@@ -1,7 +1,69 @@
-# Traction Workbench v0.2.0 — Release / Handback Notes
+# Traction Workbench v0.3.0 — Release / Handback Notes
 
 기준선: `reference/traction_workbench_spec_v1` (Blueprint, Implementation Handoff, Reference Cases, golden JSON; manifest SHA-256 일치 확인).
 이 문서는 Handoff H12가 요구한 실행 방법, model contract, 제약 목록, 알려진 한계, 검증 실행 결과, 실패/미구현 항목, data provenance, 재현 조건을 담습니다.
+
+## 0.3.0 변경 사항 (v0.2.0 대비)
+
+독립 엔지니어링 리뷰(handoff), 감사 증거 패키지(dc7b338)의 재현 스크립트, 세 추가 명세(OEW/HEV, 파워모듈별 손실·단계별 효율,
+가변 PWM·anti-jerk)를 반영했습니다. 항목별 구현 위치·확인 테스트·상태(implemented / partial / missing / evidence_missing)는
+[`TRACEABILITY.md`](TRACEABILITY.md)에 있습니다. 모든 수치 fixture는 구현 검증(V0–V3)이며 하드웨어 정확도(V5–V6)가 아닙니다.
+
+**정확성 (리뷰 P0-A, F01–F13, 감사 재현)**
+- **공통 witness gate** (`solvers/gate.check_witness`): 정책·capability·지정 정책·sizing·불확실성 calibration·탐색 페이지의 모든 witness를
+  원 요청으로 다시 평가합니다(모델 유효, 커버리지 내부, 모든 제약 평가·충족, 관련 DC 한계 선언). 통과하지 못한 수치는 진단값입니다.
+- **결측 ≠ 무제한**: 선언되지 않은 DC 한계는 UNKNOWN, 무제한은 `math.inf`로 명시 선언. NOT_EVALUATED는 통과가 아니고, 수치 residual은
+  토크 정확도가 아닙니다. 커버리지 인지 인증(control domain ≠ data domain), 유한/연속 정격의 typed semantics(순서 불변), 대역 요구는
+  같은 witness로 판정합니다.
+- **FTTI**: 고장에서 **물리적** 안전 종점까지의 모든 연속 예산 경로를 열거(보장 상한 = 경로 최소). 독립 최댓값의 합이 FTTI를 넘으면
+  UNKNOWN(BOUND_INCONCLUSIVE)이고, 최댓값이 한 트레이스에서 함께 일어난다고 선언할 때만 INFEASIBLE. 명령 발행으로 끝나는 체인은 UNKNOWN,
+  분할할 수 없는 composite 예산이 있으면 FDTI/FRTI 예산 판정은 UNKNOWN.
+- **열 증거**: “검증됨”에는 검증 근거와 유효 영역이 필요하고, 필수 노드·초기 열 상태(미선언·고온 시작 → UNKNOWN)를 확인합니다.
+  비단조 feasible set은 보존합니다.
+- **정류 위험**: 회전 중 무부하 역기전력은 방전 하한이 아니라 다이오드 정류 위험입니다(RC 시간은 하한, 결합 모델 필요). 상수 파라미터
+  모델이면 다이오드 브리지 등가(R_eq = π²/18·R)로 링크 유지 전압을 **스크리닝 추정**(한계 아님)합니다.
+- Kt 단위의 명시 변환·거부, 정적 reciprocity ≠ 보간자의 동적 보수성, sizing의 UNKNOWN 구간을 최소 sizing으로 보고하지 않음, 미해결 이득을
+  “not limiting”으로 표시하지 않음, **수학 · 모델 · 요구 · qualification claim 층** 분리.
+- 감사 재현 폐쇄: 조건부 빈 곡선 → UNKNOWN, 고정 calibration 행의 witness gate, provenance 기반 정격 승인, FDTI/FRTI 분할 미상 → UNKNOWN,
+  보간자 내부 비대칭 검출.
+
+**데이터 계약 (P0-B)**: flux map 좌표계를 import 시 고정, q-홀수 이음매 검사, machine-data audit(정적·동적·손실·열·감자·고장 용도별
+사용 가능 여부와 qualification 공백 — 이웃 용도로 승격하지 않음).
+
+**P1 확장**
+- 데이터시트 **모듈 손실**(§8.8): 소자별 도통·스위칭(온도×전류 표, 외삽 금지, typical ≠ 상한), 변조별 듀티, 데드타임, 병렬 → P_dc·DC claim·
+  열에 결합. 2차 surrogate와 배타적이며 I² certificate를 적용하지 않습니다.
+- **DC-link 리플**(§8.9): 커패시터 RMS 전류, ESR(f) 손실, 수명 게이트. **열 사이클 수명**(§12): rainflow, 조건부 손상.
+- **보호**(§9): 임계값·디레이팅·고장 반응을 하나의 인과 궤적에서 검증. **ASC 과도**(§9.13): 고객의 두 전류-시간 요구.
+- **전도 EMI**(§11, P1-C): 요구 프로파일 완결성, source → path → receiver, RBW 선 합 추정, 대역별 필요 감쇠, 측정 trace 판정
+  (PASS/FAIL/INDETERMINATE). 스크리닝은 PASS가 아닙니다.
+- **모터 설계**(§10): 검증된 기준 모델 주변의 일관 스케일링(ψ = k_N·k_L·k_PM·ψ, L·R은 k_N²와 단부 비율, 전류축 ×1/k_N)과 계보·무효화 데이터,
+  같은 결합 요구 여유로 후보 비교, 권선 star of slots(정수 산술 벨트, 3상 MMF 권선계수, 병렬 회로), 개념 사이징(T = 2σV_r).
+
+**추가 명세**
+- **OEW 듀얼 인버터 / HEV**: 64 상태쌍·보장 반경, dq0 전력, 공통 bus vs 절연 전원, 포트 회계, i0 리플, 쌍 안전 상태, 두 브리지 CM 교차
+  스펙트럼; 결합 토크 집합(가지 vs 순전력), 크랭킹 replay, 유성기어 검사, 부하 차단 에너지 원장.
+- **효율·모듈 비교**: 다섯 제어 체적(인버터 · 모터 · 인버터+모터 · 감속기 · eDrive)의 포트 기준 η — 구동 η = 출력/입력, 회생 η = |입력|/|출력|,
+  혼합 흐름 N/A, 미상 손실 UNKNOWN, η > 1은 clamp 없이 INCONSISTENT, 망원 항등식은 같은 점·방향에서만. 방향별 감속기 모델(없으면 eDrive η
+  UNKNOWN), 보조 전력은 공급 포트에서 한 번, 미션 E±(정확한 구간 선형 분할), 모듈 A/B(고정 정책 vs 설계별 정책, Tj는 드라이브를 거친 결합
+  고정점, 선언된 오차 예산을 넘을 때만 우열). 기존 표시 결함 **F-E01**(미상 손실을 0으로 합산한 총 손실), **F-E02**(개별 효율을 전체 energy
+  mode에 종속), **F-E03**(회생 지도에 정방향 수식 라벨) 수정.
+- **가변 PWM**: 캐리어·이벤트율·샘플/갱신율·전기 주파수·펄스 비 분리, 인과적 fsw 스케줄(첫 일치 규칙, 히스테리시스, dwell, 보호 선점,
+  fallback), 지연 원장(필터 + 갱신 + 변조기 비율, deadline 미스는 위반), PI 이득 매핑(연속 vs 고정 이산)과 전류 루프 위상 여유, RL 리플(엣지 사이
+  정확 적분 = 엣지 합 스펙트럼), 최소 펄스, 카운터 수준 up-down 타이머(shadow vs 즉시 기록)와 gate event 검사, 고조파 동손 3ΣI²R_ac와
+  철손 상한의 구간 비교, Pareto(“평가한 후보 중 최선”).
+- **Anti-jerk·능동 감쇠**: 기어비로 환산한 2관성 ROM(이벤트 사이 행렬지수 정확 적분), 성형(rate·prefilter·ZV)과 피드백(상대속도·HPF),
+  ZOH + 분수 지연(modified z-transform), 연속 지연 교차(Newton 연속), 중재 후 클리핑, 긴급 감소는 comfort 필터 우회, 백래시 통과 → UNKNOWN.
+- **교환 패키지** (`twb exchange`, 검증 페이지): MathWorks 이식·도구 간 parity용 규약(포트 부호, 효율 경계, 손실 소유권, PWM, 드라이브라인 좌표),
+  모델 식별자, 예시 입력, 이 구현이 계산한 fixture(E-01..E-06, D-01..D-05, PWM 지연·리플). 구현 검증용이며 물리 검증이 아닙니다.
+
+**데스크톱**
+- 새 페이지 7개: 보호·고장, 전력변환·수명, 효율·모듈 비교, 가변 PWM·Anti-jerk, OEW·HEV, EMI(전도성), 모터 설계.
+- P0 결과의 화면 노출: 요구 판정의 **claim 층 표**와 요구 witness, 운전점 탐색의 **ACCEPTED / DIAGNOSTIC ONLY / UNKNOWN**과 gate 사유,
+  모델·데이터의 DC 한계 **값 / 미선언 / 선언된 무제한** 선택과 **data audit 표**, 열 편집기의 **검증 근거**와 열 페이지의 **초기 열 상태**,
+  안전 스크리닝의 **FTTI 종점 입력**(안전 종점 이벤트, 종점 종류, 최댓값 동시 발생)과 보장 상한 경로·FDTI/FRTI 최악값, 방전·과전압 **결과 표**
+  (정류 위험과 스크리닝 추정).
+- self-test에 효율·PWM·anti-jerk·교환 패키지 검사 추가, desktop smoke가 새 입력 경로를 확인합니다.
 
 ## 0.2.0 변경 사항 (v0.1.0 대비)
 
@@ -48,7 +110,7 @@
 | 모델 | (a) 상수 파라미터 dq (D1), (b) 유효 마스크가 있는 비선형 dq flux map (D2) — engineering MVP의 두 모델 모두 구현 |
 | 경계 | 속도·Vdc·온도는 scenario가 주는 경계 조건. 열 동특성·배터리 전기화학 없음 |
 | 필수 query (H2) | forward, 요구 축토크 해, ±capability(정책/물리/전기), 지정 정책 평가, 조건 비교, 1-파라미터 역설계, 구간 입력 분석, 추적 가능한 의사결정 기록, 외부 rating envelope 조회 |
-| 추가(요청) | FTTI·DC-link·ASC/6SO·열→토크 스크리닝 확장 (`extensions/`, 7절 참조) |
+| 추가(요청) | FTTI·DC-link·ASC/6SO·열→토크 스크리닝 확장 (`extensions/`, 7절 참조); 리뷰 P1(모듈 손실, DC-link 리플, 열 사이클 수명, 보호, ASC 과도, 전도 EMI), 모터 설계(§10), 추가 명세(OEW 듀얼 인버터·HEV, 경계별 효율·모듈 A/B, 가변 PWM, anti-jerk) — 단일 VSI solver는 OEW 토폴로지를 재해석하지 않습니다 |
 
 ## 2. 실행 방법
 
@@ -105,7 +167,11 @@ T_shaft = T_em − τ_rot(ω_m),   τ_rot = bω_m + cω_m|ω_m|  (회전 반대 
 P_rot = ω_m τ_rot ≥ 0,   P_cu = 1.5 R_s I_pk²
 P_ac = 1.5(v_d i_d + v_q i_q) = T_em ω_m + P_cu = P_shaft + P_cu + P_rot
 P_dc = P_ac + P_inv,   P_inv = a0 + a2 I_pk² ≥ 0   (구동/회생 대칭은 명시 선언 필요)
+                     또는 P_inv = 데이터시트 모듈 모델(소자별 도통 + 스위칭, V_dc·f_sw·T_j·변조 의존)  — 둘 중 하나만, 합산 금지
 ```
+
+모듈 모델을 쓰면 2차 surrogate의 I² certificate(오목 상한 등)는 적용되지 않으며 DC claim은 직접 witness에 근거합니다. 데이터 범위(V/I/T)
+밖은 외삽하지 않고 UNKNOWN입니다. 효율은 선언된 포트 사이의 제어 체적마다 따로 정의합니다(0.3.0 변경 사항, `analysis/efficiency.py`).
 
 철손을 τ_rot에 포함하면 “loss-equivalent resisting-torque approximation”으로 기록합니다. 손실 모델이 없으면 축/DC claim을 전기적 claim으로부터 승격하지 않습니다(UNKNOWN, MISSING_INPUT; 인버터 손실이 없을 때는 P_dc ≥ P_ac 필요조건만 사용).
 
@@ -188,12 +254,16 @@ Blueprint는 ASC/6SO 전환·열 지속시간·FuSa를 MVP non-goal로 두었으
 
 | 모듈 | 내용 | 판정 규칙 |
 |---|---|---|
-| `extensions/timing.py` | 이벤트 체인(고장→감지→…→안전상태), min/nom/max, 주기 태스크 샘플링 지연, **중복 예산(같은 구간을 두 담당자가 예산화) 자동 검출**, FDTI/FRTI 분할과 할당 비교 | 선언된 최대값의 합 ≤ FTTI면 FEASIBLE(값 자체는 미검증), 공백/누락은 UNKNOWN |
-| `extensions/dclink.py` | 저항 능동 방전(R_max, I0, P0, E_R, 도달 시간), 패시브 방전(블리더 R_p: 도달 시간, 상시 손실 V²/R_p, P·t 불변량, R_p 설계 창, 능동 병렬), 회전 중 역기전력 > V_f이면 방전 불가(속도 한계 산출); 회생 중 배터리 차단 시 ½C(V₂²−V₁²) = E_in으로 과전압 도달 시간·허용 반응 시간 | 선언한 전력 프로파일·반응 시간·허용 손실 기준 |
+| `extensions/timing.py` | 이벤트 체인(고장→감지→…→안전상태), min/nom/max, 주기 태스크 샘플링 지연, **중복 예산(같은 구간을 두 담당자가 예산화) 자동 검출**, FDTI/FRTI 분할과 할당 비교 | 물리적 안전 종점까지의 모든 연속 경로 중 보장 상한(최소 합) ≤ FTTI면 FEASIBLE(값 자체는 미검증); 초과는 UNKNOWN(BOUND_INCONCLUSIVE), 최댓값 동시 발생을 선언했거나 최솟값 합도 초과하면 INFEASIBLE; 명령 종점·공백·누락은 UNKNOWN |
+| `extensions/dclink.py` | 저항 능동 방전(R_max, I0, P0, E_R, 도달 시간), 패시브 방전(블리더 R_p: 도달 시간, 상시 손실 V²/R_p, P·t 불변량, R_p 설계 창, 능동 병렬), 회전 중 역기전력 > V_f이면 **정류 위험**(RC 시간은 하한, 결합 모델 필요 → UNKNOWN; 목표 이하 최고 속도와 상수 모델의 정류 링크 전압 스크리닝 추정); 회생 중 배터리 차단 시 ½C(V₂²−V₁²) = E_in으로 과전압 도달 시간·허용 반응 시간 | 선언한 전력 프로파일·반응 시간·허용 손실 기준 |
 | `extensions/safe_state.py` | Freewheel(6SO): 역기전력 선간 peak vs V_dc(비제어 정류 개시 속도), HV 차단 시 과전압 위험; ASC: v=0 정상상태 전류·제동 토크(상수 모델 해석해, 맵은 커버리지 내 수치해); 소자 정격·경로 가용성·전환 시간(선언값); 프로젝트/고객 규칙 별도 계층 | 항상 UNKNOWN(OUT_OF_SCOPE): 과도 peak, UCG 전류 크기, SOA, 검출, FuSa 미평가 — 안전 상태를 선택하지 않음 |
 | `extensions/thermal.py` | Foster Z_th(t), 노드별 손실 배분, 한계 도달 시간, 지속시간별 가용 토크(“X N·m는 t초 유지, 이후 Y N·m”) | 검증된 열모델 + 조건 일치 시에만 FEASIBLE/INFEASIBLE, 그 외 UNKNOWN(UNVALIDATED_DURATION) + 추정치 |
 
 fixture E01(1-node 열) 값 77.6424 °C / 138.6294 s를 재현합니다.
+
+0.3.0에서 추가된 리뷰 P1 모듈(모듈 손실, DC-link 리플, 열 사이클 수명, 보호, ASC 과도, 전도 EMI), 모터 설계, 추가 명세 모듈(OEW·HEV,
+경계별 효율·모듈 A/B, 가변 PWM, anti-jerk)의 판정 규칙과 상태는 [`TRACEABILITY.md`](TRACEABILITY.md)에 항목별로 있습니다. 공통 규칙:
+스크리닝은 PASS로 승격하지 않고, 선언되지 않은 입력은 UNKNOWN이며, 합성 예시는 끝까지 합성으로 표시됩니다(evidence_missing).
 
 ## 8. Data provenance
 
@@ -216,26 +286,30 @@ fixture E01(1-node 열) 값 77.6424 °C / 138.6294 s를 재현합니다.
 
 ## 10. 알려진 한계
 
-1. 정상상태 기본파 모델: PWM 리플, 순간 peak, 반도체 SOA, OC overshoot, 전류 제어 동특성·안정성, 과도 전압 headroom은 평가하지 않습니다.
+1. 판정의 기준은 정상상태 기본파 모델입니다: 순간 peak, 반도체 SOA, OC overshoot, 과도 전압 headroom은 판정하지 않습니다. PWM 리플·전류 루프 위상 여유(가변 PWM 페이지), ASC 과도(보호 페이지), 드라이브라인 동특성(anti-jerk)은 선언된 축약 모델의 별도 분석이며 기본 판정을 바꾸지 않습니다.
 2. 검증은 합성 fixture에 한정: V4(독립 모델 비교)·V5(시험/공급사 데이터) 미수행. 수치 자릿수는 제품 정확도가 아닙니다.
-3. 회전 손실 토크는 전류 비의존(τ_rot(ω))만 지원: 전류/자속 의존 철손 토크는 미지원. 인버터 손실은 대칭 2차 surrogate만 지원(구동/회생 비대칭, Vdc·fsw 의존 손실 맵 미지원).
+3. 회전 손실 토크는 전류 비의존(τ_rot(ω))만 지원: 전류/자속 의존 철손 토크는 미지원(PWM 고조파 철손은 선언된 상한으로만). 인버터 손실은 대칭 2차 surrogate 또는 데이터시트 모듈 모델(V_dc·f_sw·T_j·변조 의존, 표 범위 밖 외삽 없음); 공급사 손실 맵(측정 P_loss(I, V, T)) 직접 입력과 DPT 상관은 없습니다.
 4. Δv_inv는 이상적(0) 또는 저항 강하만 지원: deadtime/소자 강하 모델, 합의된 단자 전압 envelope 함수 미지원.
 5. Flux map은 쌍선형 보간(셀 내부)만. 곡선 추적은 행당 한 가지 분기를 가정하고 다중 분기를 감지하면 구간 구조 없이 표본 결과만 보고합니다. 셀 B&B 기본 깊이 7(10 A 셀 → 0.08 A)로 최소전류 인증 gap은 약 0.1 A 수준입니다.
 6. 정책 capability의 음(회생) 방향은 표본 증거(연속성 가정)입니다. T–n 곡선은 속도 17점 표본이며 점 사이는 표시용입니다.
 7. Vdc 범위 요구는 기본 5점 표본으로만 검사하며 연속 구간 PASS를 주장하지 않습니다(단조성 인증 미구현).
 8. 구간 입력 분석은 독립 상자(모서리+중심)만: 상관 파라미터는 공동 시나리오로 표현해야 하며 최악점 인증은 없습니다.
-9. 온도: 선형 계수 조정만 지원, 손실–온도 피드백 없음. 냉각수 물성 기본값은 일반 EG/물 표의 근사이며, 냉각수 자체의 열용량·수송 지연은
+9. 온도: 선형 계수 조정만 지원. 손실–온도 피드백은 모듈 A/B·가변 PWM 비교의 정상상태 전기열 고정점(모듈 T_j)에만 있고, 기본 판정·미션 과도 T_j에는 없습니다. 냉각수 물성 기본값은 일반 EG/물 표의 근사이며, 냉각수 자체의 열용량·수송 지연은
    무시(가열 쪽으로 보수적)하고, 유량에 따른 대류 저항은 사용자가 지정한 단에만 지수 법칙으로 보정합니다(검증된 값이 아님).
-10. 스크리닝 확장은 7절의 범위로 제한됩니다(과도, UCG 전류 크기, 소자 SOA, 기능안전 승인 없음).
+10. 스크리닝 확장은 7절과 [`TRACEABILITY.md`](TRACEABILITY.md)의 범위로 제한됩니다(UCG 전류 크기, 소자 SOA, 기능안전 승인, EMC 합격, 수명 보증 없음). OEW 과도 ASC(R-02 partial), 전원 개방·브리지 trip·전환 skew(R-03), 측정 파형 전력, 동기 PWM·spread spectrum, 샘플 유효창, 다관성 드라이브라인은 미구현입니다.
 11. 그래프의 파형·듀티는 같은 기본파 값을 역 Park·min-max 영상분 주입으로 다시 표현한 평균값 모델입니다(스위칭 리플, 데드타임, 소자 강하 없음). MTPV는 상수 모델에서 R_s를 무시한 참고선입니다.
 12. flux map 드라이브의 T–n 곡선은 계산량 때문에 격자 추정(시각화용, 라벨 표기)이며, 판정 자체는 항상 엄밀 솔버를 사용합니다. 맵·스윕은 표본 사이의 연속성을 보장하지 않습니다.
 13. 실행 파일은 코드 서명되지 않았습니다(사내 배포 시 IT 정책에 따라 서명·화이트리스트 필요). 번들 크기는 Qt·SciPy 포함 수백 MB입니다.
 
 ## 11. 미구현 / 후속 항목
 
-- Roadmap C–G 본 구현(검증된 lumped thermal과 duty/recovery, DC source 결합(Vdc–Idc), reducer/vehicle, 선택 transient, 선택 protection) — 이번 버전은 C/D/G의 스크리닝 미리보기만 포함.
-- UC11(reducer/vehicle 변환)은 fixture E00 산술만 독립 검산에서 확인, 제품 기능은 없음.
-- 공급사 손실 맵 입력, 비대칭 손실, 전류 의존 철손, 비선형 맵의 다중 분기 인증, Vdc 구간 단조성 인증.
+- **P0-C (evidence_missing)**: 실제 모터–인버터 한 조합의 정적 release evidence — 공급사·시험 데이터가 필요합니다. 합성 suite를 qualified baseline이라 부르지 않습니다.
+- Roadmap C–G 본 구현(검증된 lumped thermal과 duty/recovery, DC source 결합(Vdc–Idc), vehicle, 선택 transient) — 보호·ASC 과도·감속기(방향별 손실)는 0.3.0에서 축약 모델로 추가.
+- UC11(vehicle 변환)은 fixture E00 산술만 독립 검산에서 확인. 감속기는 효율 경계(P_m ↔ P_o)로만 있고 차량 모델은 없음.
+- 공급사 손실 맵 직접 입력, 전류 의존 철손, 비선형 맵의 다중 분기 인증, Vdc 구간 단조성 인증.
+- 추가 명세의 missing/partial 항목(OEW R-02/R-03, 측정 파형 ⟨v·i⟩, 저장에너지 자동 계산, 동기 PWM·random PWM, 샘플 유효창·stale 샘플,
+  차동 인덕턴스 기반 동적 전압 여유, 센서 dropout·wheel slip, 다관성 협조)과 §14 디스커넥터(P2 보류) — [`TRACEABILITY.md`](TRACEABILITY.md).
+- 물리 검증 증거(DPT·열량계·동력계, HIL, EMC 측정 보정, 차량 FRF) 없음: 해당 항목은 evidence_missing으로 표시됩니다.
 - 모든 실패 항목: 없음(검증 실행에서 FAIL 0).
 
 ## 12. 재현 조건
@@ -273,3 +347,13 @@ fixture E01(1-node 열) 값 77.6424 °C / 138.6294 s를 재현합니다.
 | 냉각수 루프·Foster/Cauer·유량 의존 열저항 | `extensions/coolant.py`, `extensions/thermal.py`, `api._thermal_model` | `test_thermal_coolant.py` (에너지 수지, Cauer ODE 대조, 유량 보정, 기준 온도) |
 | 회로 개요도·열 회로도 | `plots/schematics.py`, `desktop/thermal_editor.py` | `test_reports_desktop.py::test_schematics_render`, desktop smoke |
 | 배포 | `packaging/` (PyInstaller spec, 빌드·동결 self-test), `.github/workflows/build.yml` | CI Windows job |
+| 리뷰 P0-A F01–F13, 감사 재현 | `solvers/gate.py`, `requirement.py`, `extensions/timing.py`·`thermal.py`·`dclink.py`, `io.py`, `models/flux.py`, `analysis/sizing.py`·`uncertainty.py`·`rating.py`, `decision.py`(claim 층) | `test_review_p0a.py` |
+| 리뷰 P0-B 데이터 계약·data audit | `io.py`, `models/`, `service.data_audit` | `test_review_p0b.py` |
+| P1: 모듈 손실·DC-link 리플·수명·보호·ASC 과도·전도 EMI | `extensions/module_loss.py`·`dclink_ripple.py`·`lifetime.py`·`protection.py`·`asc_transient.py`·`emi.py` | `test_module_loss.py`, `test_dclink_ripple.py`, `test_lifetime.py`, `test_protection.py`, `test_asc_transient.py`, `test_emi.py` |
+| 모터 설계 (§10) | `analysis/machine_design.py` | `test_machine_design.py` (권선계수 교과서 값, dq 스케일링 항등식) |
+| OEW·HEV | `extensions/oew.py`, `extensions/hev.py` | `test_oew.py`, `test_hev.py` |
+| 경계별 효율·감속기·미션·모듈 A/B | `analysis/efficiency.py` | `test_efficiency.py` (E-01..E-06) |
+| 가변 PWM | `extensions/pwm_policy.py` | `test_pwm_policy.py` (시간 적분 = 스펙트럼 리플, 이벤트 합 = 평균 손실) |
+| Anti-jerk·능동 감쇠 | `extensions/driveline.py` | `test_driveline.py` (D-01..D-05, 출력 좌표 독립 ODE) |
+| 교환 패키지 | `exchange.py`, `cli.py exchange` | `test_exchange.py` |
+| 항목별 상태 (implemented / partial / missing / evidence_missing) | — | [`TRACEABILITY.md`](TRACEABILITY.md) |
