@@ -364,8 +364,8 @@ def build_constraints(k: DriveKernel, *, id_A: float, iq_A: float, v_cmd_peak: f
          None if lim.charge_current_max_A is None else -lim.charge_current_max_A, i_dc, "A (average)",
          s.current_abs_tol_A),
     ):
-        if limit is None:
-            continue
+        if limit is None or not math.isfinite(limit):
+            continue            # not declared (see solvers.gate: never read as unlimited) or declared unlimited
         out.append(ConstraintResult(name, group, sense, limit, demand, unit, _tol(s, limit, floor), dc_src,
                                     details=(("note", "average DC quantity; not ripple RMS or transient peak"),)))
     return tuple(out)
@@ -610,6 +610,17 @@ class ForwardResult:
     def all_constraints_ok(self) -> bool | None:
         return None if self.point is None else self.point.all_satisfied()
 
+    @property
+    def validity_gate_passed(self) -> bool:
+        """False when the model is not valid for this scenario (e.g. Rs reference temperature missing)."""
+        return not self.issues
+
+    @property
+    def accepted(self) -> bool:
+        """The evaluated point is admissible evidence: model valid, covered, every constraint evaluated and met."""
+        return bool(self.evaluable and self.validity_gate_passed and self.point is not None
+                    and self.point.all_satisfied() and self.point.identities_ok)
+
     def to_dict(self) -> dict:
         return {
             "query": "forward_evaluation",
@@ -617,9 +628,16 @@ class ForwardResult:
             "reason": None if self.reason is None else self.reason.value,
             "message": self.message,
             "model_issues": [i.to_dict() for i in self.issues],
+            "validity_gate": {
+                "passed": self.validity_gate_passed,
+                "meaning": ("model valid for this scenario" if self.validity_gate_passed else
+                            "model NOT valid for this scenario: the numbers are diagnostics only and the point is "
+                            "not an accepted witness"),
+            },
             "all_constraints_satisfied": self.all_constraints_ok,
-            "semantics": "the point is evaluated as given and never moved; a violating point is a diagnostic, "
-                         "not a feasible witness",
+            "accepted_as_evidence": self.accepted,
+            "semantics": "the point is evaluated as given and never moved; a violating point or a point evaluated "
+                         "outside the model-validity gate is a diagnostic, not a feasible witness",
             "operating_point": None if self.point is None else self.point.to_dict(),
         }
 
@@ -631,6 +649,14 @@ def forward_evaluation(drive: DriveModel, scenario: Scenario, id_A: float, iq_A:
         pt = evaluate_point(k, id_A, iq_A)
     except OutsideModelDomain as exc:
         return ForwardResult(None, False, Reason.OUTSIDE_MODEL_DOMAIN, str(exc), tuple(k.issues))
-    msg = "all evaluated constraints satisfied" if pt.all_satisfied() else (
-        "constraint violation(s): " + ", ".join(c.name for c in pt.violations()))
+    if pt.all_satisfied():
+        msg = "all evaluated constraints satisfied"
+    else:
+        bad = [c.name for c in pt.violations()] + [f"{c.name} (not evaluated)" for c in pt.constraints
+                                                   if c.state == NOT_EVALUATED]
+        msg = "constraint violation(s) / not evaluated: " + ", ".join(bad)
+    if k.issues:
+        msg = ("DIAGNOSTIC ONLY - model validity gate failed (" + "; ".join(i.message for i in k.issues) + "); "
+               + msg)
+        return ForwardResult(pt, True, k.issues[0].reason, msg, tuple(k.issues))
     return ForwardResult(pt, True, None, msg, tuple(k.issues))

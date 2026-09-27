@@ -83,6 +83,13 @@ class ConstantCurve:
         self.Rv = k.Rs + k.R_drop
         self.we = k.omega_e
         self.scale = max(k.Imax, abs(k.domain.id_A[0]), abs(k.domain.id_A[1]), 1.0)
+        # effective iq bounds: declared domain intersected with the declared parameter validity, so that a
+        # validity edge is a candidate root like a domain edge (feasibility can change there)
+        q_lo, q_hi = k.domain.iq_A
+        v = k.drive.motor.flux.validity
+        if v is not None:
+            q_lo, q_hi = max(q_lo, v.iq_A[0]), min(q_hi, v.iq_A[1])
+        self.q_lo, self.q_hi = q_lo, q_hi
         # a = 0 within rounding of the torque arithmetic is treated as zero torque
         self.zero_torque = abs(self.a) <= 1e-14 * max(self.psi * k.Imax, abs(self.dl) * k.Imax ** 2, 1e-300)
 
@@ -105,10 +112,10 @@ class ConstantCurve:
         return vd * vd + vq * vq - self.k.Vb ** 2
 
     def _g_qhi(self, d):
-        return self.iq_of(d) - self.k.domain.iq_A[1]
+        return self.iq_of(d) - self.q_hi
 
     def _g_qlo(self, d):
-        return self.k.domain.iq_A[0] - self.iq_of(d)
+        return self.q_lo - self.iq_of(d)
 
     def _g_stat(self, d):
         return d * self.kd(d) ** 3 - self.a ** 2 * self.dl
@@ -123,8 +130,8 @@ class ConstantCurve:
             "voltage_boundary": ((self.Rv * X * K - self.we * self.Lq * a) ** 2
                                  + (self.Rv * a + self.we * (self.psi + self.Ld * X) * K) ** 2
                                  - k.Vb ** 2 * K * K, self._g_voltage),
-            "iq_max_boundary": (a * K - k.domain.iq_A[1] * K * K, self._g_qhi),
-            "iq_min_boundary": (k.domain.iq_A[0] * K * K - a * K, self._g_qlo),
+            "iq_max_boundary": (a * K - self.q_hi * K * K, self._g_qhi),
+            "iq_min_boundary": (self.q_lo * K * K - a * K, self._g_qlo),
             "stationary_I2": (X * K ** 3 - a * a * self.dl, self._g_stat),
         }
         out = [(lo, "id_bound"), (hi, "id_bound")]
@@ -146,8 +153,9 @@ class ConstantCurve:
             d_lo, d_hi = max(d_lo, v.id_A[0]), min(d_hi, v.id_A[1])
         notes = []
         diag = {"a_Wb_A": self.a, "saliency_H": self.dl}
-        if d_lo > d_hi:
-            return self._result([], [], notes + ["declared id range is empty"], diag)
+        if d_lo > d_hi or self.q_lo > self.q_hi:
+            return self._result([], [], notes + ["declared id/iq range (domain intersected with parameter validity) "
+                                                 "is empty"], diag)
         if self.zero_torque:
             pts, segs, n2 = self._zero_torque(d_lo, d_hi)
             notes.append("zero electromagnetic torque: iq = 0 branch (and the k = 0 line if inside the domain) "
@@ -158,9 +166,11 @@ class ConstantCurve:
         if self.dl != 0.0:
             d0 = -self.psi / self.dl
             diag["k_zero_id_A"] = d0
-            if d_lo < d0 < d_hi:
-                gap = 1e-9 * self.scale
-                pieces = [(d_lo, d0 - gap), (d0 + gap, d_hi)]
+            gap = 1e-9 * self.scale
+            if d_lo - gap <= d0 <= d_hi + gap:
+                # the pole (k = 0, no torque for any iq) may be interior or coincide with an id bound
+                # (e.g. psi_PM = 0 with id_max = 0): the curve is split there and the pole itself excluded
+                pieces = [pc for pc in ((d_lo, min(d_hi, d0 - gap)), (max(d_lo, d0 + gap), d_hi)) if pc[0] <= pc[1]]
                 notes.append(f"torque curve has a pole at id = {d0:.6g} A (k = 0); pieces analysed separately")
         all_pts: list[CurvePoint] = []
         segs: list[CurveSegment] = []
@@ -231,7 +241,7 @@ class ConstantCurve:
     def _zero_torque(self, d_lo, d_hi):
         """a = 0: iq = 0 for every id, plus the k = 0 line (any iq) if inside the domain."""
         k = self.k
-        q_lo, q_hi = k.domain.iq_A
+        q_lo, q_hi = self.q_lo, self.q_hi
         pts, segs = [], []
         if q_lo <= 0.0 <= q_hi:
             # constraints along iq = 0 are quadratics in id

@@ -24,7 +24,7 @@ from .models.provenance import FIDELITY_ALLOWED_CLAIMS
 from .requirement import Requirement
 from .scenario import DcSourceLimits, Scenario
 from .settings import DEFAULT_SETTINGS, NumericalSettings
-from .solvers.capability import CapabilityResult, policy_capability
+from .solvers.capability import CapabilityResult, physical_capability, policy_capability
 from .solvers.policy import POLICY_TEXT, PolicyEvaluator, PolicySolution
 from .status import Aggregate, Claim, Evidence, EvidenceKind, Reason, Status, aggregate_and
 
@@ -64,13 +64,24 @@ class ConditionResult:
     duration: Claim | None
     requirement_claim: Claim
     torque_margin_Nm: float | None
+    witness_torque_Nm: float | None = None      # torque of the single witness behind every part of the claim
+    witness_solution: PolicySolution | None = None
 
     def to_dict(self) -> dict:
+        ws = self.witness_solution
+        wp = None if ws is None else ws.point
         return {
             "scenario": self.scenario.describe(),
             "requirement_claim_at_this_condition": self.requirement_claim.to_dict(),
+            "requirement_witness": None if self.witness_torque_Nm is None else {
+                "torque_Nm": self.witness_torque_Nm,
+                "id_A": None if wp is None else wp.id_A,
+                "iq_A": None if wp is None else wp.iq_A,
+                "note": "the static, DC and duration parts of the claim are evaluated at this same witness",
+            },
             "torque_capability_margin_Nm": self.torque_margin_Nm,
             "policy_solution": self.solution.to_dict(),
+            "band_witness_solution": (None if ws is None or ws is self.solution else ws.to_dict()),
             "policy_capability": None if self.capability is None else self.capability.to_dict(),
             "duration_claim": None if self.duration is None else self.duration.to_dict(),
         }
@@ -160,23 +171,26 @@ def _scenario_for(req: Requirement, base: Scenario | None, limits: DcSourceLimit
     return Scenario(source_limits=limits or DcSourceLimits(), **kw)
 
 
-def _requirement_claim(req: Requirement, sc: Scenario, sol: PolicySolution, cap: CapabilityResult | None,
-                       dur: Claim | None) -> tuple[Claim, float | None]:
-    """AND of the static policy claim (and duration) at one condition, honouring a torque band."""
-    policy = sol.policy_claim
+BAND_SAMPLES = 9
+
+
+def _requirement_claim(req: Requirement, sc: Scenario, ev: PolicyEvaluator, sol: PolicySolution,
+                       cap: CapabilityResult | None, ratings, stated: dict):
+    """Requirement claim at one condition -> (claim, margin, duration claim, witness torque, witness solution).
+
+    ``achieve``: AND of the policy claim and the duration claim, both at the requested torque.
+    ``band``: existence of ONE torque T' inside [target - band, target + band] for which the policy claim
+    and the duration claim hold at the same witness; a failing band centre does not fail the band, and the
+    band is INFEASIBLE only when an exclusion proof covers every torque in it.
+    """
     margin = None
-    if cap is not None and cap.value_Nm is not None:
+    if cap is not None and cap.accepted and cap.value_Nm is not None:
         margin = (cap.value_Nm - req.target_Nm) if req.direction > 0 else (req.target_Nm - cap.value_Nm)
-    parts = [policy]
-    if req.operator == "band" and policy.status is not Status.FEASIBLE and cap is not None and cap.value_Nm is not None:
-        lo, hi = req.target_Nm - req.band_Nm, req.target_Nm + req.band_Nm
-        if lo <= cap.value_Nm <= hi:
-            parts = [Claim("policy_static_in_band", Status.FEASIBLE,
-                           f"shaft torque within [{lo:g}, {hi:g}] N*m", policy.scope, policy.policy,
-                           evidence=cap.evidence, qualifiers=("achieved at the capability boundary",),
-                           detail=f"the policy achieves {cap.value_Nm:.6g} N*m, inside the requested band")]
-    if dur is not None:
-        parts.append(dur)
+    if req.operator == "band":
+        return _band_claim(req, sc, ev, sol, cap, ratings, stated, margin)
+    policy = sol.policy_claim
+    dur = duration_claim(ratings, req.duration_s, req.speed_rpm, req.target_Nm, stated)
+    parts = [policy] + ([dur] if dur is not None else [])
     agg = aggregate_and(parts)
     quals = tuple(q for p in parts for q in p.qualifiers)
     if cap is not None and margin is not None and agg.status is Status.FEASIBLE:
@@ -187,7 +201,64 @@ def _requirement_claim(req: Requirement, sc: Scenario, sol: PolicySolution, cap:
                   policy.scope, policy.policy, dur.time_horizon if dur else "static steady-state (no duration)",
                   agg.reasons, tuple(e for p in parts for e in p.evidence), quals,
                   "AND of: " + ", ".join(f"{p.name}={p.status.value}" for p in parts))
-    return claim, margin
+    wit_T = req.target_Nm if sol.point is not None else None
+    return claim, margin, dur, wit_T, sol
+
+
+def _band_claim(req, sc, ev, sol_c, cap, ratings, stated, margin):
+    lo, hi = req.target_Nm - req.band_Nm, req.target_Nm + req.band_Nm
+    q = (f"{req.req_id}: some shaft torque in [{lo:g}, {hi:g}] N*m at {req.speed_rpm:g} rpm, Vdc = {sc.Vdc_V:g} V "
+         f"(band existence, one witness for every part)")
+    cands = [req.target_Nm, lo, hi] + [float(x) for x in np.linspace(lo, hi, BAND_SAMPLES)]
+    if cap is not None and cap.accepted:
+        cands += [x for seg in cap.segments for x in seg if lo <= x <= hi]
+    order = sorted(dict.fromkeys(round(x, 12) for x in cands), key=lambda x: (abs(x - req.target_Nm), x))
+    tried = []
+    for T in order:
+        s_T = sol_c if T == req.target_Nm else ev.solve(T)
+        d_T = duration_claim(ratings, req.duration_s, req.speed_rpm, T, stated)
+        parts = [s_T.policy_claim] + ([d_T] if d_T is not None else [])
+        agg = aggregate_and(parts)
+        tried.append((T, agg.status.value))
+        if agg.status is Status.FEASIBLE:
+            claim = Claim("requirement_at_condition", Status.FEASIBLE, q, s_T.policy_claim.scope, s_T.policy_claim.policy,
+                          d_T.time_horizon if d_T else "static steady-state (no duration)", (),
+                          tuple(e for p in parts for e in p.evidence),
+                          tuple(p2 for p in parts for p2 in p.qualifiers) + (f"band witness at {T:.6g} N*m",),
+                          f"witness torque {T:.6g} N*m inside the band: " + ", ".join(
+                              f"{p.name}={p.status.value}" for p in parts))
+            return claim, margin, d_T, T, s_T
+    # no witness among the examined torques: INFEASIBLE only with an exclusion that covers the whole band
+    proofs, evid = [], []
+    phys = physical_capability(ev, req.direction, include_dc=True) if ev.speed_in_domain and ev.k.evaluable \
+        and ev.k.tau_rot is not None else None
+    if phys is not None and phys.accepted and phys.bound_Nm is not None and phys.certified:
+        U, tol = phys.bound_Nm, phys.gap_tolerance_Nm
+        if (req.direction > 0 and U < lo - tol) or (req.direction < 0 and U > hi + tol):
+            proofs.append(f"certified any-control capability bound {U:.6g} N*m (incl. DC limits) excludes the band")
+            evid.extend(phys.evidence)
+    if req.duration_s is not None:
+        t_small = 0.0 if lo <= 0.0 <= hi else (lo if abs(lo) < abs(hi) else hi)
+        d_small = duration_claim(ratings, req.duration_s, req.speed_rpm, t_small, stated)
+        if d_small is not None and d_small.status is Status.INFEASIBLE:
+            proofs.append(f"even the smallest |T| in the band ({t_small:g} N*m) is not rated for {req.duration_text()}")
+            evid.extend(d_small.evidence)
+    sol_T = sol_c
+    d_c = duration_claim(ratings, req.duration_s, req.speed_rpm, req.target_Nm, stated)
+    if proofs:
+        claim = Claim("requirement_at_condition", Status.INFEASIBLE, q, sol_c.policy_claim.scope,
+                      sol_c.policy_claim.policy, d_c.time_horizon if d_c else "static steady-state (no duration)",
+                      (Reason.CONSTRAINT_VIOLATION,) if "capability" in proofs[0] else (Reason.RATING_NOT_MET,),
+                      tuple(evid), (), "; ".join(proofs))
+        return claim, margin, d_c, None, sol_T
+    claim = Claim("requirement_at_condition", Status.UNKNOWN, q, sol_c.policy_claim.scope, sol_c.policy_claim.policy,
+                  d_c.time_horizon if d_c else "static steady-state (no duration)", (Reason.SAMPLED_COVERAGE,),
+                  (Evidence.make(EvidenceKind.SAMPLED, f"{len(tried)} torques in the band examined",
+                                 examined=[[t, st] for t, st in tried]),),
+                  ("a failing band centre does not fail the band",),
+                  "no examined torque in the band is feasible with every part at the same witness, but no exclusion "
+                  "proof covers the whole band")
+    return claim, margin, d_c, None, sol_T
 
 
 def _limiting_and_actions(req: Requirement, results: list[ConditionResult], sampled_range: bool) -> tuple[list, list, list]:
@@ -222,9 +293,12 @@ def _limiting_and_actions(req: Requirement, results: list[ConditionResult], samp
                     f"torque-capability margin only {m:.4g} N*m" if m >= 0 else
                     f"the request exceeds the policy capability by {-m:.4g} N*m") +
                     ": the limit is voltage/DC, not current")
-        if cr.capability is not None and cr.capability.witness is not None:
+        if cr.capability is not None and cr.capability.witness is not None and cr.capability.accepted:
             add(limiting, f"{tag} policy capability {cr.capability.value_Nm:.6g} N*m limited by: "
                           f"{', '.join(cr.capability.active_constraints) or 'n/a'}")
+        elif cr.capability is not None and cr.capability.gate_messages:
+            add(limiting, f"{tag} policy capability not established (diagnostic only): "
+                          + "; ".join(cr.capability.gate_messages))
         el, pc, dc = sol.electrical, sol.policy_claim, sol.dc_claim
         if el.status is Status.INFEASIBLE:
             if any(s.name == "d_axis_voltage_exceeds_budget" and s.violated for s in sol.screens):
@@ -286,9 +360,8 @@ def evaluate_requirement(req: Requirement, drive: DriveModel, *, scenario: Scena
         stated = {"coolant_temp_C": sc.coolant_temp_C, "initial_state": sc.initial_state, "Vdc_V": sc.Vdc_V,
                   "switching_frequency_Hz": sc.switching_frequency_Hz, "winding_temp_C": sc.winding_temp_C,
                   "magnet_temp_C": sc.magnet_temp_C}
-        dur = duration_claim(ratings, req.duration_s, req.speed_rpm, req.target_Nm, stated)
-        rc, margin = _requirement_claim(req, sc, sol, cap, dur)
-        results.append(ConditionResult(sc, sol, cap, dur, rc, margin))
+        rc, margin, dur, wit_T, wit_sol = _requirement_claim(req, sc, ev, sol, cap, ratings, stated)
+        results.append(ConditionResult(sc, sol, cap, dur, rc, margin, wit_T, wit_sol))
     agg = aggregate_and(r.requirement_claim for r in results)
     qualifiers = []
     if sampled and agg.status is Status.FEASIBLE:

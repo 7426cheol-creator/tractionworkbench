@@ -30,6 +30,7 @@ from ..settings import DEFAULT_SETTINGS, NumericalSettings
 from ..status import Evidence, EvidenceKind
 from .certificate import certify_torque
 from .common import dc_ok, electrical_ok
+from .gate import check_witness
 from .policy import PolicyEvaluator, scope_text
 
 
@@ -49,6 +50,12 @@ class CapabilityResult:
     evidence: tuple = ()
     scope: str = ""
     notes: tuple = ()
+    gate_messages: tuple = ()          # why the value is a diagnostic only (model validity, missing DC limit, ...)
+
+    @property
+    def accepted(self) -> bool:
+        """The value may be used as evidence (it passed the common witness gate)."""
+        return self.value_Nm is not None and not self.gate_messages
 
     @property
     def gap_Nm(self) -> float | None:
@@ -80,6 +87,8 @@ class CapabilityResult:
             "evidence": [e.to_dict() for e in self.evidence],
             "scope": self.scope,
             "notes": list(self.notes),
+            "accepted_as_evidence": self.accepted,
+            "diagnostic_only_because": list(self.gate_messages),
         }
 
 
@@ -324,8 +333,13 @@ def physical_capability(ev: PolicyEvaluator, direction: int, include_dc: bool = 
         certified = abs(bound - val) <= tol and not cov_limited
     if cov_limited:
         notes.append("allowed domain not fully covered by model data: bounds hold within covered data only")
+    gate = check_witness(k, wit.id_A, wit.iq_A, T_request=val, require_dc=include_dc, point=wit)
+    gate_msgs = tuple(gate.messages)
+    if gate_msgs:
+        certified = False
+        notes.append("diagnostic only (failed the common witness gate): " + "; ".join(gate_msgs))
     return CapabilityResult(kind, direction, k.speed_rpm, k.Vdc, include_dc, val, bound, certified, tol, wit,
-                            evidence=tuple(evidence), scope=scope, notes=tuple(notes))
+                            evidence=tuple(evidence), scope=scope, notes=tuple(notes), gate_messages=gate_msgs)
 
 
 # ---------------------------------------------------------------------------
@@ -342,6 +356,11 @@ def policy_capability(ev: PolicyEvaluator, direction: int, samples: int | None =
     if not ev.speed_in_domain or not k.evaluable or k.tau_rot is None:
         return CapabilityResult("policy", direction, k.speed_rpm, k.Vdc, True, None, None, False, tol, None,
                                 scope=scope, notes=("scenario outside the declared domain or model incomplete",))
+    if k.issues:
+        msgs = tuple(f"model validity: {i.message}" for i in k.issues)
+        return CapabilityResult("policy", direction, k.speed_rpm, k.Vdc, True, None, None, False, tol, None,
+                                scope=scope, notes=("the model-validity gate failed: no policy capability is claimed",),
+                                gate_messages=msgs)
     elec = physical_capability(ev, direction, include_dc=False)
     if elec.value_Nm is None:
         return CapabilityResult("policy", direction, k.speed_rpm, k.Vdc, True, None, None, False, tol, None,
@@ -420,8 +439,19 @@ def policy_capability(ev: PolicyEvaluator, direction: int, samples: int | None =
                 notes.append(f"any-control braking capability reaches {phys.value_Nm:.6f} N*m by raising losses; "
                              "the minimum-current (energy-recovering) policy boundary is less negative")
     segs = tuple((a, b) for a, b, _ in segments)
+    gate_msgs = ()
+    if wit is None or sol.policy_claim.status.value != "FEASIBLE":
+        gate_msgs = (f"the full policy solve at the scanned boundary {val:.6g} N*m is "
+                     f"{sol.policy_claim.status.value}, not FEASIBLE",)
+    else:
+        g = check_witness(k, wit.id_A, wit.iq_A, T_request=val, require_dc=True, point=wit)
+        gate_msgs = tuple(g.messages)
+    if gate_msgs:
+        certified = False
+        notes.append("diagnostic only: " + "; ".join(gate_msgs))
     return CapabilityResult("policy", direction, k.speed_rpm, k.Vdc, True, val, bound, certified, tol, wit,
-                            segments=segs, evidence=tuple(evidence), scope=scope, notes=tuple(notes))
+                            segments=segs, evidence=tuple(evidence), scope=scope, notes=tuple(notes),
+                            gate_messages=gate_msgs)
 
 
 def capability(drive: DriveModel, scenario: Scenario, direction: int = 1, kind: str = "policy",

@@ -46,7 +46,14 @@ def test_timing_duplicate_budget_detected():
 
 
 def test_timing_violation_gap_and_missing():
-    assert analyze_timing(chain(ftti=0.015))["claim"]["status"] == "INFEASIBLE"
+    # summed independent maxima above the FTTI: the bound cannot guarantee it, but it is no failure witness
+    # (review F05; the earlier INFEASIBLE expectation encoded the wrong meaning)
+    r = analyze_timing(chain(ftti=0.015))
+    assert r["claim"]["status"] == "UNKNOWN" and r["claim"]["reasons"] == ["BOUND_INCONCLUSIVE"]
+    att = chain(ftti=0.015)
+    from dataclasses import replace
+    assert analyze_timing(replace(att, worst_case_attainable=True))["claim"]["status"] == "INFEASIBLE"
+    assert analyze_timing(chain(ftti=0.005))["claim"]["status"] == "INFEASIBLE"    # even the minima exceed it
     gap = TimingChain("C2", "f", 0.03, EVENTS, (TimingItem("A", "fault", "sensed", "HW", 0.001),))
     assert analyze_timing(gap)["claim"]["status"] == "UNKNOWN" and analyze_timing(gap)["gaps"]
     nomax = TimingChain("C3", "f", 0.03, ("a", "b"), (TimingItem("A", "a", "b", "HW", None, 0.001),))

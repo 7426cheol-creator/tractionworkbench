@@ -38,6 +38,7 @@ from ..status import Claim, Evidence, EvidenceKind, Reason, Status
 from .bounds import CellBounds
 from .common import TIE_RULE, CurveAnalysis, CurvePoint, dc_band_I2, dc_ok
 from .exact import analyze_constant, point_on_curve_with_I2
+from .gate import DC_GROUPS, HARD_GROUPS, check_witness, missing_relevant_dc_limits
 from .sampled import SampledCurveTracer
 from .screens import ScreenResult, run_screens
 
@@ -143,24 +144,90 @@ class PolicyEvaluator:
                 self._cache[T] = self.tracer.analyze(T)
         return self._cache[T]
 
+    # -- certification of the minimum-current point (shared by solve and quick_status) ----------
+
+    def certify_min_point(self, T: float, curve: CurveAnalysis) -> dict:
+        """Is the found point the *global* minimum-current point of the declared control domain?
+
+        The control domain (declared id/iq/|i| limits) and the data domain (covered map cells or
+        declared parameter validity) are different sets.  When the data do not cover the whole
+        control domain, a lower-current point may lie where the model says nothing; the found point
+        is certified only if every point with a smaller current is covered (|i_found| <= distance
+        to the nearest uncovered allowed point).  For sampled tracing the cell-bound lower bound
+        must also close the gap.  Same rule for the exact and the sampled method.
+        """
+        k = self.k
+        mp = curve.min_point
+        i_found = math.sqrt(mp.I2)
+        cov_ok = (not curve.coverage_limited) or i_found <= curve.coverage_distance_A
+        if curve.exact:
+            i2_lb = mp.I2 if cov_ok else 0.0
+            return {"method": "exact boundary enumeration", "certified": cov_ok, "coverage_ok": cov_ok,
+                    "found_I_A": i_found, "lower_bound_I_A": math.sqrt(i2_lb), "i2_lb": i2_lb,
+                    "coverage_distance_A": None if math.isinf(curve.coverage_distance_A) else curve.coverage_distance_A}
+        lb = self.bounds.min_current_lower_bound(T + k.tau_rot_or_zero, mp.I2)
+        i2_lb = lb.bound if lb.bound is not None else 0.0
+        if not cov_ok:
+            i2_lb = 0.0
+        gap_A = i_found - math.sqrt(max(i2_lb, 0.0))
+        certified = cov_ok and gap_A <= max(1e-3, 1e-3 * i_found)
+        return {"method": "sampled tracing + cell-bound lower bound", "found_I_A": i_found,
+                "lower_bound_I_A": math.sqrt(max(i2_lb, 0.0)), "gap_A": gap_A, "coverage_ok": cov_ok,
+                "certified": certified, "i2_lb": i2_lb, "bnb": lb.to_dict(),
+                "coverage_distance_A": None if math.isinf(curve.coverage_distance_A) else curve.coverage_distance_A}
+
+    def _pdc_at(self, T: float, I2: float) -> float:
+        k = self.k
+        return (T + k.tau_rot_or_zero) * k.omega_m + (1.5 * k.Rs + k.inv_loss.ipk2_coeff_W_per_A2) * I2 \
+            + k.inv_loss.offset_W
+
+    def dc_status(self, T: float, I2_found: float, i2_lb: float, certified: bool) -> tuple[str, str]:
+        """DC-limit status of the (possibly uncertified) policy point; P_dc is monotone in I^2 on the curve."""
+        k = self.k
+        if not k.limits.any_declared:
+            return "UNKNOWN", "no DC source limits declared"
+        pf = self._pdc_at(T, I2_found)
+        ends = [pf] if certified else [pf, self._pdc_at(T, i2_lb)]
+        oks = [bool(dc_ok(k, np.array([p]))[0]) for p in ends]
+        if not any(oks):
+            same_side = all(p > 0 for p in ends) or all(p < 0 for p in ends)
+            if certified or same_side:
+                return "INFEASIBLE", "violated at every admissible policy point"
+            return "UNKNOWN", "violation not established for every admissible policy point"
+        if not all(oks):
+            return "UNKNOWN", "DC compatibility depends on where the uncertified policy point lies"
+        miss = sorted({m for p in ends for m in missing_relevant_dc_limits(k, p)})
+        if miss:
+            return "UNKNOWN", ("DC limit(s) that can bind are not declared: " + ", ".join(miss)
+                               + " (missing is not unlimited)")
+        return "FEASIBLE", "within the declared DC limits"
+
     # -- fast status used by capability scans -----------------------------
 
     def quick_status(self, T: float) -> tuple[str, CurvePoint | None]:
-        """FEASIBLE / INFEASIBLE / UNKNOWN of the policy incl. DC (no claims built)."""
-        if not self.speed_in_domain or not self.k.evaluable:
+        """FEASIBLE / INFEASIBLE / UNKNOWN of the policy incl. DC (no claims built).
+
+        The same gate as ``solve``: model-validity issues, a minimum-current point that is not
+        certified (uncovered data or an open cell-bound gap) and undeclared DC limits that can
+        bind all give UNKNOWN, never FEASIBLE.
+        """
+        k = self.k
+        if not self.speed_in_domain or not k.evaluable or k.issues:
             return "UNKNOWN", None
-        c = self.curve(T)
+        try:
+            c = self.curve(T)
+        except Exception:  # noqa: BLE001 - a numerical failure is UNKNOWN, never a verdict
+            return "UNKNOWN", None
         if c.empty:
             return ("INFEASIBLE" if c.exact and not c.coverage_limited else "UNKNOWN"), None
         p = c.min_point
-        if self.k.inv_loss is None or self.k.tau_rot is None:
+        if k.inv_loss is None or k.tau_rot is None:
             return "UNKNOWN", p
-        tem = T + self.k.tau_rot
-        c2 = 1.5 * self.k.Rs + self.k.inv_loss.ipk2_coeff_W_per_A2
-        pdc = tem * self.k.omega_m + c2 * p.I2 + self.k.inv_loss.offset_W
-        if self.k.P_dis_eff is None and self.k.P_chg_eff is None:
+        cert = self.certify_min_point(T, c)
+        if not cert["certified"]:
             return "UNKNOWN", p
-        return ("FEASIBLE" if bool(dc_ok(self.k, np.array([pdc]))[0]) else "INFEASIBLE"), p
+        st, _why = self.dc_status(T, p.I2, cert["i2_lb"], True)
+        return st, p
 
     # -- full solve ----------------------------------------------------------
 
@@ -235,25 +302,20 @@ class PolicyEvaluator:
         policy_certified = False
         if not curve.empty:
             mp = curve.min_point
-            point = evaluate_point(k, mp.id_A, mp.iq_A)
-            if curve.exact:
-                policy_certified = True
-                i2_lb = mp.I2
-                certs["minimum_current"] = {"method": "exact boundary enumeration", "certified": True}
-            else:
-                cov_ok = (not curve.coverage_limited) or math.sqrt(mp.I2) <= curve.coverage_distance_A
-                lb = self.bounds.min_current_lower_bound(T + k.tau_rot_or_zero, mp.I2)
-                i2_lb = lb.bound if lb.bound is not None else 0.0
-                gap_A = math.sqrt(mp.I2) - math.sqrt(max(i2_lb, 0.0))
-                policy_certified = cov_ok and gap_A <= max(1e-3, 1e-3 * math.sqrt(mp.I2))
-                certs["minimum_current"] = {
-                    "method": "sampled tracing + cell-bound lower bound",
-                    "found_I_A": math.sqrt(mp.I2), "lower_bound_I_A": math.sqrt(max(i2_lb, 0.0)),
-                    "gap_A": gap_A, "coverage_ok": cov_ok, "certified": policy_certified,
-                    "bnb": lb.to_dict()}
-                if not cov_ok:
-                    notes.append("a lower-current solution may exist outside the covered map data; "
-                                 "the policy point is the minimum within covered data only")
+            gate = check_witness(k, mp.id_A, mp.iq_A)
+            point = gate.point
+            cert = self.certify_min_point(T, curve)
+            policy_certified = cert["certified"]
+            i2_lb = cert["i2_lb"]
+            certs["minimum_current"] = {kk: v for kk, v in cert.items() if kk != "i2_lb"}
+            if not cert["coverage_ok"]:
+                notes.append("control domain != data domain: a lower-current solution may exist where the model data "
+                             "do not reach; the found point is the minimum within covered data only and the policy "
+                             "claim stays UNKNOWN")
+            if point is None:
+                # the curve method returned a point the forward evaluation does not cover: never a witness
+                policy_certified = False
+                notes.append("minimum-current point rejected by the forward evaluation: " + "; ".join(gate.messages))
 
         # ---------------- DC claim & policy claim ----------------
         dc_claim = None
@@ -271,6 +333,9 @@ class PolicyEvaluator:
 
         # ---------------- numerical acceptance ----------------
         acc = {}
+        if point is None and not curve.empty:
+            electrical = _downgrade(electrical, Reason.NUMERICAL_UNRESOLVED, "the curve point failed the forward gate")
+            policy_claim = _downgrade(policy_claim, Reason.NUMERICAL_UNRESOLVED, "the curve point failed the forward gate")
         if point is not None and point.Tshaft_Nm is not None:
             tscale = k.torque_scale()
             tres = abs(point.Tshaft_Nm - T)
@@ -346,10 +411,16 @@ class PolicyEvaluator:
                                    ("discharge current", lim.discharge_current_max_A),
                                    ("charge current", lim.charge_current_max_A)) if v is not None]
         missing = [n for n in ("discharge power", "charge power", "discharge current", "charge current") if n not in declared]
-        if not declared:
+        if not lim.any_declared:
             return Claim("dc_source", Status.UNKNOWN, q, scope, POLICY_NAME, reasons=(Reason.MISSING_INPUT,),
                          detail="no DC source limits declared for this scenario")
-        extra_q = tuple(f"{m} limit not declared" for m in missing)
+        relevant_missing = set()
+        if point.Pdc_W is not None:
+            relevant_missing.update(missing_relevant_dc_limits(k, point.Pdc_W))
+            if not certified and i2_lb is not None and k.inv_loss is not None:
+                relevant_missing.update(missing_relevant_dc_limits(k, self._pdc_at(T, i2_lb)))
+        extra_q = tuple(f"{m} limit not declared (cannot bind at this point)" for m in missing
+                        if m not in relevant_missing)
         if k.inv_loss is None or point.Pdc_W is None:
             # P_inv in [0, inf): P_dc >= P_ac only
             pac = point.Pac_W
@@ -392,6 +463,13 @@ class PolicyEvaluator:
                          reasons=cond_reasons or (Reason.CONSTRAINT_VIOLATION,), evidence=tuple(ev),
                          qualifiers=cond_q + extra_q,
                          detail="violated at the policy operating point: " + ", ".join(c.name for c in viol))
+        if relevant_missing:
+            return Claim("dc_source", Status.UNKNOWN, q, scope, POLICY_NAME,
+                         reasons=tuple(dict.fromkeys(cond_reasons + (Reason.MISSING_INPUT,))), evidence=tuple(ev),
+                         qualifiers=cond_q + extra_q,
+                         detail="DC limit(s) that can bind at the policy point are not declared: "
+                                + ", ".join(sorted(relevant_missing))
+                                + " - a missing limit is not 'unlimited' (declare Infinity explicitly for no limit)")
         quals = cond_q + extra_q + (("boundary: active within numerical tolerance",) if active else ())
         return Claim("dc_source", Status.UNKNOWN if conditional else Status.FEASIBLE, q, scope, POLICY_NAME,
                      reasons=cond_reasons, evidence=tuple(ev), qualifiers=quals,
@@ -442,41 +520,56 @@ class PolicyEvaluator:
             return Claim("physical_existence_with_dc", Status.UNKNOWN, q, scope, "any control",
                          reasons=(Reason.MISSING_INPUT,), detail="loss model or DC limits missing"), None
         lo, hi = band
-        witness = None
+        cands = []
         for seg in curve.segments:
             if seg.max_point.I2 >= lo and seg.min_point.I2 <= hi:
                 if seg.min_point.I2 >= lo:
-                    witness = seg.min_point
+                    cands.append(seg.min_point)
                 elif curve.exact:
-                    witness = point_on_curve_with_I2(k, T, seg, lo)
-                else:
-                    witness = seg.max_point if seg.max_point.I2 <= hi else None
-                if witness is not None:
-                    break
-        if witness is None and not curve.segments and curve.min_point is not None:
+                    w = point_on_curve_with_I2(k, T, seg, lo)
+                    if w is not None:
+                        cands.append(w)
+                elif seg.max_point.I2 <= hi:
+                    cands.append(seg.max_point)
+        if not curve.segments:
             for cand in (curve.min_point, curve.max_point):
                 if cand is not None and lo <= cand.I2 <= hi:
-                    witness = cand
-                    break
-        if witness is not None:
-            try:
-                wpt = evaluate_point(k, witness.id_A, witness.iq_A)
-            except OutsideModelDomain:
-                wpt = None
-            if wpt is not None and wpt.all_satisfied():
-                active = None
-                if point is not None and (wpt.id_A != point.id_A or wpt.iq_A != point.iq_A) and \
-                        not point.all_satisfied():
-                    active = wpt
-                st = Status.UNKNOWN if conditional else Status.FEASIBLE
-                detail = ("the policy point itself is DC-compatible" if active is None else
-                          "DC-compatible only by raising losses above the minimum-current point "
-                          "(active-loss candidate, outside the default policy)")
-                return Claim("physical_existence_with_dc", st, q, scope, "any control", reasons=cond_reasons,
-                             evidence=(Evidence.make(EvidenceKind.NUMERICAL_WITNESS,
-                                                     f"witness id = {wpt.id_A:.6f} A, iq = {wpt.iq_A:.6f} A, "
-                                                     f"P_dc = {wpt.Pdc_W:.6g} W"),),
-                             qualifiers=cond_q, detail=detail), active
+                    cands.append(cand)
+        rejected = []
+        for cand in cands:
+            if not curve.exact:
+                cand = self._snap_to_curve(T, cand)
+            # every candidate is re-verified against the ORIGINAL request (torque residual, all limits
+            # incl. DC, coverage); a sampled estimate that answers a different torque is never a witness
+            chk = check_witness(k, cand.id_A, cand.iq_A, T_request=T, require_dc=True, include_validity=False)
+            if not chk.accepted:
+                rejected.append("; ".join(chk.messages))
+                continue
+            wpt = chk.point
+            active = None
+            if point is not None and (wpt.id_A != point.id_A or wpt.iq_A != point.iq_A) and \
+                    not point.all_satisfied():
+                active = wpt
+            st = Status.UNKNOWN if conditional else Status.FEASIBLE
+            detail = ("the policy point itself is DC-compatible" if active is None else
+                      "DC-compatible only by raising losses above the minimum-current point "
+                      "(active-loss candidate, outside the default policy)")
+            return Claim("physical_existence_with_dc", st, q, scope, "any control", reasons=cond_reasons,
+                         evidence=(Evidence.make(EvidenceKind.NUMERICAL_WITNESS,
+                                                 f"witness id = {wpt.id_A:.6f} A, iq = {wpt.iq_A:.6f} A, "
+                                                 f"P_dc = {wpt.Pdc_W:.6g} W, T_shaft = {wpt.Tshaft_Nm:.6g} N*m",
+                                                 **chk.to_dict()),),
+                         qualifiers=cond_q, detail=detail), active
+        if rejected:
+            notes_rej = Evidence.make(EvidenceKind.SAMPLED, "candidate(s) rejected by the witness gate",
+                                      rejected=rejected[:5])
+            if curve.exact:
+                return Claim("physical_existence_with_dc", Status.UNKNOWN, q, scope, "any control",
+                             reasons=(Reason.NUMERICAL_UNRESOLVED,), evidence=(notes_rej,),
+                             detail="the enumeration found DC-compatible curve points but none passed the witness "
+                                    "gate: not proven either way"), None
+        else:
+            notes_rej = None
         if curve.exact:
             st = Status.UNKNOWN if conditional else Status.INFEASIBLE
             return Claim("physical_existence_with_dc", st, q, scope, "any control",
@@ -494,10 +587,25 @@ class PolicyEvaluator:
                          evidence=(Evidence.make(EvidenceKind.BOUNDED_SEARCH, "cell bounds exclude every covered cell "
                                                  "with DC limits"),), qualifiers=cond_q,
                          detail="no control meets the DC limits at this torque"), None
+        ev_tail = (Evidence.make(EvidenceKind.SAMPLED, "no DC-compatible sample found"),)
+        if notes_rej is not None:
+            ev_tail += (notes_rej,)
         return Claim("physical_existence_with_dc", Status.UNKNOWN, q, scope, "any control",
                      reasons=(Reason.NUMERICAL_UNRESOLVED,) if not curve.coverage_limited else (Reason.OUTSIDE_MODEL_DOMAIN,),
-                     evidence=(Evidence.make(EvidenceKind.SAMPLED, "no DC-compatible sample found"),),
-                     detail="not established either way"), None
+                     evidence=ev_tail, detail="not established either way (a coarse search may end UNKNOWN; it never "
+                                              "reports a point that answers a different request)"), None
+
+    def _snap_to_curve(self, T: float, cp: CurvePoint) -> CurvePoint:
+        """Re-locate a sampled curve estimate on the torque curve (root solve at fixed id)."""
+        tr = self.tracer
+        tem = T + self.k.tau_rot_or_zero
+        try:
+            q = tr.solve_q(cp.id_A, tem, cp.iq_A)
+        except Exception:  # noqa: BLE001 - unresolved: keep the estimate; the gate rejects it if off-curve
+            q = None
+        if q is None:
+            return cp
+        return CurvePoint(cp.id_A, q, cp.id_A * cp.id_A + q * q, cp.tag + "+snapped")
 
 
 def _downgrade(c: Claim, reason: Reason, why: str) -> Claim:

@@ -61,7 +61,8 @@ PRESETS = [
 
 EXAMPLE_TIMING = {
     "chain_id": "FC-OC-01", "fault": "phase overcurrent", "ftti_ms": 30, "detection_event": "confirmed",
-    "fdti_budget_ms": 10, "frti_budget_ms": 15,
+    "fdti_budget_ms": 10, "frti_budget_ms": 15, "safe_event": "safe_state", "endpoint_kind": "physical_safe_state",
+    "worst_case_attainable": False,
     "events": ["fault", "sensed", "filtered", "detected", "confirmed", "reaction_request", "gate_off", "safe_state"],
     "items": [
         {"id": "HW_SENSE", "from": "fault", "to": "sensed", "owner": "HW", "min_ms": 0.2, "max_ms": 0.5},
@@ -196,7 +197,10 @@ def timing(body):
     ch = TimingChain(b.get("chain_id", "chain"), b.get("fault", ""), float(b["ftti_ms"]) * ms, tuple(b["events"]), items,
                      b.get("detection_event"),
                      None if b.get("fdti_budget_ms") in (None, "") else float(b["fdti_budget_ms"]) * ms,
-                     None if b.get("frti_budget_ms") in (None, "") else float(b["frti_budget_ms"]) * ms)
+                     None if b.get("frti_budget_ms") in (None, "") else float(b["frti_budget_ms"]) * ms,
+                     safe_event=b.get("safe_event") or None,
+                     endpoint_kind=b.get("endpoint_kind") or "physical_safe_state",
+                     worst_case_attainable=bool(b.get("worst_case_attainable", False)))
     return _jsonable(analyze_timing(ch))
 
 

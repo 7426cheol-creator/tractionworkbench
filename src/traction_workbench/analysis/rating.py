@@ -2,10 +2,25 @@
 
 A fixed-temperature electrical capability is never renamed "10-second peak"
 or "continuous".  A duration claim comes only from a validated external
-rating envelope whose duration and every declared condition (coolant,
-initial state, Vdc, switching frequency, ...) match the requirement; the
-envelope is only interpolated between its own speed points (never
-extrapolated).  Without such an envelope the duration claim is UNKNOWN.
+rating envelope whose every declared condition (coolant, initial state, Vdc,
+switching frequency, ...) matches the requirement; the envelope is only
+interpolated between its own speed points (never extrapolated).  Without such
+an envelope the duration claim is UNKNOWN.
+
+Typed duration semantics (independent review F04):
+
+* a continuous requirement is answered only by a continuous rating - a finite
+  (e.g. 10 s) rating never passes a continuous requirement;
+* a finite requirement D is answered by a finite rating of the same or a
+  longer duration (a torque allowed for D_r seconds from the declared initial
+  state is allowed for any D <= D_r from that state) or by a continuous rating
+  when the requirement declares a start that is not hotter than that
+  equilibrium (cold / equilibrium at the coolant);
+* the result does not depend on the order of the envelopes: every applicable
+  envelope of the highest declared priority is evaluated; equally
+  authoritative envelopes that disagree give UNKNOWN (CONFLICTING_EVIDENCE);
+* outside a validated envelope the requirement is not *rated*
+  (RATING_NOT_MET); that is not a proof of physical impossibility.
 """
 
 from __future__ import annotations
@@ -35,6 +50,7 @@ class RatingEnvelope:
     interpolation: str = "conservative"
     port: str = "motor_shaft"
     evidence_kind: str = "supplier_rated"
+    priority: int = 0                  # authority when several envelopes apply (higher wins); ties must agree
 
     def __post_init__(self):
         d = float(self.duration_s)
@@ -76,6 +92,7 @@ class RatingEnvelope:
             "interpolation": self.interpolation,
             "provenance": self.provenance.to_dict(),
             "evidence_kind": self.evidence_kind,
+            "priority": self.priority,
         }
 
 
@@ -100,61 +117,114 @@ def _match_conditions(env: RatingEnvelope, stated: dict) -> tuple[bool, list[str
     return (not missing and not mismatch), missing, mismatch
 
 
+COLD_STARTS = ("cold", "ambient", "equilibrium_at_coolant", "coolant_equilibrium")
+
+
+def applicability(env: RatingEnvelope, duration_s: float, stated_conditions: dict) -> tuple[bool, str]:
+    """Can this envelope answer a requirement of this duration (typed finite / continuous semantics)?"""
+    req_inf = math.isinf(duration_s)
+    env_inf = math.isinf(env.duration_s)
+    if req_inf:
+        return (env_inf, "continuous rating for a continuous requirement" if env_inf else
+                f"a finite {env.duration_text} rating cannot establish a continuous requirement")
+    if env_inf:
+        start = str(stated_conditions.get("initial_state") or "").strip().lower()
+        if start in COLD_STARTS:
+            return True, (f"continuous rating covers {duration_s:g} s from a declared '{start}' start "
+                          f"(not hotter than the rated equilibrium)")
+        return False, ("a continuous rating covers a finite duration only from a declared start that is not hotter "
+                       "than the rated equilibrium (state initial_state: cold / equilibrium_at_coolant)")
+    tol = 1e-9 * max(1.0, duration_s)
+    if abs(env.duration_s - duration_s) <= tol:
+        return True, f"{env.duration_text} rating for a {duration_s:g} s requirement"
+    if env.duration_s > duration_s:
+        return True, (f"{env.duration_text} rating covers {duration_s:g} s (duration monotonicity from the same "
+                      f"declared initial state)")
+    return False, f"a {env.duration_text} rating is shorter than the required {duration_s:g} s"
+
+
+def _evaluate_envelope(env: RatingEnvelope, speed_rpm: float, torque_Nm: float, stated: dict):
+    ok, missing, mismatch = _match_conditions(env, stated)
+    if not ok:
+        return None, f"{env.envelope_id}: " + "; ".join([f"condition not stated: {m}" for m in missing] + mismatch)
+    sp = np.array(env.speed_rpm)
+    if not (sp[0] <= speed_rpm <= sp[-1]):
+        return None, f"{env.envelope_id}: speed {speed_rpm:g} rpm outside the envelope axis (no extrapolation)"
+    table = env.max_motoring_torque_Nm if torque_Nm >= 0 else env.min_braking_torque_Nm
+    if table is None:
+        return None, f"{env.envelope_id}: no braking-side table"
+    tb = np.array(table)
+    j = int(np.clip(np.searchsorted(sp, speed_rpm, side="right") - 1, 0, sp.size - 2))
+    lin = float(np.interp(speed_rpm, sp, tb))
+    pair = (tb[j], tb[j + 1]) if speed_rpm not in sp else (lin, lin)
+    mag = abs(torque_Nm)
+    cons = min(abs(pair[0]), abs(pair[1]))
+    opt = max(abs(pair[0]), abs(pair[1]))
+    lim = abs(lin) if env.interpolation == "linear_declared" else cons
+    kind = EvidenceKind.SUPPLIER_RATED if env.evidence_kind == "supplier_rated" else EvidenceKind.VALIDATED_DOMAIN
+    ev = Evidence.make(kind, f"{env.envelope_id} rev {env.revision} ({env.duration_text}): |T| limit {lim:.6g} N*m "
+                             f"at {speed_rpm:g} rpm ({env.interpolation})",
+                       conservative_limit_Nm=cons, linear_limit_Nm=abs(lin), optimistic_limit_Nm=opt,
+                       priority=env.priority, provenance=env.provenance.to_dict())
+    if mag <= lim:
+        return (Status.FEASIBLE, ev), None
+    if mag > opt:
+        return (Status.INFEASIBLE, ev), None
+    return (Status.UNKNOWN, ev), None
+
+
 def duration_claim(envelopes, duration_s: float | None, speed_rpm: float, torque_Nm: float,
                    stated_conditions: dict) -> Claim | None:
-    """Duration claim for a shaft-torque request; None when no duration was requested."""
+    """Duration claim for a shaft-torque request; None when no duration was requested.
+
+    ``torque_Nm`` must be the torque of the *same witness* as the static claim it is combined with.
+    """
     if duration_s is None:
         return None
     dtext = "continuous" if math.isinf(duration_s) else f"{duration_s:g} s"
     q = f"{torque_Nm:g} N*m at {speed_rpm:g} rpm sustained for {dtext}"
     scope = "external rating envelope lookup under matching conditions only"
-    same = [e for e in envelopes if (math.isinf(e.duration_s) and math.isinf(duration_s))
-            or abs(e.duration_s - duration_s) <= 1e-9 * max(1.0, duration_s)]
-    if not same:
+    notes, results = [], []
+    for env in envelopes:
+        app, why = applicability(env, duration_s, stated_conditions)
+        if not app:
+            notes.append(f"{env.envelope_id}: {why}")
+            continue
+        res, note = _evaluate_envelope(env, speed_rpm, torque_Nm, stated_conditions)
+        if res is None:
+            notes.append(note)
+            continue
+        results.append((env, res[0], res[1], why))
+    if not results:
+        detail = (f"no validated rating envelope applies to a {dtext} requirement; the fixed-temperature electrical "
+                  f"result is not renamed a {dtext} rating")
+        reasons = (Reason.UNVALIDATED_DURATION,) + ((Reason.MISSING_INPUT,) if notes else ())
+        return Claim("duration", Status.UNKNOWN, q, scope, None, time_horizon=dtext, reasons=reasons,
+                     evidence=tuple(Evidence.make(EvidenceKind.DIRECT_EVALUATION, n) for n in notes),
+                     detail=detail if not notes else detail + " (" + "; ".join(notes) + ")")
+    top = max(e.priority for e, *_ in results)
+    group = [r for r in results if r[0].priority == top]
+    feas = [r for r in group if r[1] is Status.FEASIBLE]
+    bad = [r for r in group if r[1] is Status.INFEASIBLE]
+    evid = tuple(r[2] for r in group)
+    ignored = [r[0].envelope_id for r in results if r[0].priority < top]
+    quals = tuple(dict.fromkeys(r[3] for r in group)) + (
+        (f"lower-priority envelope(s) not used: {', '.join(ignored)}",) if ignored else ())
+    if feas and bad:
         return Claim("duration", Status.UNKNOWN, q, scope, None, time_horizon=dtext,
-                     reasons=(Reason.UNVALIDATED_DURATION,),
-                     detail=f"no validated {dtext} rating envelope provided; the fixed-temperature electrical result "
-                            f"is not renamed a {dtext} rating")
-    notes = []
-    for env in same:
-        ok, missing, mismatch = _match_conditions(env, stated_conditions)
-        if not ok:
-            notes.append(f"{env.envelope_id}: " + "; ".join(
-                ([f"condition not stated: {m}" for m in missing]) + mismatch))
-            continue
-        sp = np.array(env.speed_rpm)
-        if not (sp[0] <= speed_rpm <= sp[-1]):
-            notes.append(f"{env.envelope_id}: speed {speed_rpm:g} rpm outside the envelope axis (no extrapolation)")
-            continue
-        table = env.max_motoring_torque_Nm if torque_Nm >= 0 else env.min_braking_torque_Nm
-        if table is None:
-            notes.append(f"{env.envelope_id}: no braking-side table")
-            continue
-        tb = np.array(table)
-        j = int(np.clip(np.searchsorted(sp, speed_rpm, side="right") - 1, 0, sp.size - 2))
-        lin = float(np.interp(speed_rpm, sp, tb))
-        pair = (tb[j], tb[j + 1]) if speed_rpm not in sp else (lin, lin)
-        mag = abs(torque_Nm)
-        cons = min(abs(pair[0]), abs(pair[1]))
-        opt = max(abs(pair[0]), abs(pair[1]))
-        lim = abs(lin) if env.interpolation == "linear_declared" else cons
-        kind = EvidenceKind.SUPPLIER_RATED if env.evidence_kind == "supplier_rated" else EvidenceKind.VALIDATED_DOMAIN
-        ev = Evidence.make(kind, f"{env.envelope_id} rev {env.revision} ({env.duration_text}): |T| limit {lim:.6g} N*m "
-                                 f"at {speed_rpm:g} rpm ({env.interpolation})",
-                           conservative_limit_Nm=cons, linear_limit_Nm=abs(lin), optimistic_limit_Nm=opt,
-                           provenance=env.provenance.to_dict())
-        if mag <= lim:
-            return Claim("duration", Status.FEASIBLE, q, scope, None, time_horizon=dtext, evidence=(ev,),
-                         qualifiers=(f"envelope {env.envelope_id}",),
-                         detail="inside the validated rating envelope at matching conditions")
-        if mag > opt:
-            return Claim("duration", Status.INFEASIBLE, q, scope, None, time_horizon=dtext,
-                         reasons=(Reason.CONSTRAINT_VIOLATION,), evidence=(ev,),
-                         detail="above the validated rating envelope at matching conditions")
-        return Claim("duration", Status.UNKNOWN, q, scope, None, time_horizon=dtext,
-                     reasons=(Reason.BOUNDARY_WITHIN_TOLERANCE,), evidence=(ev,),
-                     detail="between the conservative and optimistic readings of the tabulated envelope")
+                     reasons=(Reason.CONFLICTING_EVIDENCE,), evidence=evid, qualifiers=quals,
+                     detail="equally authoritative rating envelopes disagree (" +
+                            ", ".join(f"{r[0].envelope_id}={r[1].value}" for r in group) +
+                            "); declare the authoritative one (priority) - the order of the list does not decide")
+    if feas:
+        return Claim("duration", Status.FEASIBLE, q, scope, None, time_horizon=dtext, evidence=evid,
+                     qualifiers=quals + tuple(f"envelope {r[0].envelope_id}" for r in feas),
+                     detail="inside a validated rating envelope at matching conditions")
+    if bad:
+        return Claim("duration", Status.INFEASIBLE, q, scope, None, time_horizon=dtext,
+                     reasons=(Reason.RATING_NOT_MET,), evidence=evid, qualifiers=quals,
+                     detail="above the validated rating envelope at matching conditions: the request is not rated "
+                            "(no evidence that it is sustained); this is not a proof of physical impossibility")
     return Claim("duration", Status.UNKNOWN, q, scope, None, time_horizon=dtext,
-                 reasons=(Reason.UNVALIDATED_DURATION, Reason.MISSING_INPUT),
-                 evidence=tuple(Evidence.make(EvidenceKind.DIRECT_EVALUATION, n) for n in notes),
-                 detail="a rating envelope with this duration exists but its conditions are not shown to match")
+                 reasons=(Reason.BOUNDARY_WITHIN_TOLERANCE,), evidence=evid, qualifiers=quals,
+                 detail="between the conservative and optimistic readings of the tabulated envelope")
