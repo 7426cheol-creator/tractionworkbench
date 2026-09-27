@@ -17,6 +17,7 @@ from .pages.decision import DecisionPage
 from .pages.design import DesignPage
 from .pages.explorer import ExplorerPage
 from .pages.model import ModelPage, examples_dir
+from .pages.oew_hev import OewHevPage
 from .pages.performance import PerformancePage
 from .pages.power import PowerPage
 from .pages.protection import ProtectionPage
@@ -38,6 +39,7 @@ PAGES = (
     ("protection", lambda: tr("보호·고장", "Protection & fault"), ProtectionPage),
     ("thermal", lambda: tr("열·지속시간", "Thermal & duration"), ThermalPage),
     ("power", lambda: tr("전력변환·수명", "Power stage & life"), PowerPage),
+    ("oew_hev", lambda: tr("OEW·HEV", "OEW & HEV"), OewHevPage),
     ("model", lambda: tr("모델·데이터", "Model & data"), ModelPage),
     ("verification", lambda: tr("검증 (V&V)", "Verification"), VerificationPage),
 )

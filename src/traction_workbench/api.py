@@ -704,6 +704,212 @@ def lifetime(body):
     return _jsonable(r)
 
 
+# ---------------------------------------------------------------------------------------------- OEW / HEV (addendum)
+
+INF = math.inf
+
+
+def _lim_dict(d, name):
+    if not d:
+        return None
+    return DcSourceLimits(d.get("discharge_power_max_W"), d.get("charge_power_max_W"), d.get("discharge_current_max_A"),
+                          d.get("charge_current_max_A"), source=name)
+
+
+def _opt_f(d, key, scale=1.0):
+    v = (d or {}).get(key)
+    return None if v in (None, "") else float(v) * scale
+
+
+def oew_topology_from_dict(t: dict):
+    from .extensions.oew import OewTopology, ZeroSequenceModel
+    zs = t.get("zero_sequence")
+    zsm = None
+    if zs:
+        harm = tuple((int(h[0]), float(h[1]) * 1e-3, math.radians(float(h[2]) if len(h) > 2 else 0.0))
+                     for h in (zs.get("psi0_mWb_deg") or []))
+        zsm = ZeroSequenceModel(float(zs["L0_uH"]) * 1e-6, harm, _opt_f(zs, "R0_mohm", 1e-3), str(zs.get("basis", "")))
+    return OewTopology(t.get("kind", "common_bus"), float(t["VA_V"]), _opt_f(t, "VB_V"), zsm,
+                       t.get("zs_policy", "regulate_i0"), _opt_f(t, "power_split_A"),
+                       _lim_dict(t.get("limits_A"), "OEW source A"), _lim_dict(t.get("limits_B"), "OEW source B"),
+                       _opt_f(t, "bridge_current_limit_A"), _opt_f(t, "reserve_fraction"), str(t.get("revision", "")),
+                       str(t.get("basis", "")))
+
+
+EXAMPLE_OEW = {
+    "topology": {"kind": "common_bus", "VA_V": 400.0, "VB_V": None, "zs_policy": "regulate_i0",
+                 "zero_sequence": {"L0_uH": 50.0, "psi0_mWb_deg": [[3, 4.0, 0.0]], "R0_mohm": None,
+                                   "basis": "synthetic example values (not measured) - replace with L0 / triplen data"},
+                 "power_split_A": None, "bridge_current_limit_A": None, "reserve_fraction": None,
+                 "limits_A": {"discharge_power_max_W": 250e3, "charge_power_max_W": 150e3,
+                              "discharge_current_max_A": INF, "charge_current_max_A": INF},
+                 "limits_B": None, "basis": "synthetic OEW example: two bridges of the example module on one bus"},
+    "speed_rpm": 10000.0, "torque_Nm": 150.0, "use_module": True, "fsw_kHz": 10.0, "carrier_shift": 0.0,
+    # the example module was characterised at 600 V: the 400 V bridges need a declared switching-energy scaling
+    "module": {**EXAMPLE_MODULE, "vdc_scaling": {"exponent": 1.0, "valid_V": [300.0, 700.0],
+                                                 "basis": "synthetic example assumption E ~ V (replace with measured "
+                                                          "E(V) data)"}},
+    "compare_speeds_rpm": [1000.0, 2000.0, 3000.0, 4000.0, 5000.0, 6000.0, 8000.0, 10000.0, 12000.0, 14000.0, 16000.0],
+    "magnet_temp_C": None, "winding_temp_C": None,
+}
+
+
+def _oew_drive(b):
+    from dataclasses import replace as _rep
+    d = _drive(b)
+    if b.get("use_module"):
+        mspec = b.get("module") or EXAMPLE_MODULE
+        d = _rep(d, inverter=_rep(d.inverter, loss=None, module_loss=module_model_from_dict(mspec),
+                                  module_Tj_C=float(mspec.get("Tj_eval_C", 150.0))))
+    return d
+
+
+def oew(body):
+    """Open-end-winding dual inverter at one request: minimum-current witness, geometry, paired states, i0 ripple."""
+    from .extensions.dclink import back_emf_ll_peak
+    from .extensions.oew import (b_clamp_vs_floating_star, oew_min_current_point, paired_state_table,
+                                 switch_state_geometry, zero_sequence_switching_ripple)
+    b = {**EXAMPLE_OEW, **(body or {})}
+    topo = oew_topology_from_dict(b["topology"])
+    d = _oew_drive(b)
+    n, T = _num(b, "speed_rpm"), _num(b, "torque_Nm")
+    mt, wt = _opt(b, "magnet_temp_C"), _opt(b, "winding_temp_C")
+    r = oew_min_current_point(d, topo, n, T, mt, wt)
+    geo = switch_state_geometry(topo.VA_V, topo.VB_V, topo.kind)
+    emf_ll = back_emf_ll_peak(d, n, mt)
+    emf = None if emf_ll is None else emf_ll / math.sqrt(3.0)
+    zs = topo.zero_sequence
+    out = {"topology": topo.describe(), "request": {"speed_rpm": n, "torque_Nm": T}, "result": r,
+           "geometry": {k: v for k, v in geo.items() if k != "rows"}, "state_rows": geo["rows"],
+           "b_clamp": b_clamp_vs_floating_star(topo.VA_V), "emf_phase_peak_V": emf,
+           "paired_states": paired_state_table(topo, emf, None if zs is None else zs.L0_H),
+           "loss_model": "datasheet module per bridge" if b.get("use_module") else "drive's declared loss model"}
+    w = r.get("witness")
+    if topo.kind == "common_bus" and zs is not None and w is not None:
+        op = w["operating_point"]
+        we = d.motor.pole_pairs * 2 * math.pi * n / 60
+        u0 = (lambda th: we * zs.dpsi0(th)) if topo.zs_policy == "regulate_i0" else None
+        rip = {}
+        for shift in (float(b.get("carrier_shift") or 0.0), 0.5):
+            rip[f"{shift:g}"] = zero_sequence_switching_ripple(
+                topo.VA_V, op["U_phase_pk_V"], math.atan2(op["vq_V"], op["vd_V"]), float(b.get("fsw_kHz", 10.0)) * 1e3,
+                we / (2 * math.pi), zs.L0_H, zs.R0_ohm if zs.R0_ohm is not None else d.motor.Rs_ohm, topo.split,
+                shift, u0)
+        out["i0_ripple"] = rip
+    return _jsonable(out)
+
+
+def oew_compare(body):
+    """Same motor, same grid method: single VSI, common-bus OEW, isolated OEW, single VSI on the same stack."""
+    from .extensions.oew import capability_comparison
+    b = {**EXAMPLE_OEW, **(body or {})}
+    topo = oew_topology_from_dict(b["topology"])
+    d = _drive(b)
+    r = capability_comparison(d, topo.VA_V, [float(x) for x in b["compare_speeds_rpm"]], topo.zero_sequence,
+                              topo.zs_policy if topo.kind == "common_bus" else "regulate_i0",
+                              topo.VB_V if topo.kind == "isolated" else None, int(b.get("direction", 1)),
+                              _opt(b, "magnet_temp_C"), _opt(b, "winding_temp_C"))
+    return _jsonable(r)
+
+
+EXAMPLE_HEV = {
+    "Vdc_V": 600.0, "aux_W": 1500.0, "bus_loss_W": 0.0, "n_levels": 13,
+    "machines": [{"name": "EM1", "role": "generator / starter (P1)", "speed_rpm": 3000.0, "drive": None},
+                 {"name": "EM2", "role": "traction (P2)", "speed_rpm": 6000.0, "drive": None}],
+    "request_Nm": [250.0, -110.0],
+    "battery": {"ocv_V": 400.0, "R_int_mohm": 50.0, "uv_min_V": 250.0, "basis": "synthetic example battery",
+                "limits": {"discharge_power_max_W": 100e3, "charge_power_max_W": 30e3,
+                           "discharge_current_max_A": INF, "charge_current_max_A": INF}},
+    "boost": {"D_max": 0.5, "I_L_max_A": 400.0, "a0_W": 150.0, "a2_W_per_A2": 0.004, "bidirectional": True,
+              "basis": "synthetic example boost"},
+    "use_boost": True, "cooling_heat_max_W": None,
+    "crank": {"ratio": 2.5, "T_cmd_Nm": 60.0, "n_target_rpm": 800.0, "t_max_s": 0.6, "V_floor_V": 300.0,
+              "theta0_deg": [0, 20, 40, 60, 80, 100, 120, 140, 160], "traction_reserve_W": 20e3, "aux_elec_W": 800.0,
+              "load": {"angle_deg": [0, 30, 60, 90, 120, 150, 180], "torque_Nm": [0, 40, 90, 60, -40, -60, 0],
+                       "period_deg": 180.0, "f0_Nm": 25.0, "f1_Nm_s": 0.3, "f2_Nm_s2": 0.0, "aux_Nm": 0.0,
+                       "J_kgm2": 0.25, "basis": "synthetic crank-angle load (not an engine test trace)"}},
+    "rejection": {"C_uF": 500.0, "V0_V": 400.0, "V_max_V": 450.0, "sources_W": [70e3], "sinks_W": [20e3],
+                  "t_react_ms": 1.0, "t_ramp_ms": 0.0},
+    "planetary": {"Ns": 30, "Nr": 78, "known_rpm": {"ring": 3000.0, "carrier": 2000.0}, "port": "carrier",
+                  "torque_Nm": 150.0, "limits_rpm": {"sun": 10000.0, "carrier": 6000.0, "ring": 12000.0}},
+}
+
+
+def _battery(bt: dict):
+    from .extensions.hev import Battery
+    return Battery(float(bt["ocv_V"]), float(bt.get("R_int_mohm") or 0.0) * 1e-3,
+                   _lim_dict(bt.get("limits"), "battery") or DcSourceLimits(), _opt_f(bt, "uv_min_V"),
+                   str(bt.get("basis", "")))
+
+
+def hev_joint(body):
+    """Joint torque set of two machines on one bus, branch vs net power (addendum 6.2)."""
+    from .extensions.hev import BoostStage, BusMachine, joint_torque_set
+    b = {**EXAMPLE_HEV, **(body or {})}
+    ms = []
+    for m in b["machines"]:
+        drv = S.resolve_drive(m.get("drive")) if m.get("drive") else _drive(b)
+        ms.append(BusMachine(str(m["name"]), drv, float(m["speed_rpm"]), str(m.get("role", ""))))
+    boost = None
+    if b.get("use_boost") and b.get("boost"):
+        bs = b["boost"]
+        boost = BoostStage(float(bs["D_max"]), float(bs["I_L_max_A"]), float(bs.get("a0_W") or 0.0),
+                           float(bs.get("a2_W_per_A2") or 0.0), bool(bs.get("bidirectional", True)), str(bs.get("basis", "")))
+    req = b.get("request_Nm")
+    r = joint_torque_set(ms, _num(b, "Vdc_V"), _battery(b["battery"]), float(b.get("aux_W") or 0.0),
+                         float(b.get("bus_loss_W") or 0.0), boost, int(b.get("n_levels", 13)),
+                         None if not req else (float(req[0]), float(req[1])),
+                         _opt(b, "cooling_heat_max_W"))
+    for m in r["tables"].values():
+        for row in m:
+            row.pop("detail", None)
+    return _jsonable(r)
+
+
+def hev_crank(body):
+    """Cranking replay with a declared crank-angle load over sampled initial angles (addendum 6.3)."""
+    from .extensions.hev import CrankLoad, cranking_replay
+    b = {**EXAMPLE_HEV, **(body or {})}
+    c = {**EXAMPLE_HEV["crank"], **(b.get("crank") or {})}
+    ld = c["load"]
+    load = CrankLoad(tuple(float(x) for x in ld["angle_deg"]), tuple(float(x) for x in ld["torque_Nm"]),
+                     float(ld.get("period_deg", 180.0)), float(ld.get("f0_Nm") or 0.0), float(ld.get("f1_Nm_s") or 0.0),
+                     float(ld.get("f2_Nm_s2") or 0.0), float(ld.get("aux_Nm") or 0.0), float(ld["J_kgm2"]),
+                     str(ld.get("basis", "")))
+    drv = S.resolve_drive(c.get("drive")) if c.get("drive") else _drive(b)
+    r = cranking_replay(drv, float(c["ratio"]), load, _battery(b["battery"]), float(c["T_cmd_Nm"]),
+                        float(c["n_target_rpm"]), float(c["t_max_s"]), float(c["V_floor_V"]),
+                        [float(x) for x in c.get("theta0_deg") or []] or None, float(c.get("traction_reserve_W") or 0.0),
+                        float(c.get("aux_elec_W") or 0.0))
+    r["load_table"] = {"angle_deg": list(load.angle_deg), "torque_Nm": list(load.torque_Nm), "period_deg": load.period_deg}
+    return _jsonable(r)
+
+
+def hev_rejection(body):
+    """Load-rejection energy ledger on the one common capacitor (addendum 6.4 / 9.4)."""
+    from .extensions.hev import load_rejection
+    b = {**EXAMPLE_HEV, **(body or {})}
+    c = {**EXAMPLE_HEV["rejection"], **(b.get("rejection") or {})}
+    return _jsonable(load_rejection(float(c["C_uF"]), float(c["V0_V"]), float(c["V_max_V"]),
+                                    [float(x) for x in c["sources_W"]], [float(x) for x in c["sinks_W"]],
+                                    float(c["t_react_ms"]) * 1e-3, float(c.get("t_ramp_ms") or 0.0) * 1e-3))
+
+
+def hev_planetary(body):
+    """Simple planetary kinematics, ideal torque ratio and the H-04 check."""
+    from .extensions.hev import planetary_check, planetary_speeds, planetary_torques
+    b = {**EXAMPLE_HEV, **(body or {})}
+    c = {**EXAMPLE_HEV["planetary"], **(b.get("planetary") or {})}
+    Ns, Nr = int(c["Ns"]), int(c["Nr"])
+    kn = {k: float(v) for k, v in (c.get("known_rpm") or {}).items()}
+    sp = planetary_speeds(Ns, Nr, kn.get("sun"), kn.get("ring"), kn.get("carrier"))
+    tq = planetary_torques(Ns, Nr, c.get("port", "carrier"), float(c["torque_Nm"]))
+    chk = planetary_check(Ns, Nr, sp, tq, {k: float(v) for k, v in (c.get("limits_rpm") or {}).items()})
+    return _jsonable({"Ns": Ns, "Nr": Nr, "speeds_rpm": sp, "torques_Nm": tq, "check": chk,
+                      "powers_W": {k: tq[k] * sp[k] * 2 * math.pi / 60 for k in sp},
+                      "convention": "torques positive INTO the gear set; massless, lossless ideal set"})
+
+
 def acceptance(body):
     return S.acceptance_summary()
 
@@ -713,5 +919,6 @@ ROUTES = {
     "relaxation": relaxation, "timing": timing, "discharge": discharge, "passive": passive, "overvoltage": overvoltage,
     "safe_state": safe_state, "thermal": thermal, "acceptance": acceptance, "protection": protection,
     "module_losses": module_losses, "dclink_ripple": dclink_ripple, "asc": asc,
-    "lifetime": lifetime,
+    "lifetime": lifetime, "oew": oew, "oew_compare": oew_compare, "hev_joint": hev_joint, "hev_crank": hev_crank,
+    "hev_rejection": hev_rejection, "hev_planetary": hev_planetary,
 }

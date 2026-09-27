@@ -142,6 +142,33 @@ def run_self_test(app, out_dir) -> int:
         shot(win, "28_power_life")
         check("power:lifetime", pw.last_life is not None and pw.last_life["damage"]["claim"]["status"] == "UNKNOWN"
               and pw.last_life["damage"]["cycles_counted"] > 0)
+        oh = visit("oew_hev", 0, ["run_oew"], [(None, "29_oew_sets"), (lambda pg: pg.o_tabs.setCurrentIndex(1), "30_oew_point"),
+                                                (lambda pg: pg.o_tabs.setCurrentIndex(3), "31_oew_paired"),
+                                                (lambda pg: pg.o_tabs.setCurrentIndex(5), "32_oew_circuit")])
+        w = (oh.last_oew or {}).get("result", {}).get("witness")
+        check("oew:point", w is not None and oh.last_oew["result"]["status"] == "FEASIBLE"
+              and abs(w["identities"]["ports_minus_winding_W"]) < 1e-3, oh.last_oew and oh.last_oew["result"]["status"])
+        g = oh.last_oew["geometry"] if oh.last_oew else {}
+        check("oew:geometry", g.get("admissible_pairs") == 20 and g.get("admissible_unique_alphabeta") == 7
+              and abs(g.get("hull_inradius_V", 0) - 400.0) < 1e-9, str({k: g.get(k) for k in ("admissible_pairs",
+                                                                                                 "hull_inradius_V")}))
+        oh.run_compare()
+        shot(win, "33_oew_tn")
+        cmp_rows = [r for r in (oh.last_cmp or {}).get("rows", []) if r.get("single_vsi_Nm") is not None]
+        check("oew:compare", bool(cmp_rows) and cmp_rows[-1]["oew_common_bus_Nm"] > cmp_rows[-1]["single_vsi_Nm"])
+        oh.tabs.setCurrentIndex(1)
+        oh.run_joint()
+        shot(win, "34_hev_joint")
+        check("hev:joint", oh.last_joint is not None and
+              oh.last_joint["joint_cells_feasible"] < oh.last_joint["box_cells_feasible_separately"])
+        oh.run_crank()
+        shot(win, "35_hev_crank")
+        check("hev:crank", oh.last_crank is not None and oh.last_crank["claim"]["status"] in ("UNKNOWN", "INFEASIBLE"))
+        oh.run_rej()
+        check("hev:rejection", oh.last_rej is not None and abs(oh.last_rej["E_margin_J"] - 10.625) < 1e-9)
+        oh.run_planetary()
+        shot(win, "36_hev_planetary")
+        check("hev:planetary", oh.last_pl is not None and oh.last_pl["check"]["status"] == "FEASIBLE")
         visit("model", 7, [], [(None, "18_model")])
         vv = visit("verification", 8, ["run"], [(None, "19_verification")])
         check("acceptance", "PASS" in vv.summary.text() and "MISMATCH" not in vv.summary.text(), vv.summary.text())

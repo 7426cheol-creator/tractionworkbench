@@ -519,3 +519,163 @@ def fig_thermal_network(fig, nodes: list, coolant: dict | None, title: str | Non
              weight="bold")
         draw_coolant_loop(ax, coolant, y=y + 0.1, x0=0.0)
     del rows
+
+
+# ---------------------------------------------------------------------------
+# open-end winding dual inverter and hybrid system (OEW/HEV addendum)
+# ---------------------------------------------------------------------------
+
+def coil(ax, p0, p1, label=None, color=None, bumps=4, lw=1.5):
+    c = color or _c()["fg"]
+    (x0, y), (x1, _) = p0, p1
+    L = x1 - x0
+    lead = 0.18 * L
+    wire(ax, (x0, y), (x0 + lead, y), color=c, lw=lw)
+    wire(ax, (x1 - lead, y), (x1, y), color=c, lw=lw)
+    w = (L - 2 * lead) / bumps
+    th = [math.pi * k / 16 for k in range(17)]
+    for b in range(bumps):
+        xs = [x0 + lead + b * w + w / 2 - (w / 2) * math.cos(t) for t in th]
+        ys = [y + (w / 2) * math.sin(t) for t in th]
+        ax.plot(xs, ys, color=c, lw=lw, zorder=3)
+    if label:
+        text(ax, (x0 + x1) / 2, y + w * 0.9, label, size=6.8, color=_c()["muted"])
+
+
+def fig_oew_schematic(fig, topo: dict, title: str | None = None, flows: dict | None = None):
+    """Two two-level bridges on the two ends of one winding; common bus or two isolated sources."""
+    fig.clear()
+    fig.set_layout_engine("none")
+    if title:
+        fig.suptitle(title, fontsize=10, fontweight="bold", color=S.theme()["fg"])
+    c = _c()
+    ax = new_axes(fig, (-1.2, 21.2), (-2.4, 6.6), rect=[0.01, 0.02, 0.98, 0.9])
+    legsA = ((4.0, 2.55, "a"), (5.5, 2.0, "b"), (7.0, 1.45, "c"))
+    legsB = ((14.0, 2.55, "a"), (15.5, 2.0, "b"), (17.0, 1.45, "c"))
+    kind = topo.get("kind", "common_bus")
+    VA, VB = topo.get("VA_V"), topo.get("VB_V")
+    # sources and rails
+    if kind == "common_bus":
+        battery(ax, 0.3, BOT, TOP, f"V = {VA:g} V")
+        wire(ax, (0.3, TOP), (legsB[-1][0], TOP))
+        wire(ax, (0.3, BOT), (legsB[-1][0], BOT))
+        capacitor(ax, (2.4, TOP), (2.4, BOT), "C", lab_off=(0.3, 0.0))
+        capacitor(ax, (18.6, TOP), (18.6, BOT), None)
+        wire(ax, (legsB[-1][0], TOP), (18.6, TOP))
+        wire(ax, (legsB[-1][0], BOT), (18.6, BOT))
+        for x in (2.4, 18.6):
+            dot(ax, x, TOP)
+            dot(ax, x, BOT)
+        text(ax, 10.5, TOP + 0.35, tr("공통 + 레일 (δ = 0): 영상분 전류의 도전 귀환 경로",
+                                      "common + rail (delta = 0): conductive return for zero-sequence current"),
+             size=7, color=c["hot"])
+        text(ax, 10.5, BOT - 0.35, tr("공통 − 레일", "common − rail"), size=7, color=c["hot"])
+    else:
+        battery(ax, 0.3, BOT, TOP, f"VA = {VA:g} V")
+        wire(ax, (0.3, TOP), (legsA[-1][0], TOP))
+        wire(ax, (0.3, BOT), (legsA[-1][0], BOT))
+        capacitor(ax, (2.4, TOP), (2.4, BOT), "C_A", lab_off=(0.3, 0.0))
+        battery(ax, 20.3, BOT, TOP, f"VB = {VB:g} V")
+        wire(ax, (legsB[0][0], TOP), (20.3, TOP))
+        wire(ax, (legsB[0][0], BOT), (20.3, BOT))
+        capacitor(ax, (18.6, TOP), (18.6, BOT), "C_B", lab_off=(0.3, 0.0))
+        for x in (2.4, 18.6):
+            dot(ax, x, TOP)
+            dot(ax, x, BOT)
+        text(ax, 10.5, TOP + 0.35, tr("두 절연 섬: 저주파 귀환 없음 → ia+ib+ic = 0, 부유 δ",
+                                      "two isolated islands: no LF return -> ia+ib+ic = 0, floating delta"),
+             size=7, color="#8250df")
+    for legs, name in ((legsA, "A"), (legsB, "B")):
+        for (x, ym, ph) in legs:
+            semi(ax, x, TOP, ym, 3.3, pwm=True)
+            semi(ax, x, ym, BOT, 0.7, pwm=True)
+            dot(ax, x, TOP)
+            dot(ax, x, BOT)
+            dot(ax, x, ym)
+        text(ax, legs[1][0], TOP + 0.95, tr(f"브리지 {name}", f"bridge {name}"), size=8, weight="bold")
+    for (xa, ym, ph), (xb, _, _) in zip(legsA, legsB):
+        wire(ax, (xa, ym), (9.0, ym))
+        coil(ax, (9.0, ym), (12.0, ym), None)
+        wire(ax, (12.0, ym), (xb, ym))
+        text(ax, 8.8, ym + 0.14, f"{ph}A", size=6.5, color=c["muted"], ha="right")
+        text(ax, 12.2, ym + 0.14, f"{ph}B", size=6.5, color=c["muted"], ha="left")
+    ax.add_patch(Rectangle((8.7, 0.95), 3.6, 2.2, fill=False, ec=c["muted"], ls="--", lw=1.0))
+    text(ax, 10.5, 3.45, tr("한 3상 권선의 양끝 (6단자)", "one 3-phase winding, both ends (6 terminals)"), size=7)
+    text(ax, 10.5, 0.55, "i: A → " + tr("권선", "winding") + " → B;  u_k = v_Ak − v_Bk", size=6.8, color=c["muted"])
+    flow(ax, (9.2, 2.85), (11.8, 2.85), None, color=c["on"], lw=1.4)
+    note = (tr("양 브리지 모두 권선 전류 전체를 운반 (반분하지 않음) · 전력 배분 ≠ 전류 분담",
+               "both bridges carry the full winding current (never halved) · power split != current sharing"))
+    text(ax, 10.5, -1.0, note, size=7, box=True)
+    if flows:
+        text(ax, legsA[1][0], -1.9, flows.get("A", ""), size=7, color=c["on"], weight="bold")
+        text(ax, legsB[1][0], -1.9, flows.get("B", ""), size=7, color="#8250df", weight="bold")
+        if flows.get("src"):
+            text(ax, 10.5, -1.9, flows["src"], size=7, color=c["ok"], weight="bold")
+
+
+def _ground(ax, x, y, color=None):
+    col = color or _c()["fg"]
+    wire(ax, (x, y), (x, y - 0.25), color=col, lw=1.3)
+    for k, w in enumerate((0.34, 0.22, 0.1)):
+        wire(ax, (x - w, y - 0.25 - 0.1 * k), (x + w, y - 0.25 - 0.1 * k), color=col, lw=1.3)
+
+
+def fig_hev_schematic(fig, info: dict, title: str | None = None):
+    """Declared connection graph of a two-machine hybrid on one DC bus (positions are shorthand only)."""
+    fig.clear()
+    fig.set_layout_engine("none")
+    if title:
+        fig.suptitle(title, fontsize=10, fontweight="bold", color=S.theme()["fg"])
+    c = _c()
+    ax = new_axes(fig, (-0.8, 17.8), (-1.6, 7.2), rect=[0.01, 0.02, 0.98, 0.9])
+    ym, ye = 1.0, 4.8
+    block(ax, 1.2, ym, 2.0, 1.1, tr("엔진", "engine"), fc="#fff1e5" if S.theme_name() == "light" else None)
+    # clutch
+    wire(ax, (2.2, ym), (3.0, ym), lw=3)
+    ax.plot([3.0, 3.0], [ym - 0.45, ym + 0.45], color=c["fg"], lw=2.2)
+    ax.plot([3.35, 3.35], [ym - 0.45, ym + 0.45], color=c["fg"], lw=2.2)
+    text(ax, 3.18, ym - 0.75, tr("클러치 (실제 상태)", "clutch (actual state)"), size=6.3, color=c["muted"])
+    wire(ax, (3.35, ym), (4.6, ym), lw=3)
+    motor(ax, 5.4, ym, r=0.75, label="EM1")
+    text(ax, 5.4, ym - 1.05, info.get("em1_pos", tr("P1 (크랭크축)", "P1 (crankshaft)")), size=6.5, color=c["muted"])
+    wire(ax, (6.15, ym), (7.6, ym), lw=3)
+    block(ax, 8.6, ym, 2.0, 1.1, tr("변속기", "transmission"))
+    wire(ax, (9.6, ym), (10.85, ym), lw=3)
+    motor(ax, 11.6, ym, r=0.75, label="EM2")
+    text(ax, 11.6, ym - 1.05, info.get("em2_pos", tr("P2/P3 (변속기 측)", "P2/P3 (transmission side)")), size=6.5,
+         color=c["muted"])
+    wire(ax, (12.35, ym), (13.6, ym), lw=3)
+    block(ax, 14.4, ym, 1.6, 1.0, tr("종감속", "final drive"), size=6.8)
+    wire(ax, (15.2, ym), (16.2, ym), lw=3)
+    ax.add_patch(Circle((16.8, ym), 0.6, fc=c["panel"], ec=c["fg"], lw=2))
+    text(ax, 16.8, ym + 0.95, tr("바퀴", "wheels"), size=7)
+    # electrical
+    battery(ax, 0.4, ye - 0.9, ye + 0.9, tr("배터리", "battery"))
+    wire(ax, (0.4, ye + 0.9), (1.4, ye + 0.9), (1.4, ye), (1.5, ye))
+    _ground(ax, 0.4, ye - 0.9)
+    block(ax, 2.4, ye, 1.8, 1.2, tr("부스트\n(선택)", "boost\n(optional)"), size=6.8)
+    wire(ax, (3.3, ye), (13.2, ye), lw=2.6)
+    text(ax, 8.6, ye + 0.35, tr("공통 DC bus (하나의 전원 한도, 한 번만 계상)", "common DC bus (one source limit, counted once)"),
+         size=7, color=c["hot"])
+    capacitor(ax, (8.6, ye), (8.6, ye - 1.3), "C_bus", lab_off=(0.3, 0.0))
+    _ground(ax, 8.6, ye - 1.3)
+    text(ax, 16.0, ye - 0.4, tr("단선도 (−극은 접지 기호)", "single-line (return shown as ground)"), size=6.3,
+         color=c["muted"])
+    for x, name, key in ((5.4, "INV1", "p1_W"), (11.6, "INV2", "p2_W")):
+        block(ax, x, ye - 1.7, 1.5, 0.8, name, size=7)
+        wire(ax, (x, ye), (x, ye - 1.3))
+        wire(ax, (x, ye - 2.1), (x, ym + 0.75))
+        p = info.get(key)
+        if p is not None:
+            col = c["on"] if p > 0 else c["flow"]
+            if p > 0:
+                flow(ax, (x + 0.35, ye - 0.1), (x + 0.35, ye - 1.2), f"{p / 1e3:+.1f} kW", color=col, lab_off=(0.85, 0.0))
+            else:
+                flow(ax, (x + 0.35, ye - 1.2), (x + 0.35, ye - 0.1), f"{p / 1e3:+.1f} kW", color=col, lab_off=(0.85, 0.0))
+    pb = info.get("p_src_W")
+    if pb is not None:
+        text(ax, 2.4, ye + 1.05, tr(f"배터리 {pb / 1e3:+.1f} kW", f"battery {pb / 1e3:+.1f} kW"), size=7.5,
+             color=c["ok"], weight="bold")
+    text(ax, 8.6, -1.2, tr("P0–P4 위치 표기는 약칭일 뿐: 축·기어·클러치·DC 노드의 실제 접속 그래프가 입력입니다",
+                           "P0-P4 labels are shorthand: the actual shaft / gear / clutch / DC-node graph is the input"),
+         size=7, box=True)

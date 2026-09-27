@@ -92,6 +92,46 @@ def test_schematics_render(tmp_path):
     assert len(list(tmp_path.glob("s*.png"))) == len(jobs)
 
 
+@pytest.mark.parametrize("lang, theme", [("ko", "light"), ("en", "dark")])
+def test_review_and_oew_hev_figures_render(tmp_path, lang, theme):
+    """Figures of the review analyses (protection, ASC, module, ripple, lifetime) and of the OEW / HEV addendum."""
+    from traction_workbench.plots import oew_hev_figures as OH
+    from traction_workbench.plots import review_figures as RF
+    from traction_workbench.plots import schematics as SC
+    set_language(lang)
+    style.apply(theme)
+    try:
+        prot = api.protection(api.EXAMPLE_PROTECTION)
+        asc = api.asc({})
+        mod = api.module_losses({})
+        rip = api.dclink_ripple({})
+        life = api.lifetime({})
+        oew = api.oew({})
+        cmp = api.oew_compare({"compare_speeds_rpm": [2000.0, 8000.0, 14000.0]})
+        js = api.hev_joint({"n_levels": 7})
+        cr = api.hev_crank({"crank": {**api.EXAMPLE_HEV["crank"], "theta0_deg": [0, 90]}})
+        rej = api.hev_rejection({})
+        pl = api.hev_planetary({})
+        rq = js["request"]
+        jobs = [(RF.fig_protection_timeline, (prot,)), (RF.fig_threshold_window, (prot,)),
+                (RF.fig_protection_loop, (prot,)), (RF.fig_asc_transient, (asc,)), (RF.fig_module_losses, (mod,)),
+                (RF.fig_ripple, (rip,)), (RF.fig_lifetime, (life,)),
+                (OH.fig_oew_voltage_sets, (oew,)), (OH.fig_oew_point, (oew,)), (OH.fig_oew_compare, (cmp,)),
+                (OH.fig_oew_paired, (oew,)), (OH.fig_oew_ripple, (oew,)), (OH.fig_hev_joint, (js,)),
+                (OH.fig_hev_crank, (cr,)), (OH.fig_hev_rejection, (rej,)), (OH.fig_planetary, (pl,)),
+                (SC.fig_oew_schematic, (oew["topology"],)),
+                (SC.fig_hev_schematic, ({"p1_W": rq["branch_P_dc_W"][0], "p2_W": rq["branch_P_dc_W"][1],
+                                         "p_src_W": rq["P_source_W"]},))]
+        for i, (fn, args) in enumerate(jobs):
+            fig = Figure(figsize=(11, 6))
+            fn(fig, *args)
+            fig.savefig(tmp_path / f"r{i:02d}.png", dpi=50)
+        assert len(list(tmp_path.glob("r*.png"))) == len(jobs)
+    finally:
+        set_language("ko")
+        style.apply("light")
+
+
 def test_pdf_report(tmp_path):
     from traction_workbench.report_pdf import build_pdf
     case = json.loads((EX / "cases" / "req_ts_012_450V_sizing.json").read_text(encoding="utf-8"))
@@ -153,6 +193,17 @@ def test_desktop_smoke(tmp_path):
         sp.run_safe()
         assert all(p._draw is not None for p in (sp.s_dis, sp.s_pas, sp.p_pas, sp.s_ov, sp.s_safe))
         assert page.views.overview._draw is not None or ex.views.overview._draw is not None
+        pro = win.pages["protection"]
+        pro.run()
+        assert pro.last is not None and pro.last["trace"]["protected"]
+        pw = win.pages["power"]
+        pw.run_module()
+        assert pw.last_module is not None and pw.last_module["losses"]["established"]
+        oh = win.pages["oew_hev"]
+        oh.run_oew()
+        assert oh.last_oew is not None and oh.last_oew["result"]["witness"] is not None
+        oh.run_rej()
+        assert oh.last_rej["claim"]["status"] == "INFEASIBLE"             # example 9.4: 1 ms reaction is too slow
         win.set_theme("dark")
         win.set_theme("light")
         assert not (app.property("twb_errors") or [])
