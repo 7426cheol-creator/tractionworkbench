@@ -156,7 +156,8 @@ def info(body):
             "drive": S.drive_info(d), "limits": sf.synthetic_limits().describe(), "presets": PRESETS,
             "example_timing": EXAMPLE_TIMING, "example_thermal": EXAMPLE_THERMAL,
             "example_protection": EXAMPLE_PROTECTION, "example_protection_ot": EXAMPLE_PROTECTION_OT,
-            "example_module": EXAMPLE_MODULE, "example_ripple": EXAMPLE_RIPPLE, "example_asc": EXAMPLE_ASC}
+            "example_module": EXAMPLE_MODULE, "example_ripple": EXAMPLE_RIPPLE, "example_asc": EXAMPLE_ASC,
+            "example_mission": EXAMPLE_MISSION}
 
 
 def evaluate(body):
@@ -477,9 +478,9 @@ EXAMPLE_MODULE = {
     "curves": {
         "v_on": _lin_curve("V", (25.0, 150.0), 800.0, (0.80, 0.70), (1.10e-3, 1.60e-3)),
         "v_rev": _lin_curve("V", (25.0, 150.0), 800.0, (0.90, 0.80), (1.00e-3, 1.30e-3)),
-        "e_on": _lin_curve("mJ", (25.0, 150.0), 800.0, (3.0, 5.0), (0.030, 0.040)),
-        "e_off": _lin_curve("mJ", (25.0, 150.0), 800.0, (5.0, 8.0), (0.035, 0.045)),
-        "e_rr": _lin_curve("mJ", (25.0, 150.0), 800.0, (2.0, 4.0), (0.012, 0.020)),
+        "e_on": _lin_curve("mJ", (25.0, 150.0), 800.0, (0.3, 0.5), (0.034, 0.045)),
+        "e_off": _lin_curve("mJ", (25.0, 150.0), 800.0, (0.4, 0.6), (0.040, 0.050)),
+        "e_rr": _lin_curve("mJ", (25.0, 150.0), 800.0, (0.2, 0.3), (0.015, 0.022)),
     },
     "fsw_kHz": 10.0, "modulation": "svpwm", "deadtime_us": 1.5, "parallel": 1, "sharing_error_pct": 0.0,
     "driver_aux_W": 12.0, "aux_from_hv_dc": False, "Tj_eval_C": 150.0, "Rth_K_per_W": 0.09, "T_ref_C": 65.0,
@@ -634,6 +635,75 @@ def asc(body):
     return _jsonable(r)
 
 
+EXAMPLE_MISSION = {
+    "segments": [{"duration_s": 10.0, "speed_rpm": 2000.0, "torque_Nm": 250.0},
+                 {"duration_s": 20.0, "speed_rpm": 5000.0, "torque_Nm": 60.0},
+                 {"duration_s": 8.0, "speed_rpm": 4000.0, "torque_Nm": -120.0},
+                 {"duration_s": 15.0, "speed_rpm": 0.0, "torque_Nm": 0.0},
+                 {"duration_s": 6.0, "speed_rpm": 1000.0, "torque_Nm": 300.0},
+                 {"duration_s": 25.0, "speed_rpm": 8000.0, "torque_Nm": 40.0}],
+    "repeat_in_trace": 3, "dt_s": 0.05, "Vdc_V": 600.0, "coolant_C": 65.0,
+    "junction_network": {"R_K_per_W": [0.02, 0.05, 0.06, 0.04], "tau_s": [0.005, 0.08, 0.8, 6.0],
+                         "note": "synthetic junction-to-coolant Foster network (not a product)"},
+    "cycling_model": None, "D_allow": None, "mission_repeats": 1.0, "ton_rule": "none", "cutoff_K": 0.0,
+    "note": "synthetic mission; the Tj history comes from a screening electrothermal chain (screening damage only)",
+}
+
+
+def lifetime(body):
+    """Mission -> hottest-device losses (datasheet module model) -> Tj(t) -> rainflow -> conditional damage (12)."""
+    from dataclasses import replace as _rep
+    from .extensions.lifetime import CyclingModel, cycle_analysis, foster_trace
+    b = {**EXAMPLE_MISSION, **(body or {})}
+    if b.get("trace"):
+        tr = b["trace"]
+        t, T = np.asarray(tr["t_s"], float), np.asarray(tr["T_C"], float)
+        src = "imported Tj trace"
+        seg_rows = []
+    else:
+        mspec = b.get("module") or EXAMPLE_MODULE
+        model = module_model_from_dict(mspec)
+        base = _drive(b)
+        drv = _rep(base, inverter=_rep(base.inverter, loss=None, module_loss=model,
+                                       module_Tj_C=float(mspec.get("Tj_eval_C", 150.0))))
+        dt = float(b.get("dt_s") or 0.05)
+        net = b["junction_network"]
+        seg_rows, t_list, p_list = [], [], []
+        now = 0.0
+        for _rep_k in range(int(b.get("repeat_in_trace") or 1)):
+            for sg in b["segments"]:
+                sc = Scenario("mission", float(sg["speed_rpm"]), float(b["Vdc_V"]), _limits(b))
+                sol = PolicyEvaluator(drv, sc).solve(float(sg["torque_Nm"]))
+                det = None if sol.point is None else sol.point.inverter_loss_detail
+                p_hot = det["hottest_position_W"] if det and det.get("established") else None
+                if _rep_k == 0:
+                    seg_rows.append({**sg, "policy": sol.policy_claim.status.value, "P_hot_device_W": p_hot})
+                if p_hot is None:
+                    raise InputValidationError(f"segment {sg}: hottest-device loss not established "
+                                               f"({sol.policy_claim.detail if sol.point is None else det.get('problems')})",
+                                               field="segments")
+                n = max(2, int(round(float(sg["duration_s"]) / dt)))
+                ts = now + np.arange(n) * (float(sg["duration_s"]) / n)
+                t_list.append(ts)
+                p_list.append(np.full(n, p_hot))
+                now += float(sg["duration_s"])
+        t = np.concatenate(t_list + [np.array([now])])
+        P = np.concatenate(p_list + [np.array([0.0])])
+        T = foster_trace(t, P, tuple(net["R_K_per_W"]), tuple(net["tau_s"]), float(b["coolant_C"]))
+        src = "screening electrothermal chain (datasheet module losses at the policy points, Foster network)"
+    cm = b.get("cycling_model")
+    model_obj = None if not cm else CyclingModel(**{k: (tuple(v) if isinstance(v, list) else v) for k, v in cm.items()})
+    r = cycle_analysis(t, T, model_obj, b.get("ton_rule", "none"),
+                       None if b.get("D_allow") in (None, "") else float(b["D_allow"]),
+                       float(b.get("cutoff_K") or 0.0), float(b.get("mission_repeats") or 1.0),
+                       repeating_mission=bool(b.get("repeating_mission", True)), source=src)
+    step = max(1, t.size // 3000)
+    r["trace"] = {"t_s": t[::step].tolist(), "T_C": T[::step].tolist()}
+    r["segments"] = seg_rows
+    r["cycles"] = r["cycles"][:500]
+    return _jsonable(r)
+
+
 def acceptance(body):
     return S.acceptance_summary()
 
@@ -643,4 +713,5 @@ ROUTES = {
     "relaxation": relaxation, "timing": timing, "discharge": discharge, "passive": passive, "overvoltage": overvoltage,
     "safe_state": safe_state, "thermal": thermal, "acceptance": acceptance, "protection": protection,
     "module_losses": module_losses, "dclink_ripple": dclink_ripple, "asc": asc,
+    "lifetime": lifetime,
 }

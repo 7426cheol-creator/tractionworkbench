@@ -187,9 +187,14 @@ def test_module_loss_feeds_pdc_and_the_dc_claim(drive, limits):
     assert fr.point.inverter_loss_detail["established"] and fr.accepted
     # tight DC cap between the module and surrogate P_dc: the module model decides (never both summed)
     from traction_workbench.scenario import DcSourceLimits
-    cap = Scenario("m", 12000.0, 600.0, DcSourceLimits(pt.Pdc_W - 500.0, 1e5, 1e4, 1e4))
-    assert PolicyEvaluator(md, cap).solve(150.0).policy_claim.status.value == "INFEASIBLE"
-    assert PolicyEvaluator(drive, cap).solve(150.0).policy_claim.status.value == "FEASIBLE"
+    p_sur = PolicyEvaluator(drive, sc).solve(150.0).point.Pdc_W
+    assert abs(pt.Pdc_W - p_sur) > 50.0                                   # the two loss models differ here
+    mid = 0.5 * (pt.Pdc_W + p_sur)
+    cap = Scenario("m", 12000.0, 600.0, DcSourceLimits(mid, 1e5, 1e4, 1e4))
+    hi_model = md if pt.Pdc_W > p_sur else drive
+    lo_model = drive if hi_model is md else md
+    assert PolicyEvaluator(hi_model, cap).solve(150.0).policy_claim.status.value == "INFEASIBLE"
+    assert PolicyEvaluator(lo_model, cap).solve(150.0).policy_claim.status.value == "FEASIBLE"
 
 
 def test_module_loss_outside_data_makes_dc_unknown_not_zero(drive, limits):
