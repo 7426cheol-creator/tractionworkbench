@@ -156,7 +156,7 @@ def info(body):
             "drive": S.drive_info(d), "limits": sf.synthetic_limits().describe(), "presets": PRESETS,
             "example_timing": EXAMPLE_TIMING, "example_thermal": EXAMPLE_THERMAL,
             "example_protection": EXAMPLE_PROTECTION, "example_protection_ot": EXAMPLE_PROTECTION_OT,
-            "example_module": EXAMPLE_MODULE}
+            "example_module": EXAMPLE_MODULE, "example_ripple": EXAMPLE_RIPPLE}
 
 
 def evaluate(body):
@@ -548,6 +548,53 @@ def module_losses(body):
     return _jsonable(out)
 
 
+EXAMPLE_RIPPLE = {
+    "capacitor": {"C_uF": 500.0, "ESL_nH": 15.0, "Rth_K_per_W": 0.35, "T_ref_C": 65.0,
+                  "ESR_table": [[100.0, 3.0], [1e3, 2.0], [1e4, 1.6], [1e5, 1.8], [1e6, 3.0]],
+                  "ESR_unit": "mohm", "life_hours_table": [], "life_voltage_V": None, "life_basis": "",
+                  "source": "synthetic film-capacitor bank example (not a product)"},
+    "source": {"R_mohm": 25.0, "L_uH": 2.0, "basis": "example battery + harness impedance (not measured)"},
+    "fsw_kHz": 10.0, "modulation": "svpwm",
+    "requirement": {"location": "dc_link_bus", "quantity": "voltage_pp", "limit": 15.0, "bandwidth_Hz": 50e3,
+                    "note": "example requirement; a real one needs the customer's measurement definition"},
+}
+
+
+def dclink_ripple(body):
+    """Capacitor current, ripple and ESR loss at the decision operating point (review 8.9)."""
+    from .extensions.dclink_ripple import CapacitorBank, SourceImpedance, ripple_analysis
+    b = body or {}
+    cfg = {**EXAMPLE_RIPPLE, **(b.get("ripple") or {})}
+    cap = cfg["capacitor"]
+    k_esr = {"mohm": 1e-3, "ohm": 1.0}[cap.get("ESR_unit", "mohm")]
+    bank = CapacitorBank(float(cap["C_uF"]) * 1e-6, tuple((float(f), float(r) * k_esr) for f, r in cap["ESR_table"]),
+                         ESL_H=float(cap.get("ESL_nH") or 0.0) * 1e-9,
+                         Rth_K_per_W=None if cap.get("Rth_K_per_W") in (None, "") else float(cap["Rth_K_per_W"]),
+                         life_hours_table=tuple((float(t), float(h)) for t, h in (cap.get("life_hours_table") or [])),
+                         life_voltage_V=None if cap.get("life_voltage_V") in (None, "") else float(cap["life_voltage_V"]),
+                         life_basis=str(cap.get("life_basis") or ""))
+    src = cfg.get("source")
+    source = None if not src else SourceImpedance(float(src["R_mohm"]) * 1e-3, float(src["L_uH"]) * 1e-6,
+                                                  str(src.get("basis", "")))
+    d = _drive(b)
+    n, vdc, T = _num(b, "speed_rpm", 6000.0), _num(b, "Vdc_V", 600.0), _num(b, "torque_Nm", 150.0)
+    sol = PolicyEvaluator(d, Scenario("ripple", n, vdc, _limits(b))).solve(T)
+    pt = sol.point
+    if pt is None:
+        raise InputValidationError("no operating point for the ripple analysis: " + sol.policy_claim.detail,
+                                   field="torque_Nm")
+    phi = math.atan2(pt.vq_V, pt.vd_V) - math.atan2(pt.iq_A, pt.id_A)
+    m = pt.v_peak_V / (0.5 * vdc)
+    fe = abs(pt.f_e_Hz)
+    r = ripple_analysis(pt.i_peak_A, m, phi, fe, float(cfg.get("fsw_kHz", 10.0)) * 1e3, vdc, bank, source,
+                        cfg.get("modulation", "svpwm"), cfg.get("requirement"),
+                        None if cap.get("T_ref_C") in (None, "") else float(cap["T_ref_C"]))
+    r["operating_point"] = {"id_A": pt.id_A, "iq_A": pt.iq_A, "Pdc_W": pt.Pdc_W, "Idc_avg_A": pt.Idc_A,
+                            "speed_rpm": n, "torque_Nm": T}
+    r["config"] = cfg
+    return _jsonable(r)
+
+
 def acceptance(body):
     return S.acceptance_summary()
 
@@ -556,5 +603,5 @@ ROUTES = {
     "info": info, "evaluate": evaluate, "curve": curve, "map": idiq, "sizing": sizing, "dominance": dominance,
     "relaxation": relaxation, "timing": timing, "discharge": discharge, "passive": passive, "overvoltage": overvoltage,
     "safe_state": safe_state, "thermal": thermal, "acceptance": acceptance, "protection": protection,
-    "module_losses": module_losses,
+    "module_losses": module_losses, "dclink_ripple": dclink_ripple,
 }
