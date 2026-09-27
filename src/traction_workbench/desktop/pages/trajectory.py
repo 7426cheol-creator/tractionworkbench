@@ -32,7 +32,9 @@ def _task(progress, drive, limits, mode, n, T, vdc, points, n_max):
 FIELD_LABELS = [("x", ""), ("status", ""), ("id_A", "id [A]"), ("iq_A", "iq [A]"), ("I_peak_A", "|i| [A]"),
                 ("v_cmd_V", "|v_cmd| [V]"), ("v_margin_V", "V margin [V]"), ("m_linear", "m [-]"),
                 ("Tshaft_Nm", "T_shaft [N·m]"), ("Pshaft_W", "P_shaft [W]"), ("Pdc_W", "P_dc [W]"), ("Idc_A", "I_dc [A]"),
-                ("P_loss_W", "loss [W]"), ("eta", "η [-]"), ("pf", "PF [-]")]
+                ("P_loss_W", "loss (all known) [W]"), ("P_loss_known_W", "known loss subtotal [W]"),
+                ("eta", "η inv+motor [-]"), ("eta_inverter", "η inverter [-]"), ("eta_motor", "η motor [-]"),
+                ("pf", "PF [-]")]
 
 
 class TrajectoryPage(QWidget):

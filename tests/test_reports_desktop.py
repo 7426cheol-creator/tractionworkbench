@@ -136,6 +136,33 @@ def test_review_and_oew_hev_figures_render(tmp_path, lang, theme):
 
 
 @pytest.mark.parametrize("lang, theme", [("ko", "light"), ("en", "dark")])
+def test_efficiency_figures_render(tmp_path, lang, theme):
+    """Point (defined, regen, mixed flow, no point), boundary maps, mission and module A/B figures."""
+    from traction_workbench.plots import efficiency_figures as EF
+    set_language(lang)
+    style.apply(theme)
+    try:
+        small = {"map_speeds_rpm": [1000.0, 6000.0, 12000.0], "map_torques_Nm": [-100.0, 50.0, 200.0]}
+        jobs = [(EF.fig_efficiency_point, api.efficiency({})),
+                (EF.fig_efficiency_point, api.efficiency({"speed_rpm": 4000.0, "torque_Nm": -120.0})),
+                (EF.fig_efficiency_point, api.efficiency({"loss_model": "surrogate", "speed_rpm": 1000.0, "torque_Nm": -0.1})),
+                (EF.fig_efficiency_point, api.efficiency({"torque_Nm": 5000.0})),
+                (EF.fig_efficiency_maps, api.efficiency_map(small)),
+                (EF.fig_efficiency_mission, api.efficiency_mission({})),
+                (EF.fig_module_compare, api.module_compare({"compare": {**api.EXAMPLE_EFFICIENCY["compare"],
+                                                                        "requests": [[6000.0, 150.0, 600.0]]},
+                                                            "mission": None}))]
+        for i, (fn, res) in enumerate(jobs):
+            fig = Figure(figsize=(11, 6))
+            fn(fig, res)
+            fig.savefig(tmp_path / f"e{i}.png", dpi=50)
+        assert len(list(tmp_path.glob("e*.png"))) == len(jobs)
+    finally:
+        set_language("ko")
+        style.apply("light")
+
+
+@pytest.mark.parametrize("lang, theme", [("ko", "light"), ("en", "dark")])
 def test_machine_design_figures_render(tmp_path, lang, theme):
     """Trade study, winding (balanced, fractional-slot and infeasible) and concept-sizing figures."""
     from traction_workbench.plots import machine_figures as MF
@@ -234,6 +261,16 @@ def test_desktop_smoke(tmp_path):
         ep = win.pages["emi"]
         ep.run()
         assert ep.last is not None and ep.last["claim"]["status"] == "UNKNOWN"      # screening is never a pass
+        efp = win.pages["efficiency"]
+        efp.run_point()
+        assert efp.last_point["ledger"]["boundaries"]["edrive"]["status"] == "DEFINED"
+        efp.r_on.setChecked(False)                      # no reducer data: the eDrive efficiency is UNKNOWN, not 100 %
+        efp.run_point()
+        assert efp.last_point["ledger"]["boundaries"]["edrive"]["status"] == "UNKNOWN"
+        efp.t_req.load([[6000.0, 150.0, 600.0]])
+        efp.ab_mis.setChecked(False)
+        efp.run_ab()
+        assert efp.last_ab["rows"][0]["compare"]["verdict"] in ("A_LOWER_LOSS", "B_LOWER_LOSS", "UNDECIDED")
         mp = win.pages["machine"]
         mp.t_cand.load([["ref", 1.0, 1.0, 1.0, None, None], ["N+10%", 1.1, 1.0, 1.0, None, None],
                         ["L+", 1.2, 1.2, 1.0, None, None]])            # stack change without end shares: refused

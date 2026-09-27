@@ -59,7 +59,11 @@ def fig_machine_trade(fig, res: dict, title: str | None = None):
                     f"policy T-n envelope (Vdc {vdc:g} V, display witness)" if vdc else "policy T-n envelope"),
                  fontsize=9)
     ax.set_ylim(bottom=0)
-    ax.legend(fontsize=7, loc="upper right")
+    if ax.get_legend_handles_labels()[0]:
+        ax.legend(fontsize=7, loc="upper right")
+    else:
+        _note(ax, tr("포트락선 계산 안 함 (요구점만 표시)", "envelope not computed (requirement points only)"),
+              loc="upper right", fontsize=7)
     ax.grid(True, alpha=0.4)
     # margin matrix
     names = [c["name"] for c in res["checks"]]

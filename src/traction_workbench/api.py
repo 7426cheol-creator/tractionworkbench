@@ -1026,6 +1026,210 @@ def emi_oew(body):
     return _jsonable(out)
 
 
+# ------------------------------------------------------------------ efficiency by boundary (module-efficiency addendum)
+
+EXAMPLE_MODULE_SIC = {
+    "name": "synthetic 750 V / 800 A SiC MOSFET half-bridge example (NOT a real product - replace with datasheet curves)",
+    "technology": "SiC_MOSFET", "value_kind": "typical", "energy_basis": "per_device", "v_test_V": 600.0,
+    "source": "synthetic example for demonstration; curves are linear stand-ins",
+    "test_conditions": {"Rg_on_ohm": 2.5, "Rg_off_ohm": 1.0, "Vgs_on_V": 18.0, "Vgs_off_V": -4.0,
+                        "deadtime_test_us": 0.3, "stray_L_nH": 12.0},
+    "curves": {
+        "v_on": _lin_curve("V", (25.0, 150.0), 800.0, (0.0, 0.0), (1.60e-3, 2.60e-3)),
+        "v_channel_rev": _lin_curve("V", (25.0, 150.0), 800.0, (0.0, 0.0), (1.65e-3, 2.70e-3)),
+        "v_rev": _lin_curve("V", (25.0, 150.0), 800.0, (2.90, 2.60), (1.30e-3, 1.50e-3)),
+        "e_on": _lin_curve("mJ", (25.0, 150.0), 800.0, (0.05, 0.08), (0.012, 0.014)),
+        "e_off": _lin_curve("mJ", (25.0, 150.0), 800.0, (0.03, 0.04), (0.006, 0.007)),
+        "e_rr": _lin_curve("mJ", (25.0, 150.0), 800.0, (0.01, 0.02), (0.0008, 0.0012)),
+    },
+    "fsw_kHz": 10.0, "modulation": "svpwm", "deadtime_us": 0.3, "parallel": 1, "sharing_error_pct": 0.0,
+    "driver_aux_W": 14.0, "aux_from_hv_dc": False, "Tj_eval_C": 150.0, "Rth_K_per_W": 0.12, "T_ref_C": 65.0,
+}
+
+EXAMPLE_REDUCER = {
+    "ratio": 9.0, "output_boundary": "single-speed gearbox output shaft (differential input)",
+    "speed_rpm": [0.0, 16000.0], "torque_Nm": [0.0, 400.0], "oil_temp_C": [20.0, 120.0],
+    "eta_forward": 0.975, "eta_reverse": 0.970, "drag_coeffs": [0.15, 2.0e-4, 0.0],
+    "basis": "synthetic example (declare supplier map / directional test data)",
+}
+
+EXAMPLE_EFFICIENCY = {
+    "speed_rpm": 6000.0, "torque_Nm": 150.0, "Vdc_V": 600.0, "loss_model": "module", "module": EXAMPLE_MODULE,
+    "reducer": EXAMPLE_REDUCER, "oil_temp_C": 80.0,
+    "aux": [{"name": "gate drivers + controller (12 V LV supply)", "P_W": 25.0, "supply": "lv_external",
+             "basis": "example value"}],
+    "map_speeds_rpm": [500.0, 1500.0, 2500.0, 3500.0, 4500.0, 5500.0, 6500.0, 7500.0, 8500.0, 9500.0, 10500.0,
+                       11500.0, 12500.0, 13500.0, 14500.0, 15500.0],
+    "map_torques_Nm": [-250.0, -200.0, -150.0, -100.0, -60.0, -30.0, -10.0, 10.0, 30.0, 60.0, 100.0, 150.0, 200.0,
+                       250.0, 300.0, 350.0],
+    "mission": {"torque_at": "motor_shaft", "distance_km": None,
+                "segments": [{"duration_s": 12.0, "speed_rpm": 3000.0, "torque_Nm": 220.0},
+                             {"duration_s": 40.0, "speed_rpm": 7000.0, "torque_Nm": 45.0},
+                             {"duration_s": 10.0, "speed_rpm": 5000.0, "torque_Nm": -110.0},
+                             {"duration_s": 6.0, "speed_rpm": 800.0, "torque_Nm": -40.0},
+                             {"duration_s": 15.0, "speed_rpm": 0.0, "torque_Nm": 0.0},
+                             {"duration_s": 30.0, "speed_rpm": 11000.0, "torque_Nm": 30.0}]},
+    "compare": {"mode": "fixed_policy", "common_fsw_kHz": 10.0, "coolant_C": 65.0,
+                "A": {"label": "IGBT design", "module": EXAMPLE_MODULE, "Rth_K_per_W": 0.09, "loss_error_rel": 0.10,
+                      "error_basis": "example engineering budget - replace with DPT / holdout evidence "
+                                     "(not a statistical confidence)"},
+                "B": {"label": "SiC design", "module": EXAMPLE_MODULE_SIC, "Rth_K_per_W": 0.12,
+                      "loss_error_rel": 0.10, "error_basis": "example engineering budget - replace with DPT / holdout "
+                                                             "evidence (not a statistical confidence)"},
+                "B_fsw_kHz": 20.0,
+                "requests": [[2000.0, 250.0, 600.0], [6000.0, 150.0, 600.0], [12000.0, 60.0, 600.0],
+                             [4000.0, -120.0, 600.0]]},
+    "note": "example reducer, auxiliaries, modules and error budgets are synthetic",
+}
+
+
+def _reducer(r):
+    from .analysis.efficiency import LossMap, ReducerModel
+    if not r:
+        return None
+    mk = lambda m: None if not m else LossMap(tuple(m["speeds_rpm"]), tuple(m["torques_Nm"]),   # noqa: E731
+                                              tuple(tuple(x) for x in m["loss_W"]))
+    return ReducerModel(float(r["ratio"]), str(r.get("output_boundary", "")), tuple(r["speed_rpm"]),
+                        tuple(r["torque_Nm"]), tuple(r["oil_temp_C"]), _opt(r, "eta_forward"), _opt(r, "eta_reverse"),
+                        tuple(float(x) for x in (r.get("drag_coeffs") or (0.0, 0.0, 0.0))),
+                        mk(r.get("map_forward")), mk(r.get("map_reverse")), str(r.get("basis", "")))
+
+
+def _aux(b):
+    from .analysis.efficiency import AuxLoad
+    return tuple(AuxLoad(str(a.get("name", "aux")), float(a["P_W"]), str(a["supply"]), str(a.get("basis", "")))
+                 for a in (b.get("aux") or []))
+
+
+def _eff_drive(b):
+    from dataclasses import replace as _rep
+    d = _drive(b)
+    if b.get("loss_model", "module") == "module":
+        mspec = b.get("module") or EXAMPLE_MODULE
+        d = _rep(d, inverter=_rep(d.inverter, loss=None, module_loss=module_model_from_dict(mspec),
+                                  module_Tj_C=float(mspec.get("Tj_eval_C", 150.0))))
+    return d
+
+
+def efficiency(body):
+    """Five boundary efficiencies, loss ledger and flow table at one policy point (module-efficiency addendum)."""
+    from .analysis.efficiency import point_ledger
+    b = {**EXAMPLE_EFFICIENCY, **(body or {})}
+    d = _eff_drive(b)
+    n, T, vdc = _num(b, "speed_rpm"), _num(b, "torque_Nm"), _num(b, "Vdc_V")
+    sol = PolicyEvaluator(d, Scenario("eff", n, vdc, _limits(b))).solve(T)
+    out = {"request": {"speed_rpm": n, "torque_Nm": T, "Vdc_V": vdc}, "claims": [c.to_dict() for c in sol.claims],
+           "loss_model": b.get("loss_model", "module")}
+    if sol.point is None:
+        out["ledger"] = None
+        out["reason"] = sol.policy_claim.detail
+        return _jsonable(out)
+    out["ledger"] = point_ledger(sol.point, d, _reducer(b.get("reducer")), _opt(b, "oil_temp_C"), _aux(b))
+    out["point"] = {"id_A": sol.point.id_A, "iq_A": sol.point.iq_A, "i_peak_A": sol.point.i_peak_A,
+                    "energy_mode": sol.point.energy_mode, "Tshaft_Nm": sol.point.Tshaft_Nm,
+                    "Te_Nm": sol.point.Te_Nm, "module_detail": sol.point.inverter_loss_detail}
+    return _jsonable(out)
+
+
+def efficiency_map(body):
+    """Boundary efficiency maps on a speed x torque grid (policy points; status mask kept, no hole filling)."""
+    from .analysis.efficiency import DEFINED, point_ledger
+    b = {**EXAMPLE_EFFICIENCY, **(body or {})}
+    d = _eff_drive(b)
+    red = _reducer(b.get("reducer"))
+    oil = _opt(b, "oil_temp_C")
+    vdc = _num(b, "Vdc_V")
+    sp = [float(x) for x in b["map_speeds_rpm"]]
+    tq = [float(x) for x in b["map_torques_Nm"]]
+    names = ("inverter", "motor", "inverter_motor", "reducer", "edrive")
+    grids = {k: np.full((len(tq), len(sp)), np.nan) for k in names}
+    status = np.full((len(tq), len(sp)), "", dtype=object)
+    loss_known = np.full((len(tq), len(sp)), np.nan)
+    for j, n in enumerate(sp):
+        ev = PolicyEvaluator(d, Scenario("map", n, vdc, _limits(b)))
+        for i, T in enumerate(tq):
+            sol = ev.solve(T)
+            status[i, j] = sol.policy_claim.status.value
+            if sol.point is None or status[i, j] == "INFEASIBLE":      # a violating point is not a map value
+                continue
+            led = point_ledger(sol.point, d, red, oil)
+            loss_known[i, j] = led["loss_known_subtotal_W"]
+            for k in names:
+                r = led["boundaries"][k]
+                if r["status"] == DEFINED:
+                    grids[k][i, j] = r["eta"]
+    return _jsonable({"speeds_rpm": sp, "torques_Nm": tq, "Vdc_V": vdc, "grids": grids, "status": status,
+                      "loss_known_W": loss_known, "reducer": None if red is None else red.describe(),
+                      "oil_temp_C": oil, "loss_model": b.get("loss_model", "module"),
+                      "meaning": "values at minimum-current policy points; only FEASIBLE cells are feasible "
+                                 "operation, UNKNOWN cells are shown hatched, INFEASIBLE cells are blank"})
+
+
+def efficiency_mission(body):
+    """Mission energy ledger per direction and boundary (E+ / E- per port; no averaged eta)."""
+    from .analysis.efficiency import mission_energy, point_ledger
+    b = {**EXAMPLE_EFFICIENCY, **(body or {})}
+    d = _eff_drive(b)
+    red = _reducer(b.get("reducer"))
+    oil = _opt(b, "oil_temp_C")
+    vdc = _num(b, "Vdc_V")
+    m = b["mission"]
+    rows, segs, delivered = [], [], True
+    for sg in m["segments"]:
+        n, T = float(sg["speed_rpm"]), float(sg["torque_Nm"])
+        if m.get("torque_at", "motor_shaft") == "output":
+            if red is None:
+                raise InputValidationError("an output-side mission needs a reducer model", field="reducer")
+            inv = red.motor_torque_for_output(n, T, oil)
+            if inv["T_m_Nm"] is None:
+                raise InputValidationError(f"segment {sg}: {inv['reason']}", field="mission")
+            T = inv["T_m_Nm"]
+        sol = PolicyEvaluator(d, Scenario("mission", n, vdc, _limits(b))).solve(T)
+        st = sol.policy_claim.status.value
+        if sol.point is None or st != "FEASIBLE":
+            delivered = False
+        led = None if sol.point is None else point_ledger(sol.point, d, red, oil)
+        p = led["ports_W"] if led else {"P_dc": None, "P_ac": None, "P_m": None, "P_o": None}
+        segs.append({"duration_s": float(sg["duration_s"]), **{k: p[k] for k in ("P_dc", "P_ac", "P_m", "P_o")}})
+        rows.append({**sg, "T_motor_Nm": T, "status": st, "ports_W": p,
+                     "loss_known_W": None if led is None else led["loss_known_subtotal_W"]})
+    e = mission_energy(segs, distance_km=_opt(m, "distance_km"))
+    return _jsonable({"segments": rows, "energy": e, "delivered": delivered, "Vdc_V": vdc,
+                      "loss_model": b.get("loss_model", "module")})
+
+
+def _cand(c: dict, fsw_kHz=None):
+    from dataclasses import replace as _rep
+    from .analysis.efficiency import ModuleCandidate
+    model = module_model_from_dict(c["module"])
+    if fsw_kHz:
+        model = _rep(model, fsw_Hz=float(fsw_kHz) * 1e3)
+    return ModuleCandidate(str(c.get("label") or c["module"].get("name", "module")), model, float(c["Rth_K_per_W"]),
+                           _opt(c, "loss_error_rel"), str(c.get("error_basis", "")))
+
+
+def module_compare(body):
+    """Module A/B (e.g. IGBT vs SiC design) on the same delivered requirement and mission (addendum section 7)."""
+    from .analysis.efficiency import compare_modules
+    b = {**EXAMPLE_EFFICIENCY, **(body or {})}
+    c = b["compare"]
+    mode = c.get("mode", "fixed_policy")
+    A = _cand(c["A"], None if mode == "fixed_policy" else c.get("A_fsw_kHz"))
+    B = _cand(c["B"], None if mode == "fixed_policy" else c.get("B_fsw_kHz"))
+    m = b.get("mission") or {}
+    mission = None
+    if m.get("segments") and c.get("include_mission", True):
+        if m.get("torque_at", "motor_shaft") != "motor_shaft":
+            raise InputValidationError("the module comparison takes the mission at the motor shaft", field="mission")
+        mission = [(float(s["duration_s"]), float(s["speed_rpm"]), float(s["torque_Nm"]), _num(b, "Vdc_V"))
+                   for s in m["segments"]]
+    r = compare_modules(_drive(b), [A, B], [tuple(float(x) for x in q) for q in c["requests"]], _limits(b),
+                        float(c.get("coolant_C", 65.0)), mode,
+                        float(c["common_fsw_kHz"]) * 1e3 if mode == "fixed_policy" else None,
+                        _reducer(b.get("reducer")), _opt(b, "oil_temp_C"), mission)
+    return _jsonable(r)
+
+
 # ------------------------------------------------------------------ machine design (handoff section 10)
 
 EXAMPLE_MACHINE = {
@@ -1135,4 +1339,6 @@ ROUTES = {
     "lifetime": lifetime, "oew": oew, "oew_compare": oew_compare, "hev_joint": hev_joint, "hev_crank": hev_crank,
     "hev_rejection": hev_rejection, "hev_planetary": hev_planetary, "emi": emi, "emi_oew": emi_oew,
     "machine_trade": machine_trade, "winding": winding, "concept_sizing": concept_sizing,
+    "efficiency": efficiency, "efficiency_map": efficiency_map, "efficiency_mission": efficiency_mission,
+    "module_compare": module_compare,
 }

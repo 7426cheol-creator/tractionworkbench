@@ -15,6 +15,7 @@ from ..io import load_json_file
 from . import theme
 from .pages.decision import DecisionPage
 from .pages.design import DesignPage
+from .pages.efficiency import EfficiencyPage
 from .pages.emi import EmiPage
 from .pages.explorer import ExplorerPage
 from .pages.machine import MachinePage
@@ -41,6 +42,7 @@ PAGES = (
     ("protection", lambda: tr("보호·고장", "Protection & fault"), ProtectionPage),
     ("thermal", lambda: tr("열·지속시간", "Thermal & duration"), ThermalPage),
     ("power", lambda: tr("전력변환·수명", "Power stage & life"), PowerPage),
+    ("efficiency", lambda: tr("효율·모듈 비교", "Efficiency & modules"), EfficiencyPage),
     ("oew_hev", lambda: tr("OEW·HEV", "OEW & HEV"), OewHevPage),
     ("emi", lambda: tr("EMI (전도성)", "EMI (conducted)"), EmiPage),
     ("machine", lambda: tr("모터 설계", "Machine design"), MachinePage),

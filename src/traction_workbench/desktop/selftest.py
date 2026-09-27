@@ -178,6 +178,29 @@ def run_self_test(app, out_dir) -> int:
         cs = (em.last_oew or {}).get("cases", {})
         check("emi:oew_cm", len(cs) == 2 and cs["0"]["u0_rms_V"] < cs["0.5"]["u0_rms_V"]
               and cs["0"]["cm6_rms_V"] > cs["0.5"]["cm6_rms_V"])
+        ef = visit("efficiency", 0, ["run_point"], [(None, "43_efficiency_point")])
+        eb = ((ef.last_point or {}).get("ledger") or {}).get("boundaries", {})
+        check("efficiency:five_boundaries", all(eb.get(k, {}).get("status") == "DEFINED" for k in
+                                                ("inverter", "motor", "inverter_motor", "reducer", "edrive"))
+              and abs(eb["telescoping_residuals"]["edrive"]) < 1e-12, str({k: v.get("status") for k, v in eb.items()
+                                                                            if isinstance(v, dict) and "status" in v}))
+        ef.run_map()
+        shot(win, "44_efficiency_maps")
+        st_map = (ef.last_map or {}).get("status")
+        check("efficiency:maps", st_map is not None and "FEASIBLE" in set(st_map.ravel()))
+        ef.run_mission()
+        shot(win, "45_efficiency_mission")
+        em_ = (ef.last_mission or {}).get("energy") or {}
+        check("efficiency:mission", bool(ef.last_mission and ef.last_mission["delivered"])
+              and 0 < (em_.get("eta_traction") or 0) < 1 and 0 < (em_.get("eta_regeneration") or 0) < 1)
+        ef.tabs.setCurrentIndex(1)
+        ef.run_ab()
+        shot(win, "46_module_ab")
+        ab_rows = (ef.last_ab or {}).get("rows", [])
+        check("efficiency:module_ab", bool(ab_rows) and all(r["A"].get("Tj_C") is not None and r["B"].get("Tj_C") is not None
+                                                            for r in ab_rows)
+              and all(r["compare"]["verdict"] in ("A_LOWER_LOSS", "B_LOWER_LOSS", "UNDECIDED") for r in ab_rows),
+              str([r["compare"]["verdict"] for r in ab_rows]))
         mc = visit("machine", 0, ["run_trade"], [(None, "40_machine_trade")])
         mrows = {r["candidate"]: r for r in (mc.last_trade or {}).get("rows", []) if "checks" in r}
         check("machine:trade", "ref" in mrows and "N+10%" in mrows and mrows["ref"]["all_feasible"]
