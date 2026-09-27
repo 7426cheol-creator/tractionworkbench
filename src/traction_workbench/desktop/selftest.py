@@ -94,10 +94,22 @@ def run_self_test(app, out_dir) -> int:
         check("design", des.p_curve._draw is not None and des.p_dom._draw is not None)
         saf = visit("safety", 5, ["run_ftti", "run_discharge", "run_overvoltage", "run_safe"],
                     [(None, "14_safety_ftti"), (lambda pg: pg.tabs.setCurrentIndex(1), "15_safety_dclink"),
+                     (lambda pg: pg.dc_tabs.setCurrentIndex(1), "15b_safety_overvoltage"),
                      (lambda pg: pg.tabs.setCurrentIndex(2), "16_safety_state")])
         check("safety", all(p._draw is not None for p in (saf.p_ftti, saf.p_dis, saf.p_ov, saf.p_safe)))
-        th = visit("thermal", 6, ["run"], [(None, "17_thermal")])
+        th = visit("thermal", 6, ["run"], [(None, "17_thermal"), (lambda pg: pg.tabs.setCurrentIndex(1), "17b_thermal_network"),
+                                           (lambda pg: pg.tabs.setCurrentIndex(2), "17c_thermal_zth"),
+                                           (lambda pg: pg.tabs.setCurrentIndex(3), "17d_thermal_editor")])
         check("thermal", th.plot._draw is not None and "s" in th.headline.text(), th.headline.text())
+        t_ref = th.last["res"]["request"]["time_to_first_limit_s"]
+        th.c_flow.setValue(5.0)
+        th.run()
+        t_low = th.last["res"]["request"]["time_to_first_limit_s"]
+        check("thermal:coolant_flow", isinstance(t_ref, float) and isinstance(t_low, float) and t_low < t_ref,
+              f"10 L/min {t_ref} s, 5 L/min {t_low} s")
+        th.c_flow.setValue(10.0)
+        th.tabs.setCurrentIndex(0)
+        check("schematics", all(p._draw is not None for p in (saf.s_dis, saf.s_ov, saf.s_safe, page.views.overview)))
         visit("model", 7, [], [(None, "18_model")])
         vv = visit("verification", 8, ["run"], [(None, "19_verification")])
         check("acceptance", "PASS" in vv.summary.text() and "MISMATCH" not in vv.summary.text(), vv.summary.text())

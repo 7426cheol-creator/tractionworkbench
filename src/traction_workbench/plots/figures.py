@@ -887,6 +887,11 @@ def fig_thermal(fig, av_curve: dict | None, th: dict | None, T_request: float | 
             col = S.PHASE[kk % 3]
             ax2.plot(th["t_s"], c["T_C"], color=col, lw=2, label=f"{c['node']} ({c['power_W']:.0f} W)")
             ax2.axhline(c["limit_C"], color=col, ls="--", lw=1)
+            ref = c.get("fluid_reference_C")
+            if ref is not None and abs(ref - th["coolant_C"]) > 1e-9:
+                ax2.axhline(ref, color=col, ls=":", lw=1.1)
+                ax2.annotate(tr(f"냉각수 기준 {ref:.1f} °C", f"coolant ref. {ref:.1f} °C"), (th["t_s"][1], ref),
+                             xytext=(2, 2), textcoords="offset points", fontsize=6.5, color=col)
             ttl = c["time_to_limit_s"]
             ttl = float(ttl) if isinstance(ttl, (int, float)) else math.inf
             if math.isfinite(ttl) and ttl <= th["t_s"][-1]:
@@ -931,3 +936,25 @@ def fig_acceptance(fig, acc: dict, title: str | None = None):
     ax.set_title(tr(f"golden 대비 acceptance {n_pass}/{len(acc['rows'])} 통과 · manifest {'OK' if acc['manifest_ok'] else 'MISMATCH'}",
                     f"acceptance vs golden {n_pass}/{len(acc['rows'])} pass · manifest {'OK' if acc['manifest_ok'] else 'MISMATCH'}"),
                  fontsize=9)
+
+
+def fig_zth(fig, zc: dict, title: str | None = None):
+    """Node-to-fluid thermal impedance Z_th(t) (log-log), with the stage time constants marked."""
+    _reset(fig, title)
+    t = S.theme()
+    ax = fig.subplots()
+    for k, nd in enumerate(zc["nodes"]):
+        col = S.PHASE[k % 3]
+        ax.loglog(zc["t_s"], nd["zth_K_per_W"], color=col, lw=2, label=f"{nd['node']}  (R_th = {sum(nd['R_K_per_W']):.4g} K/W)")
+        ax.axhline(sum(nd["R_K_per_W"]), color=col, lw=0.8, ls="--")
+        for tau in nd["tau_s"]:
+            if zc["t_s"][0] <= tau <= zc["t_s"][-1]:
+                z = float(np.interp(tau, zc["t_s"], nd["zth_K_per_W"]))
+                ax.plot(tau, z, marker="o", ms=4, color=col)
+    ax.set_xlabel(tr("시간 [s]", "time [s]"))
+    ax.set_ylabel(tr("Z_th (노드 → 냉각수) [K/W]", "Z_th (node → coolant) [K/W]"))
+    ax.grid(True, which="both", alpha=0.5)
+    ax.legend(loc="lower right", fontsize=7.5)
+    _note(ax, tr("점 = 각 단의 시정수 τ_i · 점선 = 정상상태 R_th\n계산에 쓰인 값 (유량 보정·Cauer→Foster 변환 후)",
+                 "dots = stage time constants τ_i · dashed = steady-state R_th\nvalues as used (after flow scaling and Cauer→Foster)"),
+          loc="upper left")

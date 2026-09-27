@@ -188,4 +188,4 @@ def test_thermal_curves_hit_the_limit_at_the_time_to_limit():
     c = SF.thermal_curves(model, nodes, 65.0, 3 * ttl, samples=4000)["curves"][j]
     assert np.interp(ttl, SF.thermal_curves(model, nodes, 65.0, 3 * ttl, samples=4000)["t_s"], c["T_C"]) == \
         pytest.approx(c["limit_C"], abs=0.05)
-    assert ttl == pytest.approx(5.47, abs=0.01)
+    assert ttl == pytest.approx(4.246, abs=0.01)           # coolant heats up along the loop (50/50 EG, 10 L/min)

@@ -17,7 +17,22 @@
 - **자체 검사**: `twb selftest DIR` / `TractionWorkbench.exe --self-test DIR` — 모든 페이지를 실제 코드 경로로 실행하고 예시 판정, golden acceptance,
   PDF 보고서, flux-map 드라이브, 다크 테마를 확인(18 checks). 빌드 스크립트가 **패키징된 실행 파일에서** 이 검사를 수행합니다.
 - CI(GitHub Actions): Linux 테스트 + Windows 실행 파일 빌드·동결 상태 self-test·zip 아티팩트, `v*` 태그 시 릴리스 첨부.
-- 참조 패키지 위치 탐색: `TWB_SPEC_DIR` → 번들 내부(`sys._MEIPASS`) → 소스 트리.
+- 참조 패키지 위치 탐색: `TWB_SPEC_DIR` → 번들 내부(`sys._MEIPASS`) → 소스 트리. `reference/**`는 `.gitattributes`로 줄바꿈 변환을
+  금지(Windows `core.autocrlf`가 CRLF로 바꾸면 manifest SHA-256이 모두 불일치했음; CI에서 발견·수정).
+- **냉각수 모델** (`extensions/coolant.py`): 유량 Q, 에틸렌글리콜:물 농도(기본 50:50 부피)에서 c_p·ρ 일반값 보간(근사, 공급사 값으로 덮어쓰기 가능),
+  ṁ = ρQ, ṁ·c_p [W/K], 순환 순서대로 부품 열 P_k를 받아 ΔT_k = P_k/(ṁ·c_p). 노드는 자기 위치(인버터 냉각판/모터 워터재킷)의
+  입구·평균·출구 온도를 기준으로 합니다. 냉각수 루프가 없으면 기존처럼 입구 온도 기준(무한 유량 가정, 명시).
+- **열 회로망**: Foster(R_i, τ_i)와 Cauer(R_i, C_i) 입력. Cauer는 일반화 고유값 문제 G v = λ C v로 **정확히** Foster로 변환(ΣR 보존,
+  사다리 ODE 적분과 1e-6 이내 일치 테스트). 단별 유량 의존 R_i(Q) = R_i,ref·(Q_ref/Q)^n (기본 n = 0.8, 근사로 표기).
+  검증된 열모델의 유효 조건에 유량(`coolant_flow_L_per_min`)·농도도 넣을 수 있습니다.
+- **열 모델 편집기**(JSON 직접 편집 대체): 노드 탭, 단 표, 4단 템플릿, 데이터시트 붙여넣기(“R τ” 줄 또는 R 행/τ 행), 유효 범위,
+  JSON 저장/불러오기. RC 회로도·냉각수 순환도·Z_th(t)(log-log) 즉시 갱신.
+- **회로 개요도** (`plots/schematics.py`): 배터리–메인 릴레이(±, 프리차지)–DC 링크–능동 방전–3상 브리지(스위치+역병렬 다이오드)–모터–축.
+  시나리오별 상태(릴레이 개방, 방전 스위치, 다이오드 정류, ASC 하단 ON)와 전력 흐름 화살표. 운전점 “시스템 개요” 탭, DC 링크(방전·
+  배터리 차단), ASC/Freewheel 비교, PDF 보고서에 사용. 프로젝트 안전 규칙은 표로 입력.
+- 모든 페이지에 접이식 **개념 설명**(그래프 읽는 법·핵심 식).
+- 예시 열 모델을 4단 Foster(인버터 접합, 마지막 단 유량 의존) + 3단 Cauer(권선)와 냉각수 루프(10 L/min, EG 50%)로 교체:
+  65 °C·3000 rpm에서 450 N·m 유지 4.24 s(냉각수 상승 반영 전 5.47 s), 연속 426 N·m.
 
 ---
 
@@ -190,8 +205,9 @@ fixture E01(1-node 열) 값 77.6424 °C / 138.6294 s를 재현합니다.
 - 참조 패키지 manifest: 10/10 일치.
 - 독립 검산(production 비의존, 다른 방법): 136/136.
 - Production vs golden: 정방향 6건 정규화 오차 ≤ 2e-16, 역문제 11건 id/iq 최대 오차 5.5e-6 A(경계해는 ~1e-13 A), 라벨 일치, capability 4건 오차 ≤ 3e-7 N·m(구동 3건 certified, 인증 상한 = golden 1e-13 이내), fixture의 Lagrangian 승수·Hessian 고유값 상대오차 < 1e-6.
-- pytest 206개 통과(그래프 데이터의 물리 일관성, PDF 보고서, 데스크톱 headless smoke 포함).
-- 동결(PyInstaller) 앱에서 acceptance 21/21, 데스크톱 self-test 18/18 (Linux 로컬 빌드; Windows는 CI에서 동일 검사).
+- pytest 214개 통과(그래프 데이터의 물리 일관성, 냉각수·Cauer·유량 보정, 회로도, PDF 보고서, 데스크톱 headless smoke 포함).
+- 데스크톱 self-test 20/20. Windows CI에서 PyInstaller exe를 빌드하고 **동결된 exe로** acceptance 21/21과 self-test를 통과했습니다
+  (아티팩트 `TractionWorkbench-windows-x64`).
 - 관찰: MTPA 내부점 golden(I00/I09/I10)은 평탄한 목적함수 때문에 정확 해와 최대 5.5e-6 A 차이(50자리 계산으로 확인). 허용오차 1e-3 A 이내이며 expected 값은 그대로 둡니다.
 
 ## 10. 알려진 한계
@@ -204,7 +220,8 @@ fixture E01(1-node 열) 값 77.6424 °C / 138.6294 s를 재현합니다.
 6. 정책 capability의 음(회생) 방향은 표본 증거(연속성 가정)입니다. T–n 곡선은 속도 17점 표본이며 점 사이는 표시용입니다.
 7. Vdc 범위 요구는 기본 5점 표본으로만 검사하며 연속 구간 PASS를 주장하지 않습니다(단조성 인증 미구현).
 8. 구간 입력 분석은 독립 상자(모서리+중심)만: 상관 파라미터는 공동 시나리오로 표현해야 하며 최악점 인증은 없습니다.
-9. 온도: 선형 계수 조정만 지원, 손실–온도 피드백 없음.
+9. 온도: 선형 계수 조정만 지원, 손실–온도 피드백 없음. 냉각수 물성 기본값은 일반 EG/물 표의 근사이며, 냉각수 자체의 열용량·수송 지연은
+   무시(가열 쪽으로 보수적)하고, 유량에 따른 대류 저항은 사용자가 지정한 단에만 지수 법칙으로 보정합니다(검증된 값이 아님).
 10. 스크리닝 확장은 7절의 범위로 제한됩니다(과도, UCG 전류 크기, 소자 SOA, 기능안전 승인 없음).
 11. 그래프의 파형·듀티는 같은 기본파 값을 역 Park·min-max 영상분 주입으로 다시 표현한 평균값 모델입니다(스위칭 리플, 데드타임, 소자 강하 없음). MTPV는 상수 모델에서 R_s를 무시한 참고선입니다.
 12. flux map 드라이브의 T–n 곡선은 계산량 때문에 격자 추정(시각화용, 라벨 표기)이며, 판정 자체는 항상 엄밀 솔버를 사용합니다. 맵·스윕은 표본 사이의 연속성을 보장하지 않습니다.
@@ -249,4 +266,6 @@ fixture E01(1-node 열) 값 77.6424 °C / 138.6294 s를 재현합니다.
 | 독립 fixture 검증 | `verification/independent_fixture_check.py` | 136 checks |
 | 그래프 데이터(파형·벡터도·궤적·맵·기저속도·스크리닝 곡선) | `viz/operating.py`, `viz/sweeps.py`, `viz/maps.py`, `viz/design.py`, `viz/safety.py` | `test_viz.py` (독립 forward Park 역변환, 전력 항등식, MTPA 접선 조건, 기저속도 = 약계자 개시, golden capability) |
 | 그림·PDF 보고서·데스크톱 앱 | `plots/`, `report_pdf.py`, `desktop/` | `test_reports_desktop.py`, `twb selftest` |
+| 냉각수 루프·Foster/Cauer·유량 의존 열저항 | `extensions/coolant.py`, `extensions/thermal.py`, `api._thermal_model` | `test_thermal_coolant.py` (에너지 수지, Cauer ODE 대조, 유량 보정, 기준 온도) |
+| 회로 개요도·열 회로도 | `plots/schematics.py`, `desktop/thermal_editor.py` | `test_reports_desktop.py::test_schematics_render`, desktop smoke |
 | 배포 | `packaging/` (PyInstaller spec, 빌드·동결 self-test), `.github/workflows/build.yml` | CI Windows job |

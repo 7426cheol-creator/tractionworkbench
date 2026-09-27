@@ -151,6 +151,8 @@ def build_pdf(path, record: dict, rec=None, case=None, progress=None, envelope: 
                 pt = cond.solution.point
                 pv = O.point_view(case.drive, sc, pt.id_A, pt.iq_A, T)
                 prog(0.35, "waveforms")
+                from .plots import schematics as SC
+                _fig(pdf, SC.fig_system_overview, O.overview_info(pv), title=title, size=(11.69, 5.6))
                 _fig(pdf, F.fig_waveforms, O.waveforms(pv), title=title, size=A4_P)
                 _fig(pdf, F.fig_phasor, O.phasor(pv), O.hexagon(pv), title=title)
                 _fig(pdf, F.fig_power_constraints, O.power_chain(pt), O.constraint_rows(pt), title=title)

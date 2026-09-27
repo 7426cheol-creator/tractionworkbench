@@ -14,9 +14,11 @@ from . import service as S
 from . import spec_fixtures as sf
 from .decision import _jsonable
 from .errors import InputValidationError
+from .extensions.coolant import PROPERTY_SOURCE, CoolantLoop, CoolantStation, eg_water_properties
 from .extensions.dclink import active_discharge, regen_disconnect_overvoltage
 from .extensions.safe_state import safe_state_screening
-from .extensions.thermal import FosterNetwork, ThermalModel, ThermalNode, thermal_duration, torque_availability
+from .extensions.thermal import (CauerNetwork, FosterNetwork, ThermalModel, ThermalNode, flow_scaled, thermal_duration,
+                                 torque_availability)
 from .extensions.timing import TimingChain, TimingItem, analyze_timing
 from .models import DataOrigin, Provenance
 from .scenario import DcSourceLimits, Scenario
@@ -73,13 +75,22 @@ EXAMPLE_TIMING = {
     ],
 }
 
+DEFAULT_LOOP = [{"station": "inverter", "losses": {"inverter": 1.0}},
+                {"station": "motor", "losses": {"copper": 1.0, "rotational": 1.0}}]
+
 EXAMPLE_THERMAL = {
-    "model_id": "EXAMPLE_THERMAL_UNVALIDATED", "validated": False,
+    "model_id": "EXAMPLE_THERMAL_UNVALIDATED", "revision": "2", "validated": False,
+    "source": "synthetic example networks for demonstration (not a product model)",
+    "coolant": {"glycol_vol_pct": 50.0, "flow_L_per_min": 10.0, "cp_J_per_kgK": None, "rho_kg_per_m3": None,
+                "reference": "mean", "loop": DEFAULT_LOOP},
     "nodes": [
-        {"id": "inverter junction (1 of 6 devices)", "R_K_per_W": [0.05, 0.15], "tau_s": [0.05, 2.0], "limit_C": 150,
-         "loss_share": {"inverter": 1 / 6}},
-        {"id": "stator winding", "R_K_per_W": [0.004, 0.01], "tau_s": [20.0, 300.0], "limit_C": 180,
-         "loss_share": {"copper": 1.0}},
+        {"id": "inverter junction (1 of 6 switches)", "network": "foster",
+         "R_K_per_W": [0.010, 0.030, 0.080, 0.080], "tau_s": [0.002, 0.03, 0.4, 2.5],
+         "flow_dependent": [False, False, False, True], "flow_ref_L_per_min": 10.0, "flow_exponent": 0.8,
+         "limit_C": 150, "loss_share": {"inverter": 1 / 6}, "station": "inverter"},
+        {"id": "stator winding (hot spot)", "network": "cauer",
+         "R_K_per_W": [0.003, 0.005, 0.006], "C_J_per_K": [1500.0, 6000.0, 30000.0],
+         "limit_C": 180, "loss_share": {"copper": 1.0}, "station": "motor"},
     ],
 }
 
@@ -226,23 +237,70 @@ def safe_state(body):
         body.get("hardware_paths"), body.get("transition_times_s"), body.get("rules")))
 
 
-def _thermal_model(spec) -> ThermalModel:
+def coolant_properties(glycol_vol_pct: float, T_C: float) -> dict:
+    return eg_water_properties(glycol_vol_pct, T_C)
+
+
+def _coolant(cs: dict | None, inlet_C: float | None) -> CoolantLoop | None:
+    if not cs:
+        return None
+    g = cs.get("glycol_vol_pct")
+    props = eg_water_properties(50.0 if g in (None, "") else float(g), 65.0 if inlet_C is None else float(inlet_C))
+    cp, rho = cs.get("cp_J_per_kgK"), cs.get("rho_kg_per_m3")
+    user = cp not in (None, "") and rho not in (None, "")
+    source = "user-entered coolant properties" if user else PROPERTY_SOURCE
+    loop = tuple(CoolantStation(str(st["station"]), tuple((k, float(v)) for k, v in st["losses"].items()))
+                 for st in (cs.get("loop") or DEFAULT_LOOP))
+    return CoolantLoop(_num(cs, "flow_L_per_min"), float(cp) if cp not in (None, "") else props["cp_J_per_kgK"],
+                       float(rho) if rho not in (None, "") else props["rho_kg_per_m3"], loop,
+                       cs.get("reference", "mean"), None if g in (None, "") else float(g), source)
+
+
+def _network(n: dict, coolant: CoolantLoop | None) -> FosterNetwork:
+    kind = str(n.get("network", "foster")).lower()
+    r = flow_scaled(n["R_K_per_W"], n.get("flow_dependent"), n.get("flow_ref_L_per_min"),
+                    None if coolant is None else coolant.flow_L_per_min, n.get("flow_exponent", 0.8))
+    if kind == "cauer":
+        return CauerNetwork(tuple(r), tuple(n["C_J_per_K"])).to_foster()
+    if kind != "foster":
+        raise InputValidationError(f"network must be 'foster' or 'cauer', got {kind!r}", field="network")
+    if n.get("tau_s") is None and n.get("C_J_per_K") is not None:
+        return FosterNetwork(tuple(r), tuple(float(ri) * float(ci) for ri, ci in zip(n["R_K_per_W"], n["C_J_per_K"])))
+    return FosterNetwork(tuple(r), tuple(n["tau_s"]))
+
+
+def _thermal_model(spec, inlet_C: float | None = None) -> ThermalModel:
     spec = spec or EXAMPLE_THERMAL
-    nodes = tuple(ThermalNode(n["id"], FosterNetwork(tuple(n["R_K_per_W"]), tuple(n["tau_s"])), float(n["limit_C"]),
-                              tuple(n["loss_share"].items())) for n in spec["nodes"])
+    coolant = _coolant(spec.get("coolant"), inlet_C)
+    nodes = tuple(ThermalNode(str(n["id"]), _network(n, coolant), float(n["limit_C"]),
+                              tuple((k, float(v)) for k, v in n["loss_share"].items()),
+                              n.get("station") if coolant is not None else None) for n in spec["nodes"])
     prov = Provenance(DataOrigin.SYNTHETIC if not spec.get("validated") else DataOrigin.SUPPLIER,
                       spec.get("source", "UI example network"), spec.get("revision", "1"),
                       "validated" if spec.get("validated") else "unvalidated example network")
     return ThermalModel(spec.get("model_id", "UI_THERMAL"), spec.get("revision", "1"), nodes, prov,
                         validated=bool(spec.get("validated")),
-                        validity=tuple((k, tuple(v)) for k, v in (spec.get("validity") or {}).items()))
+                        validity=tuple((k, tuple(v)) for k, v in (spec.get("validity") or {}).items()),
+                        coolant=coolant)
+
+
+def thermal_details(spec, inlet_C: float | None = None) -> dict:
+    """Model as used in the calculation (flow-scaled, Cauer converted) for display: networks, Z_th(inf), coolant."""
+    model = _thermal_model(spec, inlet_C)
+    spec = spec or EXAMPLE_THERMAL
+    nodes = []
+    for n, nd in zip(spec["nodes"], model.nodes):
+        nodes.append({"id": nd.node_id, "input": n, "foster": {"R_K_per_W": list(nd.network.R_K_per_W),
+                                                                 "tau_s": list(nd.network.tau_s)},
+                      "Rth_total_K_per_W": sum(nd.network.R_K_per_W), "limit_C": nd.limit_C, "station": nd.station})
+    return {"model": model, "nodes": nodes, "coolant": None if model.coolant is None else model.coolant.describe()}
 
 
 def thermal(body):
     d = _drive(body)
     sc = Scenario("thermal", _num(body, "speed_rpm"), _num(body, "Vdc_V"), _limits(body),
                   coolant_temp_C=_num(body, "coolant_temp_C"))
-    model = _thermal_model(body.get("model"))
+    model = _thermal_model(body.get("model"), sc.coolant_temp_C)
     durs = body.get("durations_s") or [1, 3, 10, 30, 60, 300, "inf"]
     durs = tuple(math.inf if x in ("inf", "continuous") else float(x) for x in durs)
     out = {"availability": torque_availability(d, sc, model, durs, 1 if _num(body, "direction", 1) >= 0 else -1)}

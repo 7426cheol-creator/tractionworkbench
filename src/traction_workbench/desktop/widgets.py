@@ -339,6 +339,32 @@ def hint(text: str) -> QLabel:
     return lab
 
 
+class ConceptNote(QWidget):
+    """Collapsible explanation for newcomers (the expert content stays unchanged)."""
+
+    def __init__(self, html: str, title: str | None = None, expanded: bool = False, parent=None):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QToolButton
+        self.button = QToolButton()
+        self.button.setText("ⓘ " + (title or tr("개념 설명", "concept")))
+        self.button.setCheckable(True)
+        self.button.setChecked(expanded)
+        self.button.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.button.setStyleSheet("QToolButton { border: none; font-weight: 600; padding: 2px 0px; }")
+        self.body = QLabel(html)
+        self.body.setWordWrap(True)
+        self.body.setTextFormat(Qt.RichText)
+        self.body.setObjectName("Card")
+        self.body.setStyleSheet("padding: 8px; font-size: 8.8pt;")
+        self.body.setVisible(expanded)
+        self.button.toggled.connect(self.body.setVisible)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 2, 0, 2)
+        lay.setSpacing(2)
+        lay.addWidget(self.button)
+        lay.addWidget(self.body)
+
+
 def error_box(parent, title: str, msg: str, detail: str = ""):
     from PySide6.QtWidgets import QApplication
     app = QApplication.instance()

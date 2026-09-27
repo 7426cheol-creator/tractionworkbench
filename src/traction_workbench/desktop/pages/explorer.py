@@ -13,7 +13,7 @@ from ...solvers.policy import PolicyEvaluator
 from ...viz import maps as M
 from ...viz import operating as O
 from ..opviews import OperatingViews
-from ..widgets import KeyValueTable, error_box, hint, number, primary_button
+from ..widgets import ConceptNote, KeyValueTable, error_box, hint, number, primary_button
 
 
 def _task(progress, drive, limits, n, vdc, mode, T, idv, iqv):
@@ -80,6 +80,16 @@ class ExplorerPage(QWidget):
                             "가능한 해가 아닙니다. 마우스를 올리면 격자 값(토크, 전압, DC 전력)을 읽을 수 있습니다.",
                             "Click the id–iq map to evaluate that current vector as given (never moved); a violating point is a "
                             "diagnostic, not a feasible witness. Hover to read torque, voltage and DC power.")))
+        v.addWidget(ConceptNote(tr(
+            "<b>id–iq 지도 읽는 법</b>: 보라 타원 = 이 속도에서 인버터가 낼 수 있는 전압 한계(속도가 오르면 작아짐), 빨간 원 = 전류 "
+            "한계, 점선 사각형 = 선언된 운전 도메인, 회색 곡선 = 등토크선, 청록선 = MTPA(같은 토크를 최소 전류로), 주황 = 요구 토크, "
+            "일점쇄선 = DC 전력 한계. 초록 영역 안의 점만 가능하며, 요구 토크 곡선 위에서 원점에 가장 가까운 가능점이 최소전류 "
+            "정책점(★)입니다. 전압 타원에 걸리면 d축 전류를 음으로 키워 자속을 줄이는 약계자 운전입니다.",
+            "<b>Reading the id–iq map</b>: purple ellipse = voltage limit at this speed (shrinks with speed), red circle = "
+            "current limit, dotted box = declared domain, grey = constant-torque lines, teal = MTPA, orange = requested torque, "
+            "dash-dot = DC power limits. Only points in the green region are feasible; the feasible point on the torque curve "
+            "closest to the origin is the minimum-current policy point (★). On the voltage ellipse the drive field-weakens "
+            "(more negative id).")))
         self.claims = KeyValueTable(headers=[tr("판정 항목", "claim"), tr("상태", "status"), tr("설명", "detail")])
         v.addWidget(QLabel(tr("<b>결과</b>", "<b>result</b>")))
         v.addWidget(self.claims, 1)
@@ -139,7 +149,7 @@ class ExplorerPage(QWidget):
         if res["pv"] is not None:
             self.views.show_point(res["pv"], title)
         else:
-            for p in (self.views.wave, self.views.phasor, self.views.power):
+            for p in (self.views.overview, self.views.wave, self.views.phasor, self.views.power):
                 p.placeholder(tr("운전점이 없습니다 (해 없음/모델 영역 밖).", "no operating point (no solution / outside model)"))
 
     def redraw(self):

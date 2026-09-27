@@ -12,7 +12,7 @@ from ...plots import figures as F
 from ...viz import maps as M
 from ...viz import sweeps as SW
 from ..opviews import plane_hover
-from ..widgets import KeyValueTable, PlotPanel, error_box, fmt, hint, integer, number, primary_button
+from ..widgets import ConceptNote, KeyValueTable, PlotPanel, error_box, fmt, hint, integer, number, primary_button
 
 
 def _task(progress, drive, limits, mode, n, T, vdc, points, n_max):
@@ -69,6 +69,13 @@ class TrajectoryPage(QWidget):
                             "보라 배경 = 전압 제한(약계자) 운전. 표본 사이의 연속성은 보장하지 않습니다.",
                             "Each point is the minimum-current policy point. Green = feasible incl. DC, orange = DC limit "
                             "violated, red = no electrical solution (proven), purple = voltage-limited (field weakening).")))
+        v.addWidget(ConceptNote(tr(
+            "<b>MTPA → 약계자</b>: 저속에서는 MTPA 곡선 위(같은 토크를 최소 전류로)에서 운전합니다. 속도가 오르면 역기전력이 커져 "
+            "전압 타원이 작아지고, 운전점은 타원을 따라 음의 id 쪽으로 이동합니다(약계자). 그 전환 속도가 기저속도입니다. "
+            "더 올라가면 전류·DC 전력 한계에 걸려 토크가 줄어듭니다.",
+            "<b>MTPA → field weakening</b>: at low speed the drive runs on the MTPA curve; as speed rises the back-EMF grows, "
+            "the voltage ellipse shrinks and the operating point moves along it towards negative id (field weakening). The "
+            "transition speed is the base speed; further up, current and DC power limits reduce the torque.")))
         v.addStretch(1)
         sc = QScrollArea()
         sc.setWidgetResizable(True)

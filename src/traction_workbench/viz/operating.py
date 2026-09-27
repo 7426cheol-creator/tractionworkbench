@@ -19,6 +19,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from ..i18n import tr
 from ..models.components import DriveModel
 from ..physics import ACTIVE, NOT_EVALUATED, VIOLATED, DriveKernel, OperatingPoint, evaluate_point
 from ..scenario import Scenario
@@ -202,3 +203,16 @@ def headline(pt: OperatingPoint) -> dict:
         "active": active, "violated": violated,
         "not_evaluated": [c.name for c in pt.constraints if c.state == NOT_EVALUATED],
     }
+
+
+def overview_info(pv: PointView) -> dict:
+    """Numbers annotated on the powertrain schematic for this operating point."""
+    pt = pv.point
+    act = [c.name for c in pt.constraints if c.state == ACTIVE]
+    eta = f"η = {100 * pt.efficiency:.2f} %" if pt.efficiency is not None else tr("효율 N/A", "efficiency N/A")
+    return {"Vdc_V": pt.Vdc_V, "Pdc_W": pt.Pdc_W, "Idc_A": pt.Idc_A, "i_rms_A": pt.i_phase_rms_A,
+            "v_ll_rms_V": pt.v_LL_rms_V, "f_e_Hz": pt.f_e_Hz, "Pshaft_W": pt.Pshaft_W,
+            "T_Nm": pt.Tshaft_Nm if pt.Tshaft_Nm is not None else pt.Te_Nm, "speed_rpm": pt.speed_rpm,
+            "energy_mode": pt.energy_mode,
+            "note": f"{pt.energy_mode} · {eta} · " + (tr("활성 제약: ", "active: ") + ", ".join(act) if act else
+                                                      tr("활성 제약 없음", "no active constraint"))}

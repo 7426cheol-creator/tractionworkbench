@@ -7,6 +7,13 @@ temperature limit and declared shares of the loss components (inverter,
 copper, rotational) that heat it.  Starting from equilibrium at the coolant,
 a constant loss P gives  T(t) = T_coolant + P * Z_th(t).
 
+With a declared coolant loop (``extensions.coolant``) the reference is the
+local fluid temperature of the node's station (the coolant heats up along the
+loop by P / (m_dot * c_p)); without one it is the coolant inlet temperature
+(infinite-flow assumption, reported as such).  Networks can be entered as
+Foster (R_i, tau_i) or Cauer (R_i, C_i; converted exactly to Foster), and
+stages may be declared flow-dependent: R_i(Q) = R_i,ref * (Q_ref / Q)^n.
+
 Loss-temperature feedback, changing losses during the transient and
 non-equilibrium initial states are not modelled.  A duration claim is
 FEASIBLE/INFEASIBLE only when the thermal model is declared *validated* for
@@ -20,6 +27,7 @@ import math
 from dataclasses import dataclass
 
 import numpy as np
+from scipy.linalg import eigh
 
 from ..errors import InputValidationError
 from ..models.components import DriveModel
@@ -30,6 +38,7 @@ from ..settings import DEFAULT_SETTINGS, NumericalSettings
 from ..solvers.capability import policy_capability
 from ..solvers.policy import PolicyEvaluator
 from ..status import Claim, Evidence, EvidenceKind, Reason, Status
+from .coolant import CoolantLoop
 
 LOSS_KEYS = ("inverter", "copper", "rotational")
 
@@ -56,6 +65,60 @@ class FosterNetwork:
     def one_node(cls, R_K_per_W: float, C_J_per_K: float) -> "FosterNetwork":
         return cls((R_K_per_W,), (R_K_per_W * C_J_per_K,))
 
+    def zth_array(self, t) -> np.ndarray:
+        t = np.asarray(t, dtype=float)
+        out = np.zeros_like(t)
+        for r, tau in zip(self.R_K_per_W, self.tau_s):
+            out = out + r * (1.0 - np.exp(-t / tau))
+        return out
+
+
+def flow_scaled(R_K_per_W, flags, flow_ref_L_per_min, flow_L_per_min, exponent: float = 0.8) -> tuple:
+    """R_i(Q) = R_i,ref * (Q_ref / Q)^n for the flagged stages (convective film; Dittus-Boelter-type h ~ Q^n)."""
+    if not flags or not any(flags) or flow_ref_L_per_min is None or flow_L_per_min is None:
+        return tuple(R_K_per_W)
+    qr, q, n = (_finite("flow_ref_L_per_min", flow_ref_L_per_min), _finite("flow_L_per_min", flow_L_per_min),
+                _finite("flow_exponent", exponent))
+    if qr <= 0 or q <= 0 or not (0.0 <= n <= 2.0):
+        raise InputValidationError("flow scaling needs Q_ref > 0, Q > 0 and 0 <= n <= 2", field="flow_exponent")
+    k = (qr / q) ** n
+    return tuple(r * k if f else r for r, f in zip(R_K_per_W, list(flags) + [False] * len(R_K_per_W)))
+
+
+@dataclass(frozen=True)
+class CauerNetwork:
+    """Ladder from the junction (node 1) to the fluid: C_i from node i to the reference, R_i from node i to
+    node i+1 (R_n to the fluid).  ``to_foster`` is exact: Z(s) = e1^T (sC + G)^-1 e1 diagonalised by the
+    generalised eigenproblem G v = lambda C v."""
+
+    R_K_per_W: tuple
+    C_J_per_K: tuple
+
+    def __post_init__(self):
+        r = tuple(_finite("R_K_per_W", x) for x in self.R_K_per_W)
+        c = tuple(_finite("C_J_per_K", x) for x in self.C_J_per_K)
+        if not r or len(r) != len(c) or any(x <= 0 for x in r) or any(x <= 0 for x in c):
+            raise InputValidationError("Cauer network needs matching R > 0 and C > 0", field="cauer")
+        object.__setattr__(self, "R_K_per_W", r)
+        object.__setattr__(self, "C_J_per_K", c)
+
+    def to_foster(self) -> FosterNetwork:
+        n = len(self.R_K_per_W)
+        G = np.zeros((n, n))
+        for i, r in enumerate(self.R_K_per_W):
+            g = 1.0 / r
+            G[i, i] += g
+            if i + 1 < n:
+                G[i + 1, i + 1] += g
+                G[i, i + 1] -= g
+                G[i + 1, i] -= g
+        C = np.diag(self.C_J_per_K)
+        lam, V = eigh(G, C)                      # V^T C V = I
+        tau = 1.0 / lam
+        R = V[0, :] ** 2 / lam
+        order = np.argsort(tau)
+        return FosterNetwork(tuple(float(x) for x in R[order]), tuple(float(x) for x in tau[order]))
+
 
 @dataclass(frozen=True)
 class ThermalNode:
@@ -63,6 +126,7 @@ class ThermalNode:
     network: FosterNetwork
     limit_C: float
     loss_share: tuple            # (("inverter", 1/6), ("copper", 0.0), ...)
+    station: str | None = None   # coolant-loop station whose fluid temperature is this node's reference
 
     def __post_init__(self):
         object.__setattr__(self, "limit_C", _finite("limit_C", self.limit_C))
@@ -81,7 +145,28 @@ class ThermalModel:
     nodes: tuple
     provenance: Provenance
     validated: bool = False
-    validity: tuple = ()          # (("coolant_temp_C", (60, 70)), ...)
+    validity: tuple = ()          # (("coolant_temp_C", (60, 70)), ("coolant_flow_L_per_min", (8, 12)), ...)
+    coolant: CoolantLoop | None = None
+
+    def __post_init__(self):
+        if self.coolant is not None:
+            names = set(self.coolant.station_names())
+            for nd in self.nodes:
+                if nd.station is not None and nd.station not in names:
+                    raise InputValidationError(f"node {nd.node_id!r} references unknown coolant station {nd.station!r}",
+                                               field="nodes.station")
+
+    def reference_C(self, node: "ThermalNode", inlet_C: float, losses: dict, fluid: dict | None = None) -> float:
+        """Fluid temperature the node's Z_th is referred to (inlet temperature without a coolant loop)."""
+        if self.coolant is None or node.station is None:
+            return float(inlet_C)
+        fluid = fluid or self.coolant.fluid_temperatures(inlet_C, losses)
+        return fluid[node.station]["T_ref_C"]
+
+    def stated_conditions(self) -> dict:
+        if self.coolant is None:
+            return {}
+        return {"coolant_flow_L_per_min": self.coolant.flow_L_per_min, "glycol_vol_pct": self.coolant.glycol_vol_pct}
 
     def conditions_ok(self, stated: dict) -> tuple[bool, list[str]]:
         problems = []
@@ -135,19 +220,22 @@ def thermal_duration(drive: DriveModel, scenario: Scenario, model: ThermalModel,
                       detail="the static operating point is not FEASIBLE, so no duration is evaluated")
         return {"claim": claim.to_dict(), "nodes": []}
     losses = _losses(sol.point)
+    fluid = model.coolant.fluid_temperatures(scenario.coolant_temp_C, losses) if model.coolant is not None else None
     rows = []
     worst_t = math.inf
     violated = False
     for nd in model.nodes:
         p = nd.power(losses)
-        tt = time_to_limit(nd, p, scenario.coolant_temp_C)
-        temp = temperature(nd, p, duration_s, scenario.coolant_temp_C)
+        ref = model.reference_C(nd, scenario.coolant_temp_C, losses, fluid)
+        tt = time_to_limit(nd, p, ref)
+        temp = temperature(nd, p, duration_s, ref)
         rows.append({"node": nd.node_id, "power_W": p, "temperature_at_duration_C": temp, "limit_C": nd.limit_C,
-                     "time_to_limit_s": tt, "steady_state_C": temperature(nd, p, math.inf, scenario.coolant_temp_C)})
+                     "time_to_limit_s": tt, "steady_state_C": temperature(nd, p, math.inf, ref),
+                     "fluid_reference_C": ref, "station": nd.station})
         worst_t = min(worst_t, tt)
         violated |= temp > nd.limit_C
     stated = {"coolant_temp_C": scenario.coolant_temp_C, "Vdc_V": scenario.Vdc_V,
-              "switching_frequency_Hz": scenario.switching_frequency_Hz}
+              "switching_frequency_Hz": scenario.switching_frequency_Hz, **model.stated_conditions()}
     ok, problems = model.conditions_ok(stated)
     ev = Evidence.make(EvidenceKind.VALIDATED_DOMAIN if (model.validated and ok) else EvidenceKind.SAMPLED,
                        f"{model.model_id} rev {model.revision}: sustainable for {worst_t:.4g} s at constant loss",
@@ -165,7 +253,15 @@ def thermal_duration(drive: DriveModel, scenario: Scenario, model: ThermalModel,
                                   f"(first limit after {worst_t:.4g} s)",),
                       detail=f"{why}: the estimate is not a duration rating")
     return {"claim": claim.to_dict(), "nodes": rows, "time_to_first_limit_s": worst_t,
-            "operating_point": {"id_A": sol.point.id_A, "iq_A": sol.point.iq_A, "losses_W": losses}}
+            "operating_point": {"id_A": sol.point.id_A, "iq_A": sol.point.iq_A, "losses_W": losses},
+            "coolant": _coolant_report(model, fluid)}
+
+
+def _coolant_report(model: ThermalModel, fluid: dict | None) -> dict:
+    if model.coolant is None:
+        return {"declared": False, "note": "no coolant loop declared: the node references are the coolant inlet "
+                                           "temperature (infinite flow; the coolant temperature rise is ignored)"}
+    return {"declared": True, **model.coolant.describe(), "fluid": fluid}
 
 
 def torque_availability(drive: DriveModel, scenario: Scenario, model: ThermalModel,
@@ -184,9 +280,11 @@ def torque_availability(drive: DriveModel, scenario: Scenario, model: ThermalMod
         if s.point is None or s.policy_claim.status is not Status.FEASIBLE:
             return False, None
         losses = _losses(s.point)
+        fluid = model.coolant.fluid_temperatures(scenario.coolant_temp_C, losses) if model.coolant is not None else None
         worst = None
         for nd in model.nodes:
-            if temperature(nd, nd.power(losses), t, scenario.coolant_temp_C) > nd.limit_C:
+            ref = model.reference_C(nd, scenario.coolant_temp_C, losses, fluid)
+            if temperature(nd, nd.power(losses), t, ref) > nd.limit_C:
                 return False, nd.node_id
         return True, worst
 
@@ -220,5 +318,8 @@ def torque_availability(drive: DriveModel, scenario: Scenario, model: ThermalMod
         "status_note": ("validated thermal model" if model.validated else
                         "screening estimate from an unvalidated thermal model: not a duration rating"),
         "assumptions": ["start from equilibrium at the coolant", "constant losses at the minimum-current point",
-                        "no loss-temperature feedback", "declared loss shares per node"],
+                        "no loss-temperature feedback", "declared loss shares per node",
+                        ("coolant rise along the declared loop (m_dot*c_p)" if model.coolant is not None
+                         else "no coolant loop: inlet temperature reference (infinite flow)")],
+        "coolant": _coolant_report(model, None),
     }

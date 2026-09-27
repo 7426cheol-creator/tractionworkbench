@@ -63,6 +63,31 @@ def test_every_figure_renders(tmp_path, lang, theme):
         style.apply("light")
 
 
+def test_schematics_render(tmp_path):
+    from traction_workbench.plots import schematics as SC
+    from traction_workbench.viz import safety as SF2
+    d, lim = sf.synthetic_drive(), sf.synthetic_limits()
+    sc = Scenario("t", 12000.0, 600.0, lim)
+    pt = PolicyEvaluator(d, sc).solve(-80.0).point
+    info = O.overview_info(O.point_view(d, sc, pt.id_A, pt.iq_A, -80.0))
+    assert info["energy_mode"] == "REGENERATING" and info["Pdc_W"] < 0
+    det = api.thermal_details(api.EXAMPLE_THERMAL, 65.0)
+    nodes = [{"name": "j", "kind": "foster", "R": [0.01, 0.03], "tau": [0.01, 1.0], "ref": "T_f"},
+             {"name": "w", "kind": "cauer", "R": [0.003, 0.005], "C": [1500.0, 6000.0], "ref": "T_f"}]
+    jobs = [(SC.fig_system_overview, (info,)),
+            (SC.fig_dclink_schematic, ("discharge", {"C_uF": 500, "V0_V": 600, "Vf_V": 60, "R_ohm": 1737, "rectifying": True,
+                                                     "spinning": True})),
+            (SC.fig_dclink_schematic, ("overvoltage", {"C_uF": 500, "V1_V": 600, "V_limit_V": 850, "P_in_W": 95000.0})),
+            (SC.fig_safe_state_schematic, ({"Vdc_V": 600, "rectifying": True, "asc_label": "a", "fw_label": "b"},)),
+            (SC.fig_thermal_network, (nodes, det["coolant"])),
+            (F.fig_zth, (SF2.zth_curves(det["model"]),))]
+    for i, (fn, args) in enumerate(jobs):
+        fig = Figure(figsize=(10, 5))
+        fn(fig, *args)
+        fig.savefig(tmp_path / f"s{i}.png", dpi=50)
+    assert len(list(tmp_path.glob("s*.png"))) == len(jobs)
+
+
 def test_pdf_report(tmp_path):
     from traction_workbench.report_pdf import build_pdf
     case = json.loads((EX / "cases" / "req_ts_012_450V_sizing.json").read_text(encoding="utf-8"))
@@ -102,6 +127,27 @@ def test_desktop_smoke(tmp_path):
         ex = win.pages["explorer"]
         ex._picked(-250.0, 120.0)
         assert ex.views.pv.point.id_A == -250.0 and ex.views.pv.point.iq_A == 120.0
+        th = win.pages["thermal"]
+        th.run()
+        t1 = th.last["res"]["request"]["time_to_first_limit_s"]
+        th.c_flow.setValue(5.0)                          # less flow: hotter coolant and a larger convective R
+        th.run()
+        t2 = th.last["res"]["request"]["time_to_first_limit_s"]
+        assert isinstance(t1, float) and isinstance(t2, float) and t2 < t1
+        node0 = th.editor.tabs.widget(0)
+        node0.r_cauer.setChecked(True)                   # same numbers read as Cauer R/C: still a valid model
+        assert th.full_spec()["nodes"][0]["network"] == "cauer"
+        from traction_workbench.desktop.thermal_editor import parse_stage_text
+        R, X, _how = parse_stage_text("i 1 2 3 4\nr 0.01 0.03 0.08 0.08\ntau 0.002 0.03 0.4 2.5")
+        assert R == [0.01, 0.03, 0.08, 0.08] and X == [0.002, 0.03, 0.4, 2.5]
+        R, X, _how = parse_stage_text("0.01\t0.002\n0.03\t0.03")
+        assert R == [0.01, 0.03] and X == [0.002, 0.03]
+        sp = win.pages["safety"]
+        sp.run_discharge()
+        sp.run_overvoltage()
+        sp.run_safe()
+        assert all(p._draw is not None for p in (sp.s_dis, sp.s_ov, sp.s_safe))
+        assert page.views.overview._draw is not None or ex.views.overview._draw is not None
         win.set_theme("dark")
         win.set_theme("light")
         assert not (app.property("twb_errors") or [])

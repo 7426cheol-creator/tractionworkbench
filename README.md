@@ -23,17 +23,18 @@
 
 | 페이지 | 내용 |
 |---|---|
-| **요구 판정** | 요구 원문·토크·속도·Vdc(단일/범위)·지속시간 입력 → PASS/FAIL/UNKNOWN 배너(사유·범위), 조건별 claim 트리와 근거, 핵심 수치, 제한 요인·다음 조치, 운전점 그래프, T–n 상의 위치, 역설계·병목 분석, 의사결정 기록(Markdown) · JSON/MD/**PDF 보고서** 저장 |
+| **요구 판정** | 요구 원문·토크·속도·Vdc(단일/범위)·지속시간 입력 → PASS/FAIL/UNKNOWN 배너(사유·범위), 조건별 claim 트리와 근거, 핵심 수치, 제한 요인·다음 조치, 운전점 그래프(**시스템 개요도**: 배터리–릴레이–DC 링크–인버터–모터에 운전점 값 표시), T–n 상의 위치, 역설계·병목 분석, 의사결정 기록(Markdown) · JSON/MD/**PDF 보고서** 저장 |
 | **운전점 탐색** | 토크 → 최소전류 정책점, 또는 id/iq 직접 입력(정방향 평가). **id–iq 지도를 클릭**하면 그 전류 벡터를 그대로 평가, 마우스를 올리면 토크·전압·DC 전력 판독 |
 | **궤적** | 토크 스윕 @ 속도(MTPA → 약계자 → 한계), 속도 스윕 @ 토크(기저속도·약계자 진입). dq 전류 궤적 + 여러 속도의 전압 타원, 변수 추이, 표 |
 | **성능 곡선·맵** | 정책(DC 포함) vs 전기적 T–n 곡선(활성 제약별 색), 비교 Vdc, 효율·모터/인버터 효율·손실·전류·변조율·역률·id·iq·P_dc 맵, 기저속도 곡선, 최대 토크 곡선을 따라가는 운전점 |
 | **설계·병목** | capability vs 파라미터(Vdc, 전류 정격, 예약분, DC 한계, …)와 bisection 역설계, 제약 1% 완화 병목 기여도, 요구 달성 최소 완화·공동 병목 |
-| **안전 스크리닝** | FTTI 체인 Gantt(중복 예산 자동 검출), 능동 방전 V(t)(역기전력 하한), 회생 중 배터리 차단 과전압 V(t), ASC/Freewheel vs 속도 + 프로젝트 규칙 |
-| **열·지속시간** | Foster 열망 → 지속시간별 가용 토크, 노드 온도 궤적, “냉각수 65 °C에서 450 N·m는 약 5.47 s 유지, 이후 433.7 N·m(연속)” (미검증 열모델이면 UNKNOWN 유지) |
+| **안전 스크리닝** | FTTI 체인 Gantt(중복 예산 자동 검출), **회로 개요도**(릴레이 개방·방전 스위치·다이오드 정류·ASC 스위치 상태와 전력 흐름 화살표) + 능동 방전 V(t)(역기전력 하한), 회생 중 배터리 차단 과전압 V(t), ASC/Freewheel 회로 비교와 속도별 곡선, 프로젝트 규칙 표(예: HVDC < 60 V → Freewheel, 물리와 분리된 계층) |
+| **열·지속시간** | **냉각수**(입구 온도, 유량, 에틸렌글리콜:물 50:50 기본 물성·직접 입력, 순환 순서, 기준 유체 온도) → 부품별 냉각수 온도 상승 ΔT = P/(ṁ·c_p). **열 회로망 표 편집**(Foster r_i/τ_i 또는 Cauer R_i/C_i, 4단 템플릿, 데이터시트 붙여넣기, 유량 의존 단 R·(Q_ref/Q)^n), RC 회로도·냉각수 순환도·Z_th(t), 지속시간별 가용 토크와 노드 온도, “냉각수 입구 65 °C(10 L/min, EG 50%)에서 450 N·m는 약 4.24 s 유지, 이후 426 N·m(연속)” (미검증 열모델이면 UNKNOWN 유지) |
 | **모델·데이터** | 내장 드라이브(상수 dq D1 / flux map D2) 선택, 단위가 선언된 드라이브 JSON·case 파일 불러오기, DC 소스 한계, provenance |
 | **검증 (V&V)** | production vs golden acceptance(오차/허용오차 그래프), 참조 패키지 SHA-256, 알려진 한계 |
 
 모든 그래프는 확대·이동·PNG/SVG/PDF 저장, 데이터는 CSV로 내보낼 수 있습니다. 한국어/영어, 라이트/다크 테마를 지원합니다.
+각 페이지의 **ⓘ 개념 설명**을 펼치면 그래프 읽는 법과 핵심 식을 짧게 볼 수 있습니다(전문 내용은 그대로, 처음 쓰는 사람을 위한 보조).
 항상 보이는 배지로 모델 ID·fidelity(D1/D2)·데이터 출처(synthetic)·“하드웨어 미검증”을 표시합니다.
 
 ## 전문가용 그래프
@@ -45,7 +46,11 @@
 | ![벡터도](docs/screenshots/phasor_hexagon.jpg) | ![효율 맵](docs/screenshots/efficiency_map.jpg) |
 | **dq 벡터도**: e₀ = ω_eψ_PM, ω_eL_d·i_d(약계자 전압), −ω_eL_q·i_q, R_s·i, v와 전류각·φ·역률·자석/릴럭턴스 토크 분해 / **공간벡터 육각형** | **효율·손실 맵**: 최소전류 정책점 기준 η, 정책 경계·전기적 한계, 기저속도 곡선, DC 한계 위반 영역(빗금), 최고 효율점 |
 | ![궤적](docs/screenshots/trajectory.jpg) | ![열](docs/screenshots/thermal.jpg) |
-| **운전 궤적**: 속도가 오르며 MTPA에서 전압 타원을 따라 약계자로 이동하는 경로, DC 한계 위반점 | **열 → 토크 가용성**: 지속시간별 가용 토크와 노드 온도 궤적 |
+| **운전 궤적**: 속도가 오르며 MTPA에서 전압 타원을 따라 약계자로 이동하는 경로, DC 한계 위반점 | **열 → 토크 가용성**: 지속시간별 가용 토크와 노드 온도 궤적(노드별 냉각수 기준 온도 표시) |
+| ![시스템 개요](docs/screenshots/system_overview.jpg) | ![배터리 차단](docs/screenshots/dclink_overvoltage.jpg) |
+| **시스템 개요도**: 배터리–메인 릴레이(프리차지)–DC 링크–능동 방전–3상 브리지–모터–축, 운전점의 P_dc·I_dc·I_ph·V_LL·토크·효율과 전력 흐름 방향 | **회생 중 배터리 차단**: 릴레이 개방(빨강)과 회생 전력이 커패시터로만 들어가는 경로, 아래에 V(t)와 허용 반응 시간 |
+| ![열 회로망](docs/screenshots/thermal_network.jpg) | ![열 모델 편집](docs/screenshots/thermal_editor.jpg) |
+| **열 회로망**: Foster(병렬 RC 직렬)·Cauer(사다리) 회로도와 냉각수 순환(라디에이터·펌프 → 인버터 냉각판 → 모터 워터재킷, 각 지점 온도) | **열 모델 편집**: 노드별 발열원·비율·냉각수 위치, 단 표(R, τ 또는 C, 계산된 C 또는 R·C, 유량 의존), 4단 템플릿, 붙여넣기 |
 
 그래프는 production 모델 값을 그대로 다시 표현한 것입니다(새 물리 없음). 파형·듀티는 스위칭 리플·데드타임이 없는 평균값 모델이며
 그림과 보고서에 그렇게 표기됩니다. 테스트가 역변환·전력 항등식·MTPA 접선 조건·기저속도 = 약계자 개시점을 독립적으로 확인합니다.
@@ -99,22 +104,22 @@ zip 아티팩트 업로드(`v*` 태그면 GitHub Release에 첨부).
 reference/traction_workbench_spec_v1/   불변 설계 기준선 + golden JSON (manifest SHA-256)
 src/traction_workbench/
   models/ physics.py solvers/ analysis/ extensions/ decision.py report.py io.py units.py   ← 엔진 (numpy, scipy)
-  viz/           그래프 데이터: 파형·벡터도·육각형·전력 흐름 / 스윕·곡선 / 맵·기저속도 / 설계 / 스크리닝 곡선
-  plots/         matplotlib 그림 (앱과 PDF 보고서 공용)
-  desktop/       PySide6 앱: main_window, pages/, 백그라운드 작업, self-test
+  viz/           그래프 데이터: 파형·벡터도·육각형·전력 흐름 / 스윕·곡선 / 맵·기저속도 / 설계 / 스크리닝·Z_th 곡선
+  plots/         matplotlib 그림과 회로 개요도·열 회로도 (앱과 PDF 보고서 공용)
+  desktop/       PySide6 앱: main_window, pages/, 열 모델 표 편집기, 백그라운드 작업, self-test
   report_pdf.py  PDF 엔지니어링 보고서
   api.py service.py cli.py
 packaging/       PyInstaller spec, launcher(TractionWorkbench.exe + twb.exe), build.py, 아이콘
 verification/    independent_fixture_check.py (production 비의존), make_report.py
-tests/           골든·의미론·검증·확장·그래프 데이터·보고서·데스크톱 (206개)
+tests/           골든·의미론·검증·확장·냉각수/열망·그래프 데이터·회로도·보고서·데스크톱 (214개)
 examples/        case 파일, 단위가 선언된 drive 정의
 docs/            RELEASE_NOTES.md (모델 계약·한계·추적표), VERIFICATION_REPORT.md, screenshots/
 ```
 
 ## 검증 상태
 
-- 참조 패키지 10개 파일 SHA-256 일치, 독립 검산 136/136, production vs golden 21/21, pytest 206 통과,
-  동결 앱 acceptance 21/21 · self-test 18/18 — 상세: [`docs/VERIFICATION_REPORT.md`](docs/VERIFICATION_REPORT.md)
+- 참조 패키지 10개 파일 SHA-256 일치, 독립 검산 136/136, production vs golden 21/21, pytest 214 통과, 데스크톱 self-test 20/20,
+  Windows CI에서 동결된 exe로 acceptance·self-test 통과 — 상세: [`docs/VERIFICATION_REPORT.md`](docs/VERIFICATION_REPORT.md)
 - **합성 fixture에 대한 verification입니다.** 하드웨어·공급사 데이터·외부 시뮬레이터 validation은 수행하지 않았습니다(V4–V5 미수행).
 
 ## 문서

@@ -100,10 +100,20 @@ def thermal_curves(model: ThermalModel, node_rows: list[dict], coolant_C: float,
         nd = by_id.get(row["node"])
         if nd is None:
             continue
-        z = np.array([nd.network.zth(float(x)) for x in t])
-        curves.append({"node": nd.node_id, "T_C": coolant_C + row["power_W"] * z, "limit_C": nd.limit_C,
-                       "power_W": row["power_W"], "time_to_limit_s": row["time_to_limit_s"]})
+        z = nd.network.zth_array(t)
+        ref = float(row.get("fluid_reference_C", coolant_C))
+        curves.append({"node": nd.node_id, "T_C": ref + row["power_W"] * z, "limit_C": nd.limit_C,
+                       "power_W": row["power_W"], "time_to_limit_s": row["time_to_limit_s"], "fluid_reference_C": ref,
+                       "station": row.get("station")})
     return {"t_s": t, "curves": curves, "coolant_C": coolant_C}
+
+
+def zth_curves(model: ThermalModel, t_min: float = 1e-4, t_max: float = 1e4, samples: int = 400) -> dict:
+    """Junction(node)-to-fluid thermal impedance Z_th(t) of every node (as used in the calculation)."""
+    t = np.geomspace(t_min, t_max, samples)
+    return {"t_s": t, "nodes": [{"node": nd.node_id, "zth_K_per_W": nd.network.zth_array(t),
+                                 "R_K_per_W": list(nd.network.R_K_per_W), "tau_s": list(nd.network.tau_s)}
+                                for nd in model.nodes]}
 
 
 def availability_curve(av: dict) -> dict:

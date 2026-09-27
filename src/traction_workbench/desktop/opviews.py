@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QTabWidget, QVBoxLayout, QWidget
 from ..i18n import tr
 from ..physics import DriveKernel
 from ..plots import figures as F
+from ..plots import schematics as SC
 from ..viz import operating as O
 from .widgets import KeyValueTable, PlotPanel, fmt
 
@@ -76,11 +77,14 @@ class OperatingViews(QWidget):
     def __init__(self, parent=None, clickable: bool = False):
         super().__init__(parent)
         self.tabs = QTabWidget()
+        self.overview = PlotPanel(hint=tr("배터리–릴레이–DC 링크–인버터–모터 개요도와 운전점 값", "battery–contactor–DC link–inverter–motor overview"),
+                                  min_height=300)
         self.map = PlotPanel(hint=tr("계산 후 id–iq 제약 지도가 표시됩니다.", "The id–iq constraint map appears after a run."))
         self.wave = PlotPanel(hint=tr("운전점의 상전류·전압·듀티·쇄교자속 파형", "phase current, voltage, duty and flux waveforms"))
         self.phasor = PlotPanel(hint=tr("dq 벡터도와 공간벡터 육각형", "dq phasor diagram and space-vector hexagon"))
         self.power = PlotPanel(hint=tr("전력 흐름과 제약 사용률", "power chain and constraint utilisation"))
         self.table = KeyValueTable()
+        self.tabs.addTab(self.overview, tr("시스템 개요", "system overview"))
         self.tabs.addTab(self.map, tr("id–iq 제약 지도", "id–iq map"))
         self.tabs.addTab(self.wave, tr("상 파형", "phase waveforms"))
         self.tabs.addTab(self.phasor, tr("벡터도·육각형", "phasor · hexagon"))
@@ -95,7 +99,7 @@ class OperatingViews(QWidget):
         self.plane = None
 
     def clear(self, msg: str):
-        for p in (self.map, self.wave, self.phasor, self.power):
+        for p in (self.overview, self.map, self.wave, self.phasor, self.power):
             p.placeholder(msg)
         self.table.set_rows([])
 
@@ -121,9 +125,10 @@ class OperatingViews(QWidget):
                         csv=lambda rows=rows: {k: [r[k] for r in rows] for k in ("name", "group", "state", "demand",
                                                                                    "limit", "slack", "utilization")})
         self.table.set_rows(point_rows(pv.point))
+        self.overview.draw(SC.fig_system_overview, O.overview_info(pv), title=title, name=f"overview_{tag}")
 
     def redraw(self):
-        for p in (self.map, self.wave, self.phasor, self.power):
+        for p in (self.overview, self.map, self.wave, self.phasor, self.power):
             p.redraw()
 
 

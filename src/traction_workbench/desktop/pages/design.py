@@ -13,7 +13,7 @@ from ...i18n import tr
 from ...plots import figures as F
 from ...scenario import Scenario
 from ...viz import design as DS
-from ..widgets import KeyValueTable, PlotPanel, combo, error_box, fmt, hint, integer, number, primary_button
+from ..widgets import ConceptNote, KeyValueTable, PlotPanel, combo, error_box, fmt, hint, integer, number, primary_button
 
 
 def _sweep_task(progress, drive, limits, n, vdc, T, param, lo, hi, samples):
@@ -75,6 +75,14 @@ class DesignPage(QWidget):
                             "불가), data(자료 불확실성). diagnostic 결과는 설계안이 아닙니다. 표본 범위 밖은 외삽하지 않습니다.",
                             "Change kinds: boundary, hardware, design, diagnostic (cause only, not realisable), data. "
                             "No extrapolation outside the searched range.")))
+        v.addWidget(ConceptNote(tr(
+            "<b>역설계·병목</b>: 파라미터 하나만 범위 안에서 바꾸며 요구 달성 여부를 다시 계산하고, 상태가 바뀌는 경계를 bisection으로 "
+            "찾습니다(범위 밖 외삽 없음). 병목 분석은 각 제약을 1% 완화했을 때 capability가 얼마나 늘어나는지로 실제로 막고 있는 제약을 "
+            "보여주며, 둘을 함께 완화해야만 풀리면 공동 병목입니다. diagnostic 변경은 원인 진단용이며 실현 가능한 설계안이 아닙니다.",
+            "<b>Sizing and bottlenecks</b>: one parameter is varied inside the range, the requirement re-evaluated and every "
+            "status change bisected (no extrapolation). Dominance relaxes each limit by 1% and recomputes the capability to show "
+            "which limit really binds; if only a pair helps it is a joint bottleneck. Diagnostic changes explain the cause and are "
+            "not realisable designs.")))
         v.addStretch(1)
         sc = QScrollArea()
         sc.setWidgetResizable(True)

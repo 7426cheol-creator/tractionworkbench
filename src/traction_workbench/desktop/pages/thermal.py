@@ -1,29 +1,49 @@
-"""Thermal screening: Foster network -> torque availability vs duration and node temperatures at a request."""
+"""Thermal screening: coolant loop + Foster/Cauer networks -> torque availability and node temperatures."""
 
 from __future__ import annotations
 
-import json
 import math
 
 import numpy as np
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QFormLayout, QGroupBox, QLabel, QPlainTextEdit, QScrollArea, QSplitter, QVBoxLayout,
-                               QWidget)
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import (QFormLayout, QGroupBox, QHBoxLayout, QLabel, QScrollArea, QSplitter, QTabWidget,
+                               QVBoxLayout, QWidget)
 
 from ... import api
+from ...extensions.coolant import eg_water_properties
 from ...i18n import tr
 from ...plots import figures as F
+from ...plots import schematics as SC
 from ...viz import safety as SF
-from ..widgets import KeyValueTable, PlotPanel, error_box, fmt, hint, number, primary_button
+from ..thermal_editor import ThermalModelEditor
+from ..widgets import (ConceptNote, KeyValueTable, PlotPanel, check, combo, error_box, fmt, hint, number,
+                       primary_button)
 
 DURATIONS = [round(float(x), 4) for x in np.geomspace(0.1, 3000, 21)] + ["inf"]
 
 
-def _task(progress, body, model_spec):
-    progress(0.1, tr("가용 토크 (지속시간별 bisection)", "availability (bisection per duration)"))
+def note_thermal():
+    return tr("<b>열 스크리닝</b>: 운전점 손실 P(동손·인버터 손실·회전 손실)이 각 노드를 가열합니다. "
+              "T_node(t) = T_냉각수(기준) + P·Z_th(t),  Z_th(t) = Σ R_i·(1 − e<sup>−t/τ_i</sup>).<br>"
+              "<b>냉각수</b>: 질량유량 ṁ = ρ·Q, 열용량률 ṁ·c_p [W/K]. 냉각수는 순환 순서대로 각 부품의 열 P_k를 받아 "
+              "ΔT_k = P_k/(ṁ·c_p)만큼 올라가며, 노드는 자기 위치(인버터 냉각판/모터 워터재킷)의 입구·평균·출구 온도를 기준으로 합니다. "
+              "기본값은 에틸렌글리콜:물 = 50:50(부피) 일반 물성(근사)이며 공급사 값으로 바꿀 수 있습니다.<br>"
+              "<b>Foster</b>는 데이터시트의 r_i, τ_i를 그대로 쓰는 곡선 맞춤(단 사이 절점은 물리 온도 아님), "
+              "<b>Cauer</b>는 층별 R_i, C_i(접합부→냉각수)이며 계산 전에 정확히 Foster로 변환합니다.<br>"
+              "검증되지 않은 열모델은 스크리닝 추정이며 지속시간 판정은 UNKNOWN으로 남습니다. 손실–온도 피드백은 없습니다.",
+              "<b>Thermal screening</b>: operating-point losses heat each node: T(t) = T_coolant,ref + P·Z_th(t), "
+              "Z_th(t) = Σ R_i(1 − e<sup>−t/τ_i</sup>).<br><b>Coolant</b>: ṁ = ρ·Q, capacity rate ṁ·c_p [W/K]; the coolant "
+              "picks up each station's heat in loop order (ΔT_k = P_k/(ṁ·c_p)) and a node references its station's inlet, "
+              "mean or outlet temperature. Defaults are generic 50/50 (vol) ethylene-glycol/water properties (approximate).<br>"
+              "<b>Foster</b> uses datasheet r_i, τ_i (inner nodes not physical); <b>Cauer</b> uses layer R_i, C_i and is "
+              "converted exactly to Foster.<br>Unvalidated models give screening estimates; the duration claim stays UNKNOWN.")
+
+
+def _task(progress, body, spec):
+    progress(0.05, tr("가용 토크 (지속시간별 bisection)", "availability (bisection per duration)"))
     res = api.thermal(body)
     progress(0.9, tr("노드 온도", "node temperatures"))
-    model = api._thermal_model(model_spec)
+    model = api._thermal_model(spec, body["coolant_temp_C"])
     req = res.get("request") or {}
     curves = None
     if req.get("nodes"):
@@ -37,43 +57,39 @@ class ThermalPage(QWidget):
     def __init__(self, win):
         super().__init__()
         self.win = win
+        self.last = None
         split = QSplitter(Qt.Horizontal)
         form = QWidget()
         v = QVBoxLayout(form)
         v.setContentsMargins(0, 0, 6, 0)
-        g = QGroupBox(tr("조건", "conditions"))
+        g = QGroupBox(tr("운전 조건", "operating condition"))
         f = QFormLayout(g)
         self.n = number(3000, -30000, 30000, "rpm", 0, 100)
         self.vdc = number(600, 1, 2000, "V", 1, 10)
-        self.coolant = number(65, -40, 150, "°C", 1, 1)
         self.T = number(450, -5000, 5000, "N·m", 2, 5)
         self.dur = number(10, 0.01, 1e6, "s", 2, 1)
-        for lab, wd in ((tr("속도", "speed"), self.n), ("Vdc", self.vdc), (tr("냉각수", "coolant"), self.coolant),
-                        (tr("요구 토크", "requested torque"), self.T), (tr("요구 지속시간", "requested duration"), self.dur)):
+        for lab, wd in ((tr("속도", "speed"), self.n), ("Vdc", self.vdc), (tr("요구 토크", "requested torque"), self.T),
+                        (tr("요구 지속시간", "requested duration"), self.dur)):
             f.addRow(lab, wd)
         v.addWidget(g)
-        g = QGroupBox(tr("열 모델 (Foster, JSON)", "thermal model (Foster, JSON)"))
-        gl = QVBoxLayout(g)
-        self.model = QPlainTextEdit(json.dumps(api.EXAMPLE_THERMAL, indent=2, ensure_ascii=False))
-        self.model.setMinimumHeight(220)
-        gl.addWidget(self.model)
-        gl.addWidget(hint(tr("노드별 R [K/W], τ [s], 한계 온도, 손실 분배(inverter/copper/rotational). \"validated\": true가 "
-                             "아니면 결과는 스크리닝 추정이며 지속시간 claim은 UNKNOWN으로 남습니다.",
-                             "Per node: R [K/W], tau [s], limit, loss shares. Unless \"validated\": true, results are screening "
-                             "estimates and the duration claim stays UNKNOWN.")))
-        v.addWidget(g, 1)
+        v.addWidget(self._coolant_box())
         self.run_btn = primary_button(tr("열 가용성 계산", "compute thermal availability"))
         self.run_btn.clicked.connect(self.run)
         v.addWidget(self.run_btn)
+        v.addWidget(hint(tr("열 회로망(노드·단)은 오른쪽 '열 모델 편집' 탭에서 표로 입력합니다.",
+                            "Edit the thermal networks (nodes, stages) in the 'thermal model' tab on the right.")))
+        v.addWidget(ConceptNote(note_thermal()))
+        v.addStretch(1)
         sc = QScrollArea()
         sc.setWidgetResizable(True)
         sc.setWidget(form)
-        sc.setMinimumWidth(340)
+        sc.setMinimumWidth(360)
         split.addWidget(sc)
-        right = QWidget()
-        rv = QVBoxLayout(right)
+        self.tabs = QTabWidget()
+        res = QWidget()
+        rv = QVBoxLayout(res)
         rv.setContentsMargins(0, 0, 0, 0)
-        self.headline = QLabel(tr("냉각수 온도와 요구를 입력하고 계산하세요.", "Enter the coolant temperature and request, then compute."))
+        self.headline = QLabel(tr("냉각수·요구를 입력하고 계산하세요.", "Enter the coolant and request, then compute."))
         self.headline.setWordWrap(True)
         self.headline.setObjectName("Card")
         self.headline.setStyleSheet("padding: 10px; font-size: 11pt;")
@@ -83,21 +99,172 @@ class ThermalPage(QWidget):
         self.table = KeyValueTable(headers=[tr("지속시간", "duration"), tr("가용 토크 [N·m]", "available torque [N·m]"),
                                             tr("제한", "limited by")])
         rv.addWidget(self.table, 1)
-        split.addWidget(right)
+        self.p_net = PlotPanel(min_height=420)
+        self.p_zth = PlotPanel()
+        self.editor = ThermalModelEditor()
+        self.tabs.addTab(res, tr("결과", "results"))
+        net_scroll = QScrollArea()
+        net_scroll.setWidgetResizable(True)
+        net_scroll.setWidget(self.p_net)
+        self.tabs.addTab(net_scroll, tr("열 회로도·냉각수 순환", "thermal network · coolant loop"))
+        self.tabs.addTab(self.p_zth, "Z_th(t)")
+        self.tabs.addTab(self.editor, tr("열 모델 편집", "thermal model"))
+        split.addWidget(self.tabs)
         split.setStretchFactor(1, 1)
-        split.setSizes([360, 1060])
+        split.setSizes([380, 1040])
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
         lay.addWidget(split)
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.setInterval(350)
+        self._timer.timeout.connect(self._refresh_diagrams)
+        self.editor.changed.connect(self._schedule)
+        self._apply_coolant_spec(self.editor.coolant_spec)
+        self._refresh_diagrams()
 
+    # ------------------------------------------------------------------ coolant
+    def _coolant_box(self):
+        g = QGroupBox(tr("냉각수", "coolant"))
+        f = QFormLayout(g)
+        self.c_in = number(65, -40, 150, "°C", 1, 1, tr("냉각수 입구 온도 = 요구의 냉각수 조건", "coolant inlet temperature"))
+        self.c_flow = number(10, 0.1, 1000, "L/min", 2, 0.5)
+        self.c_eg = number(50, 0, 60, "vol %", 1, 5, tr("에틸렌글리콜 부피 농도 (물과 혼합). 50 = 50:50", "ethylene glycol by volume; 50 = 50:50"))
+        self.c_manual = check(tr("물성 직접 입력", "enter properties"), False,
+                              tr("공급사 데이터시트 값으로 c_p, ρ를 직접 입력", "use the coolant supplier's c_p and ρ"))
+        self.c_cp = number(3500, 500, 6000, "J/(kg·K)", 1, 10)
+        self.c_rho = number(1045, 500, 2000, "kg/m³", 1, 1)
+        self.c_order = combo([(tr("인버터 → 모터", "inverter → motor"), "inv_first"), (tr("모터 → 인버터", "motor → inverter"), "motor_first")])
+        self.c_ref = combo([(tr("평균 (부품 입·출구 평균)", "mean (station in/out)"), "mean"), (tr("입구", "inlet"), "inlet"),
+                            (tr("출구 (보수적)", "outlet (conservative)"), "outlet")])
+        self.c_rot = check(tr("회전 손실도 냉각수로", "rotational loss into coolant"), True,
+                           tr("해제하면 모터 워터재킷은 동손만 받습니다 (회전 손실은 공기·베어링으로)",
+                              "off: the motor jacket receives copper loss only"))
+        self.c_props = QLabel("")
+        self.c_props.setObjectName("Hint")
+        self.c_props.setWordWrap(True)
+        for lab, wd in ((tr("입구 온도", "inlet temperature"), self.c_in), (tr("유량", "flow"), self.c_flow),
+                        (tr("부동액 (EG)", "glycol (EG)"), self.c_eg), ("", self.c_manual), ("c_p", self.c_cp),
+                        ("ρ", self.c_rho), (tr("순환 순서", "loop order"), self.c_order),
+                        (tr("기준 유체 온도", "reference fluid temp."), self.c_ref), ("", self.c_rot)):
+            f.addRow(lab, wd)
+        f.addRow(self.c_props)
+        self.c_manual.toggled.connect(self._props_mode)
+        for w in (self.c_in, self.c_flow, self.c_eg, self.c_cp, self.c_rho):
+            w.valueChanged.connect(self._coolant_changed)
+        for w in (self.c_order, self.c_ref):
+            w.currentIndexChanged.connect(self._coolant_changed)
+        self.c_rot.toggled.connect(self._coolant_changed)
+        self._props_mode(False)
+        return g
+
+    def _props_mode(self, manual: bool):
+        self.c_cp.setEnabled(manual)
+        self.c_rho.setEnabled(manual)
+        self._coolant_changed()
+
+    def _coolant_changed(self, *_):
+        p = eg_water_properties(self.c_eg.value(), self.c_in.value())
+        if not self.c_manual.isChecked():
+            for w, key in ((self.c_cp, "cp_J_per_kgK"), (self.c_rho, "rho_kg_per_m3")):
+                w.blockSignals(True)
+                w.setValue(p[key])
+                w.blockSignals(False)
+        cp, rho = self.c_cp.value(), self.c_rho.value()
+        mdot = rho * self.c_flow.value() / 60000.0
+        src = tr("직접 입력", "user values") if self.c_manual.isChecked() else \
+            tr(f"EG {self.c_eg.value():g}% · {self.c_in.value():g} °C 일반값(근사)", f"typical EG {self.c_eg.value():g}% at {self.c_in.value():g} °C (approx.)")
+        warn = tr(" · 표 범위 밖(끝값 사용)", " · outside the table (clamped)") if p["clamped_to_table"] and not self.c_manual.isChecked() else ""
+        self.c_props.setText(f"c_p {cp:.0f} J/(kg·K) · ρ {rho:.0f} kg/m³ ({src}{warn})<br>"
+                             f"ṁ = {mdot:.4f} kg/s · ṁ·c_p = {mdot * cp:.0f} W/K "
+                             f"({tr('1 kW당', 'per kW')} {1000.0 / (mdot * cp):.2f} K)")
+        self._schedule()
+
+    def coolant_spec(self) -> dict:
+        motor_losses = {"copper": 1.0, "rotational": 1.0} if self.c_rot.isChecked() else {"copper": 1.0}
+        loop = [{"station": "inverter", "losses": {"inverter": 1.0}}, {"station": "motor", "losses": motor_losses}]
+        if self.c_order.currentData() == "motor_first":
+            loop.reverse()
+        return {"glycol_vol_pct": self.c_eg.value(), "flow_L_per_min": self.c_flow.value(),
+                "cp_J_per_kgK": self.c_cp.value() if self.c_manual.isChecked() else None,
+                "rho_kg_per_m3": self.c_rho.value() if self.c_manual.isChecked() else None,
+                "reference": self.c_ref.currentData(), "loop": loop}
+
+    def _apply_coolant_spec(self, cs: dict | None):
+        if not cs:
+            return
+        self.c_flow.setValue(float(cs.get("flow_L_per_min", 10.0)))
+        if cs.get("glycol_vol_pct") is not None:
+            self.c_eg.setValue(float(cs["glycol_vol_pct"]))
+        manual = cs.get("cp_J_per_kgK") is not None and cs.get("rho_kg_per_m3") is not None
+        self.c_manual.setChecked(manual)
+        if manual:
+            self.c_cp.setValue(float(cs["cp_J_per_kgK"]))
+            self.c_rho.setValue(float(cs["rho_kg_per_m3"]))
+        for i in range(self.c_ref.count()):
+            if self.c_ref.itemData(i) == cs.get("reference", "mean"):
+                self.c_ref.setCurrentIndex(i)
+        loop = cs.get("loop") or []
+        if loop and loop[0].get("station") == "motor":
+            self.c_order.setCurrentIndex(1)
+        self._coolant_changed()
+
+    def full_spec(self) -> dict:
+        spec = self.editor.spec()
+        spec["coolant"] = self.coolant_spec()
+        return spec
+
+    # ----------------------------------------------------------------- diagrams
+    def _schedule(self, *_):
+        timer = getattr(self, "_timer", None)
+        if timer is not None:
+            timer.start()
+
+    def _network_nodes(self, spec):
+        nodes = []
+        ref_names = {"inverter": tr("T_f 인버터", "T_f inverter"), "motor": tr("T_f 모터", "T_f motor"),
+                     None: tr("T_냉각수 입구", "T_coolant inlet")}
+        for n in spec["nodes"]:
+            ref = ref_names.get(n.get("station"), str(n.get("station")))
+            if str(n.get("network", "foster")).lower() == "cauer":
+                nodes.append({"name": n["id"], "kind": "cauer", "R": n["R_K_per_W"], "C": n["C_J_per_K"], "ref": ref})
+            else:
+                nodes.append({"name": n["id"], "kind": "foster", "R": n["R_K_per_W"], "tau": n["tau_s"], "ref": ref})
+        return nodes
+
+    def _refresh_diagrams(self):
+        try:
+            spec = self.full_spec()
+            det = api.thermal_details(spec, self.c_in.value())
+        except Exception as exc:  # noqa: BLE001 - live preview of an incomplete edit
+            self.p_net.placeholder(tr(f"열 모델 입력을 확인하세요: {exc}", f"check the thermal model: {exc}"))
+            return
+        cool = dict(det["coolant"] or {})
+        if self.last is not None:
+            fl = ((self.last["res"].get("request") or {}).get("coolant") or {}).get("fluid")
+            if fl:
+                cool["fluid"] = fl
+        if "fluid" not in cool:
+            cool["fluid"] = {"_loop": {"T_inlet_C": self.c_in.value()}}
+        nodes = self._network_nodes(spec)
+        h = 3.3 * len(nodes) + 2.6
+        self.p_net.draw(SC.fig_thermal_network, nodes, cool, title=tr("열 회로망 (노드 → 냉각수) · 냉각수 순환", "thermal networks (node → coolant) · coolant loop"),
+                        name="thermal_network")
+        self.p_net.canvas.setMinimumHeight(int(max(420, 72 * h)))
+        zc = SF.zth_curves(det["model"])
+        self.p_zth.draw(F.fig_zth, zc, title=tr("열 임피던스 Z_th(t)", "thermal impedance Z_th(t)"), name="zth",
+                        csv=lambda zc=zc: {"t_s": zc["t_s"], **{f"zth_{i}_{n['node']}": n["zth_K_per_W"] for i, n in enumerate(zc["nodes"])}})
+
+    # --------------------------------------------------------------------- run
     def run(self):
         try:
-            spec = json.loads(self.model.toPlainText())
-        except json.JSONDecodeError as exc:
-            error_box(self, tr("열 모델 JSON 오류", "thermal model JSON error"), str(exc))
+            spec = self.full_spec()
+            api._thermal_model(spec, self.c_in.value())
+        except Exception as exc:  # noqa: BLE001
+            error_box(self, tr("열 모델 입력 오류", "thermal model input error"), str(exc))
             return
         s = self.win.state
-        body = s.body(speed_rpm=self.n.value(), Vdc_V=self.vdc.value(), coolant_temp_C=self.coolant.value(),
+        body = s.body(speed_rpm=self.n.value(), Vdc_V=self.vdc.value(), coolant_temp_C=self.c_in.value(),
                       torque_Nm=self.T.value(), duration_s=self.dur.value(), model=spec, durations_s=DURATIONS,
                       direction=1 if self.T.value() >= 0 else -1)
         self.run_btn.setEnabled(False)
@@ -109,33 +276,39 @@ class ThermalPage(QWidget):
 
     def _show(self, out):
         self.run_btn.setEnabled(True)
+        self.last = out
         res = out["res"]
         av = res["availability"]
         cur = SF.availability_curve(av)
         req = res.get("request") or {}
-        T, dur, cool = self.T.value(), self.dur.value(), self.coolant.value()
+        T, dur, cool = self.T.value(), self.dur.value(), self.c_in.value()
         claim = req.get("claim", {})
         ttl = req.get("time_to_first_limit_s")
         ttl = float(ttl) if isinstance(ttl, (int, float)) else math.inf
         cont = cur["continuous_Nm"]
+        flow_txt = tr(f" (유량 {self.c_flow.value():g} L/min, EG {self.c_eg.value():g}%)",
+                      f" ({self.c_flow.value():g} L/min, EG {self.c_eg.value():g}%)")
         if req.get("nodes"):
             if math.isfinite(ttl):
-                head = tr(f"냉각수 {cool:g} °C에서 {T:g} N·m는 약 <b>{ttl:.3g} s</b> 유지 가능, 이후 <b>{fmt(cont, 4)} N·m</b> (연속)",
-                          f"At {cool:g} °C coolant, {T:g} N·m holds for about <b>{ttl:.3g} s</b>, then <b>{fmt(cont, 4)} N·m</b> continuous")
+                head = tr(f"냉각수 입구 {cool:g} °C{flow_txt}에서 {T:g} N·m는 약 <b>{ttl:.3g} s</b> 유지 가능, 이후 <b>{fmt(cont, 4)} N·m</b> (연속)",
+                          f"At {cool:g} °C coolant inlet{flow_txt}, {T:g} N·m holds for about <b>{ttl:.3g} s</b>, then <b>{fmt(cont, 4)} N·m</b> continuous")
             else:
-                head = tr(f"냉각수 {cool:g} °C에서 {T:g} N·m는 열 한계에 도달하지 않음 (연속 가능 추정)",
-                          f"At {cool:g} °C coolant, {T:g} N·m does not reach a thermal limit (continuous estimate)")
+                head = tr(f"냉각수 입구 {cool:g} °C{flow_txt}에서 {T:g} N·m는 열 한계에 도달하지 않음 (연속 가능 추정)",
+                          f"At {cool:g} °C coolant inlet{flow_txt}, {T:g} N·m does not reach a thermal limit (continuous estimate)")
+            fl = (req.get("coolant") or {}).get("fluid") or {}
+            parts = [f"{k}: {v['T_in_C']:.1f}→{v['T_out_C']:.1f} °C (+{v['P_W'] / 1e3:.2f} kW)" for k, v in fl.items() if k != "_loop"]
+            if parts:
+                head += "<br><span style='font-size:9pt'>" + tr("냉각수: ", "coolant: ") + " · ".join(parts) + "</span>"
         else:
             head = tr(f"{T:g} N·m는 정적으로 가능하지 않아 지속시간을 평가하지 않았습니다 ({claim.get('status', '')}).",
                       f"{T:g} N·m is not statically feasible, so no duration was evaluated ({claim.get('status', '')}).")
-        status = claim.get("status", "—")
         note = tr("검증된 열모델" if out["validated"] else "미검증 열모델 → 스크리닝 추정 (지속시간 claim UNKNOWN 유지)",
                   "validated thermal model" if out["validated"] else "unvalidated thermal model → screening estimate (duration claim stays UNKNOWN)")
-        self.headline.setText(f"{head}<br><span style='font-size:9pt'>claim: <b>{status}</b> · "
+        self.headline.setText(f"{head}<br><span style='font-size:9pt'>claim: <b>{claim.get('status', '—')}</b> · "
                               f"{', '.join(claim.get('reasons') or [])} · {note}</span>")
         self.plot.draw(F.fig_thermal, cur, out["curves"], T, dur,
-                       title=tr(f"열 → 토크 가용성 · n = {self.n.value():g} rpm · 냉각수 {cool:g} °C",
-                                f"thermal → torque availability · n = {self.n.value():g} rpm · coolant {cool:g} °C"),
+                       title=tr(f"열 → 토크 가용성 · n = {self.n.value():g} rpm · 냉각수 입구 {cool:g} °C",
+                                f"thermal → torque availability · n = {self.n.value():g} rpm · coolant inlet {cool:g} °C"),
                        name="thermal", csv=lambda: {"duration_s": cur["duration_s"], "torque_Nm": cur["torque_Nm"]})
         rows = []
         for r in av.get("rows", []):
@@ -143,6 +316,8 @@ class ThermalPage(QWidget):
             rows.append((tr("연속", "continuous") if d in ("Infinity", math.inf) else f"{float(d):.4g} s",
                          fmt(r["torque_Nm"]), r["limited_by"]))
         self.table.set_rows(rows)
+        self._refresh_diagrams()
 
     def redraw(self):
-        self.plot.redraw()
+        for p in (self.plot, self.p_net, self.p_zth):
+            p.redraw()

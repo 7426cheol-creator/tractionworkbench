@@ -11,7 +11,7 @@ from ...i18n import tr
 from ...plots import figures as F
 from ...viz import maps as M
 from ...viz import sweeps as SW
-from ..widgets import PlotPanel, combo, error_box, hint, number, primary_button
+from ..widgets import ConceptNote, PlotPanel, combo, error_box, hint, number, primary_button
 
 RESOLUTION = {"fast": (25, 24, 21), "normal": (41, 40, 33), "fine": (61, 60, 49)}
 
@@ -60,6 +60,14 @@ class PerformancePage(QWidget):
                             "flux map 드라이브는 계산량 때문에 해상도를 자동으로 낮춥니다.",
                             "Envelope: policy capability per speed sample (not guaranteed between samples). Map: minimum-current "
                             "policy point per node. Hatched = policy point violates a DC limit. Purple dashed = base-speed curve.")))
+        v.addWidget(ConceptNote(tr(
+            "<b>T–n 곡선과 맵</b>: 각 속도에서 최소전류 정책(DC 한계 포함)으로 낼 수 있는 최대·최소 토크입니다. 저속은 전류 한계(일정 "
+            "토크), 고속은 전압·DC 전력 한계(일정 출력 부근)로 줄어들며, 곡선 색은 그 구간에서 활성인 제약입니다. 맵은 각 격자점의 정책 "
+            "운전점 기준 효율·손실·전류 등이고, 보라 점선(기저속도) 오른쪽이 약계자 영역, 빗금은 DC 한계를 넘는 점입니다.",
+            "<b>Envelope and maps</b>: maximum/minimum torque of the minimum-current policy (incl. DC) per speed: current-limited "
+            "(constant torque) at low speed, voltage/DC-power-limited at high speed; colours show the active constraint. Maps show "
+            "efficiency, losses, current… of the policy point per node; right of the purple dashed base-speed curve the drive "
+            "field-weakens; hatched = DC limit exceeded.")))
         v.addStretch(1)
         sc = QScrollArea()
         sc.setWidgetResizable(True)

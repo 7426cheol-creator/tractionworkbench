@@ -21,7 +21,7 @@ from ...viz import maps as M
 from ...viz import operating as O
 from ...viz import sweeps as SW
 from ..opviews import OperatingViews
-from ..widgets import (ClaimTree, KeyValueTable, PlotPanel, VerdictBanner, check, error_box, fmt, hint, number,
+from ..widgets import (ConceptNote, ClaimTree, KeyValueTable, PlotPanel, VerdictBanner, check, error_box, fmt, hint, number,
                        primary_button)
 
 
@@ -148,8 +148,17 @@ class DecisionPage(QWidget):
         self.run_btn.clicked.connect(self.run)
         self.run_btn.setShortcut("Ctrl+Return")
         v.addWidget(self.run_btn)
-        v.addWidget(hint(tr("같은 입력 형식과 검증 규칙이 case 파일에도 적용됩니다. 누락된 근거는 추정하지 않고 UNKNOWN으로 남깁니다.",
-                            "The same validation applies to case files. Missing evidence stays UNKNOWN (never assumed).")))
+        v.addWidget(ConceptNote(tr(
+            "<b>판정 방식</b>: 요구 하나를 여러 판정 항목(claim)으로 나눕니다 — 전기적 존재(전압·전류·도메인), 최소전류 정책의 "
+            "정적 달성(DC 한계 포함), DC 소스 한계, (있으면) 지속시간. 요구 판정은 이들의 AND입니다: 증명된 위반이 하나라도 있으면 "
+            "<b>FAIL</b>, 위반은 없지만 확인하지 못한 항목이 있으면 <b>UNKNOWN</b>, 모두 가능하면 명시된 범위에서 <b>PASS</b>.<br>"
+            "INFEASIBLE은 증명(제약 다항식 근 전수 열거, 해석적 필요조건, 인증 상한)이 있을 때만 냅니다. '운전점 그래프' 탭에서 "
+            "시스템 개요도·파형·벡터도로 그 운전점을 확인할 수 있습니다.",
+            "<b>How the verdict is formed</b>: the requirement is split into claims — electrical existence (voltage, current, "
+            "domain), static achievement by the minimum-current policy (incl. DC limits), DC source limits and (if stated) "
+            "duration. The verdict is their AND: any proven violation → <b>FAIL</b>; no violation but something unconfirmed → "
+            "<b>UNKNOWN</b>; all feasible → <b>PASS</b> within the stated scope. INFEASIBLE needs a proof (exact root enumeration, "
+            "analytic necessary condition or certified bound).")))
         v.addStretch(1)
         sc = QScrollArea()
         sc.setWidgetResizable(True)
@@ -349,7 +358,7 @@ class DecisionPage(QWidget):
         if views["pv"] is not None:
             self.views.show_point(views["pv"], title + tr(" · 최소전류 정책점", " · minimum-current policy point"))
         else:
-            for p in (self.views.wave, self.views.phasor, self.views.power):
+            for p in (self.views.overview, self.views.wave, self.views.phasor, self.views.power):
                 p.placeholder(tr("이 조건에는 정책 운전점이 없습니다 (전기적 해 없음 또는 미확정). id–iq 지도에서 원인을 확인하세요.",
                                  "No policy operating point at this condition. See the id–iq map for the cause."))
             self.views.table.set_rows([])
