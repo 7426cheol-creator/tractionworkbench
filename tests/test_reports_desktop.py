@@ -135,6 +135,30 @@ def test_review_and_oew_hev_figures_render(tmp_path, lang, theme):
         style.apply("light")
 
 
+@pytest.mark.parametrize("lang, theme", [("ko", "light"), ("en", "dark")])
+def test_machine_design_figures_render(tmp_path, lang, theme):
+    """Trade study, winding (balanced, fractional-slot and infeasible) and concept-sizing figures."""
+    from traction_workbench.plots import machine_figures as MF
+    set_language(lang)
+    style.apply(theme)
+    try:
+        tr_ = api.machine_trade({"candidates": api.EXAMPLE_MACHINE["candidates"][:3],
+                                 "checks": api.EXAMPLE_MACHINE["checks"][:2] + api.EXAMPLE_MACHINE["checks"][3:4],
+                                 "envelope_speeds_rpm": [0.0, 8000.0, 16000.0]})
+        jobs = [(MF.fig_machine_trade, tr_), (MF.fig_winding, api.winding({})),
+                (MF.fig_winding, api.winding({"Q": 12, "p": 5, "y": 1, "parallel_paths": 1, "turns_per_coil": 20})),
+                (MF.fig_winding, api.winding({"Q": 10, "p": 4, "y": 1, "parallel_paths": 1, "compare": None})),
+                (MF.fig_concept_sizing, api.concept_sizing({}))]
+        for i, (fn, res) in enumerate(jobs):
+            fig = Figure(figsize=(11, 6))
+            fn(fig, res)
+            fig.savefig(tmp_path / f"m{i}.png", dpi=50)
+        assert len(list(tmp_path.glob("m*.png"))) == len(jobs)
+    finally:
+        set_language("ko")
+        style.apply("light")
+
+
 def test_pdf_report(tmp_path):
     from traction_workbench.report_pdf import build_pdf
     case = json.loads((EX / "cases" / "req_ts_012_450V_sizing.json").read_text(encoding="utf-8"))
@@ -210,6 +234,19 @@ def test_desktop_smoke(tmp_path):
         ep = win.pages["emi"]
         ep.run()
         assert ep.last is not None and ep.last["claim"]["status"] == "UNKNOWN"      # screening is never a pass
+        mp = win.pages["machine"]
+        mp.t_cand.load([["ref", 1.0, 1.0, 1.0, None, None], ["N+10%", 1.1, 1.0, 1.0, None, None],
+                        ["L+", 1.2, 1.2, 1.0, None, None]])            # stack change without end shares: refused
+        mp.t_chk.load([["ugo", "ugo", 12000.0, 450.0, None, 900.0], ["asc", "asc", 12000.0, 450.0, None, None]])
+        mp.t_env_on.setChecked(False)
+        mp.run_trade()
+        rows = {r["candidate"]: r for r in mp.last_trade["rows"]}
+        assert "error" in rows["L+"] and rows["ref"]["checks"]["asc"]["status"] == "UNKNOWN"    # no limit: no pass
+        assert rows["N+10%"]["checks"]["ugo"]["status"] == "INFEASIBLE"
+        mp.run_wind()
+        assert mp.last_wind["balanced"] and mp.w_send.isEnabled()
+        mp.run_size()
+        assert mp.last_size is not None
         win.set_theme("dark")
         win.set_theme("light")
         assert not (app.property("twb_errors") or [])

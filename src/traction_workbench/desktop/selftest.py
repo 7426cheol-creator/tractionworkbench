@@ -178,6 +178,26 @@ def run_self_test(app, out_dir) -> int:
         cs = (em.last_oew or {}).get("cases", {})
         check("emi:oew_cm", len(cs) == 2 and cs["0"]["u0_rms_V"] < cs["0.5"]["u0_rms_V"]
               and cs["0"]["cm6_rms_V"] > cs["0.5"]["cm6_rms_V"])
+        mc = visit("machine", 0, ["run_trade"], [(None, "40_machine_trade")])
+        mrows = {r["candidate"]: r for r in (mc.last_trade or {}).get("rows", []) if "checks" in r}
+        check("machine:trade", "ref" in mrows and "N+10%" in mrows and mrows["ref"]["all_feasible"]
+              and mrows["N+10%"]["checks"]["UGO back-EMF"]["status"] == "INFEASIBLE"
+              and abs(mrows["N+10%"]["checks"]["UGO back-EMF"]["value"] / mrows["ref"]["checks"]["UGO back-EMF"]["value"]
+                      - 1.1) < 1e-9, str({k: v.get("binding") for k, v in mrows.items()}))
+        mc.tabs.setCurrentIndex(1)
+        mc.run_wind()
+        shot(win, "41_machine_winding")
+        mw = mc.last_wind or {}
+        check("machine:winding", abs(mw.get("kw1", 0) - 0.9330127018922193) < 1e-12 and mw.get("balanced")
+              and abs((mw.get("compare") or {}).get("k_turns", 0) - 1.25) < 1e-12, mw.get("kw1"))
+        n0 = mc.t_cand.rowCount()
+        mc.send_candidate()
+        check("machine:k_turns_to_trade", mc.t_cand.rowCount() == n0 + 1 and mc.tabs.currentIndex() == 0)
+        mc.tabs.setCurrentIndex(2)
+        mc.run_size()
+        shot(win, "42_machine_sizing")
+        check("machine:sizing", mc.last_size is not None and
+              all(abs(r["check_T_Nm"] - mc.last_size["T_Nm"]) < 1e-9 for r in mc.last_size["rows"]))
         visit("model", 7, [], [(None, "18_model")])
         vv = visit("verification", 8, ["run"], [(None, "19_verification")])
         check("acceptance", "PASS" in vv.summary.text() and "MISMATCH" not in vv.summary.text(), vv.summary.text())

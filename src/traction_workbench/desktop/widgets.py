@@ -292,8 +292,11 @@ def parse_clipboard_grid(text: str) -> list[list[str]]:
 class NumTable(QTableWidget):
     """Editable numeric table: add/remove rows, Ctrl+V pastes a block from a spreadsheet at the current cell."""
 
-    def __init__(self, headers: list[str], rows=None, parent=None, min_height: int = 120):
+    def __init__(self, headers: list[str], rows=None, parent=None, min_height: int = 120, text_cols=(),
+                 optional_cols=()):
         super().__init__(parent)
+        self.text_cols = frozenset(text_cols)            # returned as stripped text (names, kinds)
+        self.optional_cols = frozenset(optional_cols)    # a blank numeric cell here is None (not declared), not 0
         self.setColumnCount(len(headers))
         self.setHorizontalHeaderLabels(headers)
         self.verticalHeader().setVisible(True)
@@ -323,7 +326,9 @@ class NumTable(QTableWidget):
             self.removeRow(r)
 
     def values(self) -> list[list[float]]:
-        """Numeric rows (blank rows skipped); a non-numeric or partly filled row raises ValueError naming the cell."""
+        """Numeric rows (blank rows skipped); a non-numeric or partly filled row raises ValueError naming the cell.
+
+        Text columns come back as text; a blank optional column comes back as None (not declared)."""
         out = []
         for i in range(self.rowCount()):
             cells = [(self.item(i, j).text().strip() if self.item(i, j) else "") for j in range(self.columnCount())]
@@ -331,6 +336,12 @@ class NumTable(QTableWidget):
                 continue
             row = []
             for j, c in enumerate(cells):
+                if j in self.text_cols:
+                    row.append(c)
+                    continue
+                if c == "" and j in self.optional_cols:
+                    row.append(None)
+                    continue
                 try:
                     if "," in c:        # '1,5' (decimal comma) vs '1,000' (thousands) is ambiguous: never guessed
                         raise ValueError

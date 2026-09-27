@@ -1026,6 +1026,103 @@ def emi_oew(body):
     return _jsonable(out)
 
 
+# ------------------------------------------------------------------ machine design (handoff section 10)
+
+EXAMPLE_MACHINE = {
+    "candidates": [
+        {"name": "ref", "basis": "validated reference (the active drive model)"},
+        {"name": "N-10%", "k_turns": 0.9, "basis": "example: fewer turns per coil / more parallel paths"},
+        {"name": "N+10%", "k_turns": 1.1, "basis": "example: more turns per coil"},
+        {"name": "L+20%", "k_stack": 1.2, "end_R_share": 0.3, "end_L_share": 0.1,
+         "basis": "example end-winding shares (declare them from the machine design)"},
+        {"name": "PM-10%", "k_pm": 0.9, "basis": "example: lower-remanence grade at the same geometry"},
+    ],
+    "checks": [
+        {"name": "low-speed torque", "kind": "capability", "speed_rpm": 2000.0, "Vdc_V": 450.0, "torque_Nm": 400.0},
+        {"name": "high-speed torque @ min Vdc", "kind": "capability", "speed_rpm": 12000.0, "Vdc_V": 450.0,
+         "torque_Nm": 130.0},
+        {"name": "requirement point", "kind": "point", "speed_rpm": 6000.0, "Vdc_V": 450.0, "torque_Nm": 200.0},
+        {"name": "UGO back-EMF", "kind": "ugo", "speed_rpm": 12000.0, "Vdc_V": 450.0, "limit": 900.0},
+        {"name": "steady ASC current", "kind": "asc", "speed_rpm": 12000.0, "Vdc_V": 450.0, "limit": 600.0},
+        {"name": "copper loss @ 300 N·m", "kind": "copper", "speed_rpm": 2000.0, "Vdc_V": 450.0, "torque_Nm": 300.0,
+         "limit": 6000.0},
+    ],
+    "envelope_speeds_rpm": [0.0, 2000.0, 4000.0, 6000.0, 8000.0, 10000.0, 12000.0, 14000.0, 16000.0],
+    "envelope_Vdc_V": 450.0,
+    "magnet_temp_C": None,
+    "note": "example requirements and limits (UGO withstand 900 V, ASC 600 A, copper 6 kW) are synthetic",
+}
+
+EXAMPLE_WINDING = {"Q": 48, "p": 4, "y": 5, "parallel_paths": 2, "turns_per_coil": 4, "harmonics": 25,
+                   "compare": {"turns_per_coil": 5, "parallel_paths": 2}}
+
+EXAMPLE_SIZING = {"T_Nm": 350.0, "sigma_kPa": [25.0, 35.0, 45.0], "aspect_L_over_D": [0.6, 0.9, 1.2],
+                  "n_max_rpm": 16000.0, "tip_speed_limit_m_s": 150.0,
+                  "basis": "example shear-stress band for a liquid-cooled traction IPM (declare the cooling class)"}
+
+
+def machine_trade(body):
+    """Candidates derived from the validated reference, judged on the same coupled requirement margins."""
+    from .analysis.machine_design import DesignCheck, trade_study
+    b = {**EXAMPLE_MACHINE, **(body or {})}
+    d = _drive(b)
+    mt = _opt(b, "magnet_temp_C")
+    checks = [DesignCheck(str(c.get("name") or c["kind"]), str(c["kind"]), _num(c, "speed_rpm"), _num(c, "Vdc_V"),
+                          _opt(c, "torque_Nm"), _opt(c, "limit"), mt) for c in b["checks"]]
+    if not checks:
+        raise InputValidationError("at least one requirement check is needed", field="checks")
+    names = [c.name for c in checks]
+    if len(set(names)) != len(names):
+        raise InputValidationError("check names must be unique", field="checks")
+    specs = [dict(c) for c in b["candidates"]]
+    if not specs:
+        raise InputValidationError("at least one candidate is needed", field="candidates")
+    r = trade_study(d, specs, checks, _limits(b), [float(x) for x in b.get("envelope_speeds_rpm") or []] or None,
+                    _opt(b, "envelope_Vdc_V"))
+    r["reference"] = {"drive_id": d.drive_id, "revision": d.revision, "validation_status": d.provenance.validation_status,
+                      "flux_model": d.motor.flux.kind, "pole_pairs": d.motor.pole_pairs,
+                      "inverter_limit_A": d.inverter.current_limit_A_peak}
+    r["source_limits"] = _limits(b).describe()
+    return _jsonable(r)
+
+
+def winding(body):
+    """Star-of-slots layout, winding factors, three-phase MMF spectrum and consistency with the drive model."""
+    from .analysis.machine_design import effective_turns_ratio, winding_layout
+    b = {**EXAMPLE_WINDING, **(body or {})}
+    Q, p = int(_num(b, "Q")), int(_num(b, "p"))
+    y = None if b.get("y") in (None, "") else int(_num(b, "y"))
+    a = int(_num(b, "parallel_paths", 1))
+    nc = None if b.get("turns_per_coil") in (None, "") else int(_num(b, "turns_per_coil"))
+    w = winding_layout(Q, p, y, 3, int(b.get("harmonics") or 25), a, nc)
+    d = _drive(b)
+    cons = [{"item": "pole pairs", "ok": d.motor.pole_pairs == p,
+             "detail": f"winding p = {p}, drive model p = {d.motor.pole_pairs}"},
+            {"item": "feasible slot / pole combination", "ok": w["feasible"], "detail": f"Q/(3 t) = {Q / (3 * w['t_periodicity']):g}"},
+            {"item": "balanced three-phase", "ok": w["balanced"], "detail": w["phase_sequence"]},
+            {"item": "parallel paths symmetric", "ok": w["parallel_paths_ok"],
+             "detail": f"a = {a}, divisors of {w['max_parallel_paths']} allowed"}]
+    w["consistency"] = cons
+    cmp = b.get("compare")
+    if cmp and nc is not None:
+        w2 = winding_layout(Q, p, y, 3, 1, int(cmp.get("parallel_paths") or a), int(cmp.get("turns_per_coil") or nc))
+        w["compare"] = {"turns_per_coil": w2["turns_per_coil"], "parallel_paths": w2["parallel_paths"],
+                        "N_series": w2["N_series"], "N_eff": w2["N_eff"], "k_turns": effective_turns_ratio(w, w2),
+                        "parallel_paths_ok": w2["parallel_paths_ok"],
+                        "meaning": "k_N for the scaling trade study (same slots, poles and pitch only)"}
+    return _jsonable(w)
+
+
+def concept_sizing(body):
+    """Rotor volume from a declared air-gap shear stress: a concept envelope, not a rating."""
+    from .analysis.machine_design import concept_sizing as cs
+    b = {**EXAMPLE_SIZING, **(body or {})}
+    r = cs(_num(b, "T_Nm"), tuple(float(x) for x in b["sigma_kPa"]), tuple(float(x) for x in b["aspect_L_over_D"]),
+           _opt(b, "n_max_rpm"), _opt(b, "tip_speed_limit_m_s"))
+    r["basis"] = b.get("basis", "")
+    return _jsonable(r)
+
+
 def acceptance(body):
     return S.acceptance_summary()
 
@@ -1037,4 +1134,5 @@ ROUTES = {
     "module_losses": module_losses, "dclink_ripple": dclink_ripple, "asc": asc,
     "lifetime": lifetime, "oew": oew, "oew_compare": oew_compare, "hev_joint": hev_joint, "hev_crank": hev_crank,
     "hev_rejection": hev_rejection, "hev_planetary": hev_planetary, "emi": emi, "emi_oew": emi_oew,
+    "machine_trade": machine_trade, "winding": winding, "concept_sizing": concept_sizing,
 }

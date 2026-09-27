@@ -17,6 +17,7 @@ from .pages.decision import DecisionPage
 from .pages.design import DesignPage
 from .pages.emi import EmiPage
 from .pages.explorer import ExplorerPage
+from .pages.machine import MachinePage
 from .pages.model import ModelPage, examples_dir
 from .pages.oew_hev import OewHevPage
 from .pages.performance import PerformancePage
@@ -42,6 +43,7 @@ PAGES = (
     ("power", lambda: tr("전력변환·수명", "Power stage & life"), PowerPage),
     ("oew_hev", lambda: tr("OEW·HEV", "OEW & HEV"), OewHevPage),
     ("emi", lambda: tr("EMI (전도성)", "EMI (conducted)"), EmiPage),
+    ("machine", lambda: tr("모터 설계", "Machine design"), MachinePage),
     ("model", lambda: tr("모델·데이터", "Model & data"), ModelPage),
     ("verification", lambda: tr("검증 (V&V)", "Verification"), VerificationPage),
 )
