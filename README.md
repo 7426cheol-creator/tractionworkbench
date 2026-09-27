@@ -1,11 +1,54 @@
 # Traction Workbench
 
 **Traction Engineering Feasibility & System Analysis Workbench** — 단일 3상 2-level 인버터 + PMSM/IPMSM의
-정상상태 기본파 모델로 고객 요구를 판정하고, 그 근거를 재현 가능한 **Engineering Decision Record**로 남기는 도구입니다.
+정상상태 기본파 모델로 고객 요구를 판정하고, 그 근거를 그래프와 재현 가능한 **Engineering Decision Record**로 남기는
+**독립 실행형 데스크톱 애플리케이션**입니다 (Windows `.exe`, 서버·네트워크·Python 설치 불필요).
 
 > “현재 조건에서 고객 요구를 만족시킬 수 있는가? 무엇이 막고 있으며, 어떤 변경이나 추가 자료가 의사결정을 바꾸는가?”
 
-설계 기준선: `reference/traction_workbench_spec_v1/` (Blueprint · Implementation Handoff · Reference Cases · golden JSON, SHA-256 고정).
+![요구 판정 화면](docs/screenshots/decision.jpg)
+
+## 실행 (Windows)
+
+1. `TractionWorkbench-<버전>-windows-x64.zip`을 받습니다 — GitHub **Actions → build → Artifacts**
+   (`TractionWorkbench-windows-x64`) 또는 `v*` 태그를 올리면 자동 생성되는 **Releases**.
+2. 압축을 풀고 `TractionWorkbench\TractionWorkbench.exe`를 실행합니다. 설치·관리자 권한이 필요 없습니다(휴대용 폴더).
+3. 코드 서명이 없어서 처음 실행 시 SmartScreen이 “Windows의 PC 보호” 경고를 띄울 수 있습니다: **추가 정보 → 실행**.
+   사내 배포 시에는 IT 정책에 따라 서명/화이트리스트를 요청하세요.
+
+같은 폴더의 `twb.exe`는 콘솔 CLI입니다: `twb.exe report case.json --pdf 보고서.pdf`, `twb.exe acceptance`, `twb.exe selftest out`.
+모든 계산은 PC 안에서만 수행되며 포트를 열지 않습니다.
+
+## 화면 구성
+
+| 페이지 | 내용 |
+|---|---|
+| **요구 판정** | 요구 원문·토크·속도·Vdc(단일/범위)·지속시간 입력 → PASS/FAIL/UNKNOWN 배너(사유·범위), 조건별 claim 트리와 근거, 핵심 수치, 제한 요인·다음 조치, 운전점 그래프, T–n 상의 위치, 역설계·병목 분석, 의사결정 기록(Markdown) · JSON/MD/**PDF 보고서** 저장 |
+| **운전점 탐색** | 토크 → 최소전류 정책점, 또는 id/iq 직접 입력(정방향 평가). **id–iq 지도를 클릭**하면 그 전류 벡터를 그대로 평가, 마우스를 올리면 토크·전압·DC 전력 판독 |
+| **궤적** | 토크 스윕 @ 속도(MTPA → 약계자 → 한계), 속도 스윕 @ 토크(기저속도·약계자 진입). dq 전류 궤적 + 여러 속도의 전압 타원, 변수 추이, 표 |
+| **성능 곡선·맵** | 정책(DC 포함) vs 전기적 T–n 곡선(활성 제약별 색), 비교 Vdc, 효율·모터/인버터 효율·손실·전류·변조율·역률·id·iq·P_dc 맵, 기저속도 곡선, 최대 토크 곡선을 따라가는 운전점 |
+| **설계·병목** | capability vs 파라미터(Vdc, 전류 정격, 예약분, DC 한계, …)와 bisection 역설계, 제약 1% 완화 병목 기여도, 요구 달성 최소 완화·공동 병목 |
+| **안전 스크리닝** | FTTI 체인 Gantt(중복 예산 자동 검출), 능동 방전 V(t)(역기전력 하한), 회생 중 배터리 차단 과전압 V(t), ASC/Freewheel vs 속도 + 프로젝트 규칙 |
+| **열·지속시간** | Foster 열망 → 지속시간별 가용 토크, 노드 온도 궤적, “냉각수 65 °C에서 450 N·m는 약 5.47 s 유지, 이후 433.7 N·m(연속)” (미검증 열모델이면 UNKNOWN 유지) |
+| **모델·데이터** | 내장 드라이브(상수 dq D1 / flux map D2) 선택, 단위가 선언된 드라이브 JSON·case 파일 불러오기, DC 소스 한계, provenance |
+| **검증 (V&V)** | production vs golden acceptance(오차/허용오차 그래프), 참조 패키지 SHA-256, 알려진 한계 |
+
+모든 그래프는 확대·이동·PNG/SVG/PDF 저장, 데이터는 CSV로 내보낼 수 있습니다. 한국어/영어, 라이트/다크 테마를 지원합니다.
+항상 보이는 배지로 모델 ID·fidelity(D1/D2)·데이터 출처(synthetic)·“하드웨어 미검증”을 표시합니다.
+
+## 전문가용 그래프
+
+| | |
+|---|---|
+| ![id–iq 제약 지도](docs/screenshots/idiq_map.jpg) | ![상 파형](docs/screenshots/waveforms.jpg) |
+| **id–iq 제약 지도**: 전압 타원(명령 예산·하드웨어 상한), 전류원, 선언 도메인, DC 방전/충전 한계, 등토크선, MTPA, MTPV(참고), 요구 토크 곡선, 최소전류 정책점, 전기적/DC 포함 가능 영역 | **상 파형**: 역 Park로 복원한 상전류, 상/선간 전압과 명령 예산, SVPWM 상 듀티(min-max 영상분, 평균값 모델)와 전압 reserve 대역, 쇄교자속, p(t) = P_ac 확인 |
+| ![벡터도](docs/screenshots/phasor_hexagon.jpg) | ![효율 맵](docs/screenshots/efficiency_map.jpg) |
+| **dq 벡터도**: e₀ = ω_eψ_PM, ω_eL_d·i_d(약계자 전압), −ω_eL_q·i_q, R_s·i, v와 전류각·φ·역률·자석/릴럭턴스 토크 분해 / **공간벡터 육각형** | **효율·손실 맵**: 최소전류 정책점 기준 η, 정책 경계·전기적 한계, 기저속도 곡선, DC 한계 위반 영역(빗금), 최고 효율점 |
+| ![궤적](docs/screenshots/trajectory.jpg) | ![열](docs/screenshots/thermal.jpg) |
+| **운전 궤적**: 속도가 오르며 MTPA에서 전압 타원을 따라 약계자로 이동하는 경로, DC 한계 위반점 | **열 → 토크 가용성**: 지속시간별 가용 토크와 노드 온도 궤적 |
+
+그래프는 production 모델 값을 그대로 다시 표현한 것입니다(새 물리 없음). 파형·듀티는 스위칭 리플·데드타임이 없는 평균값 모델이며
+그림과 보고서에 그렇게 표기됩니다. 테스트가 역변환·전력 항등식·MTPA 접선 조건·기저속도 = 약계자 개시점을 독립적으로 확인합니다.
 
 ## 무엇이 다른가
 
@@ -15,27 +58,7 @@
 - **입력을 조용히 채우지 않습니다.** 단위·정의(peak/RMS, 상/선간, 기계/전기 속도, per-phase/line-to-line, Ke/Kt convention)가 모호하면 계산 전에 INVALID_INPUT, 누락된 손실/온도/지속시간 근거는 UNKNOWN으로 남깁니다. 모든 변환은 기록됩니다.
 - **요구를 바꾸지 않습니다.** 원문 보존, 토크 clip 없음, Vdc 범위 요구는 표본점 통과만으로 PASS가 아니며(SAMPLED_COVERAGE), 지속시간이 없으면 정적 항목으로만 해석합니다.
 
-## 빠른 시작
-
-```bash
-pip install -e '.[test]'           # numpy, scipy (+ pytest)
-
-twb demo                           # 대표 질문 8개를 합성 드라이브로 판정
-twb serve --open                   # 웹 UI (http://127.0.0.1:8765)
-twb evaluate examples/cases/req_ts_012_450V_sizing.json --out out/   # 의사결정 기록 JSON + Markdown
-twb solve --n 12000 --torque 150 --vdc 600
-twb capability --n 12000 --vdc 600 --direction -1
-twb curve --vdc 450
-twb acceptance                     # production 결과 vs golden JSON
-twb export-static --out out/traction_workbench.html   # 서버 없이 열리는 UI 스냅샷
-
-python verification/independent_fixture_check.py      # production 코드를 쓰지 않는 독립 검산
-python -m pytest -q
-```
-
-`python -m traction_workbench <command>`도 동일하게 동작합니다.
-
-## 대표 결과 (합성 fixture, `twb demo`)
+## 대표 결과 (합성 fixture, 앱의 “예시 질문” / `twb demo`)
 
 | 요구 | 판정 | 핵심 근거 |
 |---|---|---|
@@ -48,48 +71,53 @@ python -m pytest -q
 | Vdc 550–650 V 전 구간 · 100 N·m | **UNKNOWN** | 표본 5점 모두 가능하지만 연속 구간 보장은 아님 (SAMPLED_COVERAGE) |
 | 정지 · 300 N·m | **PASS** (정적) | 등가 정현파 RMS, 효율 N/A, 정지 열 지속시간 추론 없음 |
 
-## 웹 UI
+## 개발·빌드
 
-판정 결과를 먼저 보여주고(PASS/FAIL/UNKNOWN + 사유 + 범위), **요구 → 조건 → id/iq → 전력 수지 → 제약 → 결론**을 클릭으로 추적합니다.
+```bash
+pip install -e '.[gui,test]'          # numpy, scipy + PySide6-Essentials, matplotlib (+ pytest)
 
-| 탭 | 내용 |
-|---|---|
-| 요구 판정 | 예시 프리셋, 요구 입력(원문 보존), claim 카드와 근거, 운전점·전압 예산, 부호 있는 전력 수지, 고유 단위 제약 여유, T–n 영역 + 동일 축척 id–iq 제약 지도, 제한 요인·다음 조치, 추가 분석, 기록 다운로드(JSON/MD, SHA-256) |
-| 성능 곡선 | 여러 Vdc의 정책(DC 포함) vs 전기적 한계 T–n 곡선과 제한 요인 표 |
-| 설계·병목 | 1-파라미터 역설계(변경 종류 표기: boundary/hardware/design/diagnostic), 제약 1% 완화 재계산 dominance, 공동 병목 |
-| 안전 스크리닝 | FTTI 체인(중복 예산 자동 검출, Gantt), 능동 방전·회생 중 배터리 차단 과전압, ASC/Freewheel 정상상태 비교 + 프로젝트 규칙 |
-| 열·지속시간 | Foster 열망 → 지속시간별 가용 토크, “냉각수 65 °C에서 X N·m는 t초 유지, 이후 Y N·m” 형식 (미검증 모델은 UNKNOWN 유지) |
-| 검증(V&V) | golden 대비 acceptance 표, manifest 해시, 알려진 한계 |
+twb gui                               # 데스크톱 앱 (= traction-workbench)
+twb evaluate examples/cases/req_ts_012_450V_sizing.json --out out/   # 의사결정 기록 JSON + Markdown
+twb report   examples/cases/req_ts_012_450V_sizing.json --pdf out/report.pdf   # 그래프 포함 PDF 보고서
+twb demo | solve | forward | capability | curve | acceptance
+twb selftest out/selftest             # 모든 페이지 headless 자체 검사 (스크린샷 + selftest.json)
 
-항상 보이는 배지로 모델 ID·fidelity(D1/D2)·데이터 출처(synthetic)·“하드웨어 미검증”을 표시합니다. 한국어/영어, 라이트/다크, 모바일 레이아웃을 지원하며 외부 라이브러리 없이 동작합니다.
+python verification/independent_fixture_check.py      # production 코드를 쓰지 않는 독립 검산
+QT_QPA_PLATFORM=offscreen python -m pytest -q
+
+# 실행 파일 (Windows: packaging\build_windows.bat)
+pip install -e '.[gui,build]'
+python packaging/build.py             # dist/TractionWorkbench/ + zip; 동결 앱에서 acceptance와 self-test 실행
+```
+
+CI(`.github/workflows/build.yml`): Linux에서 독립 검산 + 전체 테스트, Windows에서 PyInstaller 빌드 → **동결된 exe로 acceptance·self-test** →
+zip 아티팩트 업로드(`v*` 태그면 GitHub Release에 첨부).
 
 ## 저장소 구조
 
 ```
 reference/traction_workbench_spec_v1/   불변 설계 기준선 + golden JSON (manifest SHA-256)
 src/traction_workbench/
-  models/        상수 dq · flux map(유효 마스크, 선언된 대칭, 온도 plane) · 손실 · 인버터 · 운전영역 · provenance
-  physics.py     DriveKernel, 정방향 평가, 고유 단위 제약, 전력 항등식, 에너지 모드/효율
-  solvers/       exact(다항식 경계 열거) · sampled(곡선 추적) · bounds(셀 B&B) · screens(필요조건)
-                 certificate(Lagrangian 상한) · policy(최소전류 정책 + claim) · capability
-  analysis/      rating(지속시간 envelope) · loss_interval · uncertainty(구간 입력) · sizing · dominance
-                 compare · supplied_policy · variation
-  extensions/    timing(FTTI) · dclink(방전/과전압) · safe_state(ASC/6SO) · thermal(열→토크)  ← 스크리닝 전용
-  decision.py    Engineering Decision Record (AND 집계, 입력 스냅샷 SHA-256), report.py (Markdown)
-  io.py, units.py  단위·정의가 명시된 JSON 입력 형식 (UC00 변환 기록)
-  service.py, web/, cli.py
-verification/   independent_fixture_check.py (production 비의존), make_report.py
-tests/          골든·의미론·검증·확장·앱 계층 테스트 (186개)
-examples/       case 파일, 단위가 선언된 drive 정의
-docs/           RELEASE_NOTES_v0.1.0.md (모델 계약·한계·추적표), VERIFICATION_REPORT.md
+  models/ physics.py solvers/ analysis/ extensions/ decision.py report.py io.py units.py   ← 엔진 (numpy, scipy)
+  viz/           그래프 데이터: 파형·벡터도·육각형·전력 흐름 / 스윕·곡선 / 맵·기저속도 / 설계 / 스크리닝 곡선
+  plots/         matplotlib 그림 (앱과 PDF 보고서 공용)
+  desktop/       PySide6 앱: main_window, pages/, 백그라운드 작업, self-test
+  report_pdf.py  PDF 엔지니어링 보고서
+  api.py service.py cli.py
+packaging/       PyInstaller spec, launcher(TractionWorkbench.exe + twb.exe), build.py, 아이콘
+verification/    independent_fixture_check.py (production 비의존), make_report.py
+tests/           골든·의미론·검증·확장·그래프 데이터·보고서·데스크톱 (206개)
+examples/        case 파일, 단위가 선언된 drive 정의
+docs/            RELEASE_NOTES.md (모델 계약·한계·추적표), VERIFICATION_REPORT.md, screenshots/
 ```
 
 ## 검증 상태
 
-- 참조 패키지 10개 파일 SHA-256 일치, 독립 검산 136/136, production vs golden 21/21, pytest 186 통과 — 상세: [`docs/VERIFICATION_REPORT.md`](docs/VERIFICATION_REPORT.md)
+- 참조 패키지 10개 파일 SHA-256 일치, 독립 검산 136/136, production vs golden 21/21, pytest 206 통과,
+  동결 앱 acceptance 21/21 · self-test 18/18 — 상세: [`docs/VERIFICATION_REPORT.md`](docs/VERIFICATION_REPORT.md)
 - **합성 fixture에 대한 verification입니다.** 하드웨어·공급사 데이터·외부 시뮬레이터 validation은 수행하지 않았습니다(V4–V5 미수행).
 
 ## 문서
 
-- [`docs/RELEASE_NOTES_v0.1.0.md`](docs/RELEASE_NOTES_v0.1.0.md) — 실행 방법, model contract, 제약 목록, 판정 의미론, 수치 방법, 알려진 한계, 미구현 항목, data provenance, 재현 조건, 스펙 조항 ↔ 구현 ↔ 테스트 추적표
+- [`docs/RELEASE_NOTES.md`](docs/RELEASE_NOTES.md) — 변경 사항, 실행 방법, model contract, 제약 목록, 판정 의미론, 수치 방법, 알려진 한계, 미구현 항목, data provenance, 재현 조건, 스펙 조항 ↔ 구현 ↔ 테스트 추적표
 - [`docs/VERIFICATION_REPORT.md`](docs/VERIFICATION_REPORT.md) — 자동 생성 검증 보고서

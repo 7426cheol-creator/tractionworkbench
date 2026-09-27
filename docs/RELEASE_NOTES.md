@@ -1,7 +1,23 @@
-# Traction Workbench v0.1.0 — Release / Handback Notes
+# Traction Workbench v0.2.0 — Release / Handback Notes
 
 기준선: `reference/traction_workbench_spec_v1` (Blueprint, Implementation Handoff, Reference Cases, golden JSON; manifest SHA-256 일치 확인).
 이 문서는 Handoff H12가 요구한 실행 방법, model contract, 제약 목록, 알려진 한계, 검증 실행 결과, 실패/미구현 항목, data provenance, 재현 조건을 담습니다.
+
+## 0.2.0 변경 사항 (v0.1.0 대비)
+
+- **독립 실행형 데스크톱 앱**으로 배포 형태 변경: PySide6(Qt, LGPL) + matplotlib, PyInstaller one-folder 번들.
+  `TractionWorkbench.exe`(창 앱)와 `twb.exe`(콘솔 CLI)가 같은 폴더에 들어 있으며 Python 설치·서버·네트워크가 필요 없습니다.
+  웹 UI(`twb serve`, `export-static`)는 제거했습니다.
+- **전문가용 그래프**(모두 production 모델 값의 재표현, `viz/` + `plots/`): 상전류·상/선간 전압·SVPWM 듀티(평균값 모델)·쇄교자속 파형,
+  IPMSM dq 벡터도(e₀, ωL_d·i_d, −ωL_q·i_q, R_s·i)와 공간벡터 육각형, 전력 흐름(DC→축)과 제약 사용률, id–iq 제약 지도(전압 타원·전류원·
+  도메인·DC 한계·등토크선·MTPA·MTPV 참고선·정책점, 마우스 판독, 클릭 정방향 평가), 토크/속도 스윕 궤적, 활성 제약별로 색을 나눈 T–n 곡선,
+  효율·손실·전류·변조율·역률 맵과 기저속도 곡선, capability vs 파라미터(역설계), 병목·완화, FTTI Gantt, 방전/과전압 V(t),
+  ASC·역기전력 vs 속도, 열 가용 토크 vs 지속시간과 노드 온도 궤적. 모든 그림은 PNG/SVG/PDF, 데이터는 CSV로 내보냅니다.
+- **PDF 엔지니어링 보고서** (`twb report CASE.json --pdf`, 앱의 "PDF 보고서"): 판정 요약, 조건별 claim, 제한 요인·다음 조치, 그래프, 의사결정 기록 원문.
+- **자체 검사**: `twb selftest DIR` / `TractionWorkbench.exe --self-test DIR` — 모든 페이지를 실제 코드 경로로 실행하고 예시 판정, golden acceptance,
+  PDF 보고서, flux-map 드라이브, 다크 테마를 확인(18 checks). 빌드 스크립트가 **패키징된 실행 파일에서** 이 검사를 수행합니다.
+- CI(GitHub Actions): Linux 테스트 + Windows 실행 파일 빌드·동결 상태 self-test·zip 아티팩트, `v*` 태그 시 릴리스 첨부.
+- 참조 패키지 위치 탐색: `TWB_SPEC_DIR` → 번들 내부(`sys._MEIPASS`) → 소스 트리.
 
 ---
 
@@ -17,17 +33,27 @@
 
 ## 2. 실행 방법
 
+**배포본(Windows)**: `TractionWorkbench-<ver>-windows-x64.zip`을 풀고 `TractionWorkbench\TractionWorkbench.exe` 실행.
+설치·관리자 권한·Python 불필요. 코드 서명이 없으므로 처음 실행 시 SmartScreen 경고가 뜰 수 있습니다(추가 정보 → 실행).
+같은 폴더의 `twb.exe`는 콘솔 CLI입니다(아래 명령과 동일).
+
 ```bash
-pip install -e '.[test]'                 # Python ≥ 3.10, numpy, scipy
+# 개발 환경
+pip install -e '.[gui,test]'             # Python ≥ 3.10: numpy, scipy (+ PySide6-Essentials, matplotlib, pytest)
+twb gui                                  # 데스크톱 앱 (= traction-workbench, TractionWorkbench.exe)
 twb demo                                 # 대표 질문 8개
-twb serve --open                         # 웹 UI, 127.0.0.1:8765
 twb evaluate <case.json> --out out/      # 의사결정 기록(JSON + Markdown). --exit-code: PASS 0 / FAIL 2 / UNKNOWN 3
+twb report <case.json> --pdf out.pdf     # 그래프 포함 PDF 보고서 (GUI 불필요)
 twb solve | forward | capability | curve # 단일 계산
 twb acceptance                           # production vs golden
-twb export-static --out out/tw.html      # 서버 없는 UI 스냅샷
+twb selftest out/selftest                # 데스크톱 앱 headless 자체 검사
 python verification/independent_fixture_check.py
 python verification/make_report.py       # docs/VERIFICATION_REPORT.md 재생성
 python -m pytest -q
+
+# 실행 파일 빌드 (Windows에서: packaging\build_windows.bat)
+pip install -e '.[gui,build]'
+python packaging/build.py                # dist/TractionWorkbench/ + zip, 동결 앱에서 acceptance·self-test 수행
 ```
 
 입력 파일 형식: `examples/cases/*.json`, `examples/drives/*.json`. 모든 물리량은 `{"value", "unit"}`와 정의(basis/reference/kind)를 명시해야 하며, 모호하면 계산 전에 거절됩니다(INVALID_INPUT, CLI exit 4).
@@ -164,7 +190,8 @@ fixture E01(1-node 열) 값 77.6424 °C / 138.6294 s를 재현합니다.
 - 참조 패키지 manifest: 10/10 일치.
 - 독립 검산(production 비의존, 다른 방법): 136/136.
 - Production vs golden: 정방향 6건 정규화 오차 ≤ 2e-16, 역문제 11건 id/iq 최대 오차 5.5e-6 A(경계해는 ~1e-13 A), 라벨 일치, capability 4건 오차 ≤ 3e-7 N·m(구동 3건 certified, 인증 상한 = golden 1e-13 이내), fixture의 Lagrangian 승수·Hessian 고유값 상대오차 < 1e-6.
-- pytest 186개 통과.
+- pytest 206개 통과(그래프 데이터의 물리 일관성, PDF 보고서, 데스크톱 headless smoke 포함).
+- 동결(PyInstaller) 앱에서 acceptance 21/21, 데스크톱 self-test 18/18 (Linux 로컬 빌드; Windows는 CI에서 동일 검사).
 - 관찰: MTPA 내부점 golden(I00/I09/I10)은 평탄한 목적함수 때문에 정확 해와 최대 5.5e-6 A 차이(50자리 계산으로 확인). 허용오차 1e-3 A 이내이며 expected 값은 그대로 둡니다.
 
 ## 10. 알려진 한계
@@ -179,7 +206,9 @@ fixture E01(1-node 열) 값 77.6424 °C / 138.6294 s를 재현합니다.
 8. 구간 입력 분석은 독립 상자(모서리+중심)만: 상관 파라미터는 공동 시나리오로 표현해야 하며 최악점 인증은 없습니다.
 9. 온도: 선형 계수 조정만 지원, 손실–온도 피드백 없음.
 10. 스크리닝 확장은 7절의 범위로 제한됩니다(과도, UCG 전류 크기, 소자 SOA, 기능안전 승인 없음).
-11. 웹 서버는 로컬 단일 사용자용(127.0.0.1)이며 인증·다중 사용자 보안이 없습니다.
+11. 그래프의 파형·듀티는 같은 기본파 값을 역 Park·min-max 영상분 주입으로 다시 표현한 평균값 모델입니다(스위칭 리플, 데드타임, 소자 강하 없음). MTPV는 상수 모델에서 R_s를 무시한 참고선입니다.
+12. flux map 드라이브의 T–n 곡선은 계산량 때문에 격자 추정(시각화용, 라벨 표기)이며, 판정 자체는 항상 엄밀 솔버를 사용합니다. 맵·스윕은 표본 사이의 연속성을 보장하지 않습니다.
+13. 실행 파일은 코드 서명되지 않았습니다(사내 배포 시 IT 정책에 따라 서명·화이트리스트 필요). 번들 크기는 Qt·SciPy 포함 수백 MB입니다.
 
 ## 11. 미구현 / 후속 항목
 
@@ -218,3 +247,6 @@ fixture E01(1-node 열) 값 77.6424 °C / 138.6294 s를 재현합니다.
 | UC00 단위·정의 | `units.py`, `io.py` | `test_validation.py`, `test_app_layers.py::test_declared_units_drive_matches_builtin_results` |
 | UC08 외부 rating | `analysis/rating.py` | `test_decision.py::test_duration_*` |
 | 독립 fixture 검증 | `verification/independent_fixture_check.py` | 136 checks |
+| 그래프 데이터(파형·벡터도·궤적·맵·기저속도·스크리닝 곡선) | `viz/operating.py`, `viz/sweeps.py`, `viz/maps.py`, `viz/design.py`, `viz/safety.py` | `test_viz.py` (독립 forward Park 역변환, 전력 항등식, MTPA 접선 조건, 기저속도 = 약계자 개시, golden capability) |
+| 그림·PDF 보고서·데스크톱 앱 | `plots/`, `report_pdf.py`, `desktop/` | `test_reports_desktop.py`, `twb selftest` |
+| 배포 | `packaging/` (PyInstaller spec, 빌드·동결 self-test), `.github/workflows/build.yml` | CI Windows job |

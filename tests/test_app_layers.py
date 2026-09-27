@@ -1,11 +1,7 @@
-"""Service, JSON API, HTTP server, CLI and static-export layers."""
+"""Service, request API and CLI layers."""
 
 import json
 import math
-import threading
-import urllib.error
-import urllib.request
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -15,9 +11,8 @@ from traction_workbench import service as S
 from traction_workbench import spec_fixtures as sf
 from traction_workbench.cli import main
 from traction_workbench.errors import InputValidationError
+from traction_workbench import api
 from traction_workbench.io import load_case
-from traction_workbench.web import api
-from traction_workbench.web.server import Handler
 
 EX = Path(__file__).resolve().parents[1] / "examples"
 
@@ -77,42 +72,6 @@ def test_api_validation_errors():
         api.curve({"Vdc_V": "abc"})
 
 
-@pytest.fixture(scope="module")
-def server():
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    th = threading.Thread(target=httpd.serve_forever, daemon=True)
-    th.start()
-    yield f"http://127.0.0.1:{httpd.server_address[1]}"
-    httpd.shutdown()
-    httpd.server_close()
-
-
-def _post(url, body):
-    req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
-    return urllib.request.urlopen(req, timeout=60)
-
-
-def test_http_server(server):
-    html = urllib.request.urlopen(server + "/", timeout=10).read().decode()
-    assert "Traction Workbench" in html
-    js = urllib.request.urlopen(server + "/static/app.js", timeout=10)
-    assert js.headers["Content-Type"].startswith("application/javascript") or "javascript" in js.headers["Content-Type"]
-    info = json.loads(urllib.request.urlopen(server + "/api/info", timeout=10).read())
-    assert info["version"]
-    r = json.loads(_post(server + "/api/evaluate", {"requirement": info["presets"][1]["req"]}).read())
-    assert r["verdict"]["verdict"] == "FAIL"
-    with pytest.raises(urllib.error.HTTPError) as exc:
-        _post(server + "/api/evaluate", {"requirement": {"id": "X", "torque_Nm": 1, "speed_rpm": 1, "Vdc_V": -5}})
-    assert exc.value.code == 400 and json.loads(exc.value.read())["status"] == "INVALID_INPUT"
-    with pytest.raises(urllib.error.HTTPError) as exc:
-        urllib.request.urlopen(server + "/static/../../../etc/passwd", timeout=10)
-    assert exc.value.code == 404
-    with pytest.raises(urllib.error.HTTPError) as exc:
-        req = urllib.request.Request(server + "/api/evaluate", data=b'{"x": NaN}', headers={"Content-Type": "application/json"})
-        urllib.request.urlopen(req, timeout=10)
-    assert exc.value.code == 400
-
-
 def test_cli(tmp_path, capsys):
     assert main(["solve", "--n", "12000", "--torque", "150", "--vdc", "600"]) == 0
     assert "policy_static" in capsys.readouterr().out
@@ -126,17 +85,3 @@ def test_cli(tmp_path, capsys):
                    '"Vdc": {"value": 600, "unit": "kilovolt"}}}}')
     assert main(["evaluate", str(bad)]) == 4
     assert main(["acceptance"]) == 0
-
-
-def test_static_export(tmp_path, monkeypatch):
-    from traction_workbench.web import export
-    small = api.curve({"Vdc_V": 600, "speeds_rpm": [0, 12000]})
-    monkeypatch.setattr(api, "curve", lambda body: small)
-    p = export.build_static_html(tmp_path / "site.html", progress=lambda m: None)
-    html = p.read_text(encoding="utf-8")
-    assert "window.TWB_STATIC" in html and "/static/app.js" not in html and "<style>" in html
-    start = html.index("window.TWB_STATIC = ") + len("window.TWB_STATIC = ")
-    end = html.index(";</script>", start)
-    data = json.loads(html[start:end].replace("<\\/", "</"))
-    assert set(data) >= {"info", "evaluate", "maps", "curves", "fixed", "acceptance"}
-    assert data["evaluate"]["ts012_450"]["verdict"]["verdict"] == "FAIL"

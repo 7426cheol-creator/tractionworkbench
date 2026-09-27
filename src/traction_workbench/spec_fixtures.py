@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 from functools import lru_cache
 from pathlib import Path
 
@@ -37,16 +38,26 @@ from .scenario import DcSourceLimits, Scenario
 SPEC_DIRNAME = "traction_workbench_spec_v1"
 
 
-def spec_dir() -> Path:
+def _candidates() -> list[Path]:
     env = os.environ.get("TWB_SPEC_DIR")
     if env:
-        p = Path(env)
-    else:
-        p = Path(__file__).resolve().parents[2] / "reference" / SPEC_DIRNAME
-    if not (p / "manifest.json").is_file():
-        raise FileNotFoundError(
-            f"reference package not found at {p}; set TWB_SPEC_DIR to the traction_workbench_spec_v1 directory")
-    return p
+        return [Path(env)]
+    out = []
+    frozen = getattr(sys, "_MEIPASS", None)             # PyInstaller bundle
+    if frozen:
+        out.append(Path(frozen) / "reference" / SPEC_DIRNAME)
+    out.append(Path(__file__).resolve().parents[2] / "reference" / SPEC_DIRNAME)   # source tree / editable install
+    return out
+
+
+def spec_dir() -> Path:
+    tried = _candidates()
+    for p in tried:
+        if (p / "manifest.json").is_file():
+            return p
+    raise FileNotFoundError(
+        f"reference package not found (tried {', '.join(str(p) for p in tried)}); "
+        f"set TWB_SPEC_DIR to the traction_workbench_spec_v1 directory")
 
 
 @lru_cache(maxsize=None)

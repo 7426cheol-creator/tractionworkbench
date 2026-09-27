@@ -1,0 +1,139 @@
+"""Headless self-test of the desktop application (also run on the packaged executable in CI).
+
+Drives every page through its real code path (tasks run synchronously), checks the decision verdicts of the
+built-in examples and the golden acceptance, writes window screenshots, a PDF report and ``selftest.json``.
+Exit code 0 only if every check passes.
+"""
+
+from __future__ import annotations
+
+import json
+import platform
+import time
+import traceback
+from pathlib import Path
+
+from .. import __version__, api
+
+EXPECTED = {"ts012_600": "PASS", "ts012_450": "FAIL", "ts012_10s": "UNKNOWN", "regen_80": "PASS",
+            "regen_100": "FAIL", "dis_350": "FAIL", "range": "UNKNOWN", "stall": "PASS"}
+
+
+def run_self_test(app, out_dir) -> int:
+    from .main_window import MainWindow
+    from .worker import TaskRunner
+
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    app.setProperty("twb_selftest", True)
+    TaskRunner.synchronous = True
+    checks: list[dict] = []
+    t_start = time.perf_counter()
+
+    def check(name, ok, detail=""):
+        checks.append({"check": name, "ok": bool(ok), "detail": str(detail)})
+
+    def shot(win, name):
+        app.processEvents()
+        win.grab().save(str(out / f"{name}.png"))
+
+    try:
+        win = MainWindow()
+        win.resize(1600, 1000)
+        win.show()
+        app.processEvents()
+        page = win.pages["decision"]
+        for i, p in enumerate(api.PRESETS):
+            page.presets.setCurrentIndex(i)
+            page.run()
+            app.processEvents()
+            got = page.result["record"]["verdict"]["verdict"] if page.result else None
+            check(f"decision:{p['key']}", got == EXPECTED.get(p["key"]), f"verdict {got}, expected {EXPECTED.get(p['key'])}")
+            if p["key"] == "ts012_600":
+                shot(win, "01_decision_summary")
+                page.tabs.setCurrentIndex(1)
+                for k in range(page.views.tabs.count()):
+                    page.views.tabs.setCurrentIndex(k)
+                    shot(win, f"02_decision_view_{k}")
+                page.tabs.setCurrentIndex(2)            # T-n position (computes the envelope)
+                shot(win, "03_decision_tn")
+                page.tabs.setCurrentIndex(0)
+            if p["key"] == "ts012_450":
+                page.tabs.setCurrentIndex(3)
+                shot(win, "04_decision_analyses")
+                from ..report_pdf import build_pdf
+                res = page.result
+                pdf = build_pdf(out / "report_REQ-TS-012-LV.pdf", res["record"], res["rec"], res["case"])
+                check("pdf_report", pdf.is_file() and pdf.stat().st_size > 50_000, f"{pdf.stat().st_size} bytes")
+                page.tabs.setCurrentIndex(0)
+
+        def visit(key, row, actions, shots):
+            win.nav.setCurrentRow(row)
+            pg = win.pages[key]
+            for a in actions:
+                getattr(pg, a)() if isinstance(a, str) else a(pg)
+                app.processEvents()
+            for k, (tab_setter, name) in enumerate(shots):
+                if tab_setter:
+                    tab_setter(pg)
+                shot(win, name)
+            return pg
+
+        ex = visit("explorer", 1, ["run", lambda pg: pg._picked(-300.0, 100.0)], [(None, "05_explorer")])
+        check("explorer:forward", ex.views.pv is not None and abs(ex.views.pv.point.id_A + 300.0) < 1e-9)
+        tr_pg = visit("trajectory", 2, ["run"], [(None, "06_trajectory_speed"), (lambda pg: pg.tabs.setCurrentIndex(1), "07_trajectory_vars")])
+        tr_pg.m_torque.setChecked(True)
+        tr_pg.run()
+        check("trajectory", tr_pg.p_plane._draw is not None)
+        shot(win, "08_trajectory_torque")
+        perf = visit("performance", 3, [lambda pg: pg.res_combo.setCurrentIndex(0), "run"],
+                     [(None, "09_envelope"), (lambda pg: pg.tabs.setCurrentIndex(1), "10_map_eta"),
+                      (lambda pg: pg.tabs.setCurrentIndex(2), "11_envelope_detail")])
+        check("performance", perf.res is not None and perf.res["map"]["status"].size > 0)
+        des = visit("design", 4, ["run1", "run2"], [(None, "12_design_sizing"), (lambda pg: pg.tabs.setCurrentIndex(1), "13_design_dominance")])
+        check("design", des.p_curve._draw is not None and des.p_dom._draw is not None)
+        saf = visit("safety", 5, ["run_ftti", "run_discharge", "run_overvoltage", "run_safe"],
+                    [(None, "14_safety_ftti"), (lambda pg: pg.tabs.setCurrentIndex(1), "15_safety_dclink"),
+                     (lambda pg: pg.tabs.setCurrentIndex(2), "16_safety_state")])
+        check("safety", all(p._draw is not None for p in (saf.p_ftti, saf.p_dis, saf.p_ov, saf.p_safe)))
+        th = visit("thermal", 6, ["run"], [(None, "17_thermal")])
+        check("thermal", th.plot._draw is not None and "s" in th.headline.text(), th.headline.text())
+        visit("model", 7, [], [(None, "18_model")])
+        vv = visit("verification", 8, ["run"], [(None, "19_verification")])
+        check("acceptance", "PASS" in vv.summary.text() and "MISMATCH" not in vv.summary.text(), vv.summary.text())
+        # flux-map drive: model switch + a decision on the D2 test drive
+        win.state.set_drive({"builtin": "MANUFACTURED_FLUX_MAP_TEST_DRIVE"}, "flux map", "builtin")
+        win.nav.setCurrentRow(0)
+        page.req_id.setText("FM-20")
+        page.torque.setValue(20.0)
+        page.speed.setValue(3000.0)
+        page.vdc.setValue(600.0)
+        page.range_on.setChecked(False)
+        page.dur_none.setChecked(True)
+        for w in (page.an_dom, page.an_relax, page.an_size_v, page.an_size_i):
+            w.setChecked(False)
+        page.run()
+        got = page.result["record"]["verdict"]["verdict"] if page.result else None
+        check("decision:flux_map", got in ("PASS", "FAIL", "UNKNOWN") and page.result["record"]["model"]["fidelity"] == "D2", got)
+        page.tabs.setCurrentIndex(1)
+        shot(win, "20_flux_map_decision")
+        win.set_theme("dark")
+        shot(win, "21_dark_theme")
+        errs = app.property("twb_errors") or []
+        check("no_error_dialogs", not errs, "; ".join(errs))
+    except Exception:  # noqa: BLE001
+        check("exception", False, traceback.format_exc())
+    report = {"software": __version__, "python": platform.python_version(), "platform": platform.platform(),
+              "elapsed_s": time.perf_counter() - t_start, "checks": checks,
+              "passed": sum(c["ok"] for c in checks), "total": len(checks), "ok": all(c["ok"] for c in checks)}
+    (out / "selftest.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    try:
+        import sys
+        if sys.stdout is not None:
+            print(json.dumps({k: report[k] for k in ("passed", "total", "ok", "elapsed_s")}))
+            for c in checks:
+                if not c["ok"]:
+                    print("FAIL", c["check"], c["detail"][:2000])
+    except Exception:  # noqa: BLE001 - windowed builds have no console
+        pass
+    return 0 if report["ok"] else 1

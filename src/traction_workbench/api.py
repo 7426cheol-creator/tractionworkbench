@@ -1,28 +1,28 @@
-"""JSON API used by the web UI and the static export.
+"""UI-agnostic request API used by the desktop application and the CLI.
 
 Numbers in request bodies use the units in their field names (rpm, V, N_m, A,
-W, s, C, uF).  Every request is converted into the documented case format, so
-the UI goes through the same validation as files.
+W, s, C, uF).  Every requirement request is converted into the documented case
+format, so interactive input goes through the same validation as case files.
 """
 
 from __future__ import annotations
 
 import math
 
-from .. import __version__
-from .. import service as S
-from .. import spec_fixtures as sf
-from ..decision import _jsonable
-from ..errors import InputValidationError
-from ..extensions.dclink import active_discharge, regen_disconnect_overvoltage
-from ..extensions.safe_state import safe_state_screening
-from ..extensions.thermal import FosterNetwork, ThermalModel, ThermalNode, thermal_duration, torque_availability
-from ..extensions.timing import TimingChain, TimingItem, analyze_timing
-from ..models import DataOrigin, Provenance
-from ..scenario import DcSourceLimits, Scenario
-from ..solvers.policy import PolicyEvaluator
-from ..analysis.dominance import capability_dominance, requirement_relaxation
-from ..analysis.sizing import size_parameter
+from . import __version__
+from . import service as S
+from . import spec_fixtures as sf
+from .decision import _jsonable
+from .errors import InputValidationError
+from .extensions.dclink import active_discharge, regen_disconnect_overvoltage
+from .extensions.safe_state import safe_state_screening
+from .extensions.thermal import FosterNetwork, ThermalModel, ThermalNode, thermal_duration, torque_availability
+from .extensions.timing import TimingChain, TimingItem, analyze_timing
+from .models import DataOrigin, Provenance
+from .scenario import DcSourceLimits, Scenario
+from .solvers.policy import PolicyEvaluator
+from .analysis.dominance import capability_dominance, requirement_relaxation
+from .analysis.sizing import size_parameter
 
 PRESETS = [
     {"key": "ts012_600", "title": {"ko": "REQ-TS-012 · 600 V", "en": "REQ-TS-012 · 600 V"},

@@ -1,6 +1,6 @@
 # Verification Report — Traction Workbench
 
-자동 생성: `python verification/make_report.py` · software 0.1.0 · commit `b3a0e48` · 2026-09-27 · Python 3.11.15, NumPy 2.4.6, SciPy 1.17.1
+자동 생성: `python verification/make_report.py` · software 0.2.0 · commit `a02e664` · 2026-09-27 · Python 3.11.15, NumPy 2.4.6, SciPy 1.17.1
 
 > 범위: 합성(synthetic) 참조 fixture에 대한 검증(verification)입니다. 하드웨어·공급사 데이터·외부 시뮬레이터에 대한 validation은 수행하지 않았습니다. 수치 자릿수는 회귀 검산용이며 실제 제품 정확도가 아닙니다.
 
@@ -9,9 +9,10 @@
 | 항목 | 결과 |
 |---|---|
 | 참조 패키지 무결성 (manifest SHA-256, 10 files) | OK |
-| 독립 fixture 검산 (production 코드 미사용) | 136/136 pass (36 s) |
+| 독립 fixture 검산 (production 코드 미사용) | 136/136 pass (35 s) |
 | Production vs golden acceptance | 21/21 pass |
-| pytest | 186 passed in 44.42s (45 s) |
+| pytest | 206 passed in 71.69s (0:01:11) (72 s) |
+| 데스크톱 앱 self-test (headless, `twb selftest`) | 18/18 pass (100 s) |
 
 ## 2. 독립 fixture 검산 (`verification/independent_fixture_check.py`)
 
@@ -67,12 +68,38 @@ PASS  inverse:I10_STANDSTILL_TORQUE:golden                             |did|=5.5
 | REQ-RANGE | **UNKNOWN** | SAMPLED_COVERAGE | 51.8181 | 표본점 통과만으로 전 구간 PASS 아님 |
 | REQ-ST-300 | **PASS** | — | 199.4377 | 등가 RMS, 효율 N/A, 지속시간 미확인 |
 
-## 5. 재현 방법
+## 5. 데스크톱 앱 self-test (`twb selftest`)
+
+모든 페이지를 실제 코드 경로로 실행합니다(작업은 동기 실행): 예시 8건의 판정, 운전점 탐색(클릭 정방향 평가), 궤적, 성능 곡선·맵, 설계·병목, 안전 스크리닝 4종, 열 가용성, golden acceptance, PDF 보고서, flux-map 드라이브 판정, 다크 테마. 배포 빌드(`packaging/build.py`, CI Windows job)는 같은 검사를 **동결된 실행 파일**에서 수행합니다.
+
+| check | result | detail |
+|---|---|---|
+| decision:ts012_600 | PASS | verdict PASS, expected PASS |
+| decision:ts012_450 | PASS | verdict FAIL, expected FAIL |
+| pdf_report | PASS | 128093 bytes |
+| decision:ts012_10s | PASS | verdict UNKNOWN, expected UNKNOWN |
+| decision:regen_80 | PASS | verdict PASS, expected PASS |
+| decision:regen_100 | PASS | verdict FAIL, expected FAIL |
+| decision:dis_350 | PASS | verdict FAIL, expected FAIL |
+| decision:range | PASS | verdict UNKNOWN, expected UNKNOWN |
+| decision:stall | PASS | verdict PASS, expected PASS |
+| explorer:forward | PASS |  |
+| trajectory | PASS |  |
+| performance | PASS |  |
+| design | PASS |  |
+| safety | PASS |  |
+| thermal | PASS | 냉각수 65 °C에서 450 N·m는 약 <b>5.47 s</b> 유지 가능, 이후 <b>433.7 N·m</b> (연속)<br><span style='font-size:9pt'>claim: <b>UNKNOWN</b |
+| acceptance | PASS | <span style='color:#1a7f37; font-weight:600'>21/21 PASS · manifest OK</span> · 1.39 s · verification against synthetic f |
+| decision:flux_map | PASS | UNKNOWN |
+| no_error_dialogs | PASS |  |
+
+## 6. 재현 방법
 
 ```bash
-pip install -e '.[test]'
+pip install -e '.[gui,test]'
 python verification/independent_fixture_check.py   # 독립 검산
 twb acceptance                                      # production vs golden
-python -m pytest -q                                 # 전체 테스트
+QT_QPA_PLATFORM=offscreen python -m pytest -q      # 전체 테스트
+twb selftest out/selftest                           # 데스크톱 앱 자체 검사
 python verification/make_report.py                  # 이 문서 재생성
 ```

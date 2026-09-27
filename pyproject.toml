@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "traction-workbench"
-version = "0.1.0"
+version = "0.2.0"
 description = "Traction inverter-motor engineering feasibility and decision workbench (steady-state fundamental dq model)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -14,16 +14,22 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+gui = ["PySide6-Essentials>=6.6", "matplotlib>=3.8"]
+report = ["matplotlib>=3.8"]
 test = ["pytest>=7"]
+build = ["pyinstaller>=6.3"]
 
 [project.scripts]
 twb = "traction_workbench.cli:main"
+
+[project.gui-scripts]
+traction-workbench = "traction_workbench.desktop.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-traction_workbench = ["web/static/*"]
+traction_workbench = ["desktop/resources/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

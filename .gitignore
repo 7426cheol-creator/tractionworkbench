@@ -7,3 +7,5 @@ dist/
 .venv/
 out/
 *.tmp
+packaging/version_info.txt
+selftest_out/

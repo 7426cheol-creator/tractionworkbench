@@ -1,14 +1,15 @@
 """Command-line interface: ``twb <command>`` (or ``python -m traction_workbench``).
 
-    twb serve [--port 8765] [--open]      local web UI
+    twb gui [--open CASE.json]            desktop application (same as TractionWorkbench.exe)
     twb evaluate CASE.json [--out DIR]    decision record (JSON + Markdown)
+    twb report CASE.json --pdf out.pdf    PDF engineering report with graphs (no GUI needed)
     twb demo [--out DIR]                  representative engineering questions on the synthetic drive
     twb solve --n 12000 --torque 150 --vdc 600
     twb forward --n 3000 --vdc 600 --id -200 --iq 400
     twb capability --n 12000 --vdc 600 [--direction -1] [--kind policy|physical|electrical]
     twb curve --vdc 600
     twb acceptance                        production output vs the golden fixtures
-    twb export-static --out site.html     self-contained UI snapshot
+    twb selftest OUT_DIR                  headless check of the desktop application (screenshots + report)
 """
 
 from __future__ import annotations
@@ -33,9 +34,34 @@ def _print_json(obj):
     print(json.dumps(_jsonable(obj), indent=2, ensure_ascii=False))
 
 
-def cmd_serve(args):
-    from .web.server import serve
-    serve(args.host, args.port, args.open, args.verbose)
+def cmd_gui(args):
+    from .desktop.app import main as gui_main
+    argv = []
+    if args.open:
+        argv += ["--open", args.open]
+    if args.lang:
+        argv += ["--lang", args.lang]
+    return gui_main(argv)
+
+
+def cmd_selftest(args):
+    from .desktop.app import main as gui_main
+    return gui_main(["--self-test", args.out])
+
+
+def cmd_report(args):
+    import matplotlib
+    matplotlib.use("Agg")
+    from .i18n import set_language
+    from .io import load_json_file
+    from .report_pdf import build_pdf
+    set_language(args.lang)
+    rec, obj, case = S.evaluate_case_full(load_json_file(args.case))
+    out = Path(args.pdf or f"{rec['record_id']}.pdf")
+    build_pdf(out, rec, obj, case, envelope=not args.no_envelope,
+              progress=lambda f, m="": print(f"  {f * 100:5.1f}% {m}", file=sys.stderr))
+    print(f"{rec['verdict']['verdict']}: report written to {out}")
+    return 0
 
 
 def _write_record(rec: dict, out: Path | None):
@@ -64,7 +90,7 @@ def cmd_evaluate(args):
 
 
 def cmd_demo(args):
-    from .web.api import PRESETS
+    from .api import PRESETS
     out = Path(args.out) if args.out else None
     rows = []
     for p in PRESETS:
@@ -145,12 +171,6 @@ def cmd_acceptance(args):
     return 0 if (a["all_pass"] and a["manifest_ok"]) else 1
 
 
-def cmd_export_static(args):
-    from .web.export import build_static_html
-    p = build_static_html(Path(args.out), progress=lambda m: print(m, file=sys.stderr))
-    print(f"static UI written to {p} ({p.stat().st_size // 1024} KB)")
-
-
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="twb", description="Traction engineering feasibility workbench")
     ap.add_argument("--version", action="version", version=f"traction-workbench {__version__}")
@@ -162,12 +182,19 @@ def build_parser() -> argparse.ArgumentParser:
             p.add_argument("--json", action="store_true", help="print JSON")
         return p
 
-    p = sub.add_parser("serve", help="run the local web UI")
-    p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--port", type=int, default=8765)
-    p.add_argument("--open", action="store_true", help="open a browser")
-    p.add_argument("--verbose", action="store_true")
-    p.set_defaults(fn=cmd_serve)
+    p = sub.add_parser("gui", help="start the desktop application")
+    p.add_argument("--open", help="case JSON to evaluate at start")
+    p.add_argument("--lang", choices=("ko", "en"))
+    p.set_defaults(fn=cmd_gui)
+    p = sub.add_parser("report", help="PDF engineering report (graphs + decision record) for a case file")
+    p.add_argument("case")
+    p.add_argument("--pdf", help="output PDF path (default: <record id>.pdf)")
+    p.add_argument("--lang", default="ko", choices=("ko", "en"))
+    p.add_argument("--no-envelope", action="store_true", help="skip the T-n envelope page (faster)")
+    p.set_defaults(fn=cmd_report)
+    p = sub.add_parser("selftest", help="headless check of the desktop application")
+    p.add_argument("out", nargs="?", default="selftest_out")
+    p.set_defaults(fn=cmd_selftest)
     p = sub.add_parser("evaluate", help="evaluate a case file into a decision record")
     p.add_argument("case")
     p.add_argument("--out", help="directory for the JSON + Markdown record")
@@ -200,9 +227,6 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("acceptance", help="compare with the golden fixtures")
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_acceptance)
-    p = sub.add_parser("export-static", help="write a self-contained HTML snapshot of the UI")
-    p.add_argument("--out", default="out/traction_workbench.html")
-    p.set_defaults(fn=cmd_export_static)
     return ap
 
 

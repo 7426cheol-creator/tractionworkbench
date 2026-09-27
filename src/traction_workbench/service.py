@@ -1,4 +1,4 @@
-"""JSON-in / JSON-out service layer shared by the CLI and the web UI.
+"""JSON-in / JSON-out service layer shared by the CLI and the desktop application.
 
 Everything returned here is plain JSON data (floats rounded only for charts;
 decision data keep full precision).
@@ -53,6 +53,11 @@ def drive_info(drive: DriveModel) -> dict:
 
 
 def evaluate_case(case_dict: dict) -> dict:
+    return evaluate_case_full(case_dict)[0]
+
+
+def evaluate_case_full(case_dict: dict):
+    """(record dict, DecisionRecord, Case): the objects are kept for plotting the operating points."""
     t0 = time.perf_counter()
     case = case_from_dict(case_dict)
     rec = evaluate_requirement(case.requirement, case.drive, scenario=case.scenario, source_limits=case.limits,
@@ -76,7 +81,7 @@ def evaluate_case(case_dict: dict) -> dict:
     out["unit_conversions"] = _jsonable(case.conversions.records)
     out["markdown"] = rec.to_markdown()
     out["elapsed_s"] = time.perf_counter() - t0
-    return out
+    return out, rec, case
 
 
 def forward(drive: DriveModel, limits: DcSourceLimits, speed_rpm: float, Vdc_V: float, id_A: float, iq_A: float) -> dict:
