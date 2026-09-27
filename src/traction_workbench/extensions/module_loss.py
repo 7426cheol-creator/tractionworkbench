@@ -216,17 +216,33 @@ def _duties(theta: np.ndarray, V_pk: float, Vdc: float, modulation: str):
 def leg_losses(model: ModuleLossModel, I_pk: float, phi_rad: float, V_pk: float, Vdc: float, Tj_C: float,
                n_angle: int | None = None) -> dict:
     """Average losses of the four positions of one leg over a fundamental period (per parallel module)."""
-    dev = model.device
     n = n_angle or model.n_angle
     theta = (np.arange(n) + 0.5) * TWO_PI / n
     i = I_pk * np.cos(theta - phi_rad) / model.parallel
-    d, sw, over = _duties(theta, V_pk, Vdc, model.modulation)
-    ipos, ineg = i > 0, i < 0
-    a = np.abs(i)
+    d, _sw, over = _duties(theta, V_pk, Vdc, model.modulation)
     problems = []
     if over:
         problems.append(f"overmodulation (V_pk {V_pk:.4g} V at Vdc {Vdc:g} V, {model.modulation}): the linear average "
                         f"PWM model is not valid - overmodulation / six-step is not supported")
+    return leg_losses_trajectory(model, i, d, Vdc, Tj_C, problems)
+
+
+def leg_losses_trajectory(model: ModuleLossModel, i: np.ndarray, d: np.ndarray, Vdc: float, Tj_C: float,
+                          problems: list | None = None) -> dict:
+    """Average losses of one leg for a uniformly sampled period.
+
+    ``i``: leg output current per parallel module (+ = out of the leg into the load); ``d``: upper-switch duty in
+    [0, 1] at the same samples.  The leg switches wherever 0 < d < 1 (a clamped leg does not switch but still
+    conducts).  Used for the single VSI (declared modulation) and for each bridge of a dual inverter (duty
+    trajectories from the voltage allocation).
+    """
+    dev = model.device
+    i = np.asarray(i, dtype=float)
+    d = np.clip(np.asarray(d, dtype=float), 0.0, 1.0)
+    sw = (d > 1e-12) & (d < 1.0 - 1e-12)
+    ipos, ineg = i > 0, i < 0
+    a = np.abs(i)
+    problems = list(problems or [])
     for name, tab in (("v_on", dev.v_on), ("v_rev", dev.v_rev), ("e_on", dev.e_on), ("e_off", dev.e_off),
                       ("e_rr", dev.e_rr), ("v_channel_rev", dev.v_channel_rev)):
         if tab is None:

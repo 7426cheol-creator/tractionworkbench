@@ -123,6 +123,9 @@ def _flux_array(obj, where):
     return arr
 
 
+SINGLE_VSI_NAMES = ("single_vsi", "single three-phase two-level vsi", "2l_vsi", "vsi")
+
+
 def drive_from_dict(d: dict, conv: Conversions | None = None) -> DriveModel:
     conv = conv or Conversions()
     if "builtin" in d:
@@ -177,6 +180,14 @@ def drive_from_dict(d: dict, conv: Conversions | None = None) -> DriveModel:
         psi_temperature=None if not psi_t else TemperatureDependence(psi_t["coeff_per_K"], tuple(psi_t["valid_C"]), psi_t["basis"]),
         fidelity=Fidelity(m.get("fidelity", fid.value)))
     iv = _req(d, "inverter", "drive")
+    topo = str(iv.get("topology", "single_vsi")).strip().lower()
+    if topo not in SINGLE_VSI_NAMES:
+        # topology identity (OEW/HEV addendum P0): a dual-bridge / open-end-winding / multi-machine declaration is
+        # never solved as a single VSI; those circuits have their own equations (extensions.oew / extensions.hev)
+        raise InputValidationError(
+            f"inverter topology {iv.get('topology')!r} is not a single three-phase two-level VSI; the single-VSI "
+            f"solver never re-interprets it (use the OEW / HEV analyses with an explicit topology)",
+            field="drive.inverter.topology")
     imax = current_peak(_req(iv, "current_limit", "drive.inverter"), "drive.inverter.current_limit", conv)
     ls = iv.get("loss")
     loss = None

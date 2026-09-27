@@ -29,6 +29,8 @@ import math
 from dataclasses import dataclass
 
 import numpy as np
+
+_trapezoid = getattr(np, "trapezoid", None) or np.trapz      # numpy < 2.0 compatibility
 from scipy.integrate import solve_ivp
 from scipy.linalg import expm
 
@@ -156,7 +158,7 @@ def evaluate_requirement(req: CurrentTimeRequirement, t: np.ndarray, iph: np.nda
         value, when = float(wave[k]), float(tw[k])
     elif req.operator == "rms":
         sq = (iph[:, sel] ** 2) if req.quantity == "phase" else (wave ** 2)[None, :]
-        rms_each = np.sqrt(np.trapezoid(sq, tw, axis=1) / (tw[-1] - tw[0]))
+        rms_each = np.sqrt(_trapezoid(sq, tw, axis=1) / (tw[-1] - tw[0]))
         worst_phase = int(np.argmax(rms_each)) if req.quantity == "phase" else None
         value, when = float(rms_each.max()), None
     elif req.operator == "envelope_after":
@@ -249,7 +251,7 @@ def asc_transient(drive: DriveModel, scenario: Scenario, id0_A: float, iq0_A: fl
     peak_phase = max((per_req[r]["value"] for r in per_req if per_req[r] and per_req[r].get("operator") == "abs_peak"
                       and per_req[r].get("quantity") == "phase"), default=None)
     iph_worst = _phase_currents(id_all, iq_all, theta_rel)
-    i2t = float(np.max(np.trapezoid(iph_worst ** 2, t, axis=1)))
+    i2t = float(np.max(_trapezoid(iph_worst ** 2, t, axis=1)))
     if device_peak_A is None and device_i2t_A2s is None:
         items["device_survival"] = {"status": "UNKNOWN", "detail": "no supplier pulse / SOA / I^2 t envelope for this "
                                     "waveform, voltage, temperature and gate condition (a short-circuit withstand "
