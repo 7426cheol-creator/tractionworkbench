@@ -217,8 +217,11 @@ def _limiting_and_actions(req: Requirement, results: list[ConditionResult], samp
             vol = pt.constraint("VOLTAGE")
             if cur is not None and vol is not None and cur.state == "SATISFIED" and vol.state != "SATISFIED" \
                     and cr.torque_margin_Nm is not None:
-                add(limiting, f"{tag} current margin {cur.slack:.4g} A but torque-capability margin only "
-                              f"{cr.torque_margin_Nm:.4g} N*m: the limit is voltage/DC, not current")
+                m = cr.torque_margin_Nm
+                add(limiting, f"{tag} current margin {cur.slack:.4g} A but " + (
+                    f"torque-capability margin only {m:.4g} N*m" if m >= 0 else
+                    f"the request exceeds the policy capability by {-m:.4g} N*m") +
+                    ": the limit is voltage/DC, not current")
         if cr.capability is not None and cr.capability.witness is not None:
             add(limiting, f"{tag} policy capability {cr.capability.value_Nm:.6g} N*m limited by: "
                           f"{', '.join(cr.capability.active_constraints) or 'n/a'}")
@@ -232,14 +235,16 @@ def _limiting_and_actions(req: Requirement, results: list[ConditionResult], samp
                 add(actions, f"{tag} no electrical solution in the declared domain: examine Vdc, current limit, "
                              f"declared id domain or motor data (see sizing/dominance)")
         if dc is not None and dc.status is Status.INFEASIBLE and pt is not None:
-            for c in pt.violations():
-                if c.group == "DISCHARGE_SOURCE":
-                    add(actions, f"{tag} DC discharge limit binds ({c.name}): source must supply "
-                                 f"{c.demand:.6g} {c.unit} vs {c.limit:.6g}; raise the limit or lower the request")
-                if c.group == "CHARGE_SOURCE":
-                    add(actions, f"{tag} battery charge acceptance binds ({c.name}); deliberately raising losses is "
-                                 f"not an energy-recovering policy - confirm charge limits at the relevant SOC/"
-                                 f"temperature or split braking with the friction brake (outside this model)")
+            dis = [c for c in pt.violations() if c.group == "DISCHARGE_SOURCE"]
+            chg = [c for c in pt.violations() if c.group == "CHARGE_SOURCE"]
+            if dis:
+                add(actions, f"{tag} DC discharge limit binds (" + "; ".join(
+                    f"{c.name}: {c.demand:.6g} vs {c.limit:.6g} {c.unit}" for c in dis) +
+                    "): raise the source limit or lower the request")
+            if chg:
+                add(actions, f"{tag} battery charge acceptance binds (" + ", ".join(c.name for c in chg) +
+                    "); deliberately raising losses is not an energy-recovering policy - confirm charge limits at the "
+                    "relevant SOC/temperature or split braking with the friction brake (outside this model)")
         for c in sol.claims:
             if Reason.MISSING_INPUT in c.reasons or Reason.OUTSIDE_MODEL_DOMAIN in c.reasons:
                 for i in sol.model_issues:

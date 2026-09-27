@@ -1,0 +1,25 @@
+{
+  "schema": "traction-workbench/case@1",
+  "drive": {
+    "builtin": "SYNTH_IPMSM_200KW_REF_V1"
+  },
+  "requirement": {
+    "id": "REQ-RG-100",
+    "text": "12,000 rpm 회생 제동 100 N·m",
+    "target": {
+      "value": -100,
+      "unit": "N*m",
+      "torque": "shaft"
+    },
+    "conditions": {
+      "speed": {
+        "value": 12000,
+        "unit": "rpm"
+      },
+      "Vdc": {
+        "value": 600,
+        "unit": "V"
+      }
+    }
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "schema": "traction-workbench/case@1",
+  "drive": {
+    "builtin": "SYNTH_IPMSM_200KW_REF_V1"
+  },
+  "requirement": {
+    "id": "REQ-TS-012-10S",
+    "revision": "A",
+    "text": "600 V, 12,000 rpm에서 150 N·m를 10초 유지한다.",
+    "target": {
+      "value": 150,
+      "unit": "N*m",
+      "torque": "shaft"
+    },
+    "conditions": {
+      "speed": {
+        "value": 12000,
+        "unit": "rpm",
+        "kind": "mechanical"
+      },
+      "Vdc": {
+        "value": 600,
+        "unit": "V",
+        "port": "inverter_dc_terminal"
+      },
+      "coolant_temp": {
+        "value": 65,
+        "unit": "degC"
+      }
+    },
+    "duration": {
+      "value": 10,
+      "unit": "s"
+    }
+  }
+}

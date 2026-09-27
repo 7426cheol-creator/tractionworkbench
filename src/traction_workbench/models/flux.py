@@ -295,8 +295,19 @@ class FluxMapPlane:
             rects.append((float(ax_d[i]), float(ax_d[i + 1]), float(ax_q[j]), float(ax_q[j + 1]), False))
         return rects
 
+    @property
+    def data_sha256(self) -> str:
+        """Digest of axes, flux arrays and mask, so decision records identify the exact map data."""
+        import hashlib
+        h = hashlib.sha256()
+        for arr in (self.id_axis_A, self.iq_axis_A, self.psi_d_Wb, self.psi_q_Wb):
+            h.update(np.ascontiguousarray(np.where(np.isfinite(arr), arr, 0.0), dtype="<f8").tobytes())
+        h.update(np.ascontiguousarray(self.valid, dtype=np.uint8).tobytes())
+        return h.hexdigest()
+
     def coverage_summary(self) -> dict:
         return {
+            "data_sha256": self.data_sha256,
             "id_axis_A": [float(self.id_axis_A[0]), float(self.id_axis_A[-1]), int(self.id_axis_A.size)],
             "iq_axis_A": [float(self.iq_axis_A[0]), float(self.iq_axis_A[-1]), int(self.iq_axis_A.size)],
             "valid_nodes": int(self.valid.sum()),

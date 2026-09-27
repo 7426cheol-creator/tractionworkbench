@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Traction Workbench</title>
+<meta name="description" content="Inverter–motor engineering decision workbench: requirement → conditions → id/iq → power balance → constraints → conclusion.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232156d1'/%3E%3Cpath d='M5 16c3-8 6-8 9 0s6 8 9 0' stroke='white' stroke-width='3' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+<!--STYLE--><link rel="stylesheet" href="/static/app.css"><!--/STYLE-->
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <div class="brand">
+    <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7"/><path d="M5 16c3-8 6-8 9 0s6 8 9 0"/></svg>
+    <div class="brand-text"><strong>Traction Workbench</strong><span id="version" class="muted"></span></div>
+  </div>
+  <div id="drive-badge" class="drive-badge" title="">…</div>
+  <div class="top-actions">
+    <button id="lang" class="ghost" aria-label="Language">EN</button>
+    <button id="theme" class="ghost" aria-label="Theme">◐</button>
+  </div>
+</header>
+<nav class="tabs" role="tablist" aria-label="Sections">
+  <button role="tab" data-tab="decision" aria-selected="true"><span data-i18n="tab.decision"></span></button>
+  <button role="tab" data-tab="capability"><span data-i18n="tab.capability"></span></button>
+  <button role="tab" data-tab="design"><span data-i18n="tab.design"></span></button>
+  <button role="tab" data-tab="safety"><span data-i18n="tab.safety"></span></button>
+  <button role="tab" data-tab="thermal"><span data-i18n="tab.thermal"></span></button>
+  <button role="tab" data-tab="vv"><span data-i18n="tab.vv"></span></button>
+</nav>
+<div id="static-note" class="static-note" hidden></div>
+<main id="main">
+  <!-- ============ DECISION ============ -->
+  <section class="page" data-page="decision">
+    <div class="layout-2">
+      <aside class="card form-card">
+        <h2 data-i18n="dec.title"></h2>
+        <p class="muted small" data-i18n="dec.lead"></p>
+        <div class="presets" id="presets"></div>
+        <form id="req-form" autocomplete="off">
+          <label><span data-i18n="f.id"></span><input name="id" value="REQ-TS-012"></label>
+          <label><span data-i18n="f.text"></span><textarea name="text" rows="2"></textarea></label>
+          <div class="row2">
+            <label><span data-i18n="f.torque"></span><div class="unit"><input name="torque_Nm" type="number" step="any" value="150" required><em>N·m</em></div></label>
+            <label><span data-i18n="f.speed"></span><div class="unit"><input name="speed_rpm" type="number" step="any" value="12000" required><em>rpm</em></div></label>
+          </div>
+          <div class="seg" role="radiogroup" aria-label="Vdc">
+            <label><input type="radio" name="vmode" value="point" checked><span data-i18n="f.vpoint"></span></label>
+            <label><input type="radio" name="vmode" value="range"><span data-i18n="f.vrange"></span></label>
+          </div>
+          <div class="row2">
+            <label><span data-i18n="f.vdc"></span><div class="unit"><input name="Vdc_V" type="number" step="any" value="600" required><em>V</em></div></label>
+            <label class="vrange-hi" hidden><span data-i18n="f.vdc_hi"></span><div class="unit"><input name="Vdc_hi" type="number" step="any" value="650"><em>V</em></div></label>
+          </div>
+          <div class="row2">
+            <label><span data-i18n="f.duration"></span><div class="unit"><input name="duration_s" type="number" step="any" min="0" placeholder="—"><em>s</em></div></label>
+            <label><span data-i18n="f.coolant"></span><div class="unit"><input name="coolant_temp_C" type="number" step="any" placeholder="—"><em>°C</em></div></label>
+          </div>
+          <details class="adv"><summary data-i18n="f.advanced"></summary>
+            <div class="row2">
+              <label><span data-i18n="f.pdis"></span><div class="unit"><input name="discharge_power_max_W" type="number" step="any" placeholder="200000"><em>W</em></div></label>
+              <label><span data-i18n="f.pchg"></span><div class="unit"><input name="charge_power_max_W" type="number" step="any" placeholder="100000"><em>W</em></div></label>
+              <label><span data-i18n="f.idis"></span><div class="unit"><input name="discharge_current_max_A" type="number" step="any" placeholder="400"><em>A</em></div></label>
+              <label><span data-i18n="f.ichg"></span><div class="unit"><input name="charge_current_max_A" type="number" step="any" placeholder="200"><em>A</em></div></label>
+            </div>
+            <label class="check"><input type="checkbox" name="an_dom"><span data-i18n="f.an_dom"></span></label>
+            <label class="check"><input type="checkbox" name="an_size"><span data-i18n="f.an_size"></span></label>
+          </details>
+          <button class="primary" type="submit"><span data-i18n="f.run"></span></button>
+          <p class="muted tiny" data-i18n="f.note"></p>
+        </form>
+      </aside>
+      <div class="results" id="dec-results">
+        <div class="empty card" data-i18n-html="dec.empty"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ CAPABILITY ============ -->
+  <section class="page" data-page="capability" hidden>
+    <div class="card">
+      <div class="card-head"><h2 data-i18n="cap.title"></h2>
+        <div class="inline-form" id="cap-form">
+          <span class="muted small" data-i18n="cap.vdc"></span>
+          <div class="chips" id="cap-vdc"></div>
+          <div class="unit tiny-input"><input id="cap-vdc-add" type="number" placeholder="Vdc"><em>V</em></div>
+          <button class="ghost" id="cap-add">+</button>
+          <button class="primary" id="cap-run"><span data-i18n="cap.run"></span></button>
+        </div>
+      </div>
+      <p class="muted small" data-i18n="cap.lead"></p>
+      <div class="chart" id="cap-chart"></div>
+      <div class="legend-note muted tiny" data-i18n="cap.note"></div>
+      <div id="cap-table" class="table-wrap"></div>
+    </div>
+  </section>
+
+  <!-- ============ DESIGN ============ -->
+  <section class="page" data-page="design" hidden>
+    <div class="grid-2">
+      <div class="card">
+        <h2 data-i18n="des.sizing"></h2>
+        <p class="muted small" data-i18n="des.sizing_lead"></p>
+        <form id="size-form" class="compact">
+          <div class="row3">
+            <label><span data-i18n="f.torque"></span><div class="unit"><input name="torque_Nm" type="number" step="any" value="150"><em>N·m</em></div></label>
+            <label><span data-i18n="f.speed"></span><div class="unit"><input name="speed_rpm" type="number" step="any" value="12000"><em>rpm</em></div></label>
+            <label><span data-i18n="f.vdc"></span><div class="unit"><input name="Vdc_V" type="number" step="any" value="450"><em>V</em></div></label>
+          </div>
+          <div class="row3">
+            <label><span data-i18n="des.param"></span><select name="parameter"></select></label>
+            <label><span data-i18n="des.lo"></span><input name="lo" type="number" step="any" value="400"></label>
+            <label><span data-i18n="des.hi"></span><input name="hi" type="number" step="any" value="800"></label>
+          </div>
+          <button class="primary" type="submit"><span data-i18n="des.run_sizing"></span></button>
+        </form>
+        <div id="size-out"></div>
+      </div>
+      <div class="card">
+        <h2 data-i18n="des.dom"></h2>
+        <p class="muted small" data-i18n="des.dom_lead"></p>
+        <form id="dom-form" class="compact">
+          <div class="row3">
+            <label><span data-i18n="f.speed"></span><div class="unit"><input name="speed_rpm" type="number" step="any" value="12000"><em>rpm</em></div></label>
+            <label><span data-i18n="f.vdc"></span><div class="unit"><input name="Vdc_V" type="number" step="any" value="500"><em>V</em></div></label>
+            <label><span data-i18n="des.dir"></span><select name="direction"><option value="1" data-i18n="des.motoring"></option><option value="-1" data-i18n="des.braking"></option></select></label>
+          </div>
+          <button class="primary" type="submit"><span data-i18n="des.run_dom"></span></button>
+        </form>
+        <div id="dom-out"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SAFETY ============ -->
+  <section class="page" data-page="safety" hidden>
+    <div class="scope-banner"><strong data-i18n="saf.scope_t"></strong> <span data-i18n="saf.scope"></span></div>
+    <div class="subtabs" role="tablist">
+      <button data-sub="ftti" aria-selected="true">FTTI</button>
+      <button data-sub="dclink" data-i18n="saf.dclink"></button>
+      <button data-sub="safestate" data-i18n="saf.safestate"></button>
+    </div>
+    <div class="sub" data-subpage="ftti">
+      <div class="card">
+        <div class="card-head"><h2 data-i18n="ftti.title"></h2><button class="primary" id="ftti-run"><span data-i18n="ftti.run"></span></button></div>
+        <p class="muted small" data-i18n="ftti.lead"></p>
+        <div class="row3 compact">
+          <label>FTTI<div class="unit"><input id="ftti-ms" type="number" step="any" value="30"><em>ms</em></div></label>
+          <label>FDTI budget<div class="unit"><input id="fdti-ms" type="number" step="any" value="10"><em>ms</em></div></label>
+          <label>FRTI budget<div class="unit"><input id="frti-ms" type="number" step="any" value="15"><em>ms</em></div></label>
+        </div>
+        <div class="table-wrap"><table class="edit" id="ftti-table"></table></div>
+        <button class="ghost small" id="ftti-add">+ <span data-i18n="ftti.add"></span></button>
+        <div id="ftti-out"></div>
+      </div>
+    </div>
+    <div class="sub" data-subpage="dclink" hidden>
+      <div class="grid-2">
+        <div class="card">
+          <h2 data-i18n="dc.dis_t"></h2>
+          <form id="dis-form" class="compact">
+            <div class="row3">
+              <label>C<div class="unit"><input name="C_uF" type="number" step="any" value="500"><em>µF</em></div></label>
+              <label>V₀<div class="unit"><input name="V0_V" type="number" step="any" value="600"><em>V</em></div></label>
+              <label><span>V<sub>f</sub></span><div class="unit"><input name="Vf_V" type="number" step="any" value="60"><em>V</em></div></label>
+              <label data-i18n-title="dc.t"><span data-i18n="dc.t"></span><div class="unit"><input name="t_target_s" type="number" step="any" value="2"><em>s</em></div></label>
+              <label><span>R <span class="muted tiny" data-i18n="dc.opt"></span></span><div class="unit"><input name="R_ohm" type="number" step="any"><em>Ω</em></div></label>
+              <label><span data-i18n="dc.spin"></span><div class="unit"><input name="speed_rpm" type="number" step="any" value="0"><em>rpm</em></div></label>
+            </div>
+            <button class="primary" type="submit"><span data-i18n="dc.run"></span></button>
+          </form>
+          <div id="dis-out"></div>
+        </div>
+        <div class="card">
+          <h2 data-i18n="dc.ov_t"></h2>
+          <form id="ov-form" class="compact">
+            <div class="row3">
+              <label>C<div class="unit"><input name="C_uF" type="number" step="any" value="500"><em>µF</em></div></label>
+              <label>V₁<div class="unit"><input name="V1_V" type="number" step="any" value="600"><em>V</em></div></label>
+              <label><span>V<sub>lim</sub></span><div class="unit"><input name="V_limit_V" type="number" step="any" value="850"><em>V</em></div></label>
+              <label><span data-i18n="f.speed"></span><div class="unit"><input name="speed_rpm" type="number" step="any" value="12000"><em>rpm</em></div></label>
+              <label><span data-i18n="dc.regen_t"></span><div class="unit"><input name="torque_Nm" type="number" step="any" value="-80"><em>N·m</em></div></label>
+              <label><span data-i18n="dc.react"></span><div class="unit"><input name="reaction_time_ms" type="number" step="any" value="2"><em>ms</em></div></label>
+            </div>
+            <div class="seg"><label><input type="radio" name="profile" value="constant" checked><span data-i18n="dc.const"></span></label><label><input type="radio" name="profile" value="linear_ramp_down"><span data-i18n="dc.ramp"></span></label></div>
+            <button class="primary" type="submit"><span data-i18n="dc.run"></span></button>
+          </form>
+          <div id="ov-out"></div>
+        </div>
+      </div>
+    </div>
+    <div class="sub" data-subpage="safestate" hidden>
+      <div class="card">
+        <h2 data-i18n="ss.title"></h2>
+        <form id="ss-form" class="compact">
+          <div class="row3">
+            <label><span data-i18n="f.speed"></span><div class="unit"><input name="speed_rpm" type="number" step="any" value="12000"><em>rpm</em></div></label>
+            <label><span data-i18n="f.vdc"></span><div class="unit"><input name="Vdc_V" type="number" step="any" value="600"><em>V</em></div></label>
+            <label><span data-i18n="ss.hv"></span><select name="hv_state"><option value="battery_connected" data-i18n="ss.conn"></option><option value="battery_disconnected" data-i18n="ss.disc"></option></select></label>
+            <label><span data-i18n="ss.dev"></span><div class="unit"><input name="device_voltage_rating_V" type="number" step="any" value="1200"><em>V</em></div></label>
+            <label><span data-i18n="ss.rule"></span><div class="unit"><input name="rule_v" type="number" step="any" value="60"><em>V</em></div></label>
+          </div>
+          <button class="primary" type="submit"><span data-i18n="ss.run"></span></button>
+        </form>
+        <div id="ss-out"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ THERMAL ============ -->
+  <section class="page" data-page="thermal" hidden>
+    <div class="scope-banner warn"><strong data-i18n="th.scope_t"></strong> <span data-i18n="th.scope"></span></div>
+    <div class="card">
+      <h2 data-i18n="th.title"></h2>
+      <form id="th-form" class="compact">
+        <div class="row3">
+          <label><span data-i18n="f.speed"></span><div class="unit"><input name="speed_rpm" type="number" step="any" value="3000"><em>rpm</em></div></label>
+          <label><span data-i18n="f.vdc"></span><div class="unit"><input name="Vdc_V" type="number" step="any" value="600"><em>V</em></div></label>
+          <label><span data-i18n="f.coolant"></span><div class="unit"><input name="coolant_temp_C" type="number" step="any" value="65"><em>°C</em></div></label>
+          <label><span data-i18n="f.torque"></span><div class="unit"><input name="torque_Nm" type="number" step="any" value="450"><em>N·m</em></div></label>
+          <label><span data-i18n="f.duration"></span><div class="unit"><input name="duration_s" type="number" step="any" value="10"><em>s</em></div></label>
+        </div>
+        <details class="adv"><summary data-i18n="th.model"></summary><textarea name="model" rows="10" class="mono"></textarea></details>
+        <button class="primary" type="submit"><span data-i18n="th.run"></span></button>
+      </form>
+      <div id="th-out"></div>
+    </div>
+  </section>
+
+  <!-- ============ V&V ============ -->
+  <section class="page" data-page="vv" hidden>
+    <div class="card">
+      <div class="card-head"><h2 data-i18n="vv.title"></h2><button class="primary" id="vv-run"><span data-i18n="vv.run"></span></button></div>
+      <p class="muted small" data-i18n="vv.lead"></p>
+      <div id="vv-out"></div>
+    </div>
+    <div class="card">
+      <h2 data-i18n="vv.limits_t"></h2>
+      <ul class="bullets" id="vv-limits"></ul>
+    </div>
+  </section>
+</main>
+<footer class="foot">
+  <span data-i18n="foot"></span>
+</footer>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+<!--DATA--><!--/DATA-->
+<!--SCRIPT--><script src="/static/app.js"></script><!--/SCRIPT-->
+</body>
+</html>
