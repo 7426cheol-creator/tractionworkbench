@@ -332,6 +332,16 @@ def test_desktop_smoke(tmp_path):
         assert pd.last_pol is not None and len(pd.last_pol["policies"]) == 3
         pd.run_driveline()
         assert pd.last_dl["variants"]["combined"]["stability"]["stable"]
+        pd.run_transients()
+        assert pd.last_trn["sampling_here"]["status"] in ("OK", "UNKNOWN", "VIOLATION")
+        pd.sn_kind.setCurrentIndex(pd.sn_kind.findData("dc_link_shunt"))      # a single shunt fails at low modulation
+        pd.run_policies()
+        assert all(any("current sampling" in v for v in p["violations"]) for p in pd.last_pol["policies"])
+        pd.sg_drop.setText("450-560")                                          # wheel-speed dropout, declared fallback
+        pd.m_em.setChecked(True)
+        pd.run_driveline()
+        fb = pd.last_dl["variants"]["feedback"]
+        assert fb["safety"]["status"] in ("FEASIBLE", "INFEASIBLE") and "evaluated_until_s" in fb["metrics"]
         mp = win.pages["machine"]
         mp.t_cand.load([["ref", 1.0, 1.0, 1.0, None, None], ["N+10%", 1.1, 1.0, 1.0, None, None],
                         ["L+", 1.2, 1.2, 1.0, None, None]])            # stack change without end shares: refused

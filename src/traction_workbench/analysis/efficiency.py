@@ -523,7 +523,8 @@ def _module_point(base_drive, cand: ModuleCandidate, sc, T: float, coolant_C: fl
             "reason": sol.policy_claim.detail, "Tj_C": Tj, "P_hot_W": P_hot, "fsw_Hz": model.fsw_Hz,
             "iterations": len(hist),
             "point": {"id_A": pt.id_A, "iq_A": pt.iq_A, "i_peak_A": pt.i_peak_A, "Pinv_W": pt.Pinv_W,
-                      "Pdc_W": pt.Pdc_W, "Pac_W": pt.Pac_W, "Pshaft_W": pt.Pshaft_W, "Pcu_W": pt.Pcu_W},
+                      "Pdc_W": pt.Pdc_W, "Pac_W": pt.Pac_W, "Pshaft_W": pt.Pshaft_W, "Pcu_W": pt.Pcu_W,
+                      "vd_V": pt.vd_V, "vq_V": pt.vq_V, "voltage_budget_V": pt.voltage_budget_V},
             "detail": det, "ledger": led}
 
 

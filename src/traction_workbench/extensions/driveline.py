@@ -137,6 +137,11 @@ class Damping:
     Kd_Nms_per_rad: float = 0.0
     hpf_Hz: float | None = None       # motor-speed high-pass cut-off (motor_speed_hpf)
     quantization_rad_s: float = 0.0   # speed measurement resolution (0: ideal)
+    load_speed_skew_s: float = 0.0    # the load (wheel) speed sample is this much OLDER than the motor speed sample
+    dropouts: tuple = ()              # ((t_start_s, t_end_s), ...) windows where the sensed signal is unavailable
+    dropout_signal: str = "load"      # which signal drops out: "load" (e.g. wheel speed message) | "motor" (resolver)
+    stale_limit_s: float | None = None  # declared fallback: beyond this age the feedback fades out (None: not declared)
+    fade_s: float = 0.0               # fade-out / fade-in ramp of the damping torque
 
     def __post_init__(self):
         if self.kind not in ("none", "relative_speed", "motor_speed_hpf"):
@@ -145,6 +150,19 @@ class Damping:
             raise InputValidationError("Kd must be >= 0", field="Kd_Nms_per_rad")
         if self.kind == "motor_speed_hpf" and not (self.hpf_Hz and self.hpf_Hz > 0):
             raise InputValidationError("motor-speed damping needs the high-pass cut-off", field="hpf_Hz")
+        for n in ("load_speed_skew_s", "fade_s"):
+            if _finite(n, getattr(self, n)) < 0:
+                raise InputValidationError(f"{n} must be >= 0", field=n)
+        if self.stale_limit_s is not None and _finite("stale_limit_s", self.stale_limit_s) <= 0:
+            raise InputValidationError("the stale limit must be > 0", field="stale_limit_s")
+        if self.dropout_signal not in ("load", "motor"):
+            raise InputValidationError("dropout signal must be load or motor", field="dropout_signal")
+        for w in self.dropouts:
+            if len(w) != 2 or not (float(w[0]) < float(w[1])):
+                raise InputValidationError("dropout windows are (t_start, t_end) with t_start < t_end", field="dropouts")
+
+    def unavailable(self, signal: str, t: float) -> bool:
+        return signal == self.dropout_signal and any(float(a) <= t < float(b) for a, b in self.dropouts)
 
 
 @dataclass(frozen=True)
@@ -209,7 +227,16 @@ def simulate(dl: Driveline, ctl: Controller, man: Maneuver) -> dict:
     xs = np.zeros((t_out.size, n))
     ucur = np.zeros(t_out.size)
     oi = 0
-    rec = {"t_s": [], "T_request": [], "T_shaped": [], "T_ad": [], "T_cmd": [], "clipped": []}
+    rec = {"t_s": [], "T_request": [], "T_shaped": [], "T_ad": [], "T_cmd": [], "clipped": [], "clip_side": [],
+           "age_s": [], "gain": [], "stale": [], "meas_error_rad_s": []}
+    dp = ctl.damping
+    skew = dp.load_speed_skew_s if dp.kind == "relative_speed" else 0.0
+    a_init = (man.T0_Nm - TL) / (r["Jm"] + r["Jl"])
+    held = {"motor": (wm0, 0.0), "load": (wm0 - a_init * skew, -skew)}      # (value, measurement time)
+    load_meas = {}                                                            # sample index -> (value, time)
+    meas_events = [(k * Tsamp - skew, k) for k in ks if skew > 0 and k * Tsamp - skew >= 0.0]
+    mi = 0
+    gain_state = 1.0
     zv = None
     if ctl.shaper.kind == "zv":
         z = ctl.shaper.zv_zeta
@@ -237,11 +264,17 @@ def simulate(dl: Driveline, ctl: Controller, man: Maneuver) -> dict:
     while True:
         t_next_sample = events[ev_i][0] if ev_i < len(events) else math.inf
         t_next_apply = pending[0][0] if pending else math.inf
-        t_next = min(t_next_sample, t_next_apply, man.t_end_s)
+        t_next_meas = meas_events[mi][0] if mi < len(meas_events) else math.inf
+        t_next = min(t_next_sample, t_next_apply, t_next_meas, man.t_end_s)
         x = advance(x, t, t_next, u_cmd)
         t = t_next
-        if t >= man.t_end_s - 1e-15 and t_next_sample > man.t_end_s and t_next_apply > man.t_end_s:
+        if t >= man.t_end_s - 1e-15 and t_next_sample > man.t_end_s and t_next_apply > man.t_end_s \
+                and t_next_meas > man.t_end_s:
             break
+        if t_next_meas <= min(t_next_sample, t_next_apply):
+            load_meas[meas_events[mi][1]] = (float(x[1]), t)                 # skewed load-speed measurement
+            mi += 1
+            continue
         if t_next_apply <= t_next_sample:
             _t, u_new, _r = pending.pop(0)
             u_cmd = u_new
@@ -276,14 +309,27 @@ def simulate(dl: Driveline, ctl: Controller, man: Maneuver) -> dict:
             shaper_state["hist"].append((tk, Treq))
             past = [v for (tt, v) in shaper_state["hist"] if tt <= tk - Td + 1e-12]
             Tsh = A1 * Treq + A2 * (past[-1] if past else man.T0_Nm)
-        # damping
-        dp = ctl.damping
-        wm, wl = x[0], x[1]
+        # damping: sensed signals (skew, dropout -> held value with its age, quantization), declared stale fallback
+        if skew > 0:
+            t_meas = tk - skew
+            wl_new, tl_new = load_meas[k] if k in load_meas else (wm0 + a_init * t_meas, t_meas)   # before t = 0:
+        else:                                                                          # the steady initial motion
+            wl_new, tl_new = float(x[1]), tk
+        if not dp.unavailable("load", tl_new):
+            held["load"] = (wl_new, tl_new)
+        if not dp.unavailable("motor", tk):
+            held["motor"] = (float(x[0]), tk)
+        (wm, t_m), (wl, t_l) = held["motor"], held["load"]
+        used = [t_m] + ([t_l] if dp.kind == "relative_speed" else [])
+        age = tk - min(used)
+        fresh = [tk] + ([tk - skew] if dp.kind == "relative_speed" else [])
+        stale_now = any(u < f - 1e-12 for u, f in zip(used, fresh))          # a held (not fresh) value is in use
         if dp.quantization_rad_s > 0:
             q = dp.quantization_rad_s
             wm, wl = q * round(wm / q), q * round(wl / q)
         if dp.kind == "relative_speed":
             Tad = -dp.Kd_Nms_per_rad * (wm - wl)
+            meas_err = (wm - wl) - float(x[0] - x[1])
         elif dp.kind == "motor_speed_hpf":
             ah = 1.0 / (1.0 + TWO_PI * dp.hpf_Hz * Tsamp)
             if hpf["prev"] is None:
@@ -291,16 +337,24 @@ def simulate(dl: Driveline, ctl: Controller, man: Maneuver) -> dict:
             hpf["y"] = ah * (hpf["y"] + wm - hpf["prev"])
             hpf["prev"] = wm
             Tad = -dp.Kd_Nms_per_rad * hpf["y"]
+            meas_err = wm - float(x[0])
         else:
             Tad = 0.0
+            meas_err = 0.0
+        if dp.kind != "none" and dp.stale_limit_s is not None:
+            target = 0.0 if age > dp.stale_limit_s + 1e-12 else 1.0
+            step = 1.0 if dp.fade_s <= 0 else Tsamp / dp.fade_s
+            gain_state = max(target, gain_state - step) if target < gain_state else min(target, gain_state + step)
+            Tad *= gain_state
         if emerg_active:
             Tad = 0.0                              # the safety reduction is not modulated by comfort functions
         Tc = Tsh + Tad
-        clipped = False
+        clipped, side = False, 0
         if man.window_Nm is not None:
             lo, hi = man.window_Nm
             Tcl = min(hi, max(lo, Tc))
             clipped = Tcl != Tc
+            side = 0 if not clipped else (1 if Tc > hi else -1)
             Tc = Tcl
         rec["t_s"].append(tk)
         rec["T_request"].append(Treq)
@@ -308,6 +362,11 @@ def simulate(dl: Driveline, ctl: Controller, man: Maneuver) -> dict:
         rec["T_ad"].append(Tad)
         rec["T_cmd"].append(Tc)
         rec["clipped"].append(clipped)
+        rec["clip_side"].append(side)
+        rec["age_s"].append(age if dp.kind != "none" else 0.0)
+        rec["gain"].append(gain_state if dp.kind != "none" else 1.0)
+        rec["stale"].append(bool(stale_now) if dp.kind != "none" else False)
+        rec["meas_error_rad_s"].append(meas_err)
         pending.append((tk + tau, Tc, k))
         pending.sort(key=lambda z: z[0])
     wm_, wl_, dl_ = xs[:, 0], xs[:, 1], xs[:, 2]
@@ -319,7 +378,8 @@ def simulate(dl: Driveline, ctl: Controller, man: Maneuver) -> dict:
     jerk_l = (r["k"] * ddelta + r["c"] * (dwm - acc_l)) / r["Jl"]      # exact d/dt of acc_l (T_L constant)
     E = 0.5 * r["Jm"] * wm_ ** 2 + 0.5 * r["Jl"] * wl_ ** 2 + 0.5 * r["k"] * dl_ ** 2
     P_in = Tact * wm_ - TL * wl_ - r["c"] * ddelta ** 2
-    return {"t_s": t_out, "omega_m": wm_, "omega_l": wl_, "delta": dl_, "T_act": Tact, "T_shaft": Ts,
+    dTact = (ucur - xs[:, 3]) / ctl.actuator_tau_s if n == 4 else None     # exact slew of the first-order ROM
+    return {"t_s": t_out, "omega_m": wm_, "omega_l": wl_, "delta": dl_, "T_act": Tact, "T_shaft": Ts, "dTact_dt": dTact,
             "acc_l": acc_l, "jerk_l": jerk_l, "E_J": E, "dE_budget_W": P_in, "record": {k: np.array(v) for k, v in rec.items()},
             "referred": r, "modal": md, "TL_motor_Nm": TL, "wheel_radius_m": dl.wheel_radius_m,
             "jerk_definition": "exact d/dt of the load angular acceleration from the plant state (motor coordinates); "
@@ -507,9 +567,14 @@ def clip_bias(base_Nm: float, amplitude_Nm: float, window: tuple, n: int = 20000
 
 
 def response_metrics(sim: dict, man: Maneuver, settle_band: float = 0.05) -> dict:
-    t = sim["t_s"]
-    a = sim["acc_l"]
-    j = sim["jerk_l"]
+    """Comfort / response metrics of the maneuver.  With a safety request inside the window the metrics cover the
+    window BEFORE the request (the comfort question); the safety reaction is judged on its own."""
+    t_all = sim["t_s"]
+    cut = man.emergency_t_s if (man.emergency_t_s is not None and man.emergency_t_s > man.t_step_s) else None
+    keep = t_all < cut if cut is not None else np.ones(t_all.size, bool)
+    t = t_all[keep]
+    a = sim["acc_l"][keep]
+    j = sim["jerk_l"][keep]
     post = t >= man.t_step_s
     a0 = float(a[0])
     a_end = float(np.mean(a[-max(3, int(0.05 * t.size)):]))
@@ -528,11 +593,17 @@ def response_metrics(sim: dict, man: Maneuver, settle_band: float = 0.05) -> dic
         if outside.size and outside[-1] >= t.size - 2:
             out["t_settle_s"] = None                        # not settled within the horizon
     rec = sim["record"]
-    if rec["t_s"].size:
-        corr = rec["T_cmd"] - rec["T_shaped"]
+    rk = rec["t_s"] < cut if cut is not None else np.ones(rec["t_s"].size, bool)
+    if rk.any():
+        corr = rec["T_cmd"][rk] - rec["T_shaped"][rk]
         out["correction_rms_Nm"] = float(np.sqrt(np.mean(corr ** 2)))
         out["correction_mean_Nm"] = float(np.mean(corr))
-        out["clipped_fraction"] = float(np.mean(rec["clipped"]))
+        out["clipped_fraction"] = float(np.mean(rec["clipped"][rk]))
+    if cut is not None:
+        out["evaluated_until_s"] = float(cut)
+        out["note"] = "comfort metrics up to the safety request; the reaction is judged separately"
+        if out.get("t_settle_s") is None:
+            out["t_settle_s"] = None                        # not settled before the safety request
     Ts = sim["T_shaft"]
     out["shaft_torque_peak_Nm"] = float(np.max(np.abs(Ts)))
     tol = 1e-6 * max(float(np.max(np.abs(Ts))), 1e-9)
@@ -548,12 +619,54 @@ def response_metrics(sim: dict, man: Maneuver, settle_band: float = 0.05) -> dic
     return out
 
 
+def electrical_slew_limits(drive, speed_rpm: float, Vdc_V: float, limits, T_Nm: float, dI_A: float = 1.0) -> dict:
+    """Torque slew the voltage headroom allows at an operating point (addendum 5.4, screening).
+
+    At the policy point: k_t = dT/di_q and the differential q inductance dpsi_q/di_q from the model (central
+    differences, not the apparent inductance); the q-axis voltage headroom up to the hardware ceiling V_c (the
+    declared reserve between the command budget and the ceiling is the voltage kept for control dynamics):
+    dv+ = sqrt(V_c^2 - v_d^2) - v_q (torque up), dv- = sqrt(V_c^2 - v_d^2) + v_q (torque down); slew = k_t dv / L_q.
+    The d-axis voltage change with i_q, the resistive drop and the speed change are left out: an instantaneous
+    first-order headroom, not a dynamic qualification of the flux model.  No declared reserve at a point on the
+    voltage limit means no headroom."""
+    from ..physics import forward_evaluation
+    from ..scenario import Scenario
+    from ..solvers.policy import PolicyEvaluator
+    sc = Scenario("slew", float(speed_rpm), float(Vdc_V), limits)
+    sol = PolicyEvaluator(drive, sc).solve(float(T_Nm))
+    pt = sol.point
+    if pt is None:
+        return {"established": False, "reason": "no operating point: " + sol.policy_claim.detail}
+    a = forward_evaluation(drive, sc, pt.id_A, pt.iq_A + dI_A).point
+    b = forward_evaluation(drive, sc, pt.id_A, pt.iq_A - dI_A).point
+    if a is None or b is None:
+        return {"established": False, "reason": "model not evaluable around the operating point (domain edge)"}
+    kt = (a.Te_Nm - b.Te_Nm) / (2 * dI_A)
+    Lq = (a.psi_q_Wb - b.psi_q_Wb) / (2 * dI_A)
+    Vc, vd, vq = pt.voltage_ceiling_V, pt.vd_V, pt.vq_V
+    if Lq <= 0 or kt <= 0 or Vc * Vc <= vd * vd:
+        return {"established": False, "reason": "no q-axis headroom or a non-positive k_t / L_q at the operating point"}
+    root = math.sqrt(Vc * Vc - vd * vd)
+    up, down = root - vq, root + vq
+    return {"established": True, "T_Nm": float(T_Nm), "speed_rpm": float(speed_rpm), "Vdc_V": float(Vdc_V),
+            "kt_Nm_per_A": kt, "Lq_diff_H": Lq, "vd_V": vd, "vq_V": vq, "V_ceiling_V": Vc,
+            "V_budget_V": pt.voltage_budget_V,
+            "headroom_up_V": up, "headroom_down_V": down,
+            "pos_Nm_per_s": kt * max(up, 0.0) / Lq, "neg_Nm_per_s": kt * max(down, 0.0) / Lq,
+            "basis": "instantaneous q-axis headroom to the voltage ceiling at the policy point (differential L_q, "
+                     "k_t from the model; the declared reserve is the dynamic headroom)"}
+
+
 def evaluate_variants(dl: Driveline, variants: dict, man: Maneuver, requirement: dict | None = None,
-                      loss_fn=None) -> dict:
+                      loss_fn=None, slew_limits: dict | None = None) -> dict:
     """Off / shaping / feedback / combined on the SAME maneuver and requirement.
 
-    ``requirement``: {"t_to_90_max_s", "peak_jerk_max", "settle_max_s"} (declared; missing -> UNKNOWN).
-    ``loss_fn(T_array, speed_rpm) -> W array`` adds the electrical loss cost of the actual torque trajectory."""
+    ``requirement``: {"t_to_90_max_s", "peak_jerk_max" | "peak_vehicle_jerk_max_m_s3", "settle_max_s",
+    "safety_reaction_max_s"} (declared; missing -> UNKNOWN).  ``loss_fn(T_array, speed_rpm) -> W array`` adds the
+    electrical loss cost of the actual torque trajectory.  ``slew_limits`` (electrical_slew_limits) checks that the
+    actuator ROM does not slew faster than the voltage headroom allows.  Mandatory failure cases of the addendum
+    (undeclared authority, stale / dropped signals, skew, one-sided reserve, safety interruption, voltage headroom)
+    are reported and never silently replaced by FEASIBLE."""
     req = requirement or {}
     out = {}
     for name, ctl in variants.items():
@@ -563,14 +676,68 @@ def evaluate_variants(dl: Driveline, variants: dict, man: Maneuver, requirement:
         res = {"metrics": met, "stability": None if st is None else {k: st[k] for k in (
             "stable", "spectral_radius_excl_rigid", "dominant_zeta", "delay_samples", "delay_fraction")},
                "energy_residual": energy_residual(sim)}
-        reasons, status = [], "FEASIBLE"
+        reasons, notes, status = [], [], "FEASIBLE"
+
+        def unknown(why):
+            nonlocal status
+            if status == "FEASIBLE":
+                status = "UNKNOWN"
+            reasons.append(why)
         if dl.contact == "backlash" and met["torque_reversal"]:
-            status = "UNKNOWN"
-            reasons.append("shaft torque reverses with a declared backlash: contact transition outside the linear "
-                           "model (qualified backlash model / external plant needed)")
+            unknown("shaft torque reverses with a declared backlash: contact transition outside the linear model "
+                    "(qualified backlash model / external plant needed)")
         if st is not None and not st["stable"]:
             status = "INFEASIBLE"
             reasons.append("the sampled closed loop is unstable for THIS policy (not a physical impossibility)")
+        if man.window_Nm is None:
+            unknown("torque authority window not declared: clipping and the positive / negative reserve are not "
+                    "evaluated (missing is not unlimited)")
+        rec = sim["record"]
+        Ts = ctl.sample_s
+        dp = ctl.damping
+        sens = {}
+        if dp.kind != "none" and rec["t_s"].size:
+            stale = rec["stale"].astype(bool)
+            faded = rec["gain"] < 1.0 - 1e-12
+            sens = {"max_age_s": float(rec["age_s"].max()), "stale_s": float(stale.sum() * Ts),
+                    "unavailable_s": float(faded.sum() * Ts), "min_gain": float(rec["gain"].min()),
+                    "max_meas_error_rad_s": float(np.abs(rec["meas_error_rad_s"]).max()),
+                    "max_spurious_torque_Nm": float(dp.Kd_Nms_per_rad * np.abs(rec["meas_error_rad_s"]).max())}
+            if stale.any() and dp.stale_limit_s is None:
+                unknown(f"damping used a held (stale) {dp.dropout_signal} signal for {1e3 * sens['stale_s']:.4g} ms "
+                        f"(age up to {1e3 * sens['max_age_s']:.4g} ms) without a declared stale limit / fallback")
+            elif faded.any():
+                notes.append(f"damping unavailable / fading for {1e3 * sens['unavailable_s']:.4g} ms (signal age > "
+                             f"{1e3 * dp.stale_limit_s:.4g} ms, fade {1e3 * dp.fade_s:.4g} ms) - the response includes it")
+            if dp.load_speed_skew_s > 0:
+                notes.append(f"load-speed skew {1e3 * dp.load_speed_skew_s:.4g} ms: false relative speed up to "
+                             f"{sens['max_meas_error_rad_s']:.4g} rad/s ({sens['max_spurious_torque_Nm']:.4g} N m of "
+                             "spurious correction), included in the response")
+        side = rec["clip_side"] if rec["t_s"].size else np.array([])
+        res["clipping"] = {"upper_s": float((side > 0).sum() * Ts), "lower_s": float((side < 0).sum() * Ts)}
+        if res["clipping"]["lower_s"] > 0:
+            notes.append(f"negative reserve (regen / charge acceptance) exhausted for {1e3 * res['clipping']['lower_s']:.4g} "
+                         "ms: the correction is one-sided and biases the mean torque")
+        if res["clipping"]["upper_s"] > 0:
+            notes.append(f"positive reserve exhausted for {1e3 * res['clipping']['upper_s']:.4g} ms")
+        if slew_limits is not None:
+            if not slew_limits.get("established"):
+                unknown("electrical torque slew limit not established: " + str(slew_limits.get("reason")))
+            elif sim["dTact_dt"] is None:
+                unknown("no actuator response ROM: torque steps are instantaneous in the model, the voltage headroom "
+                        "cannot be checked")
+            else:
+                up = float(np.max(sim["dTact_dt"]))
+                dn = float(-np.min(sim["dTact_dt"]))
+                res["slew"] = {"max_up_Nm_per_s": up, "max_down_Nm_per_s": dn,
+                               "limit_up_Nm_per_s": slew_limits["pos_Nm_per_s"],
+                               "limit_down_Nm_per_s": slew_limits["neg_Nm_per_s"]}
+                bad = [f"{w} {v:.4g} > {lim:.4g} N m/s" for w, v, lim in (("up", up, slew_limits["pos_Nm_per_s"]),
+                                                                        ("down", dn, slew_limits["neg_Nm_per_s"]))
+                       if v > lim]
+                if bad:
+                    unknown("voltage headroom: the actuator ROM slews faster than the q-axis headroom allows ("
+                            + "; ".join(bad) + ") - nonlinear electrical dynamics or a validated response envelope needed")
         jk = ("peak_vehicle_jerk_max_m_s3", "peak_vehicle_jerk_m_s3", "peak vehicle jerk") if dl.wheel_radius_m else \
             ("peak_jerk_max", "peak_jerk_abs", "peak load angular jerk")
         for key, mkey, label in (("t_to_90_max_s", "t_to_90_s", "response time"), jk,
@@ -578,16 +745,16 @@ def evaluate_variants(dl: Driveline, variants: dict, man: Maneuver, requirement:
             lim = req.get(key)
             val = met.get(mkey)
             if lim is None:
-                if status == "FEASIBLE":
-                    status = "UNKNOWN"
-                reasons.append(f"{label}: no requirement declared")
+                unknown(f"{label}: no requirement declared")
             elif val is None:
-                if status == "FEASIBLE":
-                    status = "UNKNOWN"
-                reasons.append(f"{label}: not reached within the horizon")
+                unknown(f"{label}: not reached within the horizon")
             elif val > lim and status != "UNKNOWN":
                 status = "INFEASIBLE"
                 reasons.append(f"{label} {val:.4g} > {lim:g}")
+        if man.emergency_t_s is not None:
+            res["safety"] = _safety_reaction(sim, man, req.get("safety_reaction_max_s"))
+            notes.append("a safety interruption is in the window: comfort metrics include it and are reported "
+                         "separately from the protection time (never traded)")
         tr = getattr(np, "trapezoid", None) or np.trapz
         res["delivered_work_J"] = float(tr(sim["T_shaft"] * sim["omega_l"], sim["t_s"]))     # into the load side
         if loss_fn is not None:
@@ -597,6 +764,8 @@ def evaluate_variants(dl: Driveline, variants: dict, man: Maneuver, requirement:
                 res["loss_energy_J"] = float(tr(w, sim["t_s"]))
         res["status"] = status
         res["reasons"] = reasons
+        res["notes"] = notes
+        res["sensing"] = sens
         res["sim"] = {k: sim[k] for k in ("t_s", "omega_m", "omega_l", "T_act", "T_shaft", "acc_l", "jerk_l")}
         res["record"] = {k: v for k, v in sim["record"].items()}
         out[name] = res
@@ -609,6 +778,32 @@ def evaluate_variants(dl: Driveline, variants: dict, man: Maneuver, requirement:
                 if r["work_difference_J"] < -1e-6 * max(abs(base["delivered_work_J"]), 1.0):
                     r["loss_note"] = ("less loss in the window because less work is delivered (slower response): "
                                       "not an efficiency gain")
-    return {"variants": out, "modal": dl.modal(), "referred": dl.referred(),
+    return {"variants": out, "modal": dl.modal(), "referred": dl.referred(), "slew_limits": slew_limits,
             "meaning": "same maneuver and requirement for every variant; a delayed acceleration is not a jerk "
                        "improvement by itself; the linear model holds only while contact is maintained"}
+
+
+def _safety_reaction(sim: dict, man: Maneuver, limit_s: float | None) -> dict:
+    """Time from the safety request until the ACTUAL torque stays within a band around the safe torque; judged on
+    its own (a protection time is never traded against comfort)."""
+    t, T = sim["t_s"], sim["T_act"]
+    target = float(man.emergency_T_Nm)
+    band = max(0.02 * abs(man.T1_Nm - target), 1.0)
+    after = t >= man.emergency_t_s
+    outside = np.nonzero(after & (np.abs(T - target) > band))[0]
+    if outside.size and outside[-1] >= t.size - 1:
+        t_react = None
+    else:
+        t_react = float(t[outside[-1]] - man.emergency_t_s) if outside.size else 0.0
+    if limit_s is None:
+        st, why = "UNKNOWN", "no protection (safety reaction) time declared"
+    elif t_react is None:
+        st, why = "INFEASIBLE", "the safe torque is not reached within the horizon"
+    elif t_react > limit_s:
+        st, why = "INFEASIBLE", f"reaction {1e3 * t_react:.4g} ms > {1e3 * limit_s:.4g} ms"
+    else:
+        st, why = "FEASIBLE", f"reaction {1e3 * t_react:.4g} ms <= {1e3 * limit_s:.4g} ms"
+    jk = np.abs(sim["jerk_l"][after])
+    return {"status": st, "reason": why, "reaction_s": t_react, "band_Nm": band, "target_Nm": target,
+            "limit_s": limit_s, "peak_load_jerk_during_reaction": float(jk.max()) if jk.size else None,
+            "note": "comfort functions are bypassed during the reaction; its jerk is reported, not traded"}

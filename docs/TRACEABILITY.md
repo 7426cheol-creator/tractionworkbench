@@ -118,8 +118,10 @@
 | §4.4 | 원자적 reload vs 즉시 기록, runt/누락/데드타임 | `counter_pwm`, `transition_check`, `check_gate_events` | 전환 테스트 | implemented |
 | §4.4 | 지연 원장·deadline (보드 상수 금지) | `TimingConfig`, `delay_ledger` | 지연 예시 (1.104°→2.208°, 54°→108°) | implemented |
 | §4.4 | 이득 매핑 (연속 Ki vs 고정 이산 KiΔt), 전류 루프 위상 여유 | `CurrentLoop` | 테스트 | implemented |
-| §4.4 | 샘플 유효창(shunt)·stale 샘플·전환 과도 | — | — | missing |
-| §4.5 | 필수 위반은 효율로 상쇄 금지, Pareto, '평가 후보 중 최선' | `evaluate_policies` | 정책 테스트 | implemented |
+| §4.4 | 샘플 유효창 (인라인 / 레그 션트 / DC-link 단일 션트: settle·aperture·데드타임·엣지 잡음), 무효 샘플의 유지·예측 나이와 오차 한계, 채널 skew | `SensingConfig`, `sampling_validity` (정지 부근은 무효 각이 지속 → 나이 무한) | 단일 션트 창 = SVPWM 활성 벡터 시간 폐형식 (2e-20 s) | implemented (선언된 타이밍 기반 screening) |
+| §4.4 | 전환 과도: 이득 매핑·적분기 저장(전압 / 오차 합)·리셋·포화, 선언 지연 | `transition_transient`, 정책 비교의 각 fsw 변경 재생 | 점프 = (Ts_to/Ts_from − 1)·v_ss, 리셋 = −v_ss 정확 | implemented (한 축, 일정 운전점) |
+| §4.4 | 임계 채터: 측정 잡음 p-p ≥ 히스테리시스 → 위반, 잡음 미선언 → 미검증 | `chatter_risk` | 채터 테스트 | implemented |
+| §4.5 | 필수 위반은 효율로 상쇄 금지, Pareto, '평가 후보 중 최선'; 요구 미확립 구간은 UNKNOWN (위반과 구분) | `evaluate_policies` (status ADMISSIBLE / VIOLATION / UNKNOWN) | 정책 테스트 (미선언 DC 한계 → UNKNOWN) | implemented |
 | — | 저 펄스 비·과변조·six-step | — | — | 미지원 (명시; 선형 SVPWM만) |
 
 ## 7. Anti-jerk·능동 감쇠 (P1-DAMP)
@@ -128,11 +130,13 @@
 |---|---|---|---|---|
 | §5.2 | 2관성 ROM, 고정 g 환산, 에너지 불변식 | `extensions/driveline.py` (행렬지수 정확 적분) | D-01, D-05 (출력 좌표 독립 ODE) | implemented |
 | §5.3 | 성형 (rate·prefilter·ZV), 피드백 (상대속도·모터속도 HPF), 전력 항 Tad·ωm | `Shaper`, `Damping` | D-02 | implemented |
-| §5.4 | 동적 토크 여유: capability 창 (양/음) | `api.driveline` window | API 테스트 | partial (차동 인덕턴스 기반 전압 여유 궤적은 미구현, 표기) |
+| §5.4 | 동적 토크 여유: capability 창 (양/음), 전압 여유 한도의 토크 slew (차동 L_q, 모델 k_t, 전압 상한까지의 q축 여유) | `api.driveline` window, `electrical_slew_limits` | k_t·L_q = 상수 모델 폐형식, 고속 FW에서 slew 초과 → UNKNOWN | partial (순간 q축 여유 screening; d축 결합·상태/진폭/주파수별 도달 가능 토크 궤적 집합은 미구현) |
 | §5.5 | 중재 후 클리핑 (한도 뒤 재가산 금지), 긴급 감소는 comfort 필터 우회 | `simulate` | 클리핑·긴급 테스트, D-04 | implemented |
 | §5.6 | 샘플링 루프 안정성 (분수 지연 반올림 금지), 연속 지연 교차 | `sampled_eigenvalues`, `delay_crossings`, `rhp_roots_at` | D-03 | implemented |
 | §2 | 백래시 통과 → UNKNOWN | `evaluate_variants` | 테스트 | implemented |
-| §5.3 | 센서 dropout·timestamp skew·wheel slip | 양자화만 | — | partial |
+| §5.5 | 권한 창 미선언 → UNKNOWN; 한쪽 클리핑(음 = 회생 여유 소진) 귀속; 안전 반응은 comfort와 별도 판정 (comfort 지표는 안전 요청 전 구간) | `evaluate_variants`, `_safety_reaction`, `response_metrics` | 테스트 | implemented |
+| §7.2 | 필수 실패 사례 (무효 샘플 창, 전류/전압 포화, 채널 skew, stale/dropout, 임계 채터, gain-state jump, 회생 여유 부족, 안전 중단, 백래시, solver/domain 실패) → 어느 것도 조용히 PASS로 대체되지 않음 | 위 항목 전체 | `test_pwm_policy.py`, `test_driveline.py` 실패 사례 테스트 | implemented |
+| §5.3 | 센서 dropout (유지값의 나이, 선언 stale 한계 → 페이드 아웃/인), 부하 속도 timestamp skew (거짓 상대속도), 양자화 | `Damping` sensing 필드, `simulate` 측정 이벤트 | skew 오차 = w_l(t) − w_l(t − skew) (조밀 출력 대조), dropout 페이드 시간 | implemented / wheel slip은 missing (무슬립 플랜트, slip 사례를 판정하지 않음) |
 | §6 | off/shaping/feedback/combined 같은 조작·요구 비교, 늦은 가속은 jerk 개선만으로 표시 금지, 손실은 전달 일과 함께 | `evaluate_variants` | API 테스트 | implemented |
 | — | 다관성·HEV 다축 협조, FRF 식별 | — | — | missing (P2) / evidence_missing |
 

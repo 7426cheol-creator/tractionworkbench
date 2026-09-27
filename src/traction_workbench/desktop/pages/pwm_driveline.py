@@ -87,7 +87,7 @@ class PwmDrivelinePage(QWidget):
     def __init__(self, win):
         super().__init__()
         self.win = win
-        self.last_pol = self.last_tim = self.last_rip = self.last_dl = self.last_stab = None
+        self.last_pol = self.last_tim = self.last_rip = self.last_trn = self.last_dl = self.last_stab = None
         self.tabs = QTabWidget()
         self.tabs.addTab(self._pwm_tab(), tr("가변 PWM (fsw 정책)", "variable PWM (fsw policy)"))
         self.tabs.addTab(self._dl_tab(), tr("Anti-jerk·능동 감쇠", "anti-jerk · active damping"))
@@ -166,11 +166,53 @@ class PwmDrivelinePage(QWidget):
         self.lp_map = combo([(tr("연속 이득 (Ki·Ts 재매핑)", "continuous gains (Ki·Ts remapped)"), "continuous"),
                              (tr("고정 이산 이득 (기준 fsw에서 튜닝)", "fixed discrete gains (tuned at the reference fsw)"),
                               "fixed_discrete")], lp["gain_mapping"])
+        self.lp_int = combo([(tr("적분기 = 전압 (bumpless)", "integrator in volts (bumpless)"), "output"),
+                             (tr("적분기 = 오차 합 (Ki_disc·Σe)", "integrator = error sum (Ki_disc·Σe)"), "error_sum")],
+                            lp.get("integrator_storage", "output"))
+        self.lp_tr = combo([(tr("전환 시 유지", "keep at a change"), "keep"), (tr("전환 시 리셋", "reset at a change"), "reset")],
+                           lp.get("on_transition", "keep"))
+        self.lp_aw = check(tr("anti-windup (포화 시 조건부 적분)", "anti-windup (conditional integration)"),
+                           bool(lp.get("anti_windup", True)))
         for lab, w in ((tr("샘플→latch (ADC+WCET)", "sample→latch (ADC+WCET)"), self.tm_lat), (tr("필터 지연", "filter delay"), self.tm_flt),
                        (tr("갱신", "update"), self.tm_upd), (tr("변조기 지연 비율", "modulator delay fraction"), self.tm_mod),
                        (tr("최소 펄스", "minimum pulse"), self.tm_pul), (tr("근거", "basis"), self.tm_basis),
                        ("L (dq)", self.lp_L), ("R", self.lp_R), (tr("전류 루프 대역", "current-loop bandwidth"), self.lp_bw),
-                       (tr("이득 매핑", "gain mapping"), self.lp_map)):
+                       (tr("이득 매핑", "gain mapping"), self.lp_map), (tr("적분기 상태", "integrator state"), self.lp_int),
+                       (tr("fsw 전환 시", "at an fsw change"), self.lp_tr), ("", self.lp_aw)):
+            f.addRow(lab, w)
+        v.addWidget(g)
+        sn, nz = ex["sensing"], ex["measurement_noise"]
+        g = QGroupBox(tr("전류 샘플링 (선언) · 스케줄 입력 잡음", "current acquisition (declared) · schedule input noise"))
+        f = QFormLayout(g)
+        self.sn_kind = combo([(tr("레그 저측 션트 3개", "three low-side leg shunts"), "leg_shunt"),
+                              (tr("인라인 상전류 센서", "inline phase sensors"), "inline_phase"),
+                              (tr("DC-link 단일 션트", "single DC-link shunt"), "dc_link_shunt")], sn["kind"])
+        self.sn_settle = number(sn["settle_us"], 0, 100, "µs", 2, 0.1, tr("스위칭 엣지 후 링잉·증폭기 정착", "ringing / amplifier settling after an edge"))
+        self.sn_ap = number(sn["aperture_us"], 0, 100, "µs", 2, 0.1)
+        self.sn_noise = combo([(tr("모든 레그 엣지가 방해 (보수적)", "every leg's edge disturbs (conservative)"), "any_leg"),
+                               (tr("자기 레그만 (레이아웃 근거 필요)", "own leg only (needs a layout basis)"), "own_leg")],
+                              sn["edge_noise"])
+        self.sn_two = check(tr("두 레그 + Kirchhoff 재구성 (센서 3개)", "two legs + Kirchhoff (three sensors)"),
+                            bool(sn["reconstruct_from_two"]))
+        self.sn_skew = number(sn["channel_skew_ns"], 0, 1e5, "ns", 0, 50, tr("상 채널 사이 샘플 시각 차", "time between the phase channels' samples"))
+        self.sn_pol = combo([(tr("대체 없음", "no fallback"), "none"), (tr("마지막 유효값 유지", "hold the last valid sample"), "hold"),
+                             (tr("예측기 (검증된 잔차 비율)", "predictor (validated residual fraction)"), "predict")],
+                            sn["invalid_policy"])
+        self.sn_pred = number(0.3, 0, 1, "", 2, 0.05)
+        self.sn_age = number(sn["max_sample_age_us"], 1, 1e6, "µs", 1, 10)
+        self.sn_err = number(sn["current_error_max_A"], 0.01, 1e4, "A", 2, 1)
+        self.sn_basis = QLineEdit(sn["basis"])
+        self.nz_n = number(nz["speed_rpm"], 0, 1e4, "rpm", 1, 5)
+        self.nz_T = number(nz["torque_abs_Nm"], 0, 1e3, "N·m", 2, 0.5)
+        self.nz_tn = number(nz["sensor_temp_C"], 0, 50, "K", 2, 0.5)
+        self.nz_v = number(nz["Vdc_V"], 0, 500, "V", 1, 1)
+        for lab, w in ((tr("방식", "kind"), self.sn_kind), ("settle", self.sn_settle), ("aperture", self.sn_ap),
+                       (tr("엣지 잡음", "edge noise"), self.sn_noise), ("", self.sn_two), (tr("채널 skew", "channel skew"), self.sn_skew),
+                       (tr("무효 샘플", "invalid samples"), self.sn_pol), (tr("예측 잔차 비율", "predictor residual"), self.sn_pred),
+                       (tr("허용 샘플 나이", "allowed sample age"), self.sn_age), (tr("허용 재구성 오차", "allowed reconstruction error"), self.sn_err),
+                       (tr("근거", "basis"), self.sn_basis), (tr("잡음 p-p: 속도", "noise p-p: speed"), self.nz_n),
+                       (tr("잡음 p-p: 토크", "noise p-p: torque"), self.nz_T), (tr("잡음 p-p: NTC", "noise p-p: NTC"), self.nz_tn),
+                       (tr("잡음 p-p: Vdc", "noise p-p: Vdc"), self.nz_v)):
             f.addRow(lab, w)
         v.addWidget(g)
         pl = ex["pwm_limits"]
@@ -180,7 +222,9 @@ class PwmDrivelinePage(QWidget):
         for key, lab, unit, lo, hi in (("Tj_max_C", "Tj max", "°C", 0, 250), ("i_peak_incl_ripple_max_A", tr("피크 전류 (리플 포함)", "peak current incl. ripple"), "A", 1, 1e5),
                                        ("cap_rms_max_A", tr("커패시터 RMS", "capacitor RMS"), "A", 1, 1e5),
                                        ("phase_margin_min_deg", tr("위상 여유 min", "phase margin min"), "°", 0, 90),
-                                       ("pulse_ratio_min", tr("펄스 비 min", "pulse ratio min"), "", 1, 1e3)):
+                                       ("pulse_ratio_min", tr("펄스 비 min", "pulse ratio min"), "", 1, 1e3),
+                                       ("transition_excursion_max_A", tr("fsw 전환 전류 편차 max", "fsw-change current excursion max"),
+                                        "A", 0.1, 1e4)):
             on = check(lab, pl.get(key) is not None)
             w = number(pl.get(key) or (10.0 if key == "pulse_ratio_min" else 1.0), lo, hi, unit, 1, 1)
             row = QHBoxLayout()
@@ -200,7 +244,9 @@ class PwmDrivelinePage(QWidget):
         self.t_btn.clicked.connect(self.run_timing)
         self.r_btn = QPushButton(tr("리플 vs fsw", "ripple vs fsw"))
         self.r_btn.clicked.connect(self.run_ripple)
-        for b in (self.p_btn, self.t_btn, self.r_btn):
+        self.x_btn = QPushButton(tr("샘플링·전환 과도", "sampling · transition"))
+        self.x_btn.clicked.connect(self.run_transients)
+        for b in (self.p_btn, self.t_btn, self.r_btn, self.x_btn):
             b.setMinimumHeight(34)
             row.addWidget(b)
         v.addLayout(row)
@@ -216,8 +262,9 @@ class PwmDrivelinePage(QWidget):
         self.pl_pol = PlotPanel(hint=tr("'정책 비교'를 누르세요", "press 'compare policies'"))
         self.pl_tim = PlotPanel(hint=tr("'타이밍·전환'을 누르세요", "press 'timing · transition'"))
         self.pl_rip = PlotPanel(hint=tr("'리플 vs fsw'를 누르세요", "press 'ripple vs fsw'"))
+        self.pl_trn = PlotPanel(hint=tr("'샘플링·전환 과도'를 누르세요", "press 'sampling · transition'"))
         for p, lab in ((self.pl_pol, tr("정책 비교", "policies")), (self.pl_tim, tr("타이밍·전환", "timing · transition")),
-                       (self.pl_rip, tr("리플", "ripple"))):
+                       (self.pl_rip, tr("리플", "ripple")), (self.pl_trn, tr("샘플링·전환 과도", "sampling · transition"))):
             self.p_tabs.addTab(p, lab)
         self.k_pwm = KeyValueTable()
         rl.addWidget(self.p_tabs, 3)
@@ -258,7 +305,20 @@ class PwmDrivelinePage(QWidget):
                        "min_pulse_us": self.tm_pul.value(), "wcet_source": "declared estimate",
                        "basis": self.tm_basis.text().strip()}
         b["loop"] = {"L_uH": self.lp_L.value(), "R_mohm": self.lp_R.value(), "bandwidth_Hz": self.lp_bw.value(),
-                     "gain_mapping": self.lp_map.currentData(), "reference_fsw_kHz": self.p_base.value(), "basis": "UI"}
+                     "gain_mapping": self.lp_map.currentData(), "reference_fsw_kHz": self.p_base.value(), "basis": "UI",
+                     "integrator_storage": self.lp_int.currentData(), "on_transition": self.lp_tr.currentData(),
+                     "anti_windup": self.lp_aw.isChecked()}
+        kind = self.sn_kind.currentData()
+        pts = "valley_and_peak" if (kind == "inline_phase" and self.tm_upd.currentData() == 2) else "valley"
+        pol = self.sn_pol.currentData()
+        b["sensing"] = {"kind": kind, "settle_us": self.sn_settle.value(), "aperture_us": self.sn_ap.value(),
+                        "sample_points": pts, "edge_noise": self.sn_noise.currentData(),
+                        "reconstruct_from_two": self.sn_two.isChecked(), "channel_skew_ns": self.sn_skew.value(),
+                        "invalid_policy": pol, "predict_error_fraction": self.sn_pred.value() if pol == "predict" else None,
+                        "max_sample_age_us": self.sn_age.value(), "current_error_max_A": self.sn_err.value(),
+                        "basis": self.sn_basis.text().strip()}
+        b["measurement_noise"] = {"speed_rpm": self.nz_n.value(), "torque_abs_Nm": self.nz_T.value(),
+                                  "sensor_temp_C": self.nz_tn.value(), "Vdc_V": self.nz_v.value()}
         b["pwm_limits"] = {k: (w.value() if on.isChecked() else None) for k, (on, w) in self.lim.items()}
         b.update(self.win.state.body())
         return b
@@ -268,7 +328,7 @@ class PwmDrivelinePage(QWidget):
         self.win.runner.run(key, label, _task(fn), show, body, on_error=self._err)
 
     def _err(self, msg, tb):
-        for b in (self.p_btn, self.t_btn, self.r_btn, self.d_btn, self.s_btn):
+        for b in (self.p_btn, self.t_btn, self.r_btn, self.x_btn, self.d_btn, self.s_btn):
             b.setEnabled(True)
         error_box(self, tr("계산 실패", "failed"), msg, tb)
 
@@ -288,6 +348,38 @@ class PwmDrivelinePage(QWidget):
 
     def run_ripple(self):
         self._run_pwm("pwm_ripple", tr("리플", "ripple"), api.pwm_ripple, self._show_ripple, self.r_btn)
+
+    def run_transients(self):
+        self._run_pwm("pwm_transients", tr("샘플링·전환 과도", "sampling · transition"), api.pwm_transients,
+                      self._show_transients, self.x_btn)
+
+    def _show_transients(self, res):
+        self.x_btn.setEnabled(True)
+        self.last_trn = res
+        self.pl_trn.draw(F.fig_pwm_transients, res, name="pwm_transients",
+                         csv=lambda r=res: {"m": r["sampling_curves"]["leg_shunt"]["m"],
+                                            **{f"valid_{k}": c["valid_fraction"] for k, c in r["sampling_curves"].items()}})
+        self.p_tabs.setCurrentWidget(self.pl_trn)
+        h, pt = res["sampling_here"], res["point"]
+        rows = [(tr("운전점", "operating point"), f"{pt['speed_rpm']:.0f} rpm · {pt['torque_Nm']:.0f} N·m · m {pt['m']:.3f} · "
+                                                f"f_e {pt['f_e_Hz']:.0f} Hz · fsw {pt['fsw_Hz'] / 1e3:g} kHz"),
+                (tr("선언 샘플링", "declared acquisition"),
+                 f"{h['status']} · {tr('유효', 'valid')} {100 * h['valid_fraction']:.1f} % · {tr('최대 나이', 'max age')} "
+                 f"{fmt(h['max_age_s'] and 1e6 * h['max_age_s'], 4)} µs · {tr('오차 한계', 'error bound')} "
+                 f"{fmt(h['error_bound_A'], 4)} A · skew {fmt(h['skew_error_bound_A'], 3)} A")]
+        rows += [("   " + tr("위반", "violation"), x) for x in h["violations"]]
+        rows += [("   " + tr("미검증", "unverified"), x) for x in h["unknown"]]
+        lim = res["transition"].get("excursion_limit_A")
+        for name, v in res["transition"]["variants"].items():
+            if not v.get("evaluated"):
+                rows.append((name, v.get("reason", "")))
+                continue
+            verdict = "" if lim is None else (" · OK" if v["excursion_A"] <= lim else tr(" · 한도 초과", " · above the limit"))
+            rows.append((name, f"{tr('출력 점프', 'output jump')} {v['output_jump_V']:.4g} V · {tr('편차', 'excursion')} "
+                               f"{v['excursion_A']:.4g} A{verdict} · {tr('정착', 'settle')} "
+                               f"{fmt(v['settle_s'] and 1e3 * v['settle_s'], 4)} ms · Ki×{v['Ki_eff_ratio']:.3g} · "
+                               f"{tr('포화 샘플', 'saturated samples')} {v['saturated_samples']}"))
+        self.k_pwm.set_rows(rows)
 
     def _show_policies(self, res):
         self.p_btn.setEnabled(True)
@@ -313,6 +405,23 @@ class PwmDrivelinePage(QWidget):
                          f"Tj {fmt(p['Tj_max_C'], 4)} °C · î+ripple {fmt(p['i_peak_incl_ripple_max_A'], 4)} A · I_cap "
                          f"{fmt(p['I_cap_rms_max_A'], 4)} A · PM {fmt(p['phase_margin_min_deg'], 3)}° · Np min "
                          f"{fmt(p['pulse_ratio_min'], 3)}"))
+            smp = [sg["sampling"] for sg in p["segments"] if sg.get("sampling")]
+            if smp:
+                rows.append(("   " + tr("전류 샘플링", "current sampling"),
+                             f"{tr('최저 유효', 'lowest valid')} {100 * min(x['valid_fraction'] for x in smp):.1f} % · "
+                             f"{tr('최대 나이', 'max age')} {fmt(max(x['max_age_s'] for x in smp) * 1e6, 4)} µs · "
+                             + ", ".join(sorted({x['status'] for x in smp}))))
+            trs = [e["transient"] for e in p["transitions"] if e.get("carrier_change") and e.get("transient")]
+            if trs:
+                ev = [x for x in trs if x.get("evaluated")]
+                rows.append(("   " + tr("fsw 전환", "fsw changes"),
+                             f"{len(trs)} · {tr('최대 편차', 'max excursion')} "
+                             f"{fmt(max((x['excursion_A'] for x in ev), default=None), 4)} A · "
+                             f"{tr('bumpless', 'bumpless')} {sum(bool(x.get('bumpless')) for x in ev)}/{len(ev)}"))
+            if p.get("chatter", {}).get("rows"):
+                rows.append(("   " + tr("임계 채터", "threshold chatter"),
+                             ", ".join(f"{c['measurement']}: {tr('위험', 'risk') if c['risk'] else ('OK' if c['risk'] is False else '—')}"
+                                       for c in p["chatter"]["rows"])))
             if p["unverified"]:
                 rows.append(("   " + tr("검증 안 됨", "unverified"), "; ".join(p["unverified"])))
             v = p.get("versus_baseline")
@@ -394,9 +503,14 @@ class PwmDrivelinePage(QWidget):
                             (tr("선언 창", "declared window"), "declared")], "capability")
         self.m_lo = number(-300.0, -1e4, 1e4, "N·m", 1, 5)
         self.m_hi = number(300.0, -1e4, 1e4, "N·m", 1, 5)
+        self.m_em = check(tr("안전 반응 (긴급 토크 감소)", "safety reaction (emergency torque reduction)"), False)
+        self.m_em_t = number(0.6, 0, 30, "s", 3, 0.05)
+        self.m_em_T = number(0.0, -5000, 5000, "N·m", 1, 5)
         for lab, w in (("T0", self.m_T0), ("T1", self.m_T1), (tr("스텝 시각", "step time"), self.m_ts), (tr("종료", "end"), self.m_te),
                        (tr("속도", "speed"), self.m_n), ("Vdc", self.m_vdc), (tr("토크 창", "torque window"), self.m_win),
-                       (tr("창 하한", "window low"), self.m_lo), (tr("창 상한", "window high"), self.m_hi)):
+                       (tr("창 하한", "window low"), self.m_lo), (tr("창 상한", "window high"), self.m_hi),
+                       ("", self.m_em), (tr("안전 요청 시각", "safety request at"), self.m_em_t),
+                       (tr("안전 토크", "safe torque"), self.m_em_T)):
             f.addRow(lab, w)
         v.addWidget(g)
         fb = ex["variants"]["combined"]
@@ -414,10 +528,30 @@ class PwmDrivelinePage(QWidget):
                           fb["damping"]["kind"])
         self.c_kd = number(fb["damping"]["Kd_Nms_per_rad"], 0, 1e4, "N·m·s/rad", 3, 0.1)
         self.c_hpf = number(fb["damping"]["hpf_Hz"], 0.01, 1000, "Hz", 2, 0.5)
+        self.c_slew = check(tr("전압 여유로 토크 slew 확인 (FW)", "check the torque slew against the voltage headroom (FW)"),
+                            bool(ex.get("check_slew", True)))
         for lab, w in ((tr("샘플 주기", "sample period"), self.c_ts), (tr("샘플→인가 지연", "sample→applied delay"), self.c_dl),
                        (tr("토크 응답 τ (ROM)", "torque response τ (ROM)"), self.c_act), (tr("성형", "shaping"), self.c_sh),
                        ("rate", self.c_rate), ("τ prefilter", self.c_tau), (tr("감쇠", "damping"), self.c_dp),
-                       ("Kd", self.c_kd), ("HPF", self.c_hpf)):
+                       ("Kd", self.c_kd), ("HPF", self.c_hpf), ("", self.c_slew)):
+            f.addRow(lab, w)
+        v.addWidget(g)
+        sg = ex["sensing"]
+        g = QGroupBox(tr("속도 신호 타이밍·대체 (선언)", "speed-signal timing and fallback (declared)"))
+        f = QFormLayout(g)
+        self.sg_skew = number(sg["load_speed_skew_ms"], 0, 1000, "ms", 3, 0.5,
+                              tr("부하(휠) 속도 샘플이 모터 속도보다 오래된 정도 (timestamp 차)",
+                                 "how much older the load (wheel) speed sample is than the motor speed sample"))
+        self.sg_drop = QLineEdit("")
+        self.sg_drop.setPlaceholderText(tr("신호 끊김 구간 [ms], 예: 300-420; 800-850", "dropout windows [ms], e.g. 300-420; 800-850"))
+        self.sg_sig = combo([(tr("부하(휠) 속도", "load (wheel) speed"), "load"), (tr("모터 속도 (resolver)", "motor speed (resolver)"), "motor")],
+                            sg["dropout_signal"])
+        self.sg_lim_on = check(tr("stale 한계 선언 (넘으면 감쇠 페이드아웃)", "declared stale limit (beyond: fade the damping out)"),
+                               sg["stale_limit_ms"] is not None)
+        self.sg_lim = number(sg["stale_limit_ms"] or 20.0, 0.1, 1e4, "ms", 2, 1)
+        self.sg_fade = number(sg["fade_ms"], 0, 1e4, "ms", 2, 1)
+        for lab, w in ((tr("부하 속도 skew", "load-speed skew"), self.sg_skew), (tr("끊김 구간", "dropouts"), self.sg_drop),
+                       (tr("끊기는 신호", "signal"), self.sg_sig), (self.sg_lim_on, self.sg_lim), (tr("페이드", "fade"), self.sg_fade)):
             f.addRow(lab, w)
         v.addWidget(g)
         rq = ex["requirement"]
@@ -426,8 +560,10 @@ class PwmDrivelinePage(QWidget):
         self.q_t90 = number(rq["t_to_90_max_s"], 0.001, 10, "s", 3, 0.01)
         self.q_j = number(rq["peak_vehicle_jerk_max_m_s3"], 0.1, 1e4, "m/s³", 1, 1)
         self.q_st = number(rq["settle_max_s"], 0.001, 30, "s", 3, 0.05)
+        self.q_safe = number(1e3 * rq.get("safety_reaction_max_s", 0.02), 0.01, 1e4, "ms", 2, 1,
+                             tr("보호 시간: comfort 지표와 별도로 판정 (상쇄 안 함)", "protection time: judged apart from comfort (never traded)"))
         for lab, w in ((tr("90% 응답 시간 max", "time to 90 % max"), self.q_t90), (tr("차량 저크 max", "vehicle jerk max"), self.q_j),
-                       (tr("정착 시간 max", "settling time max"), self.q_st)):
+                       (tr("정착 시간 max", "settling time max"), self.q_st), (tr("안전 반응 max", "safety reaction max"), self.q_safe)):
             f.addRow(lab, w)
         v.addWidget(g)
         row = QHBoxLayout()
@@ -467,7 +603,9 @@ class PwmDrivelinePage(QWidget):
         b["maneuver"] = {"T0_Nm": self.m_T0.value(), "T1_Nm": self.m_T1.value(), "t_step_s": self.m_ts.value(),
                          "t_end_s": self.m_te.value(), "speed_rpm": self.m_n.value(), "Vdc_V": self.m_vdc.value(),
                          "TL_out_Nm": 0.0, "window": "capability" if self.m_win.currentData() == "capability" else
-                         [self.m_lo.value(), self.m_hi.value()], "emergency_t_s": None, "emergency_T_Nm": None}
+                         [self.m_lo.value(), self.m_hi.value()],
+                         "emergency_t_s": self.m_em_t.value() if self.m_em.isChecked() else None,
+                         "emergency_T_Nm": self.m_em_T.value() if self.m_em.isChecked() else None}
         b["controller"] = {"sample_ms": self.c_ts.value(), "delay_ms": self.c_dl.value(), "actuator_tau_ms": self.c_act.value(),
                            "basis": "UI"}
         kind = self.c_sh.currentData()
@@ -479,7 +617,23 @@ class PwmDrivelinePage(QWidget):
         b["variants"] = {"off": {}, "shaping": {"shaper": sh}, "feedback": {"damping": dp},
                          "combined": {"shaper": sh, "damping": dp}}
         b["requirement"] = {"t_to_90_max_s": self.q_t90.value(), "peak_vehicle_jerk_max_m_s3": self.q_j.value(),
-                            "settle_max_s": self.q_st.value(), "basis": "UI"}
+                            "settle_max_s": self.q_st.value(), "safety_reaction_max_s": 1e-3 * self.q_safe.value(),
+                            "basis": "UI"}
+        drops = []
+        for part in self.sg_drop.text().replace(",", ";").split(";"):
+            part = part.strip()
+            if not part:
+                continue
+            a, _, c = part.partition("-")
+            try:
+                drops.append([float(a), float(c)])
+            except ValueError:
+                raise ValueError(tr(f"끊김 구간 형식 오류: {part!r} (예: 300-420)", f"bad dropout window {part!r} (e.g. 300-420)")) from None
+        b["sensing"] = {"load_speed_skew_ms": self.sg_skew.value(), "dropouts_ms": drops,
+                        "dropout_signal": self.sg_sig.currentData(),
+                        "stale_limit_ms": self.sg_lim.value() if self.sg_lim_on.isChecked() else None,
+                        "fade_ms": self.sg_fade.value(), "basis": "UI"}
+        b["check_slew"] = self.c_slew.isChecked()
         b.update(self.win.state.body())
         return b
 
@@ -525,6 +679,31 @@ class PwmDrivelinePage(QWidget):
             if v.get("extra_loss_energy_J") is not None:
                 rows.append(("   " + tr("비용", "cost"), f"Δloss {v['extra_loss_energy_J']:.1f} J · Δwork {v['work_difference_J']:.1f} J"
                              + (f" — {v['loss_note']}" if v.get("loss_note") else "")))
+            cl = v.get("clipping") or {}
+            if cl.get("upper_s") or cl.get("lower_s"):
+                rows.append(("   " + tr("클리핑", "clipping"), f"{tr('양', 'positive')} {1e3 * cl['upper_s']:.4g} ms · "
+                                                                f"{tr('음 (회생 여유)', 'negative (regen reserve)')} {1e3 * cl['lower_s']:.4g} ms"))
+            sn = v.get("sensing") or {}
+            if sn:
+                rows.append(("   " + tr("센서", "sensing"), f"{tr('최대 나이', 'max age')} {1e3 * sn['max_age_s']:.4g} ms · stale "
+                                                             f"{1e3 * sn['stale_s']:.4g} ms · {tr('감쇠 불가', 'unavailable')} "
+                                                             f"{1e3 * sn['unavailable_s']:.4g} ms · {tr('거짓 상대속도', 'false relative speed')} "
+                                                             f"{sn['max_meas_error_rad_s']:.3g} rad/s"))
+            sl = v.get("slew")
+            if sl:
+                rows.append(("   slew", f"{tr('상승', 'up')} {sl['max_up_Nm_per_s']:.4g} / {sl['limit_up_Nm_per_s']:.4g} · "
+                                       f"{tr('하강', 'down')} {sl['max_down_Nm_per_s']:.4g} / {sl['limit_down_Nm_per_s']:.4g} N·m/s"))
+            sf = v.get("safety")
+            if sf:
+                rows.append(("   " + tr("안전 반응 (별도 판정)", "safety reaction (judged separately)"),
+                             f"{sf['status']} · {sf['reason']}"))
+            rows += [("   " + tr("주석", "note"), n) for n in v.get("notes", [])]
+        sl = res.get("slew_limits")
+        if sl and sl.get("established"):
+            rows.append((tr("전압 여유 (T1 운전점)", "voltage headroom (T1 point)"),
+                         f"k_t {sl['kt_Nm_per_A']:.3f} N·m/A · L_q,diff {1e6 * sl['Lq_diff_H']:.0f} µH · "
+                         f"{tr('여유', 'headroom')} +{sl['headroom_up_V']:.1f} / −{sl['headroom_down_V']:.1f} V → "
+                         f"{sl['pos_Nm_per_s']:.4g} / {sl['neg_Nm_per_s']:.4g} N·m/s"))
         rows.append((tr("의미", "meaning"), res["meaning"]))
         self.k_dl.set_rows(rows)
 
@@ -538,5 +717,5 @@ class PwmDrivelinePage(QWidget):
                             for c in res["continuous_relative_speed"]] + [(tr("의미", "meaning"), res["meaning"])])
 
     def redraw(self):
-        for p in (self.pl_pol, self.pl_tim, self.pl_rip, self.pl_dl, self.pl_st):
+        for p in (self.pl_pol, self.pl_tim, self.pl_rip, self.pl_trn, self.pl_dl, self.pl_st):
             p.redraw()

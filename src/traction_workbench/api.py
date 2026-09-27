@@ -1261,13 +1261,21 @@ EXAMPLE_PWM = {
                "modulator_delay_fraction": 0.5, "min_pulse_us": 1.5, "wcet_source": "declared estimate",
                "basis": "example target timing (replace with the measured delay chain of the ECU)"},
     "loop": {"L_uH": 300.0, "R_mohm": 15.0, "bandwidth_Hz": 500.0, "gain_mapping": "continuous",
-             "reference_fsw_kHz": 10.0, "basis": "example PI with pole-zero cancellation at the mean dq inductance"},
+             "reference_fsw_kHz": 10.0, "integrator_storage": "output", "on_transition": "keep", "anti_windup": True,
+             "basis": "example PI with pole-zero cancellation at the mean dq inductance"},
+    "sensing": {"kind": "leg_shunt", "settle_us": 2.0, "aperture_us": 0.6, "sample_points": "valley",
+                "edge_noise": "own_leg", "reconstruct_from_two": True, "channel_skew_ns": 200.0,
+                "invalid_policy": "hold", "max_sample_age_us": 150.0, "current_error_max_A": 15.0,
+                "basis": "example: three Kelvin-connected low-side shunts, simultaneous sampling ADCs, the other legs' "
+                         "edges assumed outside the aperture - replace with the target trigger / ADC timing"},
+    "measurement_noise": {"speed_rpm": 20.0, "torque_abs_Nm": 4.0, "sensor_temp_C": 1.0, "Vdc_V": 10.0,
+                          "basis": "example peak-to-peak noise of the schedule inputs (declare the measured values)"},
     "harmonic": {"f_Hz": [0.0, 1e3, 5e3, 10e3, 20e3, 50e3, 1e5, 3e5, 1e6, 3e6],
                  "rac_over_rdc": [1.0, 1.02, 1.3, 1.8, 2.8, 5.0, 8.0, 14.0, 25.0, 45.0],
                  "iron_bound_W": [[6e3, 420.0], [8e3, 350.0], [10e3, 300.0], [16e3, 220.0]],
                  "basis": "synthetic example (declare FEA / measured R_ac(f) and the harmonic iron-loss bound)"},
     "pwm_limits": {"Tj_max_C": 150.0, "i_peak_incl_ripple_max_A": 700.0, "cap_rms_max_A": 250.0,
-                   "phase_margin_min_deg": 45.0, "pulse_ratio_min": None},
+                   "phase_margin_min_deg": 45.0, "pulse_ratio_min": None, "transition_excursion_max_A": 50.0},
     "use_capacitor": True,
     "transition": {"from_kHz": 10.0, "to_kHz": 20.0, "duty": 0.9, "deadtime_us": 1.0, "write_fraction": 0.3},
     "note": "example schedule, timing, harmonic data and limits are synthetic",
@@ -1306,7 +1314,25 @@ def _loop(lp: dict | None):
     kp = 2 * math.pi * float(lp["bandwidth_Hz"]) * L
     return CurrentLoop(L, R, kp, kp * R / L, str(lp.get("gain_mapping", "continuous")),
                        None if lp.get("reference_fsw_kHz") in (None, "") else float(lp["reference_fsw_kHz"]) * 1e3,
-                       str(lp.get("basis", "")))
+                       str(lp.get("basis", "")), str(lp.get("integrator_storage", "output")),
+                       str(lp.get("on_transition", "keep")), bool(lp.get("anti_windup", True)))
+
+
+def _sensing(sd: dict | None):
+    from .extensions.pwm_policy import SensingConfig
+    if not sd:
+        return None
+    return SensingConfig(str(sd["kind"]), float(sd["settle_us"]) * 1e-6, float(sd["aperture_us"]) * 1e-6,
+                         str(sd.get("sample_points", "valley")), str(sd.get("edge_noise", "any_leg")),
+                         bool(sd.get("reconstruct_from_two", True)), float(sd.get("channel_skew_ns") or 0.0) * 1e-9,
+                         str(sd.get("invalid_policy", "none")), _opt(sd, "predict_error_fraction"),
+                         _opt(sd, "max_sample_age_us", 1e-6), _opt(sd, "current_error_max_A"), str(sd.get("basis", "")))
+
+
+def _noise(nd: dict | None):
+    if not nd:
+        return None
+    return {k: float(v) for k, v in nd.items() if k != "basis" and v not in (None, "")}
 
 
 def pwm_policies(body):
@@ -1330,8 +1356,61 @@ def pwm_policies(body):
     segs = [{**s, "Vdc_V": float(s.get("Vdc_V") or 600.0)} for s in b["segments"]]
     r = evaluate_policies(_drive(b), cand, segs, pols, float(b["coolant_C"]), _limits(b), _timing(b["timing"]),
                           float(b["L_hf_uH"]) * 1e-6, _loop(b.get("loop")), harm, bank, source,
-                          str(b.get("modulation", "svpwm")), lim)
+                          str(b.get("modulation", "svpwm")), lim, _sensing(b.get("sensing")),
+                          _noise(b.get("measurement_noise")))
     return _jsonable(r)
+
+
+def pwm_transients(body):
+    """Current-sample validity vs modulation index for the three acquisition kinds, the declared acquisition at an
+    operating point, and one carrier-frequency change replayed with alternative integrator / gain mappings."""
+    from dataclasses import replace as _rep
+    from .extensions.pwm_policy import sampling_validity, transition_transient
+    b = {**EXAMPLE_PWM, **(body or {})}
+    d = _drive(b)
+    n, T, vdc = _num(b, "speed_rpm", 6000.0), _num(b, "torque_Nm", 150.0), _num(b, "Vdc_V", 600.0)
+    sol = PolicyEvaluator(d, Scenario("transients", n, vdc, _limits(b))).solve(T)
+    if sol.point is None:
+        raise InputValidationError("no operating point: " + sol.policy_claim.detail, field="torque_Nm")
+    pt = sol.point
+    mod = str(b.get("modulation", "svpwm"))
+    m = pt.v_peak_V / (0.5 * vdc)
+    fe = abs(pt.f_e_Hz)
+    fsw = float(b["baseline_fsw_kHz"]) * 1e3
+    L_hf = float(b["L_hf_uH"]) * 1e-6
+    sens = _sensing(b.get("sensing") or EXAMPLE_PWM["sensing"])
+    dead = float((b.get("module") or EXAMPLE_MODULE).get("deadtime_us") or 0.0) * 1e-6
+    here = sampling_validity(m, mod, fsw, fe, sens, dead, pt.i_peak_A, 0.5 * m * vdc, L_hf)
+    m_grid = [0.05 * k for k in range(1, 24)]
+    curves = {}
+    for kind in ("inline_phase", "leg_shunt", "dc_link_shunt"):
+        sk = _rep(sens, kind=kind, sample_points="valley")
+        rows = [sampling_validity(mm, mod, fsw, max(fe, 1.0), sk, dead, pt.i_peak_A, 0.5 * mm * vdc, L_hf) for mm in m_grid]
+        curves[kind] = {"m": m_grid, "valid_fraction": [r["valid_fraction"] for r in rows],
+                        "max_age_s": [r["max_age_s"] for r in rows], "error_bound_A": [r["error_bound_A"] for r in rows]}
+    tc = _timing(b["timing"])
+    loop = _loop(b.get("loop"))
+    trn = b["transition"]
+    f0, f1 = float(trn["from_kHz"]) * 1e3, float(trn["to_kHz"]) * 1e3
+    variants = {}
+    if loop is not None:
+        e = pt.vq_V - loop.R_ohm * pt.iq_A
+        for label, lp in (("declared", loop),
+                          ("bumpless (volts, Ki*Ts remapped)", _rep(loop, gain_mapping="continuous", integrator_storage="output",
+                                                                    on_transition="keep")),
+                          ("error-sum integrator, Ki*Ts remapped", _rep(loop, gain_mapping="continuous",
+                                                                        integrator_storage="error_sum", on_transition="keep")),
+                          ("integrator reset", _rep(loop, on_transition="reset", integrator_storage="output")),
+                          ("fixed discrete gains", _rep(loop, gain_mapping="fixed_discrete", integrator_storage="output",
+                                                        on_transition="keep",
+                                                        reference_fsw_Hz=loop.reference_fsw_Hz or f0))):
+            variants[label] = transition_transient(lp, tc, f0, f1, pt.iq_A, e, pt.voltage_budget_V)
+    lim = (b.get("pwm_limits") or {}).get("transition_excursion_max_A")
+    return _jsonable({"point": {"speed_rpm": n, "torque_Nm": T, "Vdc_V": vdc, "m": m, "f_e_Hz": fe, "fsw_Hz": fsw,
+                                "iq_A": pt.iq_A, "vq_V": pt.vq_V, "i_peak_A": pt.i_peak_A,
+                                "voltage_budget_V": pt.voltage_budget_V},
+                      "sensing": sens.__dict__, "sampling_here": here, "sampling_curves": curves,
+                      "transition": {"from_Hz": f0, "to_Hz": f1, "excursion_limit_A": lim, "variants": variants}})
 
 
 def pwm_timing(body):
@@ -1410,7 +1489,12 @@ EXAMPLE_DRIVELINE = {
                  "combined": {"shaper": {"kind": "rate", "rate_Nm_per_s": 1500.0},
                               "damping": {"kind": "motor_speed_hpf", "Kd_Nms_per_rad": 1.5, "hpf_Hz": 2.0}}},
     "requirement": {"t_to_90_max_s": 0.25, "peak_vehicle_jerk_max_m_s3": 35.0, "settle_max_s": 0.6,
+                    "safety_reaction_max_s": 0.02,
                     "basis": "example comfort / response targets (declare the program's definitions)"},
+    "sensing": {"load_speed_skew_ms": 0.0, "dropouts_ms": [], "dropout_signal": "load", "stale_limit_ms": 20.0,
+                "fade_ms": 10.0, "basis": "example speed-signal timing and fallback (declare the target's message "
+                                          "timing, timestamps and the degraded-mode strategy)"},
+    "check_slew": True,
     "stability": {"Kd_list": [0.5, 1.0, 1.5, 2.5, 4.0], "delay_ms_list": [0.0, 1.0, 2.0, 4.0, 6.0, 8.0, 12.0, 16.0, 24.0]},
     "note": "example driveline, controller and targets are synthetic",
 }
@@ -1423,16 +1507,21 @@ def _driveline(dd: dict):
                      str(dd.get("contact", "maintained")), _opt(dd, "backlash_out_rad"), str(dd.get("basis", "")))
 
 
-def _controller(c: dict, v: dict):
+def _controller(c: dict, v: dict, sensing: dict | None = None):
     from .extensions.driveline import Controller, Damping, Shaper
     sh = v.get("shaper") or {}
     dp = v.get("damping") or {}
+    sn = {**(sensing or {}), **(dp.get("sensing") or {})}
     return Controller(float(c["sample_ms"]) * 1e-3, float(c["delay_ms"]) * 1e-3,
                       float(c.get("actuator_tau_ms") or 0.0) * 1e-3,
                       Shaper(sh.get("kind", "none"), _opt(sh, "rate_Nm_per_s"), _opt(sh, "tau_s"), _opt(sh, "zv_f_Hz"),
                              _opt(sh, "zv_zeta")),
                       Damping(dp.get("kind", "none"), float(dp.get("Kd_Nms_per_rad") or 0.0), _opt(dp, "hpf_Hz"),
-                              float(dp.get("quantization_rad_s") or 0.0)))
+                              float(dp.get("quantization_rad_s") or 0.0),
+                              float(sn.get("load_speed_skew_ms") or 0.0) * 1e-3,
+                              tuple((float(a) * 1e-3, float(b) * 1e-3) for a, b in (sn.get("dropouts_ms") or [])),
+                              str(sn.get("dropout_signal") or "load"), _opt(sn, "stale_limit_ms", 1e-3),
+                              float(sn.get("fade_ms") or 0.0) * 1e-3))
 
 
 def _torque_window(d, n, vdc, lim):
@@ -1489,12 +1578,16 @@ def driveline(body):
         window = None
     man = Maneuver(float(m["T0_Nm"]), float(m["T1_Nm"]), float(m["t_step_s"]), float(m["t_end_s"]), n,
                    float(m.get("TL_out_Nm") or 0.0), window, _opt(m, "emergency_t_s"), _opt(m, "emergency_T_Nm"))
-    variants = {name: _controller(b["controller"], v or {}) for name, v in b["variants"].items()}
+    variants = {name: _controller(b["controller"], v or {}, b.get("sensing")) for name, v in b["variants"].items()}
     loss_fn = None
     if window is not None:
         loss_fn = _loss_lookup(d, n, vdc, lim, window[0], window[1])
-    req = {k: v for k, v in (b.get("requirement") or {}).items() if k != "basis"}
-    r = evaluate_variants(dl, variants, man, req, loss_fn)
+    req = {k: v for k, v in (b.get("requirement") or {}).items() if k != "basis" and v not in (None, "")}
+    slew = None
+    if b.get("check_slew"):
+        from .extensions.driveline import electrical_slew_limits
+        slew = electrical_slew_limits(d, n, vdc, lim, man.T1_Nm)
+    r = evaluate_variants(dl, variants, man, req, loss_fn, slew)
     r["window"] = window_info
     r["wheel_radius_m"] = dl.wheel_radius_m
     if window is not None:
@@ -1653,5 +1746,6 @@ ROUTES = {
     "machine_trade": machine_trade, "winding": winding, "concept_sizing": concept_sizing,
     "efficiency": efficiency, "efficiency_map": efficiency_map, "efficiency_mission": efficiency_mission,
     "module_compare": module_compare, "pwm_policies": pwm_policies, "pwm_timing": pwm_timing, "pwm_ripple": pwm_ripple,
+    "pwm_transients": pwm_transients,
     "driveline": driveline, "driveline_stability": driveline_stability,
 }

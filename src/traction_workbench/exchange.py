@@ -55,14 +55,31 @@ def conventions() -> dict:
                 "delay_ledger": "filter + (sample -> applied at the next reload) + declared modulator fraction; "
                                 "each delay counted once; a missed deadline is a violation",
                 "policy": "stateful causal q_next = policy(q, measurements): first matching rule, hysteresis, "
-                          "minimum dwell, protective pre-emption, fallback"},
+                          "minimum dwell, protective pre-emption, fallback",
+                "chatter": "peak-to-peak measurement noise >= hysteresis on a rule input is a violation; undeclared "
+                           "noise is not evaluated",
+                "sampling": "a current sample is valid only if its declared window (settle after the last edge + "
+                            "aperture) is edge-free: inline / low-side leg shunt (valley) / single DC-link shunt (two "
+                            "active vectors per half period); invalid samples are held or predicted, never replaced "
+                            "by the true current; held error <= omega_e I_pk age; skew error = skew (V1/L_hf + "
+                            "omega_e I_pk)",
+                "transition": "one decoupled current-loop axis at a constant point: integrator in volts is bumpless; "
+                              "an error-sum integrator under Ki*Ts remapping jumps by (Ts_to/Ts_from - 1) v_ss; a "
+                              "reset drops v_ss; fixed discrete gains scale the effective Ki by f_to/f_from"},
         "driveline": {"coordinates": "motor side; ideal gear g = omega_m / omega_gear_out before the elastic element",
                       "referral": "J_l = J_out / g^2, k = k_out / g^2, c = c_out / g^2, T_L = T_L,out / g",
                       "states": "delta = theta_m - theta_l, T_s = k delta + c delta', J_m omega_m' = T_act - T_s, "
                                 "J_l omega_l' = T_s - T_L",
                       "energy": "E' = T_act omega_m - T_L omega_l - c delta'^2",
                       "actuator": "T_act is the applied torque after arbitration, clipping, delay and the actuator ROM",
-                      "sampled_loop": "ZOH + exact fractional delay (modified z-transform); rigid-body mode excluded"},
+                      "sampled_loop": "ZOH + exact fractional delay (modified z-transform); rigid-body mode excluded",
+                      "sensing": "load speed sampled 'skew' before the motor speed; during a dropout the last value is "
+                                 "held with its age; beyond the declared stale limit the damping fades out (no "
+                                 "declared limit + stale use -> UNKNOWN)",
+                      "authority": "an undeclared torque window is UNKNOWN (missing is not unlimited); clipping is "
+                                   "attributed per side (negative = regen / charge-acceptance reserve)",
+                      "safety": "a safety request is judged on its own reaction time; comfort metrics cover the window "
+                                "before the request"},
     }
 
 
@@ -85,6 +102,14 @@ def fixtures() -> dict:
     cr = D.delay_crossings(co["a1"], co["a0"], co["b1"], 0.05)[0]
     d03 = D.rhp_roots_at(co["a1"], co["a0"], co["b1"], 0.016)
     rip = phase_ripple(600.0, 0.8, 0.3, 400.0, 10e3, 150e-6)
+    from .extensions.pwm_policy import CurrentLoop, SensingConfig, TimingConfig, sampling_validity, transition_transient
+    shunt = sampling_validity(0.8, "svpwm", 10e3, 50.0, SensingConfig("dc_link_shunt", 0.0, 0.0, basis="fixture"))
+    lp = dict(L_H=300e-6, R_ohm=15e-3, Kp=2 * math.pi * 500 * 300e-6, Ki=2 * math.pi * 500 * 15e-3,
+              gain_mapping="continuous", reference_fsw_Hz=10e3, basis="fixture")
+    tcf = TimingConfig(25e-6, 5e-6, 1, 0.5, 1.5e-6, "fixture")
+    jumps = {name: transition_transient(CurrentLoop(**lp, **kw), tcf, 10e3, 20e3, -150.0, 180.0, 346.0)["output_jump_V"]
+             for name, kw in (("volts_keep", {}), ("error_sum_keep", {"integrator_storage": "error_sum"}),
+                              ("volts_reset", {"on_transition": "reset"}))}
     return {
         "E-01": {"inputs_W": [100e3, 97e3, 92e3, 88e3], "result": eff(100e3, 97e3, 92e3, 88e3), "tol_abs": 1e-12},
         "E-02": {"inputs_W": [-87e3, -90e3, -95e3, -100e3], "result": eff(-87e3, -90e3, -95e3, -100e3),
@@ -115,6 +140,16 @@ def fixtures() -> dict:
                                   "L_hf_H": 150e-6, "modulation": "svpwm", "carrier": "synchronous, regular sampled"},
                        "ripple_rms_A_time": rip["ripple_rms_A"], "ripple_rms_A_spectrum": rip["ripple_rms_spectrum_A"],
                        "tol_rel": 1e-3},
+        "PWM-single-shunt": {"inputs": {"m": 0.8, "fsw_Hz": 10e3, "fe_Hz": 50.0, "modulation": "svpwm"},
+                             "closed_form": "per half period (sqrt3/4) m Ts sin(pi/3 - t) and (sqrt3/4) m Ts sin(t), "
+                                            "t = sector-local angle at the carrier centre; window = the shorter",
+                             "first_windows_s": [float(x) for x in shunt["window_s"][:6]], "tol_abs_s": 1e-15},
+        "PWM-transition": {"inputs": {**{k: v for k, v in lp.items() if k != "basis"}, "i_ref_A": -150.0, "e_V": 180.0,
+                                      "V_max_V": 346.0, "fsw_from_Hz": 10e3, "fsw_to_Hz": 20e3,
+                                      "timing": {"sample_to_latch_s": 25e-6, "filter_delay_s": 5e-6,
+                                                 "modulator_delay_fraction": 0.5}},
+                           "output_jump_V": jumps, "expected": {"volts_keep": 0.0, "error_sum_keep": -0.5 * 177.75,
+                                                                "volts_reset": -177.75}, "tol_abs_V": 1e-9},
     }
 
 

@@ -214,6 +214,14 @@ def run_self_test(app, out_dir) -> int:
         pw_.run_ripple()
         rr = (pw_.last_rip or {}).get("rows", [])
         check("pwm:ripple", bool(rr) and all(abs(x["ripple_rms_A"] / x["ripple_rms_spectrum_A"] - 1) < 1e-3 for x in rr))
+        pw_.run_transients()
+        shot(win, "48b_pwm_sampling_transition")
+        tv = (pw_.last_trn or {}).get("transition", {}).get("variants", {})
+        sc = (pw_.last_trn or {}).get("sampling_curves", {})
+        check("pwm:sampling_transition", bool(tv) and tv["bumpless (volts, Ki*Ts remapped)"]["excursion_A"] == 0.0
+              and tv["integrator reset"]["excursion_A"] > tv["error-sum integrator, Ki*Ts remapped"]["excursion_A"] > 0
+              and sc.get("dc_link_shunt", {}).get("valid_fraction", [1])[0] == 0.0,
+              str({k: v.get("excursion_A") for k, v in tv.items()}))
         pw_.tabs.setCurrentIndex(1)
         pw_.run_driveline()
         shot(win, "49_antijerk_variants")

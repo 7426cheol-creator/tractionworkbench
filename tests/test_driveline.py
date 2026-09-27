@@ -148,3 +148,87 @@ def test_api_example_compares_the_four_variants_on_the_same_maneuver():
     assert any(not x["stable"] for row in s["grid"] for x in row) and any(x["stable"] for row in s["grid"] for x in row)
     with pytest.raises(InputValidationError):
         D.Driveline(0.2, 2.0, 3000.0, 2.0, 1.0, basis="")
+
+
+# ------------------------------------------------------------------ addendum 7.2 mandatory failure cases (damping side)
+
+REQ = {"t_to_90_max_s": 1.0, "peak_jerk_max": 1e9, "settle_max_s": 1.0}
+
+
+def test_load_speed_skew_error_equals_the_load_speed_change_over_the_skew():
+    """With Kd = 0 the feedback does not act, so the plant is untouched and the measured relative-speed error must be
+    w_l(t_k) - w_l(t_k - skew) exactly (independent reference: the dense plant output, interpolated)."""
+    skew = 3.3e-3
+    ctl = D.Controller(1e-3, 1e-3, damping=D.Damping("relative_speed", 0.0, load_speed_skew_s=skew))
+    man = D.Maneuver(0.0, 80.0, 0.02, 0.3, 1000.0, output_dt_s=1e-5)
+    sim = D.simulate(D01, ctl, man)
+    rec = sim["record"]
+    t, wl = sim["t_s"], sim["omega_l"]
+    k = rec["t_s"] >= skew
+    ref = np.interp(rec["t_s"][k], t, wl) - np.interp(rec["t_s"][k] - skew, t, wl)
+    err = rec["meas_error_rad_s"][k]
+    assert np.max(np.abs(err - ref)) < 1e-6 * max(1.0, np.max(np.abs(ref)))
+    assert np.max(np.abs(ref)) > 1e-3                                  # a real, non-zero false relative speed
+
+
+def test_signal_dropout_without_a_fallback_is_unknown_and_with_one_the_damping_fades():
+    man = D.Maneuver(0.0, 80.0, 0.02, 0.4, 1000.0, window_Nm=(-500.0, 500.0))
+    stale = D.Controller(1e-3, 1e-3, damping=D.Damping("relative_speed", 2.0, dropouts=((0.1, 0.2),)))
+    r = D.evaluate_variants(D01, {"fb": stale}, man, REQ)["variants"]["fb"]
+    assert r["status"] == "UNKNOWN" and any("stale" in x for x in r["reasons"])
+    assert r["sensing"]["stale_s"] == pytest.approx(0.1, abs=1.5e-3) and r["sensing"]["min_gain"] == 1.0
+    fb = D.Controller(1e-3, 1e-3, damping=D.Damping("relative_speed", 2.0, dropouts=((0.1, 0.2),), stale_limit_s=0.02,
+                                                     fade_s=0.01))
+    r2 = D.evaluate_variants(D01, {"fb": fb}, man, REQ)["variants"]["fb"]
+    assert not any("stale" in x for x in r2["reasons"]) and r2["sensing"]["min_gain"] == 0.0
+    # age passes 20 ms at t = 0.12 s, fade-out 10 ms, the signal returns at 0.2 s, fade-in 10 ms
+    assert r2["sensing"]["unavailable_s"] == pytest.approx(0.09, abs=3e-3)
+    assert any("unavailable" in n for n in r2["notes"])
+    rec = D.simulate(D01, fb, man)["record"]
+    assert np.all(rec["T_ad"][(rec["t_s"] > 0.131) & (rec["t_s"] < 0.2)] == 0.0)
+
+
+def test_one_sided_clipping_is_reported_as_an_exhausted_negative_reserve():
+    ctl = D.Controller(1e-3, 1e-3, damping=D.Damping("relative_speed", 4.0))
+    man = D.Maneuver(30.0, 0.0, 0.01, 0.4, 1000.0, window_Nm=(-2.0, 200.0))       # tip-out, full battery
+    r = D.evaluate_variants(D01, {"fb": ctl}, man, REQ)["variants"]["fb"]
+    assert r["clipping"]["lower_s"] > 0 and r["clipping"]["upper_s"] == 0
+    assert any("regen" in n for n in r["notes"])
+
+
+def test_an_undeclared_authority_window_is_not_a_pass():
+    r = D.evaluate_variants(D01, {"off": D.Controller(1e-3, 1e-3)}, D.Maneuver(0.0, 50.0, 0.02, 0.5, 1000.0),
+                            REQ)["variants"]["off"]
+    assert r["status"] == "UNKNOWN" and any("authority window not declared" in x for x in r["reasons"])
+
+
+def test_safety_reaction_is_judged_on_its_own():
+    ctl = D.Controller(1e-3, 1e-3, shaper=D.Shaper("rate", rate_Nm_per_s=200.0))
+    man = D.Maneuver(100.0, 100.0, 0.0, 0.3, 1000.0, window_Nm=(-500.0, 500.0), emergency_t_s=0.1, emergency_T_Nm=0.0)
+    for lim, st in ((0.02, "FEASIBLE"), (5e-4, "INFEASIBLE"), (None, "UNKNOWN")):
+        req = {**REQ, **({} if lim is None else {"safety_reaction_max_s": lim})}
+        r = D.evaluate_variants(D01, {"x": ctl}, man, req)["variants"]["x"]
+        assert r["safety"]["status"] == st
+        assert r["safety"]["reaction_s"] == pytest.approx(1e-3, abs=6e-4)     # the declared delay, not the ramp
+        assert any("reported separately" in n for n in r["notes"])
+
+
+def test_electrical_slew_limit_matches_the_constant_model_and_binds_at_high_speed():
+    from traction_workbench import service as S
+    d = S.resolve_drive(None)
+    f = d.motor.flux
+    lim = api._limits({})
+    s = D.electrical_slew_limits(d, 2000.0, 600.0, lim, 150.0)
+    from traction_workbench.scenario import Scenario
+    from traction_workbench.solvers.policy import PolicyEvaluator
+    pt = PolicyEvaluator(d, Scenario("t", 2000.0, 600.0, lim)).solve(150.0).point
+    kt = 1.5 * d.motor.pole_pairs * (f.psi_pm_Wb + (f.Ld_H - f.Lq_H) * pt.id_A)
+    assert s["kt_Nm_per_A"] == pytest.approx(kt, rel=1e-9) and s["Lq_diff_H"] == pytest.approx(f.Lq_H, rel=1e-9)
+    up = math.sqrt(pt.voltage_ceiling_V ** 2 - pt.vd_V ** 2) - pt.vq_V
+    assert s["pos_Nm_per_s"] == pytest.approx(kt * up / f.Lq_H, rel=1e-9)
+    b = {"maneuver": {**api.EXAMPLE_DRIVELINE["maneuver"], "speed_rpm": 11000.0, "T1_Nm": 100.0},
+         "controller": {**api.EXAMPLE_DRIVELINE["controller"], "actuator_tau_ms": 0.3}}
+    r = api.driveline(b)
+    assert r["slew_limits"]["pos_Nm_per_s"] < 0.2 * r["slew_limits"]["neg_Nm_per_s"]      # FW: little room upward
+    assert r["variants"]["off"]["status"] == "UNKNOWN"
+    assert any("voltage headroom" in x for x in r["variants"]["off"]["reasons"])

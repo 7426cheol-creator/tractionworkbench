@@ -162,6 +162,28 @@ def replay_schedule(schedule: FswSchedule, t_s, meas_series: list[dict], chatter
             "chatter_window_s": chatter_window_s}
 
 
+def chatter_risk(schedule: FswSchedule, noise_pp: dict | None) -> dict:
+    """Threshold chatter from measurement noise: a rule entered at a boundary is left only after the measurement moves
+    by the hysteresis, so a peak-to-peak noise at least as large as the hysteresis can toggle the schedule on noise
+    alone (the dwell only limits the toggle RATE).  Noise not declared for a measurement a rule uses: not evaluated."""
+    used = sorted({v for r in schedule.rules for v in VARS if getattr(r, v) is not None})
+    hyst = dict(schedule.hysteresis)
+    rows, viol, unknown = [], [], []
+    for v in used:
+        n = None if noise_pp is None else noise_pp.get(v)
+        h = float(hyst.get(v, 0.0))
+        if n is None:
+            unknown.append(f"{v}: measurement noise not declared (threshold chatter not evaluated)")
+            rows.append({"measurement": v, "hysteresis": h, "noise_pp": None, "risk": None})
+            continue
+        risk = float(n) >= h
+        rows.append({"measurement": v, "hysteresis": h, "noise_pp": float(n), "risk": risk})
+        if risk:
+            viol.append(f"threshold chatter: {v} noise {float(n):g} (peak-peak) >= hysteresis {h:g} - the schedule can "
+                        f"change on noise alone (dwell {schedule.min_dwell_s:g} s only limits the rate)")
+    return {"rows": rows, "violations": viol, "unknown": unknown}
+
+
 # --------------------------------------------------------------------------------------------- timing
 
 @dataclass(frozen=True)
@@ -208,6 +230,197 @@ def phase_lag_deg(f_Hz: float, tau_s: float) -> float:
     return 360.0 * f_Hz * tau_s
 
 
+# --------------------------------------------------------------------------------------------- current sampling
+
+SENSING_KINDS = ("inline_phase", "leg_shunt", "dc_link_shunt")
+
+
+@dataclass(frozen=True)
+class SensingConfig:
+    """Declared phase-current acquisition (addendum 4.4 items 3-4).  A sample is VALID only when its declared window
+    is free of switching disturbance; an invalid sample is never replaced by the ideal true phase current.
+
+    inline_phase : phase sensors, sampled at the carrier valley (centre of the 000 vector) and / or peak (111);
+    leg_shunt    : low-side shunt per leg: a leg is measurable only while its lower switch conducts (valley only);
+    dc_link_shunt: single shunt: two active vectors per half carrier period, each must be long enough."""
+
+    kind: str
+    settle_s: float                        # disturbance settling after a switching edge (ringing, amplifier)
+    aperture_s: float                      # sample-and-hold aperture
+    sample_points: str = "valley"          # "valley" | "peak" | "valley_and_peak" (inline); leg shunts: valley
+    edge_noise: str = "any_leg"            # "any_leg" (conservative) | "own_leg" (needs a layout / filter basis)
+    reconstruct_from_two: bool = True      # three sensors installed: any two valid legs + Kirchhoff i_a+i_b+i_c = 0
+                                           # (two installed sensors: declare False - all legs must be valid)
+    channel_skew_s: float = 0.0            # time between the phase channels' samples (sequential conversion)
+    invalid_policy: str = "none"           # "none" | "hold" (last valid sample) | "predict" (declared predictor)
+    predict_error_fraction: float | None = None   # "predict": residual error / hold error (from its validation)
+    max_sample_age_s: float | None = None  # declared maximum acceptable age of a held / predicted sample
+    current_error_max_A: float | None = None      # declared allowed current-reconstruction error
+    basis: str = ""
+
+    def __post_init__(self):
+        if self.kind not in SENSING_KINDS:
+            raise InputValidationError(f"sensing kind must be one of {SENSING_KINDS}", field="kind")
+        for n in ("settle_s", "aperture_s", "channel_skew_s"):
+            if _finite(n, getattr(self, n)) < 0:
+                raise InputValidationError(f"{n} must be >= 0", field=n)
+        if self.sample_points not in ("valley", "peak", "valley_and_peak"):
+            raise InputValidationError("sample points must be valley, peak or valley_and_peak", field="sample_points")
+        if self.kind == "leg_shunt" and self.sample_points != "valley":
+            raise InputValidationError("low-side leg shunts measure only while the lower switch conducts: sample at "
+                                       "the valley", field="sample_points")
+        if self.edge_noise not in ("any_leg", "own_leg"):
+            raise InputValidationError("edge noise must be any_leg or own_leg", field="edge_noise")
+        if self.invalid_policy not in ("none", "hold", "predict"):
+            raise InputValidationError("invalid-sample policy must be none, hold or predict", field="invalid_policy")
+        if self.invalid_policy == "predict" and not (self.predict_error_fraction is not None
+                                                     and 0.0 <= self.predict_error_fraction <= 1.0):
+            raise InputValidationError("a predictor needs its validated residual error fraction in [0, 1]",
+                                       field="predict_error_fraction")
+        for n in ("max_sample_age_s", "current_error_max_A"):
+            v = getattr(self, n)
+            if v is not None and _finite(n, v) <= 0:
+                raise InputValidationError(f"{n} must be > 0", field=n)
+        if not self.basis.strip():
+            raise InputValidationError("the acquisition timing needs its basis (target ADC / trigger configuration)",
+                                       field="basis")
+
+
+def _periodic_age(valid: np.ndarray, t: np.ndarray, period: float) -> tuple[int, float]:
+    """Longest run of invalid samples and the largest age of the last valid sample over a periodic sequence."""
+    if valid.all():
+        return 0, 0.0
+    if not valid.any():
+        return int(valid.size), math.inf
+    k0 = int(np.argmax(valid))
+    run = best = 0
+    age = 0.0
+    last = t[k0]
+    for i in range(1, valid.size + 1):
+        j = (k0 + i) % valid.size
+        tj = t[j] + (period if j <= k0 else 0.0)
+        if valid[j]:
+            last = tj
+            run = 0
+        else:
+            run += 1
+            best = max(best, run)
+            age = max(age, tj - last)
+    return best, age
+
+
+def sampling_validity(m: float, modulation: str, fsw_Hz: float, fe_Hz: float, sens: SensingConfig,
+                      deadtime_s: float = 0.0, I_pk_A: float = 0.0, V1_pk_V: float = 0.0,
+                      L_hf_H: float | None = None) -> dict:
+    """Validity of every current sample over one fundamental period (synchronous regular-sampled carrier, pulses
+    centred at the carrier peak as in the edge generator).  Windows per carrier period j (duties d, period Ts):
+
+    valley (lower switches conduct): previous edge (1 - d_prev) Ts/2 (+ dead time on the low side) before, next edge
+    (1 - d_next) Ts/2 after; peak (upper switches conduct): d Ts/2 on both sides; single DC-link shunt: the two
+    active vectors (d_max - d_mid) Ts/2 and (d_mid - d_min) Ts/2 per half period.  A window must hold the declared
+    settling after the edge plus the aperture.
+
+    Invalid samples are held / predicted (declared policy) with an error bound from the fundamental slope
+    omega_e I_pk times the age; at (near) standstill an invalid angle can persist, so the age is unbounded.
+    Channel skew between the phase samples adds skew * (V1_pk / L_hf + omega_e I_pk) (zero-vector slope of the
+    phase current plus the fundamental slope)."""
+    fe_true = abs(float(fe_Hz))
+    quasi_static = fe_true < fsw_Hz / 400.0
+    fe = max(fe_true, fsw_Hz / 400.0)
+    ratio = max(1, int(round(fsw_Hz / fe)))
+    period = 1.0 / fe
+    Ts = period / ratio
+    tc = (np.arange(ratio) + 0.5) * Ts
+    d = np.clip(_duties(TWO_PI * fe * tc, m, 0.0, modulation), 0.0, 1.0)
+    before = sens.settle_s + 0.5 * sens.aperture_s
+    after = 0.5 * sens.aperture_s
+    t_s, ok, window = [], [], []
+    for j in range(ratio):
+        dp, dn = d[:, j - 1], d[:, j]
+        if sens.kind == "dc_link_shunt":
+            s = np.sort(dn)[::-1]
+            w = min(s[0] - s[1], s[1] - s[2]) * Ts / 2.0
+            t_s.append(tc[j] - 0.5 * Ts)
+            ok.append(w >= sens.settle_s + sens.aperture_s)
+            window.append(w)
+            continue
+        need = 2 if sens.reconstruct_from_two else 3
+        if sens.sample_points in ("valley", "valley_and_peak"):
+            eb = np.where((dp > 0.0) & (dp < 1.0), (1.0 - dp) * Ts / 2.0, np.inf)    # to each leg's last edge
+            ea = np.where((dn > 0.0) & (dn < 1.0), (1.0 - dn) * Ts / 2.0, np.inf)    # ... and its next edge
+            if sens.kind == "leg_shunt":                                              # own low-side conduction
+                lb = (1.0 - dp) * Ts / 2.0 - deadtime_s
+                la = (1.0 - dn) * Ts / 2.0
+                own = (lb >= before) & (la >= after) & (dp < 1.0) & (dn < 1.0)
+                own_w = np.minimum(lb, la)
+            else:
+                own = (eb >= before) & (ea >= after)
+                own_w = np.minimum(eb, ea)
+            w = float(np.sort(own_w)[::-1][need - 1])
+            if sens.edge_noise == "any_leg":                  # every leg's edge disturbs every channel
+                own = own & bool(eb.min() >= before and ea.min() >= after)
+                w = min(w, float(eb.min()), float(ea.min()))
+            t_s.append(j * Ts)
+            ok.append(bool(own.sum() >= need))
+            window.append(w)
+        if sens.sample_points in ("peak", "valley_and_peak"):
+            ep = np.where((dn > 0.0) & (dn < 1.0), dn * Ts / 2.0, np.inf)              # upper conduction
+            if sens.edge_noise == "any_leg":
+                good, w = bool(ep.min() >= before), float(ep.min())
+            else:
+                good, w = bool((ep >= before).sum() >= need), float(np.sort(ep)[::-1][need - 1])
+            t_s.append(tc[j])
+            ok.append(good)
+            window.append(w)
+    t_s, ok, window = np.array(t_s), np.array(ok, bool), np.array(window)
+    order = np.argsort(t_s, kind="stable")
+    t_s, ok, window = t_s[order], ok[order], window[order]
+    run, age = _periodic_age(ok, t_s, period)
+    if quasi_static and not ok.all():
+        age = math.inf                               # the invalid angle can persist at (near) standstill
+    w_e = TWO_PI * fe_true
+    hold_err = w_e * I_pk_A * age if math.isfinite(age) else math.inf
+    if sens.invalid_policy == "predict":
+        err = hold_err * float(sens.predict_error_fraction)
+    else:
+        err = hold_err
+    slope = (V1_pk_V / L_hf_H if (L_hf_H and L_hf_H > 0) else 0.0) + w_e * I_pk_A
+    skew_err = sens.channel_skew_s * slope if sens.kind != "dc_link_shunt" else 0.0
+    viol, unknown = [], []
+    n_bad = int((~ok).sum())
+    if n_bad:
+        what = (f"{n_bad} of {ok.size} current samples fall in a disturbed / too-short window "
+                f"(tightest window {1e6 * float(np.min(window)):.3g} us vs settle {1e6 * sens.settle_s:.3g} us + "
+                f"aperture {1e6 * sens.aperture_s:.3g} us)")
+        if sens.invalid_policy == "none":
+            viol.append(what + "; no fallback declared: the controller would use disturbed samples")
+        elif not math.isfinite(age):
+            viol.append(what + ("; at (near) standstill the invalid angle can persist: the held value may never "
+                                "refresh" if quasi_static else "; no valid sample in the fundamental period"))
+        else:
+            if sens.max_sample_age_s is None:
+                unknown.append("held / predicted sample age: no limit declared")
+            elif age > sens.max_sample_age_s:
+                viol.append(f"held sample age {1e6 * age:.4g} us exceeds the declared {1e6 * sens.max_sample_age_s:.4g} us")
+            if sens.current_error_max_A is None:
+                unknown.append("reconstruction error of held samples: no limit declared")
+            elif err > sens.current_error_max_A:
+                viol.append(f"held-sample error bound {err:.4g} A exceeds the declared {sens.current_error_max_A:g} A")
+    if skew_err > 0:
+        if sens.current_error_max_A is None:
+            unknown.append("channel-skew error: no reconstruction error limit declared")
+        elif skew_err > sens.current_error_max_A:
+            viol.append(f"channel skew {1e9 * sens.channel_skew_s:.4g} ns gives up to {skew_err:.4g} A reconstruction "
+                        f"error > {sens.current_error_max_A:g} A")
+    return {"kind": sens.kind, "valid_fraction": float(ok.mean()), "n_samples": int(ok.size), "n_invalid": n_bad,
+            "longest_invalid_run": run, "max_age_s": age, "hold_error_bound_A": hold_err, "error_bound_A": err,
+            "skew_error_bound_A": skew_err, "min_window_s": float(np.min(window)), "quasi_static": quasi_static,
+            "t_s": t_s, "valid": ok, "window_s": window, "violations": viol, "unknown": unknown,
+            "status": "VIOLATION" if viol else ("UNKNOWN" if unknown else "OK"),
+            "note": "valid windows from the declared settle / aperture / dead time; invalid samples are held or "
+                    "predicted by the declared policy, never replaced by the true current"}
+
+
 @dataclass(frozen=True)
 class CurrentLoop:
     """PI current loop on one axis: C(s) = Kp + Ki/s, plant 1 / (R + s L_diff), pure delay tau."""
@@ -219,6 +432,10 @@ class CurrentLoop:
     gain_mapping: str = "continuous"          # "continuous": Ki*Ts remapped at every period; "fixed_discrete": not
     reference_fsw_Hz: float | None = None     # the period at which fixed discrete gains were tuned
     basis: str = ""
+    integrator_storage: str = "output"        # "output": state in volts (bumpless when Ki*Ts changes)
+                                              # "error_sum": sum of errors, output = Ki_disc * sum (jumps with Ki_disc)
+    on_transition: str = "keep"               # "keep" | "reset" (integrator cleared at a carrier-frequency change)
+    anti_windup: bool = True                  # conditional integration while the voltage is saturated
 
     def __post_init__(self):
         for n in ("L_H", "Kp"):
@@ -232,6 +449,11 @@ class CurrentLoop:
         if self.gain_mapping == "fixed_discrete" and not self.reference_fsw_Hz:
             raise InputValidationError("fixed discrete gains need the reference frequency they were tuned at",
                                        field="reference_fsw_Hz")
+        if self.integrator_storage not in ("output", "error_sum"):
+            raise InputValidationError("integrator storage must be output or error_sum", field="integrator_storage")
+        if self.on_transition not in ("keep", "reset"):
+            raise InputValidationError("integrator handling at a transition must be keep or reset",
+                                       field="on_transition")
 
     def effective_Ki(self, fsw_Hz: float, updates_per_period: int = 1) -> float:
         if self.gain_mapping == "continuous":
@@ -262,6 +484,109 @@ class CurrentLoop:
         pm = 180.0 + math.degrees(arg)
         return {"crossover_Hz": wc / TWO_PI, "phase_margin_deg": pm, "delay_phase_at_crossover_deg":
                 math.degrees(wc * tau_s)}
+
+
+def transition_transient(loop: CurrentLoop, tc: TimingConfig, fsw_from_Hz: float, fsw_to_Hz: float, i_ref_A: float,
+                         e_V: float, V_max_V: float, band_A: float | None = None, t_after_s: float | None = None,
+                         n_before: int = 40) -> dict:
+    """One current-loop axis across a carrier-frequency change at a CONSTANT operating point (addendum 4.4 items 5-6).
+
+    Sampled PI with the declared gain mapping, integrator storage and transition handling, voltage saturation with
+    optional conditional-integration anti-windup; the declared delay chain per period (filter + one update +
+    modulator fraction); plant L di/dt = v - R i - e integrated exactly between events.  The run starts at the exact
+    steady state, so any excursion is caused by the transition itself: a bumpless mapping gives none; an error-sum
+    integrator under Ki*Ts remapping jumps by (Ts_to / Ts_from - 1) v_ss; a reset drops v_ss; fixed discrete gains
+    change the effective Ki (the loop dynamics) without a jump at a constant point.  One decoupled axis: a screening
+    of the mechanism, not the full dq transient."""
+    upd = tc.updates_per_period
+    T0, T1 = 1.0 / (fsw_from_Hz * upd), 1.0 / (fsw_to_Hz * upd)
+    for T, f in ((T0, fsw_from_Hz), (T1, fsw_to_Hz)):
+        if tc.sample_to_latch_s > T:
+            return {"evaluated": False, "reason": f"control deadline missed at {f / 1e3:g} kHz: the transition is a "
+                                                  "timing violation, not evaluated as a transient"}
+    if loop.Ki <= 0:
+        return {"evaluated": False, "reason": "no integral action: no integrator state to map"}
+    Tref = None if loop.reference_fsw_Hz is None else 1.0 / (loop.reference_fsw_Hz * upd)
+
+    def ki_disc(T):
+        return loop.Ki * (T if loop.gain_mapping == "continuous" else Tref)
+    L, R, e = loop.L_H, loop.R_ohm, float(e_V)
+    v_ss = R * i_ref_A + e
+    if abs(v_ss) > V_max_V:
+        return {"evaluated": False, "reason": f"steady voltage {abs(v_ss):.4g} V above the limit {V_max_V:.4g} V"}
+    band = band_A if band_A is not None else max(0.01 * abs(i_ref_A), 0.5)
+    t_after = t_after_s if t_after_s is not None else min(0.25, max(40.0 * L / loop.Kp, 5.0 * L / R if R > 0 else 0.0))
+    t_sw = n_before * T0
+    t_end = t_sw + t_after
+
+    def advance(i, h, v):
+        if h <= 0.0:
+            return i
+        if R > 0.0:
+            i_inf = (v - e) / R
+            return i_inf + (i - i_inf) * math.exp(-R * h / L)
+        return i + (v - e) * h / L
+    i, t, v_app = i_ref_A, 0.0, v_ss
+    xI = v_ss                                        # integrator in volts ("output" storage)
+    S = v_ss / ki_disc(T0)                           # sum of errors ("error_sum" storage)
+    pending, last_issue = [], -1
+    tr_t, tr_i, tr_v = [0.0], [i], [v_app]
+    tk, k, prev_v, jump, sat_after = 0.0, 0, v_ss, None, 0
+    while tk <= t_end + 1e-15:
+        while pending and pending[0][0] <= tk:
+            ta, vnew, idx = pending.pop(0)
+            i = advance(i, ta - t, v_app)
+            t = ta
+            if idx > last_issue:                     # a newer command already applied wins (shadow registers)
+                v_app, last_issue = vnew, idx
+            tr_t.append(t)
+            tr_i.append(i)
+            tr_v.append(v_app)
+        i = advance(i, tk - t, v_app)
+        t = tk
+        tr_t.append(t)
+        tr_i.append(i)
+        tr_v.append(v_app)
+        new = tk >= t_sw - 1e-15
+        T = T1 if new else T0
+        first = new and jump is None
+        if first and loop.on_transition == "reset":
+            xI, S = 0.0, 0.0
+        err = i_ref_A - i
+        v = loop.Kp * err + (xI if loop.integrator_storage == "output" else ki_disc(T) * S)
+        vc = max(-V_max_V, min(V_max_V, v))
+        saturated = vc != v
+        if new and saturated:
+            sat_after += 1
+        if not (loop.anti_windup and saturated and (err > 0) == (v > 0)):
+            if loop.integrator_storage == "output":
+                xI += ki_disc(T) * err
+            else:
+                S += err
+        if first:
+            jump = vc - prev_v
+        prev_v = vc
+        pending.append((tk + tc.filter_delay_s + (1.0 + tc.modulator_delay_fraction) * T, vc, k))
+        pending.sort()
+        k += 1
+        tk += T
+    tt, ii, vv = np.array(tr_t), np.array(tr_i), np.array(tr_v)
+    post = tt >= t_sw
+    dev = np.abs(ii - i_ref_A)
+    out_band = np.nonzero(post & (dev > band))[0]
+    settled = not (out_band.size and tt[out_band[-1]] > t_end - 0.02 * t_after)
+    step = max(1, tt.size // 4000)
+    return {"evaluated": True, "fsw_from_Hz": fsw_from_Hz, "fsw_to_Hz": fsw_to_Hz, "i_ref_A": i_ref_A, "e_V": e,
+            "v_ss_V": v_ss, "V_max_V": V_max_V, "output_jump_V": float(jump), "bumpless": abs(jump) <= 1e-9 * max(1.0, abs(v_ss)),
+            "excursion_A": float(dev[post].max()), "band_A": band,
+            "settle_s": (float(tt[out_band[-1]] - t_sw) if out_band.size else 0.0) if settled else None,
+            "horizon_s": t_after, "saturated_samples": sat_after,
+            "Ki_eff_ratio": (ki_disc(T1) / T1) / (ki_disc(T0) / T0),
+            "mapping": {"gain_mapping": loop.gain_mapping, "integrator_storage": loop.integrator_storage,
+                        "on_transition": loop.on_transition, "anti_windup": loop.anti_windup},
+            "t_s": tt[::step] - t_sw, "i_err_A": (ii - i_ref_A)[::step], "v_V": vv[::step],
+            "note": "one decoupled axis at a constant operating point, exact RL between events, declared delay chain; "
+                    "the transition's own transient (not the full dq response)"}
 
 
 # --------------------------------------------------------------------------------------------- waveform checks
@@ -544,11 +869,12 @@ class PwmLimits:
     cap_rms_max_A: float | None = None
     phase_margin_min_deg: float | None = None
     pulse_ratio_min: float | None = None              # declared lower bound of the qualified PWM family (no default)
+    transition_excursion_max_A: float | None = None   # allowed current excursion caused by a carrier-frequency change
 
 
 def _segment_eval(base_drive, cand, seg: dict, fsw: float, coolant_C: float, limits_dc, timing: TimingConfig,
                   loop: CurrentLoop | None, L_hf_H: float, harmonic: HarmonicLossData | None, bank, source,
-                  modulation: str) -> dict:
+                  modulation: str, sensing: SensingConfig | None = None) -> dict:
     from ..analysis.efficiency import _module_point
     from ..scenario import Scenario
     from .dclink_ripple import ripple_analysis
@@ -577,7 +903,15 @@ def _segment_eval(base_drive, cand, seg: dict, fsw: float, coolant_C: float, lim
                 "ripple_quasi_static": fe_true < fsw / 400.0, "modulation_index": m,
                 "pulse_ratio": (fsw / fe_true) if fe_true > 0 else None, "narrowest_pulse_s": mp["narrowest_pulse_s"],
                 "min_pulse_ok": mp["ok"], "P_cu_harm_W": hcu["W"], "P_cu_harm_reason": hcu["reason"],
-                "P_iron_harm_bound_W": None if harmonic is None else harmonic.iron_bound(fsw)})
+                "P_iron_harm_bound_W": None if harmonic is None else harmonic.iron_bound(fsw),
+                "linear_modulation": not rip["overmodulation"],
+                "iq_A": p.get("iq_A"), "vq_V": p.get("vq_V"), "voltage_budget_V": p.get("voltage_budget_V")})
+    if sensing is not None:
+        sv = sampling_validity(m, modulation, fsw, fe_true, sensing, getattr(cand.model, "deadtime_s", 0.0) or 0.0,
+                               p["i_peak_A"], 0.5 * m * vdc, L_hf_H)
+        out["sampling"] = {k: sv[k] for k in ("status", "valid_fraction", "n_invalid", "n_samples", "max_age_s",
+                                              "error_bound_A", "skew_error_bound_A", "min_window_s", "violations",
+                                              "unknown", "quasi_static")}
     if bank is not None and fe_true > 0:
         pf = d.get("power_factor")
         phi = math.acos(max(-1.0, min(1.0, float(pf)))) if (pf is not None and math.isfinite(pf)) else 0.0
@@ -590,11 +924,15 @@ def _segment_eval(base_drive, cand, seg: dict, fsw: float, coolant_C: float, lim
 def evaluate_policies(base_drive, cand, segments: list[dict], policies: list, coolant_C: float, limits_dc,
                       timing: TimingConfig, L_hf_H: float, loop: CurrentLoop | None = None,
                       harmonic: HarmonicLossData | None = None, bank=None, source=None, modulation: str = "svpwm",
-                      limits: PwmLimits | None = None) -> dict:
+                      limits: PwmLimits | None = None, sensing: SensingConfig | None = None,
+                      measurement_noise: dict | None = None) -> dict:
     """Every policy on the SAME trajectory, source and coolant; the first policy is the baseline.
 
     ``cand``: efficiency.ModuleCandidate (module data, own thermal path).  Segments carry duration_s, speed_rpm,
-    torque_Nm, Vdc_V and optionally sensor_temp_C (the observable temperature the schedule may use)."""
+    torque_Nm, Vdc_V and optionally sensor_temp_C (the observable temperature the schedule may use).
+    ``sensing``: declared current acquisition (sample validity per segment); ``measurement_noise``: peak-to-peak
+    noise of the schedule's measurements (threshold chatter).  Each carrier-frequency change is replayed on the
+    current loop at the new segment's operating point (gain / integrator mapping, saturation)."""
     if not policies:
         raise InputValidationError("no policies", field="policies")
     lim = limits or PwmLimits()
@@ -602,19 +940,36 @@ def evaluate_policies(base_drive, cand, segments: list[dict], policies: list, co
     for pol in policies:
         state, t_now, rows = None, 0.0, []
         events = []
+        prev_fsw = None
         for seg in segments:
             meas = {"speed_rpm": abs(float(seg["speed_rpm"])), "torque_abs_Nm": abs(float(seg["torque_Nm"])),
                     "Vdc_V": float(seg["Vdc_V"]), "sensor_temp_C": seg.get("sensor_temp_C")}
             state = pol.step(state, meas, t_now)
-            if state.get("changed"):
-                events.append({"t_s": t_now, "to_fsw_Hz": pol.fsw(state), "reason": state["reason"]})
             fsw = pol.fsw(state)
             ev = _segment_eval(base_drive, cand, seg, fsw, coolant_C, limits_dc, timing, loop, L_hf_H, harmonic, bank,
-                               source, modulation)
+                               source, modulation, sensing)
             ev["duration_s"] = float(seg["duration_s"])
+            if state.get("changed") and prev_fsw is not None:
+                e = {"t_s": t_now, "from_fsw_Hz": prev_fsw, "to_fsw_Hz": fsw, "reason": state["reason"],
+                     "carrier_change": fsw != prev_fsw}
+                if fsw != prev_fsw and loop is not None and ev.get("iq_A") is not None and ev.get("vq_V") is not None:
+                    tr = transition_transient(loop, timing, prev_fsw, fsw, ev["iq_A"],
+                                              ev["vq_V"] - loop.R_ohm * ev["iq_A"], ev["voltage_budget_V"])
+                    e["transient"] = {k: tr.get(k) for k in ("evaluated", "reason", "output_jump_V", "excursion_A",
+                                                             "band_A", "settle_s", "saturated_samples", "Ki_eff_ratio",
+                                                             "bumpless", "horizon_s")}
+                events.append(e)
+            prev_fsw = fsw
             rows.append(ev)
             t_now += float(seg["duration_s"])
-        out.append(_aggregate(pol, rows, events, lim))
+        agg = _aggregate(pol, rows, events, lim, loop)
+        ch = chatter_risk(pol, measurement_noise) if not pol.is_fixed else {"rows": [], "violations": [], "unknown": []}
+        agg["chatter"] = ch
+        agg["violations"] += ch["violations"]
+        agg["unverified"] += ch["unknown"]
+        agg["status"] = "VIOLATION" if agg["violations"] else agg["status"]
+        agg["admissible"] = agg["status"] == "ADMISSIBLE"
+        out.append(agg)
     base = out[0]
     for o in out[1:]:
         o["versus_baseline"] = _versus(base, o)
@@ -629,11 +984,51 @@ def evaluate_policies(base_drive, cand, segments: list[dict], policies: list, co
                        "bound"}
 
 
-def _aggregate(pol, rows, events, lim: PwmLimits) -> dict:
+def _aggregate(pol, rows, events, lim: PwmLimits, loop: CurrentLoop | None = None) -> dict:
     viol, unknown = [], []
     delivered = all(r["status"] == "FEASIBLE" for r in rows)
-    if not delivered:
-        viol.append("requirement not delivered in every segment")
+    bad = [k for k, r in enumerate(rows) if r["status"] == "INFEASIBLE"]
+    open_ = [k for k, r in enumerate(rows) if r["status"] not in ("FEASIBLE", "INFEASIBLE")]
+    if bad:
+        viol.append("requirement not delivered (INFEASIBLE) in segment(s) " + ", ".join(str(k + 1) for k in bad))
+    for k in open_:
+        unknown.append(f"segment {k + 1}: requirement not established ({rows[k]['status']}: "
+                       f"{rows[k].get('reason') or 'no reason given'})")
+    for k, r in enumerate(rows):
+        if r.get("linear_modulation") is False:
+            unknown.append(f"segment {k + 1}: modulation index beyond the linear range of the declared PWM family "
+                           "(overmodulation / six-step not supported: ripple, loss and timing not evaluated)")
+        smp = r.get("sampling")
+        if smp is None:
+            continue
+        viol += [f"segment {k + 1} current sampling: {x}" for x in smp["violations"]]
+        unknown += [f"segment {k + 1} current sampling: {x}" for x in smp["unknown"]]
+    if rows and all(r.get("sampling") is None for r in rows):
+        unknown.append("current-sampling validity not evaluated (no acquisition configuration declared)")
+    for e in events:
+        if not e.get("carrier_change"):
+            continue                                 # a rule change at the same carrier frequency
+        tr = e.get("transient")
+        tag = f"transition {e['from_fsw_Hz'] / 1e3:g} -> {e['to_fsw_Hz'] / 1e3:g} kHz at {e['t_s']:g} s"
+        if tr is None:
+            unknown.append(f"{tag}: not replayed (no current loop / operating voltage declared)")
+            continue
+        if not tr.get("evaluated"):
+            viol.append(f"{tag}: {tr.get('reason')}") if "deadline" in str(tr.get("reason")) else \
+                unknown.append(f"{tag}: {tr.get('reason')}")
+            continue
+        if tr["excursion_A"] <= tr.get("band_A", 0.0):
+            pass                                     # stays inside the settling band: nothing to judge
+        elif lim.transition_excursion_max_A is None:
+            unknown.append(f"{tag}: current excursion {tr['excursion_A']:.4g} A - no allowed excursion declared")
+        elif tr["excursion_A"] > lim.transition_excursion_max_A:
+            why = "integrator reset" if tr.get("output_jump_V") and loop is not None and loop.on_transition == "reset" \
+                else ("error-sum integrator under Ki*Ts remapping" if not tr.get("bumpless") else "loop dynamics")
+            viol.append(f"{tag}: current excursion {tr['excursion_A']:.4g} A > {lim.transition_excursion_max_A:g} A "
+                        f"({why}; output jump {tr['output_jump_V']:.4g} V)")
+        if tr.get("Ki_eff_ratio") is not None and abs(tr["Ki_eff_ratio"] - 1.0) > 1e-9:
+            unknown.append(f"{tag}: fixed discrete gains change the effective Ki by x{tr['Ki_eff_ratio']:.3g} "
+                           "(gain-state jump of the loop dynamics; see the phase margin per segment)")
 
     def tot(key):
         vals = [r.get(key) for r in rows]
@@ -665,9 +1060,9 @@ def _aggregate(pol, rows, events, lim: PwmLimits) -> dict:
         worst = max(vals) if hi else min(vals)
         if (worst > limit) if hi else (worst < limit):
             viol.append(f"{name} {worst:.4g} vs limit {limit:g}")
-    admissible = not viol
+    status = "VIOLATION" if viol else ("UNKNOWN" if (open_ or not delivered) else "ADMISSIBLE")
     return {"policy": pol.describe(), "segments": rows, "transitions": events, "violations": viol,
-            "unverified": unknown, "admissible": admissible, "delivered": delivered,
+            "unverified": unknown, "status": status, "admissible": status == "ADMISSIBLE", "delivered": delivered,
             "E_inv_J": E_inv, "E_cu_fund_J": E_cu, "E_cu_harm_J": E_h, "E_iron_harm_bound_J": E_fe,
             "Tj_max_C": max(tj) if tj else None, "i_peak_incl_ripple_max_A": max(ipk) if ipk else None,
             "I_cap_rms_max_A": max(icap) if icap else None, "phase_margin_min_deg": min(pm) if pm else None,

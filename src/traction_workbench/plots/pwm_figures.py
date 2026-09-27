@@ -24,6 +24,11 @@ def _pc(i, t):
     return t["fg"] if i == 0 else POL[i % len(POL)]
 
 
+KIND = {"inline_phase": ("#0969da", "inline"), "leg_shunt": ("#1a7f37", "leg shunts"),
+        "dc_link_shunt": ("#cf222e", "DC-link shunt")}
+TRV = ("#1f2328", "#1a7f37", "#bf8700", "#cf222e", "#8250df")
+
+
 # ---------------------------------------------------------------------------------------------- PWM policies
 
 def fig_pwm_policies(fig, res: dict, title: str | None = None):
@@ -187,6 +192,63 @@ def fig_pwm_ripple(fig, rp: dict, title: str | None = None):
 
 # ---------------------------------------------------------------------------------------------- driveline
 
+def fig_pwm_transients(fig, r: dict, title: str | None = None):
+    """Current-sample validity vs modulation index per acquisition kind, and one carrier-frequency change replayed
+    with alternative integrator / gain mappings (``api.pwm_transients``)."""
+    _reset(fig, title)
+    t = S.theme()
+    ax, ax2 = fig.subplots(1, 2, gridspec_kw={"width_ratios": [1.0, 1.25]})
+    pt = r["point"]
+    for kind, c in r["sampling_curves"].items():
+        col, lab = KIND.get(kind, (S.ACCENT, kind))
+        ax.plot(c["m"], np.asarray(c["valid_fraction"]) * 100.0, color=col, lw=1.8, marker="o", ms=3,
+                label=tr({"inline": "인라인 상전류", "leg shunts": "레그 저측 션트 (두 레그 재구성)",
+                          "DC-link shunt": "DC-link 단일 션트"}[lab], lab))
+    ax.axvline(pt["m"], color=t["muted"], lw=1.0, ls=":")
+    here = r["sampling_here"]
+    col = KIND.get(r["sensing"]["kind"], (S.ACCENT, ""))[0]
+    ax.plot([pt["m"]], [100.0 * here["valid_fraction"]], marker="*", ms=14, color=col, ls="none",
+            label=tr(f"선언 구성 @ 운전점: {here['status']}", f"declared set-up @ point: {here['status']}"))
+    ax.set_xlabel(tr("변조 지수 m (선형 SVPWM ≤ 2/√3)", "modulation index m (linear SVPWM <= 2/sqrt3)"))
+    ax.set_ylabel(tr("유효 전류 샘플 [%] (기본파 1주기)", "valid current samples [%] (one fundamental period)"))
+    ax.set_ylim(-3, 125)                                    # headroom for the note above the 100 % lines
+    ax.set_yticks([0, 20, 40, 60, 80, 100])
+    ax.grid(True, alpha=0.35)
+    ax.legend(fontsize=6.8, loc="lower right")
+    sn = r["sensing"]
+    _note(ax, tr(f"settle {1e6 * sn['settle_s']:.2g} µs + aperture {1e6 * sn['aperture_s']:.2g} µs, "
+                 f"fsw {pt['fsw_Hz'] / 1e3:g} kHz\n무효 샘플은 선언 정책으로 유지/예측 (실제 전류로 대체 안 함)",
+                 f"settle {1e6 * sn['settle_s']:.2g} us + aperture {1e6 * sn['aperture_s']:.2g} us, "
+                 f"fsw {pt['fsw_Hz'] / 1e3:g} kHz\ninvalid samples are held / predicted by the declared policy "
+                 "(never the true current)"), loc="upper left", fontsize=6.5)
+    tr_ = r["transition"]
+    lim = tr_.get("excursion_limit_A")
+    for i, (name, v) in enumerate(tr_["variants"].items()):
+        if not v.get("evaluated"):
+            continue
+        tt = np.asarray(v["t_s"]) * 1e3
+        ax2.plot(tt, v["i_err_A"], color=TRV[i % len(TRV)], lw=1.6 if i == 0 else 1.2,
+                 ls="-" if i else "--", label=f"{name}: {v['excursion_A']:.3g} A" +
+                 (tr(f", Ki×{v['Ki_eff_ratio']:.2g}", f", Ki x{v['Ki_eff_ratio']:.2g}") if abs(v["Ki_eff_ratio"] - 1) > 1e-9 else ""))
+    if lim:
+        ax2.axhspan(-lim, lim, color=S.VERDICT["PASS"], alpha=0.08, lw=0)
+        for sgn in (1, -1):
+            ax2.axhline(sgn * lim, color="#cf222e", lw=0.9, ls=":")
+    ax2.axvline(0.0, color=t["muted"], lw=1.0)
+    ax2.set_xlim(-1.0, None)
+    ax2.set_xlabel(tr(f"전환 후 시간 [ms] ({tr_['from_Hz'] / 1e3:g} → {tr_['to_Hz'] / 1e3:g} kHz)",
+                      f"time after the change [ms] ({tr_['from_Hz'] / 1e3:g} -> {tr_['to_Hz'] / 1e3:g} kHz)"))
+    ax2.set_ylabel(tr("q축 전류 편차 i − i_ref [A]", "q-axis current deviation i - i_ref [A]"))
+    ax2.grid(True, alpha=0.35)
+    ax2.legend(fontsize=6.5, loc="lower right")
+    _note(ax2, tr(f"운전점 {pt['speed_rpm']:.0f} rpm · {pt['torque_Nm']:.0f} N·m: i_q {pt['iq_A']:.0f} A, "
+                  f"v_q {pt['vq_V']:.0f} V\n일정 운전점에서의 전환 자체의 과도 (한 축, 비결합)",
+                  f"point {pt['speed_rpm']:.0f} rpm · {pt['torque_Nm']:.0f} N m: i_q {pt['iq_A']:.0f} A, "
+                  f"v_q {pt['vq_V']:.0f} V\nthe change's own transient at a constant point (one decoupled axis)"),
+          loc="upper right", fontsize=6.5)
+    return fig
+
+
 def fig_driveline(fig, r: dict, title: str | None = None):
     _reset(fig, title)
     t = S.theme()
@@ -207,6 +269,21 @@ def fig_driveline(fig, r: dict, title: str | None = None):
     if rec:
         axs[0, 0].step(rec["t_s"], rec["T_request"], where="post", color=t["muted"], ls="--", lw=1.0,
                        label=tr("요청", "request"))
+    faded = False
+    for name, v in r["variants"].items():                    # damping unavailable / fading (stale signal)
+        rc = v.get("record") or {}
+        gain = np.asarray(rc.get("gain", []), float)
+        if gain.size and np.any(gain < 1.0 - 1e-12):
+            ts = np.asarray(rc["t_s"], float)
+            low = gain < 1.0 - 1e-12
+            edges = np.flatnonzero(np.diff(np.concatenate([[0], low.astype(int), [0]])))
+            for a, b in zip(edges[::2], edges[1::2] - 1):
+                for ax in axs.ravel():
+                    ax.axvspan(ts[a], ts[b], color=t["muted"], alpha=0.12, lw=0)
+            faded = True
+    if faded:
+        axs[0, 0].plot([], [], color=t["muted"], lw=6, alpha=0.3, label=tr("감쇠 불가·페이드 (신호 stale)",
+                                                                          "damping faded (stale signal)"))
     w = r.get("window")
     if w:
         axs[0, 0].axhline(w["T_max_Nm"], color="#cf222e", lw=0.8, ls=":")

@@ -26,3 +26,18 @@ def test_exchange_package_carries_the_reference_fixtures():
     assert r["ripple_rms_A_time"] == pytest.approx(r["ripple_rms_A_spectrum"], rel=1e-3)
     assert "referral" in pkg["conventions"]["driveline"] and "telescoping" in pkg["conventions"]["efficiency_boundaries"]
     assert pkg["example_inputs"]["pwm"]["schedules"]
+
+
+def test_exchange_sampling_and_transition_fixtures_match_their_closed_forms():
+    import math
+    fx = build_package(include_examples=False)["fixtures"]
+    s = fx["PWM-single-shunt"]
+    m, fsw, fe = s["inputs"]["m"], s["inputs"]["fsw_Hz"], s["inputs"]["fe_Hz"]
+    Ts = 1.0 / fsw
+    for j, w in enumerate(s["first_windows_s"]):
+        th = (2 * math.pi * fe * (j + 0.5) * Ts) % (math.pi / 3)
+        ref = min((math.sqrt(3) / 4) * m * Ts * math.sin(math.pi / 3 - th), (math.sqrt(3) / 4) * m * Ts * math.sin(th))
+        assert w == pytest.approx(ref, abs=s["tol_abs_s"])
+    t = fx["PWM-transition"]
+    for k, v in t["expected"].items():
+        assert t["output_jump_V"][k] == pytest.approx(v, abs=t["tol_abs_V"])

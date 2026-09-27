@@ -169,3 +169,144 @@ def test_policy_comparison_never_trades_a_mandatory_constraint():
     # a missing limit is never a pass
     r3 = api.pwm_policies({"pwm_limits": {}, "schedules": []})
     assert any("no limit declared" in u for u in r3["policies"][0]["unverified"])
+
+
+# ------------------------------------------------------------------ addendum 7.2 mandatory failure cases (PWM side)
+
+def _sens(kind, **kw):
+    base = {"settle_s": 2e-6, "aperture_s": 1e-6, "basis": "test"}
+    base.update(kw)
+    return P.SensingConfig(kind, **base)
+
+
+def test_single_shunt_windows_equal_the_classical_svpwm_active_vector_times():
+    """Independent closed form (sector-local angle t): per half carrier period the two active vectors last
+    (sqrt3 / 4) m Ts sin(pi/3 - t) and (sqrt3 / 4) m Ts sin(t); the shunt window is the shorter one."""
+    m, fsw, fe = 0.8, 10e3, 50.0
+    r = P.sampling_validity(m, "svpwm", fsw, fe, _sens("dc_link_shunt", settle_s=0.0, aperture_s=0.0))
+    Ts = 1.0 / fsw
+    loc = (2 * math.pi * fe * (r["t_s"] + 0.5 * Ts)) % (math.pi / 3)
+    ref = np.minimum((math.sqrt(3) / 4) * m * Ts * np.sin(math.pi / 3 - loc), (math.sqrt(3) / 4) * m * Ts * np.sin(loc))
+    assert np.max(np.abs(r["window_s"] - ref)) < 1e-15
+
+
+def test_invalid_samples_are_never_silently_accepted():
+    # single shunt at low modulation: no valid sample at all -> a violation whatever the fallback
+    for pol in ("none", "hold"):
+        r = P.sampling_validity(0.1, "svpwm", 10e3, 100.0, _sens("dc_link_shunt", invalid_policy=pol,
+                                                                   max_sample_age_s=1e-3, current_error_max_A=50.0),
+                                I_pk_A=300.0)
+        assert r["status"] == "VIOLATION" and r["valid_fraction"] == 0.0 and math.isinf(r["max_age_s"])
+    # partly invalid: no fallback -> violation; hold without limits -> UNKNOWN; hold with limits -> judged
+    kw = dict(I_pk_A=300.0)
+    assert P.sampling_validity(0.8, "svpwm", 10e3, 100.0, _sens("dc_link_shunt"), **kw)["status"] == "VIOLATION"
+    r = P.sampling_validity(0.8, "svpwm", 10e3, 100.0, _sens("dc_link_shunt", invalid_policy="hold"), **kw)
+    assert r["status"] == "UNKNOWN" and 0 < r["valid_fraction"] < 1
+    age = r["max_age_s"]
+    assert r["hold_error_bound_A"] == pytest.approx(2 * math.pi * 100.0 * 300.0 * age)
+    ok = P.sampling_validity(0.8, "svpwm", 10e3, 100.0, _sens("dc_link_shunt", invalid_policy="hold",
+                                                              max_sample_age_s=2 * age,
+                                                              current_error_max_A=2 * r["hold_error_bound_A"]), **kw)
+    assert ok["status"] == "OK"
+    tight = P.sampling_validity(0.8, "svpwm", 10e3, 100.0, _sens("dc_link_shunt", invalid_policy="hold",
+                                                                 max_sample_age_s=0.5 * age,
+                                                                 current_error_max_A=1e6), **kw)
+    assert tight["status"] == "VIOLATION"
+    pred = P.sampling_validity(0.8, "svpwm", 10e3, 100.0, _sens("dc_link_shunt", invalid_policy="predict",
+                                                                predict_error_fraction=0.25), **kw)
+    assert pred["error_bound_A"] == pytest.approx(0.25 * r["hold_error_bound_A"])
+    # at (near) standstill an invalid angle can persist: the held value may never refresh
+    st = P.sampling_validity(0.8, "svpwm", 10e3, 0.0, _sens("dc_link_shunt", invalid_policy="hold",
+                                                            max_sample_age_s=1.0, current_error_max_A=1e6), **kw)
+    assert st["quasi_static"] and math.isinf(st["max_age_s"]) and st["status"] == "VIOLATION"
+    # leg shunts with two-leg reconstruction keep valid windows where the single shunt cannot
+    assert P.sampling_validity(0.1, "svpwm", 10e3, 100.0, _sens("leg_shunt"))["status"] == "OK"
+    # inline sensing near the top of the linear range: the zero vector around the valley becomes too short
+    assert P.sampling_validity(1.1, "svpwm", 10e3, 100.0, _sens("inline_phase"))["n_invalid"] > 0
+    with pytest.raises(InputValidationError):
+        _sens("leg_shunt", sample_points="peak")                    # low-side shunts cannot measure at the peak
+    with pytest.raises(InputValidationError):
+        _sens("inline_phase", invalid_policy="predict")             # a predictor needs its validated residual
+
+
+def test_channel_skew_error_is_the_zero_vector_slope_times_the_skew():
+    s = _sens("inline_phase", channel_skew_s=1e-6, current_error_max_A=1.0)
+    r = P.sampling_validity(0.6, "svpwm", 10e3, 100.0, s, I_pk_A=200.0, V1_pk_V=180.0, L_hf_H=200e-6)
+    expect = 1e-6 * (180.0 / 200e-6 + 2 * math.pi * 100.0 * 200.0)
+    assert r["skew_error_bound_A"] == pytest.approx(expect)
+    assert r["status"] == "OK" if expect <= 1.0 else r["status"] == "VIOLATION"
+    assert P.sampling_validity(0.6, "svpwm", 10e3, 100.0, _sens("inline_phase", channel_skew_s=1e-6), I_pk_A=200.0,
+                               V1_pk_V=180.0, L_hf_H=200e-6)["status"] == "UNKNOWN"      # no error limit declared
+
+
+def _loop(**kw):
+    L, R = 300e-6, 15e-3
+    kp = 2 * math.pi * 500 * L
+    return P.CurrentLoop(L, R, kp, kp * R / L, kw.pop("gain_mapping", "continuous"), 10e3, "t", **kw)
+
+
+TC = P.TimingConfig(25e-6, 5e-6, 1, 0.5, 1.5e-6, "t")
+
+
+def test_transition_transient_exposes_gain_state_jumps_and_resets():
+    i_ref, e = -150.0, 180.0
+    v_ss = 15e-3 * i_ref + e
+    bumpless = P.transition_transient(_loop(), TC, 10e3, 20e3, i_ref, e, 346.0)
+    assert bumpless["bumpless"] and bumpless["excursion_A"] == 0.0 and bumpless["Ki_eff_ratio"] == 1.0
+    es = P.transition_transient(_loop(integrator_storage="error_sum"), TC, 10e3, 20e3, i_ref, e, 346.0)
+    assert es["output_jump_V"] == pytest.approx((0.5 - 1.0) * v_ss, rel=1e-12)       # (Ts_to / Ts_from - 1) v_ss
+    rs = P.transition_transient(_loop(on_transition="reset"), TC, 10e3, 20e3, i_ref, e, 346.0)
+    assert rs["output_jump_V"] == pytest.approx(-v_ss, rel=1e-12) and rs["excursion_A"] > es["excursion_A"] > 50.0
+    fx = P.transition_transient(_loop(gain_mapping="fixed_discrete"), TC, 10e3, 20e3, i_ref, e, 346.0)
+    assert fx["bumpless"] and fx["Ki_eff_ratio"] == pytest.approx(2.0)                # dynamics change, no jump
+    sat = P.transition_transient(_loop(integrator_storage="error_sum"), TC, 20e3, 10e3, -i_ref, e, 1.2 * (e - 15e-3 * i_ref))
+    assert sat["saturated_samples"] > 0 and sat["output_jump_V"] == pytest.approx(0.2 * (e - 15e-3 * i_ref), rel=1e-9)
+    late = P.transition_transient(_loop(), P.TimingConfig(80e-6, 0.0, 1, 0.5, 0.0, "t"), 10e3, 20e3, i_ref, e, 346.0)
+    assert late["evaluated"] is False and "deadline" in late["reason"]
+
+
+def test_threshold_chatter_needs_hysteresis_above_the_measurement_noise():
+    sch = P.FswSchedule("s", (P.FswRule("light", 8e3, torque_abs_Nm=(0.0, 60.0)), P.FswRule("d", 10e3)), 10e3,
+                        hysteresis=(("torque_abs_Nm", 2.0),))
+    assert P.chatter_risk(sch, {"torque_abs_Nm": 5.0})["violations"]
+    assert not P.chatter_risk(sch, {"torque_abs_Nm": 1.0})["violations"]
+    assert P.chatter_risk(sch, None)["unknown"]
+
+
+def test_policy_evaluation_reports_the_failure_cases_and_keeps_unknown_apart_from_violation():
+    r = api.pwm_policies({})
+    for p in r["policies"]:
+        assert all(s["sampling"]["status"] == "OK" for s in p["segments"])
+        for e in p["transitions"]:
+            if e["carrier_change"]:
+                assert e["transient"]["evaluated"] and e["transient"]["bumpless"]
+    assert any(p["chatter"]["rows"] for p in r["policies"][1:])
+    # an error-sum integrator under Ki*Ts remapping: every carrier change becomes a transition violation
+    lp = {**api.EXAMPLE_PWM["loop"], "integrator_storage": "error_sum"}
+    r2 = api.pwm_policies({"loop": lp})
+    sched = [p for p in r2["policies"][1:]]
+    assert all(p["status"] == "VIOLATION" and any("transition" in v for v in p["violations"]) for p in sched)
+    assert r2["policies"][0]["status"] == "ADMISSIBLE"                     # the fixed baseline has no transition
+    # a single DC-link shunt fails at the low-modulation segment
+    sn = {**api.EXAMPLE_PWM["sensing"], "kind": "dc_link_shunt"}
+    r3 = api.pwm_policies({"sensing": sn})
+    assert all(any("current sampling" in v for v in p["violations"]) for p in r3["policies"])
+    # undeclared DC limits: the requirement is not established -> UNKNOWN, never a violation
+    none = {k: None for k in ("discharge_power_max_W", "charge_power_max_W", "discharge_current_max_A",
+                              "charge_current_max_A")}
+    r4 = {p["policy"]["name"]: p for p in api.pwm_policies({"limits": none})["policies"]}
+    for name in ("fixed 10 kHz", "light-load 8 kHz"):
+        assert r4[name]["status"] == "UNKNOWN" and not r4[name]["violations"]
+        assert any("requirement not established" in u for u in r4[name]["unverified"])
+    # a violation proven independently of the DC limits (phase margin at 6 kHz) stays a violation
+    assert r4["thermal fallback 6 kHz"]["status"] == "VIOLATION"
+
+
+def test_transients_route():
+    t = api.pwm_transients({})
+    assert t["sampling_here"]["status"] == "OK"
+    c = t["sampling_curves"]
+    assert c["dc_link_shunt"]["valid_fraction"][0] == 0.0 and min(c["leg_shunt"]["valid_fraction"]) > 0.9
+    v = t["transition"]["variants"]
+    assert v["bumpless (volts, Ki*Ts remapped)"]["excursion_A"] == 0.0
+    assert v["integrator reset"]["excursion_A"] > v["error-sum integrator, Ki*Ts remapped"]["excursion_A"] > 0
