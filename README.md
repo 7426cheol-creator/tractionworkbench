@@ -1,0 +1,128 @@
+# Traction Workbench
+
+**Traction Engineering Feasibility & System Analysis Workbench** — 단일 3상 2-level 인버터 + PMSM/IPMSM의
+정상상태 기본파 모델로 고객 요구를 판정하고, 그 근거를 그래프와 재현 가능한 **Engineering Decision Record**로 남기는
+**독립 실행형 데스크톱 애플리케이션**입니다 (Windows `.exe`, 서버·네트워크·Python 설치 불필요).
+
+> “현재 조건에서 고객 요구를 만족시킬 수 있는가? 무엇이 막고 있으며, 어떤 변경이나 추가 자료가 의사결정을 바꾸는가?”
+
+![요구 판정 화면](docs/screenshots/decision.jpg)
+
+## 실행 (Windows)
+
+1. `TractionWorkbench-<버전>-windows-x64.zip`을 받습니다 — GitHub **Actions → build → Artifacts**
+   (`TractionWorkbench-windows-x64`) 또는 `v*` 태그를 올리면 자동 생성되는 **Releases**.
+2. 압축을 풀고 `TractionWorkbench\TractionWorkbench.exe`를 실행합니다. 설치·관리자 권한이 필요 없습니다(휴대용 폴더).
+3. 코드 서명이 없어서 처음 실행 시 SmartScreen이 “Windows의 PC 보호” 경고를 띄울 수 있습니다: **추가 정보 → 실행**.
+   사내 배포 시에는 IT 정책에 따라 서명/화이트리스트를 요청하세요.
+
+같은 폴더의 `twb.exe`는 콘솔 CLI입니다: `twb.exe report case.json --pdf 보고서.pdf`, `twb.exe acceptance`, `twb.exe selftest out`.
+모든 계산은 PC 안에서만 수행되며 포트를 열지 않습니다.
+
+## 화면 구성
+
+| 페이지 | 내용 |
+|---|---|
+| **요구 판정** | 요구 원문·토크·속도·Vdc(단일/범위)·지속시간 입력 → PASS/FAIL/UNKNOWN 배너(사유·범위), 조건별 claim 트리와 근거, 핵심 수치, 제한 요인·다음 조치, 운전점 그래프(**시스템 개요도**: 배터리–릴레이–DC 링크–인버터–모터에 운전점 값 표시), T–n 상의 위치, 역설계·병목 분석, 의사결정 기록(Markdown) · JSON/MD/**PDF 보고서** 저장 |
+| **운전점 탐색** | 토크 → 최소전류 정책점, 또는 id/iq 직접 입력(정방향 평가). **id–iq 지도를 클릭**하면 그 전류 벡터를 그대로 평가, 마우스를 올리면 토크·전압·DC 전력 판독 |
+| **궤적** | 토크 스윕 @ 속도(MTPA → 약계자 → 한계), 속도 스윕 @ 토크(기저속도·약계자 진입). dq 전류 궤적 + 여러 속도의 전압 타원, 변수 추이, 표 |
+| **성능 곡선·맵** | 정책(DC 포함) vs 전기적 T–n 곡선(활성 제약별 색), 비교 Vdc, 효율·모터/인버터 효율·손실·전류·변조율·역률·id·iq·P_dc 맵, 기저속도 곡선, 최대 토크 곡선을 따라가는 운전점 |
+| **설계·병목** | capability vs 파라미터(Vdc, 전류 정격, 예약분, DC 한계, …)와 bisection 역설계, 제약 1% 완화 병목 기여도, 요구 달성 최소 완화·공동 병목 |
+| **안전 스크리닝** | FTTI 체인 Gantt(중복 예산 자동 검출), **회로 개요도**(릴레이 개방·방전 스위치·다이오드 정류·ASC 스위치 상태와 전력 흐름 화살표) + 능동 방전 V(t)(역기전력 하한), **패시브 방전**(상시 연결 블리더 R_p: V(t), 능동 저항 병렬 효과, 방전 시간–상시 손실 R_p 설계 창), 회생 중 배터리 차단 과전압 V(t), ASC/Freewheel 회로 비교와 속도별 곡선, 프로젝트 규칙 표(예: HVDC < 60 V → Freewheel, 물리와 분리된 계층) |
+| **열·지속시간** | **냉각수**(입구 온도, 유량, 에틸렌글리콜:물 50:50 기본 물성·직접 입력, 순환 순서, 기준 유체 온도) → 부품별 냉각수 온도 상승 ΔT = P/(ṁ·c_p). **열 회로망 표 편집**(Foster r_i/τ_i 또는 Cauer R_i/C_i, 4단 템플릿, 데이터시트 붙여넣기, 유량 의존 단 R·(Q_ref/Q)^n), RC 회로도·냉각수 순환도·Z_th(t), 지속시간별 가용 토크와 노드 온도, “냉각수 입구 65 °C(10 L/min, EG 50%)에서 450 N·m는 약 4.24 s 유지, 이후 426 N·m(연속)” (미검증 열모델이면 UNKNOWN 유지) |
+| **모델·데이터** | 내장 드라이브(상수 dq D1 / flux map D2) 선택, 단위가 선언된 드라이브 JSON·case 파일 불러오기, DC 소스 한계, provenance |
+| **검증 (V&V)** | production vs golden acceptance(오차/허용오차 그래프), 참조 패키지 SHA-256, 알려진 한계 |
+
+모든 그래프는 확대·이동·PNG/SVG/PDF 저장, 데이터는 CSV로 내보낼 수 있습니다. 한국어/영어, 라이트/다크 테마를 지원합니다.
+각 페이지의 **ⓘ 개념 설명**을 펼치면 그래프 읽는 법과 핵심 식을 짧게 볼 수 있습니다(전문 내용은 그대로, 처음 쓰는 사람을 위한 보조).
+항상 보이는 배지로 모델 ID·fidelity(D1/D2)·데이터 출처(synthetic)·“하드웨어 미검증”을 표시합니다.
+
+## 전문가용 그래프
+
+| | |
+|---|---|
+| ![id–iq 제약 지도](docs/screenshots/idiq_map.jpg) | ![상 파형](docs/screenshots/waveforms.jpg) |
+| **id–iq 제약 지도**: 전압 타원(명령 예산·하드웨어 상한), 전류원, 선언 도메인, DC 방전/충전 한계, 등토크선, MTPA, MTPV(참고), 요구 토크 곡선, 최소전류 정책점, 전기적/DC 포함 가능 영역 | **상 파형**: 역 Park로 복원한 상전류, 상/선간 전압과 명령 예산, SVPWM 상 듀티(min-max 영상분, 평균값 모델)와 전압 reserve 대역, 쇄교자속, p(t) = P_ac 확인 |
+| ![벡터도](docs/screenshots/phasor_hexagon.jpg) | ![효율 맵](docs/screenshots/efficiency_map.jpg) |
+| **dq 벡터도**: e₀ = ω_eψ_PM, ω_eL_d·i_d(약계자 전압), −ω_eL_q·i_q, R_s·i, v와 전류각·φ·역률·자석/릴럭턴스 토크 분해 / **공간벡터 육각형** | **효율·손실 맵**: 최소전류 정책점 기준 η, 정책 경계·전기적 한계, 기저속도 곡선, DC 한계 위반 영역(빗금), 최고 효율점 |
+| ![궤적](docs/screenshots/trajectory.jpg) | ![열](docs/screenshots/thermal.jpg) |
+| **운전 궤적**: 속도가 오르며 MTPA에서 전압 타원을 따라 약계자로 이동하는 경로, DC 한계 위반점 | **열 → 토크 가용성**: 지속시간별 가용 토크와 노드 온도 궤적(노드별 냉각수 기준 온도 표시) |
+| ![시스템 개요](docs/screenshots/system_overview.jpg) | ![배터리 차단](docs/screenshots/dclink_overvoltage.jpg) |
+| **시스템 개요도**: 배터리–메인 릴레이(프리차지)–DC 링크–능동 방전–3상 브리지–모터–축, 운전점의 P_dc·I_dc·I_ph·V_LL·토크·효율과 전력 흐름 방향 | **회생 중 배터리 차단**: 릴레이 개방(빨강)과 회생 전력이 커패시터로만 들어가는 경로, 아래에 V(t)와 허용 반응 시간 |
+| ![열 회로망](docs/screenshots/thermal_network.jpg) | ![열 모델 편집](docs/screenshots/thermal_editor.jpg) |
+| **열 회로망**: Foster(병렬 RC 직렬)·Cauer(사다리) 회로도와 냉각수 순환(라디에이터·펌프 → 인버터 냉각판 → 모터 워터재킷, 각 지점 온도) | **열 모델 편집**: 노드별 발열원·비율·냉각수 위치, 단 표(R, τ 또는 C, 계산된 C 또는 R·C, 유량 의존), 4단 템플릿, 붙여넣기 |
+
+그래프는 production 모델 값을 그대로 다시 표현한 것입니다(새 물리 없음). 파형·듀티는 스위칭 리플·데드타임이 없는 평균값 모델이며
+그림과 보고서에 그렇게 표기됩니다. 테스트가 역변환·전력 항등식·MTPA 접선 조건·기저속도 = 약계자 개시점을 독립적으로 확인합니다.
+
+## 무엇이 다른가
+
+- **판정 항목을 섞지 않습니다.** 전기적 해의 존재 / 최소전류 정책의 정적 달성(DC 한계 포함) / DC 소스 한계 / 임의 제어로의 가능성(진단) / 지속시간 / 요구 전체(AND 집계)를 각각 FEASIBLE·INFEASIBLE·UNKNOWN과 근거(evidence)로 보고합니다.
+- **INFEASIBLE은 증명이 있을 때만.** 상수 모델은 제약 다항식 근 전수 열거(exact enumeration), flux map은 셀 구간 경계(branch & bound), 공통으로 해석적 필요조건(예: 축 출력 > 방전 한계, 최대 손실로도 충전 한계 미달, d축 전압 하한 > 예산)을 사용합니다. Solver가 해를 못 찾은 것은 UNKNOWN(NUMERICAL_UNRESOLVED)입니다.
+- **Capability는 달성값과 증명된 반대쪽 상한을 분리합니다.** 구동 capability는 Lagrangian 오목 상한(상수 모델) 또는 셀 경계(flux map)로 certified, 회생 경계는 최소전류(에너지 회수) 정책 경계로 표본 증거와 함께 보고하며 의도적 손실 증가 운전은 채택하지 않습니다.
+- **입력을 조용히 채우지 않습니다.** 단위·정의(peak/RMS, 상/선간, 기계/전기 속도, per-phase/line-to-line, Ke/Kt convention)가 모호하면 계산 전에 INVALID_INPUT, 누락된 손실/온도/지속시간 근거는 UNKNOWN으로 남깁니다. 모든 변환은 기록됩니다.
+- **요구를 바꾸지 않습니다.** 원문 보존, 토크 clip 없음, Vdc 범위 요구는 표본점 통과만으로 PASS가 아니며(SAMPLED_COVERAGE), 지속시간이 없으면 정적 항목으로만 해석합니다.
+
+## 대표 결과 (합성 fixture, 앱의 “예시 질문” / `twb demo`)
+
+| 요구 | 판정 | 핵심 근거 |
+|---|---|---|
+| 12,000 rpm · 150 N·m · 600 V | **PASS** (정적) | 전류 여유 204 A지만 토크 capability 여유는 **2.555 N·m** — 한계는 전압·DC 방전 전력 (certified 152.555 N·m) |
+| 같은 요구 · 450 V | **FAIL** | 필요조건 증명: \|v_d\| ≥ 255.54 V > 예산 246.82 V, 축 출력 188.5 kW > 450 V×400 A. 인버터 전류를 1200 A로 키워도 해결 불가, **Vdc ≥ 497.7 V** 필요 (전압 + DC 전류 공동 병목) |
+| 같은 요구 · 10초 유지 | **UNKNOWN** | 전기적으로 가능하나 검증된 10초 rating/열모델 없음 (UNVALIDATED_DURATION) |
+| 12,000 rpm · −80 N·m 회생 | **PASS** | 에너지 회수 회생, 충전 한계 내 |
+| 12,000 rpm · −100 N·m 회생 | **FAIL** | 최대 손실(600 A)로도 P_dc ≤ −111.3 kW < −100 kW: 배터리 수용 한계 |
+| 6,000 rpm · 350 N·m | **FAIL** | 손실 0이어도 축 출력 219.9 kW > 방전 200 kW |
+| Vdc 550–650 V 전 구간 · 100 N·m | **UNKNOWN** | 표본 5점 모두 가능하지만 연속 구간 보장은 아님 (SAMPLED_COVERAGE) |
+| 정지 · 300 N·m | **PASS** (정적) | 등가 정현파 RMS, 효율 N/A, 정지 열 지속시간 추론 없음 |
+
+## 개발·빌드
+
+```bash
+pip install -e '.[gui,test]'          # numpy, scipy + PySide6-Essentials, matplotlib (+ pytest)
+
+twb gui                               # 데스크톱 앱 (= traction-workbench)
+twb evaluate examples/cases/req_ts_012_450V_sizing.json --out out/   # 의사결정 기록 JSON + Markdown
+twb report   examples/cases/req_ts_012_450V_sizing.json --pdf out/report.pdf   # 그래프 포함 PDF 보고서
+twb demo | solve | forward | capability | curve | acceptance
+twb selftest out/selftest             # 모든 페이지 headless 자체 검사 (스크린샷 + selftest.json)
+
+python verification/independent_fixture_check.py      # production 코드를 쓰지 않는 독립 검산
+QT_QPA_PLATFORM=offscreen python -m pytest -q
+
+# 실행 파일 (Windows: packaging\build_windows.bat)
+pip install -e '.[gui,build]'
+python packaging/build.py             # dist/TractionWorkbench/ + zip; 동결 앱에서 acceptance와 self-test 실행
+```
+
+CI(`.github/workflows/build.yml`): Linux에서 독립 검산 + 전체 테스트, Windows에서 PyInstaller 빌드 → **동결된 exe로 acceptance·self-test** →
+zip 아티팩트 업로드(`v*` 태그면 GitHub Release에 첨부).
+
+## 저장소 구조
+
+```
+reference/traction_workbench_spec_v1/   불변 설계 기준선 + golden JSON (manifest SHA-256)
+src/traction_workbench/
+  models/ physics.py solvers/ analysis/ extensions/ decision.py report.py io.py units.py   ← 엔진 (numpy, scipy)
+  viz/           그래프 데이터: 파형·벡터도·육각형·전력 흐름 / 스윕·곡선 / 맵·기저속도 / 설계 / 스크리닝·Z_th 곡선
+  plots/         matplotlib 그림과 회로 개요도·열 회로도 (앱과 PDF 보고서 공용)
+  desktop/       PySide6 앱: main_window, pages/, 열 모델 표 편집기, 백그라운드 작업, self-test
+  report_pdf.py  PDF 엔지니어링 보고서
+  api.py service.py cli.py
+packaging/       PyInstaller spec, launcher(TractionWorkbench.exe + twb.exe), build.py, 아이콘
+verification/    independent_fixture_check.py (production 비의존), make_report.py
+tests/           골든·의미론·검증·확장·냉각수/열망·그래프 데이터·회로도·보고서·데스크톱 (215개)
+examples/        case 파일, 단위가 선언된 drive 정의
+docs/            RELEASE_NOTES.md (모델 계약·한계·추적표), VERIFICATION_REPORT.md, screenshots/
+```
+
+## 검증 상태
+
+- 참조 패키지 10개 파일 SHA-256 일치, 독립 검산 136/136, production vs golden 21/21, pytest 215 통과, 데스크톱 self-test 20/20,
+  Windows CI에서 동결된 exe로 acceptance·self-test 통과 — 상세: [`docs/VERIFICATION_REPORT.md`](docs/VERIFICATION_REPORT.md)
+- **합성 fixture에 대한 verification입니다.** 하드웨어·공급사 데이터·외부 시뮬레이터 validation은 수행하지 않았습니다(V4–V5 미수행).
+
+## 문서
+
+- [`docs/RELEASE_NOTES.md`](docs/RELEASE_NOTES.md) — 변경 사항, 실행 방법, model contract, 제약 목록, 판정 의미론, 수치 방법, 알려진 한계, 미구현 항목, data provenance, 재현 조건, 스펙 조항 ↔ 구현 ↔ 테스트 추적표
+- [`docs/VERIFICATION_REPORT.md`](docs/VERIFICATION_REPORT.md) — 자동 생성 검증 보고서

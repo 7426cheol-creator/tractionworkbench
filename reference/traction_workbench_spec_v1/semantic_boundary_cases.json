@@ -1,0 +1,103 @@
+{
+  "metadata": {
+    "schema_purpose": "Engineering reference fixture, not a required production serialization format",
+    "version": "1.0",
+    "date": "2026-09-27",
+    "origin": "Synthetic analytic/numerical construction; no OEM or confidential data",
+    "verification_status": "Algebraic identities, independently reduced 1D inverse reference calculations and selected bound checks performed; no hardware or external-simulator validation performed",
+    "scope": "Balanced sinusoidal three-phase steady-state fundamental model",
+    "convention": "Amplitude-invariant Park; d axis PM-aligned; dq quantities phase peak; p=pole pairs"
+  },
+  "cases": [
+    {
+      "case_id": "S00_REGEN_LOSS_INTERVAL",
+      "Pshaft_W": -80000,
+      "total_loss_interval_W": [
+        2000,
+        8000
+      ],
+      "Pdc_interval_W": [
+        -78000,
+        -72000
+      ],
+      "charge_cap_W": 75000,
+      "expected": {
+        "actual_unknown_loss_claim": "UNKNOWN: admissible values include both constraint satisfaction and violation.",
+        "robust_claim_for_all_declared_admissible_losses": "INFEASIBLE: L=2000 W is an explicit admissible counterexample (Pdc=-78000 W < -75000 W).",
+        "if_interval_is_only_an_outer_enclosure": "A violating bound alone does not prove a realizable violating scenario. Report no guarantee/UNKNOWN until a realizable counterexample or a tighter bound is established."
+      }
+    },
+    {
+      "case_id": "S01_MISSING_DURATION",
+      "base_case": "I02_HIGH_SPEED_MATCH",
+      "duration_requested_s": 10,
+      "expected": "Electrical FEASIBLE; duration UNKNOWN; entire 10-second requirement UNKNOWN."
+    },
+    {
+      "case_id": "S02_INVALID_VDC",
+      "input_values_V": [
+        0,
+        -1
+      ],
+      "expected": "INVALID_INPUT; no Pdc/Vdc division."
+    },
+    {
+      "case_id": "S03_NONFINITE_INPUT",
+      "injection_tokens": [
+        "NaN",
+        "positive infinity",
+        "negative infinity"
+      ],
+      "expected": "Validation error; these tokens describe injected nonfinite numeric values rather than valid JSON numbers."
+    },
+    {
+      "case_id": "S04_MAP_HOLE_OR_OUTSIDE",
+      "expected": "No silent extrapolation; invalid data-domain candidate is not a physical prohibition outside known coverage."
+    },
+    {
+      "case_id": "S05_NUMERICAL_UNRESOLVED",
+      "expected": "UNKNOWN rather than INFEASIBLE."
+    },
+    {
+      "case_id": "S06_ZERO_SHAFT_TORQUE_AT_SPEED",
+      "expected": "Solve for drag compensation and possible field weakening; do not force id=iq=0."
+    },
+    {
+      "case_id": "S07_EXISTENCE_VS_SUPPLIED_POLICY",
+      "expected": "A feasible alternative candidate does not overwrite failure/unknown of a supplied static policy."
+    },
+    {
+      "case_id": "S08_SAMPLED_COVERAGE",
+      "expected": "Passing sampled corners does not establish a worst-case continuous-domain guarantee."
+    }
+  ],
+  "future_only_not_MVP": [
+    {
+      "case_id": "E00_REDUCER_SIGN",
+      "ratio_motor_to_output": 9,
+      "efficiency": 0.97,
+      "motor_speed_rpm": 9000,
+      "output_speed_rpm": 1000,
+      "motoring": {
+        "motor_torque_Nm": 150,
+        "output_torque_Nm": 1309.5
+      },
+      "regen": {
+        "motor_torque_Nm": -150,
+        "output_torque_Nm": -1391.7525773195878
+      },
+      "note": "Shaft-port powers positive toward output. For motoring Pout=eta*Pmotor; regeneration Pout=Pmotor/eta. Loss=Pmotor-Pout>=0."
+    },
+    {
+      "case_id": "E01_ONE_NODE_THERMAL",
+      "constant_loss_W": 1000,
+      "thermal_resistance_K_W": 0.02,
+      "thermal_capacity_J_K": 5000,
+      "initial_temperature_C": 65,
+      "coolant_temperature_C": 65,
+      "T_at_100s_C": 77.64241117657116,
+      "time_to_80C_s": 138.62943611198907,
+      "note": "Constant-power analytic first-order fixture; not real cooling validation."
+    }
+  ]
+}

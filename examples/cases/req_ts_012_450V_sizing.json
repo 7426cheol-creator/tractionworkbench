@@ -1,0 +1,52 @@
+{
+  "schema": "traction-workbench/case@1",
+  "drive": {
+    "builtin": "SYNTH_IPMSM_200KW_REF_V1"
+  },
+  "requirement": {
+    "id": "REQ-TS-012-LV",
+    "revision": "A",
+    "text": "REQ-TS-012 at the 450 V stress condition",
+    "target": {
+      "value": 150,
+      "unit": "N*m",
+      "torque": "shaft"
+    },
+    "conditions": {
+      "speed": {
+        "value": 12000,
+        "unit": "rpm",
+        "kind": "mechanical"
+      },
+      "Vdc": {
+        "value": 450,
+        "unit": "V",
+        "port": "inverter_dc_terminal"
+      }
+    }
+  },
+  "analyses": {
+    "sizing": [
+      {
+        "parameter": "Vdc_V",
+        "range": [
+          400,
+          800
+        ]
+      },
+      {
+        "parameter": "I_peak_max_A",
+        "range": [
+          600,
+          1200
+        ],
+        "samples": 13
+      }
+    ],
+    "relaxation": true,
+    "compare_Vdc": [
+      600,
+      450
+    ]
+  }
+}

@@ -1,0 +1,75 @@
+{
+  "metadata": {
+    "schema_purpose": "Engineering reference fixture, not a required production serialization format",
+    "version": "1.0",
+    "date": "2026-09-27",
+    "origin": "Synthetic analytic/numerical construction; no OEM or confidential data",
+    "verification_status": "Algebraic identities, independently reduced 1D inverse reference calculations and selected bound checks performed; no hardware or external-simulator validation performed",
+    "scope": "Balanced sinusoidal three-phase steady-state fundamental model",
+    "convention": "Amplitude-invariant Park; d axis PM-aligned; dq quantities phase peak; p=pole pairs"
+  },
+  "model_id": "SYNTH_IPMSM_200KW_REF_V1",
+  "parameters": {
+    "pole_pairs": 4,
+    "Rs_phase_ohm": 0.015,
+    "psi_pm_Wb": 0.1,
+    "Ld_H": 0.0002,
+    "Lq_H": 0.0004,
+    "drag_coefficient_Nm_per_rad_s": 0.002,
+    "inverter_loss_offset_W": 200.0,
+    "inverter_loss_Ipk2_coefficient_ohm": 0.008,
+    "voltage_reserve_fraction": 0.05,
+    "switching_frequency_context_Hz": 20000
+  },
+  "declared_operating_domain": {
+    "id_A_peak": [
+      -500,
+      0
+    ],
+    "iq_A_peak": [
+      -600,
+      600
+    ],
+    "I_peak_max_A": 600,
+    "speed_rpm": [
+      -16000,
+      16000
+    ],
+    "dc_voltage_reference_cases_V": [
+      450,
+      600
+    ],
+    "interpretation": "Synthetic allowed-operating-domain restrictions, not measured demagnetization or rotor-strength limits"
+  },
+  "source_limits": {
+    "discharge_power_max_W": 200000,
+    "charge_power_max_W": 100000,
+    "discharge_average_current_max_A": 400,
+    "charge_average_current_max_A": 200
+  },
+  "equations": {
+    "psi_d": "psi_pm + Ld*id",
+    "psi_q": "Lq*iq",
+    "vd": "Rs*id - omega_e*psi_q",
+    "vq": "Rs*iq + omega_e*psi_d",
+    "Te": "1.5*p*(psi_d*iq-psi_q*id)",
+    "Tshaft": "Te - b*omega_m",
+    "Pcu": "1.5*Rs*(id^2+iq^2)",
+    "Prot": "b*omega_m^2",
+    "Pinv": "200 + 0.008*(id^2+iq^2)",
+    "Pac": "1.5*(vd*id+vq*iq)",
+    "Pdc": "Pac+Pinv",
+    "V_budget_peak": "0.95*Vdc/sqrt(3)"
+  },
+  "loss_voltage_approximation": "Ideal command-to-terminal voltage mapping (delta_v_inv=0) plus explicit synthetic energy-loss surrogate. Not a detailed semiconductor drop/deadtime model.",
+  "not_defined": [
+    "Temperature dependence",
+    "Continuous/10-second rating",
+    "Cooling performance",
+    "PWM ripple",
+    "Switching-frequency loss scaling",
+    "Demagnetization approval",
+    "Control dynamics"
+  ],
+  "default_policy": "Minimum Ipk^2 subject to shaft torque, voltage, current, declared domain; then evaluate DC acceptance. Do not intentionally raise losses to meet charging cap."
+}

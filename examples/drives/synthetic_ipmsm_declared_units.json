@@ -1,0 +1,104 @@
+{
+  "drive_id": "SYNTH_IPMSM_200KW_REF_V1_JSON",
+  "revision": "1.0",
+  "provenance": {
+    "origin": "synthetic",
+    "source": "reference/traction_workbench_spec_v1/synthetic_drive.json (restated in the production format)",
+    "revision": "1.0",
+    "validation_status": "no hardware or external-simulator validation performed"
+  },
+  "notes": [
+    "Declared-unit restatement of the synthetic fixture; conversions are recorded in every decision record"
+  ],
+  "motor": {
+    "model": "constant_dq",
+    "pole_pairs": 4,
+    "connection": "wye",
+    "Rs": {
+      "value": 30,
+      "unit": "mohm",
+      "reference": "line_to_line"
+    },
+    "Ke": {
+      "value": 51.30199320647456,
+      "unit": "V",
+      "basis": "line_line_rms",
+      "per_speed": {
+        "value": 1000,
+        "unit": "rpm",
+        "kind": "mechanical"
+      }
+    },
+    "Ld": {
+      "value": 0.2,
+      "unit": "mH"
+    },
+    "Lq": {
+      "value": 0.4,
+      "unit": "mH"
+    },
+    "rotational_loss": {
+      "viscous": {
+        "value": 0.002,
+        "unit": "N*m/(rad/s)"
+      },
+      "includes_iron_loss": false,
+      "description": "synthetic fixture tau_rot = b*omega_m"
+    }
+  },
+  "inverter": {
+    "inverter_id": "SYNTH_2L_VSI_REF_V1",
+    "current_limit": {
+      "value": 424.26406871192853,
+      "unit": "A",
+      "basis": "fundamental_rms"
+    },
+    "voltage_reserve_fraction": 0.05,
+    "voltage_error": "ideal",
+    "loss": {
+      "offset": {
+        "value": 200,
+        "unit": "W"
+      },
+      "coeff": {
+        "value": 0.016,
+        "unit": "W/A^2"
+      },
+      "current_basis": "fundamental_rms",
+      "symmetric_motoring_regen": true,
+      "description": "synthetic energy-loss surrogate"
+    },
+    "switching_frequency": {
+      "value": 20,
+      "unit": "kHz"
+    }
+  },
+  "domain": {
+    "id": {
+      "value": [
+        -500,
+        0
+      ],
+      "unit": "A",
+      "basis": "fundamental_peak"
+    },
+    "iq": {
+      "value": [
+        -600,
+        600
+      ],
+      "unit": "A",
+      "basis": "fundamental_peak"
+    },
+    "speed": {
+      "value": [
+        -16000,
+        16000
+      ],
+      "unit": "rpm",
+      "kind": "mechanical"
+    },
+    "kind": "allowed_operating_limit",
+    "interpretation": "Synthetic allowed-operating-domain restrictions, not measured demagnetization or rotor-strength limits"
+  }
+}

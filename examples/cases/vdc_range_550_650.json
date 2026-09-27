@@ -1,0 +1,27 @@
+{
+  "schema": "traction-workbench/case@1",
+  "drive": {
+    "builtin": "SYNTH_IPMSM_200KW_REF_V1"
+  },
+  "requirement": {
+    "id": "REQ-RANGE",
+    "text": "550~650 V 전 구간에서 12,000 rpm 100 N·m",
+    "target": {
+      "value": 100,
+      "unit": "N*m"
+    },
+    "conditions": {
+      "speed": {
+        "value": 12000,
+        "unit": "rpm"
+      },
+      "Vdc": {
+        "value": [
+          550,
+          650
+        ],
+        "unit": "V"
+      }
+    }
+  }
+}

@@ -1,0 +1,176 @@
+{
+  "metadata": {
+    "schema_purpose": "Engineering reference fixture, not a required production serialization format",
+    "version": "1.0",
+    "date": "2026-09-27",
+    "origin": "Synthetic analytic/numerical construction; no OEM or confidential data",
+    "verification_status": "Algebraic identities, independently reduced 1D inverse reference calculations and selected bound checks performed; no hardware or external-simulator validation performed",
+    "scope": "Balanced sinusoidal three-phase steady-state fundamental model",
+    "convention": "Amplitude-invariant Park; d axis PM-aligned; dq quantities phase peak; p=pole pairs"
+  },
+  "cases": [
+    {
+      "n_rpm": 6000,
+      "Vdc_V": 600,
+      "policy": "minimum-current",
+      "active_source_power_W": 200000.0,
+      "expected_Tshaft_Nm": 306.8288961202995,
+      "expected_solution": {
+        "n_rpm": 6000,
+        "id_A_peak": -328.8074850500648,
+        "iq_A_peak": 309.7678881394325,
+        "i_peak_A": 451.7416371636696,
+        "i_phase_rms_A": 319.4295749827437,
+        "vd_V_peak": -316.3447592187481,
+        "vq_V_peak": 90.69726189269585,
+        "v_peak_V": 329.08965343808666,
+        "Te_Nm": 308.08553318173546,
+        "Tshaft_Nm": 306.82889612029953,
+        "Pshaft_W": 192786.28119211976,
+        "Pcu_W": 4591.586401814532,
+        "Prot_W": 789.5683520871487,
+        "Pac_W": 198167.43594602143,
+        "Pinv_W": 1832.5640539785004,
+        "Pdc_W": 199999.99999999994,
+        "Idc_A": 333.33333333333326,
+        "Vmargin_V": 5.684341886080802e-14
+      },
+      "root_bracket_Tshaft_Nm": [
+        300,
+        320
+      ],
+      "status": "Verified boundary candidate; use the supplied certificate where present for global upper-bound verification",
+      "maximum_torque_upper_bound_certificate": {
+        "lambda_voltage": 6.0226940380095485e-05,
+        "lambda_dc_power": 0.001485080641378001,
+        "lagrangian_hessian_eigenvalues": [
+          -0.0002582621400804364,
+          -7.514241782894326e-05
+        ],
+        "stationarity_residual": 0.0,
+        "explanation": "Upper-bound certificate for maximum shaft torque: nonnegative multipliers, feasible candidate, active voltage and source-power constraints, globally concave quadratic Lagrangian. Numerical residuals must be included in bound tolerance."
+      },
+      "constraint_evaluation": "On active boundary within stated numerical tolerance; do not classify from untoleranced floating-point sign."
+    },
+    {
+      "n_rpm": 12000,
+      "Vdc_V": 600,
+      "policy": "minimum-current",
+      "active_source_power_W": 200000.0,
+      "expected_Tshaft_Nm": 152.5550589346928,
+      "expected_solution": {
+        "n_rpm": 12000,
+        "id_A_peak": -374.11371224232005,
+        "iq_A_peak": 147.83386768960872,
+        "i_peak_A": 402.26349837363836,
+        "i_phase_rms_A": 284.44324752382346,
+        "vd_V_peak": -302.8493330023166,
+        "vq_V_peak": 128.7722077936539,
+        "v_peak_V": 329.0896534380867,
+        "Te_Nm": 155.06833305756464,
+        "Tshaft_Nm": 152.5550589346928,
+        "Pshaft_W": 191706.34096687555,
+        "Pcu_W": 3640.858247785459,
+        "Prot_W": 3158.273408348595,
+        "Pac_W": 198505.4726230096,
+        "Pinv_W": 1494.5273769903854,
+        "Pdc_W": 200000.0,
+        "Idc_A": 333.3333333333333,
+        "Vmargin_V": 0.0
+      },
+      "root_bracket_Tshaft_Nm": [
+        150,
+        155
+      ],
+      "status": "Verified boundary candidate; use the supplied certificate where present for global upper-bound verification",
+      "maximum_torque_upper_bound_certificate": {
+        "lambda_voltage": 3.535674682901113e-05,
+        "lambda_dc_power": 0.0007578202608740163,
+        "lagrangian_hessian_eigenvalues": [
+          -0.00034593196601404453,
+          -0.00010388600149522551
+        ],
+        "stationarity_residual": 2.7755575615628914e-17,
+        "explanation": "Upper-bound certificate for maximum shaft torque: nonnegative multipliers, feasible candidate, active voltage and source-power constraints, globally concave quadratic Lagrangian. Numerical residuals must be included in bound tolerance."
+      },
+      "constraint_evaluation": "On active boundary within stated numerical tolerance; do not classify from untoleranced floating-point sign."
+    },
+    {
+      "n_rpm": 12000,
+      "Vdc_V": 450,
+      "policy": "minimum-current",
+      "active_source_power_W": 180000.0,
+      "expected_Tshaft_Nm": 134.88882666037077,
+      "expected_solution": {
+        "n_rpm": 12000,
+        "id_A_peak": -469.02696762065875,
+        "iq_A_peak": 118.16157287536471,
+        "i_peak_A": 483.68218249157223,
+        "i_phase_rms_A": 342.01495117889993,
+        "vd_V_peak": -244.61334325470077,
+        "vq_V_peak": 32.90991190747841,
+        "v_peak_V": 246.8172400785651,
+        "Te_Nm": 137.40210078324256,
+        "Tshaft_Nm": 134.88882666037074,
+        "Pshaft_W": 169506.2987550271,
+        "Pcu_W": 5263.840207345738,
+        "Prot_W": 3158.273408348595,
+        "Pac_W": 177928.41237072146,
+        "Pinv_W": 2071.587629278485,
+        "Pdc_W": 179999.99999999994,
+        "Idc_A": 399.9999999999999,
+        "Vmargin_V": -8.526512829121202e-14
+      },
+      "root_bracket_Tshaft_Nm": [
+        130,
+        138
+      ],
+      "status": "Verified boundary candidate; use the supplied certificate where present for global upper-bound verification",
+      "maximum_torque_upper_bound_certificate": {
+        "lambda_voltage": 0.00011119467259261414,
+        "lambda_dc_power": 0.0007173104609089791,
+        "lagrangian_hessian_eigenvalues": [
+          -0.0009618986761162369,
+          -0.00024949944363769297
+        ],
+        "stationarity_residual": 2.7755575615628914e-17,
+        "explanation": "Upper-bound certificate for maximum shaft torque: nonnegative multipliers, feasible candidate, active voltage and source-power constraints, globally concave quadratic Lagrangian. Numerical residuals must be included in bound tolerance."
+      },
+      "constraint_evaluation": "On active boundary within stated numerical tolerance; do not classify from untoleranced floating-point sign."
+    },
+    {
+      "n_rpm": 12000,
+      "Vdc_V": 600,
+      "policy": "minimum-current",
+      "active_source_power_W": -100000.0,
+      "expected_Tshaft_Nm": -83.71107155914689,
+      "expected_solution": {
+        "n_rpm": 12000,
+        "id_A_peak": -227.02380455242033,
+        "iq_A_peak": -93.07099818905182,
+        "i_peak_A": 245.36099636527814,
+        "i_phase_rms_A": 173.49642436857602,
+        "vd_V_peak": 183.72498800242997,
+        "vq_V_peak": 273.02953829852675,
+        "v_peak_V": 329.08965343808626,
+        "Te_Nm": -81.19779743627505,
+        "Tshaft_Nm": -83.71107155914689,
+        "Pshaft_W": -105194.43497373814,
+        "Pcu_W": 1354.5454170906457,
+        "Prot_W": 3158.273408348595,
+        "Pac_W": -100681.6161482989,
+        "Pinv_W": 681.6161482988963,
+        "Pdc_W": -100000.0,
+        "Idc_A": -166.66666666666666,
+        "Vmargin_V": 4.547473508864641e-13
+      },
+      "root_bracket_Tshaft_Nm": [
+        -90,
+        -80
+      ],
+      "status": "Verified boundary candidate; use the supplied certificate where present for global upper-bound verification",
+      "scope_note": "Minimum-current energy-recovery policy charging boundary; NOT the most negative torque achievable by deliberately increasing losses.",
+      "constraint_evaluation": "On active boundary within stated numerical tolerance; do not classify from untoleranced floating-point sign."
+    }
+  ]
+}

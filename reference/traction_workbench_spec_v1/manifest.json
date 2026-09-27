@@ -1,0 +1,71 @@
+{
+  "version": "1.0",
+  "date": "2026-09-27",
+  "package_type": "Engineering design and implementation handoff; no production code",
+  "performed_checks": {
+    "forward_reference_cases": 6,
+    "inverse_reference_cases": 11,
+    "inverse_cases_with_electrical_solution": 10,
+    "positive_capability_quadratic_certificates": 3,
+    "maximum_forward_power_identity_residual_W": 2.9103830456733704e-11,
+    "manufactured_map_shape": [
+      41,
+      41
+    ],
+    "json_serialization": "All six reference JSON files parse successfully",
+    "hardware_validation_performed": false,
+    "external_simulator_validation_performed": false
+  },
+  "files": [
+    {
+      "name": "01_Engineering_Blueprint_KO.md",
+      "size_bytes": 34584,
+      "sha256": "6983a7e5b608d674a555c5d019eb978c1342ab9effc6ee13a99c64229ac8e966"
+    },
+    {
+      "name": "02_Implementation_Handoff_KO.md",
+      "size_bytes": 22294,
+      "sha256": "948666630b901df2c99b72a2bd5a5646ced4ee425a116a87b376f42f93583b09"
+    },
+    {
+      "name": "03_Reference_Cases_KO.md",
+      "size_bytes": 12814,
+      "sha256": "799b9c199d38e3bb2488b67fac542ef7ac551e9f6cbb3f5aa3e80ebdcc8a0bd9"
+    },
+    {
+      "name": "README_KO.md",
+      "size_bytes": 2039,
+      "sha256": "7fc6854130909d429d6e918d5667a50ea92f673d7c746ee11add7678640e3203"
+    },
+    {
+      "name": "golden_capability.json",
+      "size_bytes": 7551,
+      "sha256": "6a89753daeebd4841cda2c368e4f7b203b5e156258e816f5215526d22b341efb"
+    },
+    {
+      "name": "golden_forward.json",
+      "size_bytes": 6604,
+      "sha256": "a96bbbd1b149e832018cb35183b6499c5447ed8eeeb503a69851e9826f92609b"
+    },
+    {
+      "name": "golden_inverse.json",
+      "size_bytes": 13658,
+      "sha256": "1a50d0bd7884e590dc3f8a0bccad274c0b8c52fc99747b0e7b504c9f69feaa10"
+    },
+    {
+      "name": "manufactured_flux_map.json",
+      "size_bytes": 95139,
+      "sha256": "b9f95458ac8715b3a66ee3eedd5ce380a60afc3659259781ce6345b0fc060163"
+    },
+    {
+      "name": "semantic_boundary_cases.json",
+      "size_bytes": 3857,
+      "sha256": "f7ae986a076864b87d8bee0dc250596bc4437e50c59ea3edfc914597c3b84c16"
+    },
+    {
+      "name": "synthetic_drive.json",
+      "size_bytes": 2627,
+      "sha256": "0e588727415e51fbf025857ceb0aab9bb17f7c54549b87d9bac3a81e5bfa50e2"
+    }
+  ]
+}

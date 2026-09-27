@@ -1,0 +1,31 @@
+{
+  "schema": "traction-workbench/case@1",
+  "drive": {
+    "builtin": "SYNTH_IPMSM_200KW_REF_V1"
+  },
+  "requirement": {
+    "id": "REQ-TS-012",
+    "revision": "A",
+    "text": "REQ-TS-012: inverter DC terminal 600 V, motor shaft 12,000 rpm에서 shaft torque 150 N·m를 유지한다.",
+    "target": {
+      "value": 150,
+      "unit": "N*m",
+      "torque": "shaft"
+    },
+    "conditions": {
+      "speed": {
+        "value": 12000,
+        "unit": "rpm",
+        "kind": "mechanical"
+      },
+      "Vdc": {
+        "value": 600,
+        "unit": "V",
+        "port": "inverter_dc_terminal"
+      }
+    }
+  },
+  "analyses": {
+    "dominance": true
+  }
+}

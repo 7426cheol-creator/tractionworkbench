@@ -1,0 +1,216 @@
+{
+  "metadata": {
+    "schema_purpose": "Engineering reference fixture, not a required production serialization format",
+    "version": "1.0",
+    "date": "2026-09-27",
+    "origin": "Synthetic analytic/numerical construction; no OEM or confidential data",
+    "verification_status": "Algebraic identities, independently reduced 1D inverse reference calculations and selected bound checks performed; no hardware or external-simulator validation performed",
+    "scope": "Balanced sinusoidal three-phase steady-state fundamental model",
+    "convention": "Amplitude-invariant Park; d axis PM-aligned; dq quantities phase peak; p=pole pairs"
+  },
+  "cases": [
+    {
+      "case_id": "F00_STANDSTILL",
+      "input": {
+        "id_A_peak": -200,
+        "iq_A_peak": 400,
+        "n_rpm": 0,
+        "Vdc_V": 600
+      },
+      "expected": {
+        "n_rpm": 0,
+        "id_A_peak": -200,
+        "iq_A_peak": 400,
+        "i_peak_A": 447.21359549995793,
+        "i_phase_rms_A": 316.22776601683796,
+        "vd_V_peak": -3.0,
+        "vq_V_peak": 6.0,
+        "v_peak_V": 6.708203932499369,
+        "Te_Nm": 336.0,
+        "Tshaft_Nm": 336.0,
+        "Pshaft_W": 0.0,
+        "Pcu_W": 4500.0,
+        "Prot_W": 0.0,
+        "Pac_W": 4500.0,
+        "Pinv_W": 1800.0,
+        "Pdc_W": 6300.0,
+        "Idc_A": 10.5,
+        "Vmargin_V": 322.38144950558734
+      },
+      "expected_violations": [],
+      "duration_status": "UNKNOWN",
+      "rms_interpretation": "equivalent sinusoidal RMS, not individual static phase RMS"
+    },
+    {
+      "case_id": "F01_FORWARD_MOTORING",
+      "input": {
+        "id_A_peak": -200,
+        "iq_A_peak": 400,
+        "n_rpm": 3000,
+        "Vdc_V": 600
+      },
+      "expected": {
+        "n_rpm": 3000,
+        "id_A_peak": -200,
+        "iq_A_peak": 400,
+        "i_peak_A": 447.21359549995793,
+        "i_phase_rms_A": 316.22776601683796,
+        "vd_V_peak": -204.06192982974676,
+        "vq_V_peak": 81.39822368615505,
+        "v_peak_V": 219.6973873879747,
+        "Te_Nm": 336.0,
+        "Tshaft_Nm": 335.37168146928207,
+        "Pshaft_W": 105360.12107259527,
+        "Pcu_W": 4500.0,
+        "Prot_W": 197.39208802178717,
+        "Pac_W": 110057.51316061706,
+        "Pinv_W": 1800.0,
+        "Pdc_W": 111857.51316061706,
+        "Idc_A": 186.42918860102844,
+        "Vmargin_V": 109.39226605011203
+      },
+      "expected_violations": [],
+      "duration_status": "UNKNOWN",
+      "rms_interpretation": "phase RMS of balanced fundamental"
+    },
+    {
+      "case_id": "F02_VOLTAGE_AND_DC_VIOLATION",
+      "input": {
+        "id_A_peak": -200,
+        "iq_A_peak": 400,
+        "n_rpm": 6000,
+        "Vdc_V": 600
+      },
+      "expected": {
+        "n_rpm": 6000,
+        "id_A_peak": -200,
+        "iq_A_peak": 400,
+        "i_peak_A": 447.21359549995793,
+        "i_phase_rms_A": 316.22776601683796,
+        "vd_V_peak": -405.1238596594935,
+        "vq_V_peak": 156.7964473723101,
+        "v_peak_V": 434.40818083224747,
+        "Te_Nm": 336.0,
+        "Tshaft_Nm": 334.7433629385641,
+        "Pshaft_W": 210325.45796914696,
+        "Pcu_W": 4500.0,
+        "Prot_W": 789.5683520871487,
+        "Pac_W": 215615.02632123412,
+        "Pinv_W": 1800.0,
+        "Pdc_W": 217415.02632123412,
+        "Idc_A": 362.3583772020569,
+        "Vmargin_V": -105.31852739416075
+      },
+      "expected_violations": [
+        "VOLTAGE",
+        "DISCHARGE_SOURCE"
+      ],
+      "duration_status": "UNKNOWN",
+      "rms_interpretation": "phase RMS of balanced fundamental"
+    },
+    {
+      "case_id": "F03_REGENERATION",
+      "input": {
+        "id_A_peak": -200,
+        "iq_A_peak": -400,
+        "n_rpm": 3000,
+        "Vdc_V": 600
+      },
+      "expected": {
+        "n_rpm": 3000,
+        "id_A_peak": -200,
+        "iq_A_peak": -400,
+        "i_peak_A": 447.21359549995793,
+        "i_phase_rms_A": 316.22776601683796,
+        "vd_V_peak": 198.06192982974676,
+        "vq_V_peak": 69.39822368615505,
+        "v_peak_V": 209.86815265465395,
+        "Te_Nm": -336.0,
+        "Tshaft_Nm": -336.62831853071793,
+        "Pshaft_W": -105754.90524863884,
+        "Pcu_W": 4500.0,
+        "Prot_W": 197.39208802178717,
+        "Pac_W": -101057.51316061706,
+        "Pinv_W": 1800.0,
+        "Pdc_W": -99257.51316061706,
+        "Idc_A": -165.42918860102844,
+        "Vmargin_V": 119.22150078343276
+      },
+      "expected_violations": [],
+      "duration_status": "UNKNOWN",
+      "rms_interpretation": "phase RMS of balanced fundamental"
+    },
+    {
+      "case_id": "F04_REVERSE_MOTORING",
+      "input": {
+        "id_A_peak": -200,
+        "iq_A_peak": -400,
+        "n_rpm": -3000,
+        "Vdc_V": 600
+      },
+      "expected": {
+        "n_rpm": -3000,
+        "id_A_peak": -200,
+        "iq_A_peak": -400,
+        "i_peak_A": 447.21359549995793,
+        "i_phase_rms_A": 316.22776601683796,
+        "vd_V_peak": -204.06192982974676,
+        "vq_V_peak": -81.39822368615505,
+        "v_peak_V": 219.6973873879747,
+        "Te_Nm": -336.0,
+        "Tshaft_Nm": -335.37168146928207,
+        "Pshaft_W": 105360.12107259527,
+        "Pcu_W": 4500.0,
+        "Prot_W": 197.39208802178717,
+        "Pac_W": 110057.51316061706,
+        "Pinv_W": 1800.0,
+        "Pdc_W": 111857.51316061706,
+        "Idc_A": 186.42918860102844,
+        "Vmargin_V": 109.39226605011203
+      },
+      "expected_violations": [],
+      "duration_status": "UNKNOWN",
+      "rms_interpretation": "phase RMS of balanced fundamental"
+    },
+    {
+      "case_id": "F05_SPMSM_NO_ROTATIONAL_OR_INVERTER_LOSS",
+      "input": {
+        "id_A_peak": 0,
+        "iq_A_peak": 100,
+        "n_rpm": 3000,
+        "Vdc_V": 400
+      },
+      "parameter_overrides": {
+        "Rs_phase_ohm": 0.02,
+        "psi_pm_Wb": 0.08,
+        "Ld_H": 0.0003,
+        "Lq_H": 0.0003,
+        "drag_coefficient_Nm_per_rad_s": 0,
+        "inverter_loss_offset_W": 0,
+        "inverter_loss_Ipk2_coefficient_ohm": 0
+      },
+      "expected": {
+        "n_rpm": 3000,
+        "id_A_peak": 0,
+        "iq_A_peak": 100,
+        "i_peak_A": 100.0,
+        "i_phase_rms_A": 70.71067811865476,
+        "vd_V_peak": -37.69911184307752,
+        "vq_V_peak": 102.53096491487338,
+        "v_peak_V": 109.24203311972852,
+        "Te_Nm": 48.0,
+        "Tshaft_Nm": 48.0,
+        "Pshaft_W": 15079.644737231007,
+        "Pcu_W": 300.0,
+        "Prot_W": 0.0,
+        "Pac_W": 15379.644737231007,
+        "Pinv_W": 0,
+        "Pdc_W": 15379.644737231007,
+        "Idc_A": 38.44911184307752,
+        "Vmargin_V": 110.15106917232927
+      },
+      "expected_violations": [],
+      "duration_status": "UNKNOWN"
+    }
+  ]
+}

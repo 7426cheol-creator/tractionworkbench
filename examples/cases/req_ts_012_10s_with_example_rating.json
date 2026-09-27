@@ -1,0 +1,85 @@
+{
+  "schema": "traction-workbench/case@1",
+  "drive": {
+    "builtin": "SYNTH_IPMSM_200KW_REF_V1"
+  },
+  "requirement": {
+    "id": "REQ-TS-012-10S",
+    "revision": "A",
+    "text": "600 V, 12,000 rpm에서 150 N·m를 10초 유지한다.",
+    "target": {
+      "value": 150,
+      "unit": "N*m",
+      "torque": "shaft"
+    },
+    "conditions": {
+      "speed": {
+        "value": 12000,
+        "unit": "rpm",
+        "kind": "mechanical"
+      },
+      "Vdc": {
+        "value": 600,
+        "unit": "V",
+        "port": "inverter_dc_terminal"
+      },
+      "coolant_temp": {
+        "value": 65,
+        "unit": "degC"
+      }
+    },
+    "duration": {
+      "value": 10,
+      "unit": "s"
+    }
+  },
+  "ratings": [
+    {
+      "id": "EXAMPLE-ENV-10S",
+      "revision": "X1",
+      "duration": {
+        "value": 10,
+        "unit": "s"
+      },
+      "speed": {
+        "value": [
+          0,
+          6000,
+          9000,
+          12000,
+          16000
+        ],
+        "unit": "rpm",
+        "kind": "mechanical"
+      },
+      "max_motoring_torque": {
+        "value": [
+          330,
+          330,
+          220,
+          160,
+          110
+        ],
+        "unit": "N*m"
+      },
+      "conditions": {
+        "coolant_temp_C": 65,
+        "Vdc_V": [
+          550,
+          650
+        ]
+      },
+      "condition_tolerances": {
+        "coolant_temp_C": 1.0
+      },
+      "interpolation": "conservative",
+      "evidence_kind": "supplier_rated",
+      "provenance": {
+        "origin": "synthetic",
+        "source": "EXAMPLE ONLY - illustrates the lookup; not supplier data",
+        "revision": "X1",
+        "validation_status": "illustrative example, not validated"
+      }
+    }
+  ]
+}
