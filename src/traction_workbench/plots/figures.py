@@ -40,6 +40,38 @@ def _note(ax, text: str, loc: str = "upper left", fontsize: float = 7.5):
             bbox=dict(boxstyle="round,pad=0.35", fc=t["panel"], ec=t["grid"], alpha=0.92))
 
 
+def _wrapped(text: str, width: int = 90, max_lines: int = 4) -> str:
+    """Long claim text as a compact note: one clause per line, wrapped (the page's result table has the full text)."""
+    import textwrap
+    lines = []
+    for part in (q for q in text.split("; ") if q):
+        lines += textwrap.wrap(part, width) or [part]
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+        lines[-1] += " …"
+    return "\n".join(lines)
+
+
+def _discharge_summary(res: dict, width: int = 60) -> str:
+    """Short plot note for a discharge result; the full claim detail is in the page's result table."""
+    c = res["claim"]
+    lines = [tr(f"{c['status']}: RC 도달 {res['t_reach_s']:.4g} s / 허용 {res['t_target_s']:g} s",
+                f"{c['status']}: RC reaches the target in {res['t_reach_s']:.4g} s / {res['t_target_s']:g} s")]
+    if res.get("rectification_risk"):
+        lines.append(tr(f"정류 위험: 역기전력 {res['back_emf_ll_peak_V']:.4g} V > {res['Vf_V']:g} V → RC 시간은 하한",
+                        f"rectification risk: back-EMF {res['back_emf_ll_peak_V']:.4g} V > {res['Vf_V']:g} V"
+                        f" → the RC time is a lower bound"))
+        est = res.get("rectified_link_screening")
+        if est:
+            lines.append(tr(f"링크 유지 전압 ≈ {est['V_dc_V']:.4g} V (스크리닝 추정, 한계 아님)",
+                            f"link held near {est['V_dc_V']:.4g} V (screening estimate, not a bound)"))
+    elif c["status"] != "FEASIBLE":
+        rest = "; ".join(c["detail"].split("; ")[1:])
+        if rest:
+            lines += _wrapped(rest, width, 2).split("\n")
+    return "\n".join(lines)
+
+
 def _runs(mask: np.ndarray):
     """Contiguous True runs as (start, stop) index pairs (stop inclusive)."""
     idx = np.flatnonzero(np.diff(np.concatenate([[0], mask.astype(int), [0]])))
@@ -813,8 +845,7 @@ def fig_discharge(fig, res: dict, cur: dict, title: str | None = None):
     ax2.grid(False)
     ax2.spines["right"].set_visible(True)
     ax.legend(loc="upper right", fontsize=7.5)
-    c = res["claim"]
-    _note(ax, f"{c['status']}: {c['detail']}", loc="lower left", fontsize=7)
+    _note(ax, _discharge_summary(res), loc="lower left", fontsize=7)
 
 
 def fig_overvoltage(fig, res: dict, cur: dict, title: str | None = None):
@@ -1001,8 +1032,7 @@ def fig_passive_discharge(fig, res: dict, cur: dict, win: dict, title: str | Non
     ax1.set_ylabel(tr("DC 링크 전압 [V]", "DC-link voltage [V]"))
     ax1.set_title(tr("패시브 방전 V(t) = V₀·e^(−t/(R_p·C))", "passive discharge V(t) = V₀·e^(−t/(R_p·C))"), fontsize=9)
     ax1.legend(loc="upper right", fontsize=7)
-    c = res["claim"]
-    _note(ax1, f"{c['status']}: " + c["detail"].split(";")[0], loc="lower left", fontsize=7)
+    _note(ax1, _discharge_summary(res, 48), loc="lower left", fontsize=7)
     R = win["R_ohm"] / 1e3
     ax2.loglog(R, win["t_reach_s"], color=S.ACCENT, lw=2, label=tr("방전 시간 t = R_p·C·ln(V₀/V_f)", "discharge time t = R_p·C·ln(V₀/V_f)"))
     ax2.axhline(res["t_target_s"], color=S.ACCENT, ls=":", lw=1)

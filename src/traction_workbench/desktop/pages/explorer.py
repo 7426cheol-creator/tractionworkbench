@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QButtonGroup, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QRadioButton, QScrollArea,
+from PySide6.QtWidgets import (QButtonGroup, QFormLayout, QGroupBox, QLabel, QRadioButton, QScrollArea,
                                QSplitter, QVBoxLayout, QWidget)
 
 from ...i18n import tr
@@ -28,7 +28,11 @@ def _task(progress, drive, limits, n, vdc, mode, T, idv, iqv):
     else:
         fr = forward_evaluation(drive, sc, idv, iqv)
         out["claims"] = []
-        out["forward"] = {"evaluable": fr.evaluable, "message": fr.message}
+        viol = [] if fr.point is None else [c.name for c in fr.point.constraints if c.state == "VIOLATED"]
+        notev = [] if fr.point is None else [c.name for c in fr.point.constraints if c.state == "NOT_EVALUATED"]
+        out["forward"] = {"evaluable": fr.evaluable, "message": fr.message, "accepted": fr.accepted,
+                          "validity_gate": fr.validity_gate_passed, "gate_messages": list(fr.gate_messages),
+                          "issues": [i.message for i in fr.issues], "violated": viol, "not_evaluated": notev}
         pt = fr.point
         out["T"] = None if pt is None else pt.Tshaft_Nm
     out["pv"] = None if pt is None else O.point_view(drive, sc, pt.id_A, pt.iq_A, out["T"])
@@ -130,7 +134,8 @@ class ExplorerPage(QWidget):
         sc = res["scenario"]
         title = f"n = {sc.speed_rpm:g} rpm · Vdc = {sc.Vdc_V:g} V"
         if res["mode"] == "forward":
-            title += f" · id = {self.id.value():g} A, iq = {self.iq.value():g} A ({tr('정방향 평가', 'forward evaluation')})"
+            diag = "" if res["forward"].get("accepted") else tr(" · 진단용 (DIAGNOSTIC ONLY)", " · DIAGNOSTIC ONLY")
+            title += f" · id = {self.id.value():g} A, iq = {self.iq.value():g} A ({tr('정방향 평가', 'forward evaluation')}){diag}"
             if res["pv"] is not None:
                 pl["policy_point"] = res["plane"].get("picked_point")
                 pl["point_label"] = tr("선택한 운전점 (정방향 평가, 이동 없음)", "picked point (forward evaluation, not moved)")
@@ -140,7 +145,20 @@ class ExplorerPage(QWidget):
         rows = []
         if res["mode"] == "forward":
             fwd = res["forward"]
-            rows.append((tr("정방향 평가", "forward evaluation"), "OK" if fwd["evaluable"] else "UNKNOWN", fwd["message"]))
+            if not fwd["evaluable"]:
+                rows.append((tr("정방향 평가", "forward evaluation"), "UNKNOWN", fwd["message"]))
+            elif fwd["accepted"]:
+                rows.append((tr("정방향 평가", "forward evaluation"), "ACCEPTED",
+                             tr("모든 제약 충족, 모델 유효, 증거로 인정", "all constraints met, model valid: admissible evidence")))
+            else:
+                why = (fwd["issues"] + [f"violated: {', '.join(fwd['violated'])}" if fwd["violated"] else ""] +
+                       [f"not evaluated: {', '.join(fwd['not_evaluated'])}" if fwd["not_evaluated"] else ""] +
+                       fwd["gate_messages"])
+                rows.append((tr("정방향 평가", "forward evaluation"), "DIAGNOSTIC ONLY",
+                             tr("가능한 해가 아닌 진단값: ", "a diagnostic, not a feasible witness: ") +
+                             "; ".join(w for w in why if w)))
+            if not fwd["validity_gate"]:
+                rows.append((tr("모델 유효성 gate", "model validity gate"), "UNKNOWN", "; ".join(fwd["issues"])))
         for c in res["claims"]:
             rows.append((c["name"], c["status"], c["detail"]))
         from ..theme import status_color

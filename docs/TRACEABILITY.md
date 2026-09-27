@@ -28,7 +28,7 @@
 | F08/F08b | 입력·시간·온도 gate, 무부하 역기전력은 정류 위험(방전 하한 아님) | `extensions/dclink.py`, ASC | F08 | implemented |
 | F09 | Kt 단위 명시 변환·거부 | `io.py` KT_UNITS | F09 | implemented |
 | F10 | node reciprocity(정적) ≠ interpolant 동적 보수성 | `models/flux.py` qualification | F10, 감사 재현(비대칭) | implemented |
-| F11/F12 | 수학/모델/요구/qualification 층 분리 | claim layers | F11/F12 | implemented (UI 표시는 §8 참조) |
+| F11/F12 | 수학/모델/요구/qualification 층 분리 | claim layers, 요구 판정 페이지의 층 표 | F11/F12, desktop smoke | implemented |
 | F13 | UNKNOWN 경계를 최소 sizing으로, 미해결 이득을 not limiting으로 표시 금지 | `analysis/sizing.py`, dominance | F13 | implemented |
 
 ## 2. 감사 증거 패키지 (dc7b338) 재현 폐쇄
@@ -45,7 +45,7 @@
 
 | 절 | 내용 | 구현 | 상태 |
 |---|---|---|---|
-| P0-B | 단위·축 순서·provenance·정적/동적 qualification, data audit | `io.py`, `models/`, `service.data_audit` | implemented (UI 노출: §8) |
+| P0-B | 단위·축 순서·provenance·정적/동적 qualification, data audit | `io.py`, `models/`, `service.data_audit`, 모델·데이터 페이지 감사 표 | implemented |
 | P0-C | 실제 모터–인버터 한 조합의 정적 release evidence | — | **evidence_missing** (공급사·시험 데이터 필요; 합성 suite를 qualified baseline이라 부르지 않음) |
 | §8.8 P1-A | 데이터시트 모듈 손실 (소자별 도통·스위칭, 소유권, 외삽 금지) → P_dc·열·claim | `extensions/module_loss.py` | implemented / evidence_missing (DPT·공급사 도구) |
 | §8.9 P1-A | DC-link 리플·커패시터 전류·ESR·수명 게이트 | `extensions/dclink_ripple.py` | implemented / evidence_missing |
@@ -54,7 +54,7 @@
 | §9.13 | ASC 두 시간영역 전류 요구 | `extensions/asc_transient.py` | implemented (단일 VSI) |
 | §11 P1-C | 전도 EMI: 요구 프로파일 완결성, source→path→receiver, 측정 trace 판정 | `extensions/emi.py`, EMI 페이지 | implemented (screening은 PASS 아님) / evidence_missing (보정) |
 | §10 | 모터 설계: 검증된 기준의 일관 스케일링·계보·무효화 데이터, 결합 요구 여유 트레이드, 권선(star of slots), 개념 사이징 | `analysis/machine_design.py`, 모터 설계 페이지 | implemented; FEA/CAD는 외부 (non-goal) |
-| §10.2 | qualified machine-data package 체크리스트 | `service.data_audit` | partial (체크리스트 UI 노출은 §8) |
+| §10.2 | qualified machine-data package 체크리스트 | `service.data_audit`, 모델·데이터 페이지 | partial (용도별 상태·qualification 공백 표시; 공급사 패키지 서명·개정 관리는 없음) |
 | §14 | 디스커넥터 연결·분리·동기화 | — | missing (P2로 명시 보류) |
 
 ## 4. OEW / HEV 추가 명세
@@ -136,11 +136,19 @@
 | §6 | off/shaping/feedback/combined 같은 조작·요구 비교, 늦은 가속은 jerk 개선만으로 표시 금지, 손실은 전달 일과 함께 | `evaluate_variants` | API 테스트 | implemented |
 | — | 다관성·HEV 다축 협조, FRF 식별 | — | — | missing (P2) / evidence_missing |
 
-## 8. 남은 UI 노출 항목 (engine은 구현됨)
+## 8. P0-A/B 결과의 화면 노출
 
-P0-A/B 엔진 결과를 화면에 더 드러내는 항목입니다. 현재 결과는 API/기록/보고서에 들어 있으며, 아래는 화면 표시 보강입니다.
-판정 페이지 claim 층 표시, 탐색 페이지의 gate 메시지, 모델 페이지 data audit 표, 열 편집기의 검증 증거·초기 상태,
-FTTI endpoint 입력, 안전 페이지의 정류 위험 주석.
+엔진 결과(API·기록·보고서)를 화면에서도 그대로 보이게 한 항목입니다. 모두 desktop smoke(`tests/test_reports_desktop.py`)가 확인합니다.
+
+| 항목 | 화면 | 상태 |
+|---|---|---|
+| claim 층 (수학 · 모델 · 요구 · qualification), 요구 witness | 요구 판정: 층 표(서로 다른 진술, 합치지 않음), 핵심 수치의 요구 witness(정적·DC·지속시간이 같은 점) | implemented |
+| witness gate 메시지 | 운전점 탐색: 정방향 평가를 ACCEPTED / DIAGNOSTIC ONLY / UNKNOWN으로 표시, 위반·미평가 제약과 gate 사유, 제목에 '진단용' | implemented |
+| 결측 ≠ 무제한 | 모델·데이터: DC 한계마다 값 / 미선언(UNKNOWN) / 선언된 무제한(∞) 선택 | implemented |
+| data audit | 모델·데이터: 용도별 상태·근거와 qualification 공백 (모듈 손실 모델 사용 시 그 식별 정보) | implemented |
+| 열 모델 증거·초기 상태 | 열 편집기의 검증 근거 칸(없으면 '검증'은 증거 없는 선언), 열 페이지의 초기 열 상태(미선언·고온 시작 → UNKNOWN) | implemented |
+| FTTI endpoint | 안전 스크리닝: 안전 종점 이벤트, 종점 종류(물리적 안전 상태 / 명령 발행 → UNKNOWN), 최댓값 동시 발생 선언, 보장 상한 경로·FDTI/FRTI 최악값 | implemented |
+| 정류 위험 | 안전 스크리닝: 능동·패시브 방전 결과 표(정류 위험, 역기전력 근거, 목표 이하 최고 속도, 정류 링크 전압 스크리닝 추정과 방법), 과전압 결과 표 | implemented |
 
 ## 9. 비목표 (handoff §15, 추가 명세 비목표)
 

@@ -23,8 +23,10 @@ VERDICT_STYLE = {
              "NONE": ("#232428", "#9da7b3")},
 }
 
-STATUS_TEXT = {"FEASIBLE": "#1a7f37", "INFEASIBLE": "#cf222e", "UNKNOWN": "#9a6700"}
-STATUS_TEXT_DARK = {"FEASIBLE": "#3fb950", "INFEASIBLE": "#f85149", "UNKNOWN": "#d29922"}
+STATUS_TEXT = {"FEASIBLE": "#1a7f37", "INFEASIBLE": "#cf222e", "UNKNOWN": "#9a6700", "ACCEPTED": "#1a7f37",
+               "DIAGNOSTIC ONLY": "#9a6700"}
+STATUS_TEXT_DARK = {"FEASIBLE": "#3fb950", "INFEASIBLE": "#f85149", "UNKNOWN": "#d29922", "ACCEPTED": "#3fb950",
+                    "DIAGNOSTIC ONLY": "#d29922"}
 
 _STATE = {"theme": "light"}
 

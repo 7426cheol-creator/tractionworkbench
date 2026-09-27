@@ -248,9 +248,26 @@ def test_desktop_smoke(tmp_path):
         page.run()
         assert page.result["record"]["verdict"]["verdict"] == "FAIL"
         assert page.views.plane is not None and page.views.pv is None
+        lay = {page.layers_table.item(r, 0).text(): page.layers_table.item(r, 1).text()
+               for r in range(page.layers_table.rowCount())}
+        assert set(lay) == {"mathematical", "model", "requirement", "qualification"}   # four separate statements
         ex = win.pages["explorer"]
         ex._picked(-250.0, 120.0)
         assert ex.views.pv.point.id_A == -250.0 and ex.views.pv.point.iq_A == 120.0
+        fwd_status = ex.claims.item(0, 1).text()
+        assert fwd_status in ("ACCEPTED", "DIAGNOSTIC ONLY")                # a picked point is never just 'OK'
+        mdl = win.pages["model"]
+        orig_limits = dict(win.state.limits_dict)
+        mdl.refresh()
+        assert mdl.audit.rowCount() >= 5
+        kind, _val, _sc = mdl.lim_fields["discharge_power_max_W"]
+        kind.setCurrentIndex(kind.findData("unlimited"))                  # declared unlimited is math.inf, not None
+        mdl._apply_limits()
+        assert win.state.limits_dict["discharge_power_max_W"] == float("inf")
+        kind.setCurrentIndex(kind.findData("missing"))
+        mdl._apply_limits()
+        assert win.state.limits_dict["discharge_power_max_W"] is None
+        win.state.set_limits(orig_limits)
         th = win.pages["thermal"]
         th.run()
         t1 = th.last["res"]["request"]["time_to_first_limit_s"]
@@ -267,9 +284,20 @@ def test_desktop_smoke(tmp_path):
         R, X, _how = parse_stage_text("0.01\t0.002\n0.03\t0.03")
         assert R == [0.01, 0.03] and X == [0.002, 0.03]
         sp = win.pages["safety"]
+        sp.run_ftti()
+        rows = {sp.t_ftti.item(r, 0).text(): sp.t_ftti.item(r, 1).text() for r in range(sp.t_ftti.rowCount())}
+        assert any("SYS_FRTI" in v or "DECAY" in v for v in rows.values())   # the chosen path is shown
+        sp.f_endpoint.setCurrentIndex(sp.f_endpoint.findData("command_issued"))
+        sp.run_ftti()
+        assert sp.t_ftti.item(0, 1).text().startswith("UNKNOWN")           # a command is not the physical safe state
+        sp.f_endpoint.setCurrentIndex(sp.f_endpoint.findData("physical_safe_state"))
+        sp.d_n.setValue(3000.0)
         sp.run_discharge()
+        txt = " ".join(sp.t_dis.item(r, 1).text() for r in range(sp.t_dis.rowCount()))
+        assert txt.startswith("UNKNOWN") and "rectification risk" in txt and "not a bound" in txt
         sp.run_passive()
         sp.run_overvoltage()
+        assert sp.t_ov.item(0, 1).text().startswith("INFEASIBLE")
         sp.run_safe()
         assert all(p._draw is not None for p in (sp.s_dis, sp.s_pas, sp.p_pas, sp.s_ov, sp.s_safe))
         assert page.views.overview._draw is not None or ex.views.overview._draw is not None

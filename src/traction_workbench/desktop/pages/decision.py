@@ -268,11 +268,19 @@ class DecisionPage(QWidget):
         rv = QVBoxLayout(right)
         rv.setContentsMargins(0, 0, 0, 0)
         self.key_table = KeyValueTable()
+        self.layers_table = KeyValueTable(headers=[tr("층", "layer"), tr("상태", "status"), tr("의미", "meaning")])
+        self.layers_table.setToolTip(tr("서로 다른 진술을 하나의 판정으로 합치지 않습니다: 수치 증거 / 이 모델의 요구 판정 / "
+                                        "요구의 완결성 / 데이터의 qualification",
+                                        "Separate statements never merged into one verdict: numerical evidence / the "
+                                        "requirement verdict for this model / requirement completeness / data qualification"))
         self.limiting = QListWidget()
         self.actions = QListWidget()
         for lw in (self.limiting, self.actions):
             lw.setWordWrap(True)
             lw.setAlternatingRowColors(True)
+        rv.addWidget(QLabel(tr("<b>판정 층</b> (수학 · 모델 · 요구 · qualification — 서로 다른 진술)",
+                               "<b>claim layers</b> (mathematical · model · requirement · qualification — separate)")))
+        rv.addWidget(self.layers_table, 2)
         rv.addWidget(QLabel(tr("<b>핵심 수치</b>", "<b>key numbers</b>")))
         rv.addWidget(self.key_table, 3)
         rv.addWidget(QLabel(tr("<b>제한 요인</b>", "<b>limiting factors</b>")))
@@ -333,6 +341,21 @@ class DecisionPage(QWidget):
         self.actions.clear()
         self.actions.addItems((rec["next_actions"] or []) + [f"[{tr('미평가', 'not evaluated')}] {x}" for x in rec["not_evaluated"]])
         self.record_view.setMarkdown(rec["markdown"])
+        lay = v.get("layers") or {}
+        lrows, lcol = [], {}
+        good = {"CERTIFIED", "COMPLETE", "FEASIBLE"}
+        for i, key in enumerate(("mathematical", "model", "requirement", "qualification")):
+            L = lay.get(key) or {}
+            st = str(L.get("status", "—"))
+            meaning = L.get("meaning", "")
+            if key == "requirement" and L.get("open_items"):
+                meaning = "; ".join(L["open_items"])
+            if key == "qualification":
+                meaning = f"{L.get('validation_status', '')} · " + " | ".join(L.get("sub_models", []))
+            lrows.append((key, st, meaning))
+            lcol[(i, 1)] = "#1a7f37" if (st in good or st.startswith("FEASIBLE")) else (
+                "#cf222e" if st in ("INFEASIBLE", "UNRESOLVED") else "#b7791f")
+        self.layers_table.set_rows(lrows, lcol)
         for b in (self.save_json, self.save_md, self.save_pdf):
             b.setEnabled(True)
         self._fill_analyses(res)
@@ -364,7 +387,10 @@ class DecisionPage(QWidget):
             self.views.table.set_rows([])
         margin = c["torque_capability_margin_Nm"]
         pcap = c.get("policy_capability") or {}
+        rw = c.get("requirement_witness")
         rows = [(tr("요구 판정 (이 조건)", "requirement at condition"), c["requirement_claim_at_this_condition"]["status"]),
+                (tr("요구 witness (정적·DC·지속 모두 같은 점)", "requirement witness (static, DC, duration at one point)"),
+                 "—" if not rw else f"T = {fmt(rw['torque_Nm'])} N·m, id / iq = {fmt(rw['id_A'])} / {fmt(rw['iq_A'])} A"),
                 (tr("토크 capability 여유 [N·m]", "torque capability margin [N·m]"), fmt(margin)),
                 (tr("정책 capability [N·m] / certified", "policy capability [N·m] / certified"),
                  f"{fmt(pcap.get('achieved_value_Nm'))} / {pcap.get('certified')}"),

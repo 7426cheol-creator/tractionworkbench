@@ -10,7 +10,7 @@ from ... import __version__
 from ... import service as S
 from ...i18n import tr
 from ...plots import figures as F
-from ..widgets import KeyValueTable, PlotPanel, fmt, hint, primary_button
+from ..widgets import KeyValueTable, PlotPanel, hint, primary_button
 
 LIMITATIONS_KO = """
 **검증 범위** — 합성(synthetic) 참조 fixture에 대한 verification입니다. 하드웨어·공급사 데이터·외부 시뮬레이터

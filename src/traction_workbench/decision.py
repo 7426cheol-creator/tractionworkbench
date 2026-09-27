@@ -156,7 +156,14 @@ _CERTIFIED_KINDS = (EvidenceKind.EXACT_ENUMERATION, EvidenceKind.CERTIFIED_BOUND
 def _sub_models(drive: DriveModel) -> list[str]:
     out = []
     inv = drive.inverter.loss
-    if inv is None:
+    mod = drive.inverter.module_loss
+    if mod is not None:
+        dev = mod.device
+        out.append(f"inverter loss: datasheet module model ({dev.technology}, {dev.value_kind} values, fsw "
+                   f"{mod.fsw_Hz / 1e3:g} kHz, {mod.modulation}, evaluated at Tj {drive.inverter.module_Tj_C:g} degC; "
+                   f"source: {dev.source or 'not stated'}) - the I^2 certificates do not apply, DC claims rest on "
+                   "direct witnesses")
+    elif inv is None:
         out.append("inverter loss: not modelled (DC claims UNKNOWN)")
     else:
         rng = "" if inv.valid_Vdc_V is None else f", declared valid Vdc {list(inv.valid_Vdc_V)} V"

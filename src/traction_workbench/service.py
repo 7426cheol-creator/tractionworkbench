@@ -6,7 +6,6 @@ decision data keep full precision).
 
 from __future__ import annotations
 
-import math
 import time
 from functools import lru_cache
 
@@ -103,11 +102,20 @@ def data_audit(drive: DriveModel) -> dict:
                  "not declared: a stated winding temperature away from the reference gives UNKNOWN",
                  "basis": f"reference {motor.reference_winding_temp_C} degC"})
     inv = drive.inverter.loss
-    uses.append({"use": "inverter loss / DC power",
-                 "status": "MISSING (DC claims UNKNOWN)" if inv is None else
-                 f"{inv.kind}: P = a0 + a2*Ipk^2 (no Vdc/fsw/Tj/modulation dependence)",
-                 "basis": "synthetic energy-loss surrogate, not a device conduction/switching model"
-                 if inv is not None and inv.kind == "quadratic_current_surrogate" else "declared"})
+    mod = drive.inverter.module_loss
+    if mod is not None:
+        dev = mod.device
+        uses.append({"use": "inverter loss / DC power",
+                     "status": f"datasheet module model ({dev.technology}, {dev.value_kind} values; fsw "
+                               f"{mod.fsw_Hz / 1e3:g} kHz, {mod.modulation}; Tj {drive.inverter.module_Tj_C:g} degC)",
+                     "basis": (dev.source or "source not stated") + " - covered V/I/T only (no extrapolation); "
+                              "typical values are not bounds"})
+    else:
+        uses.append({"use": "inverter loss / DC power",
+                     "status": "MISSING (DC claims UNKNOWN)" if inv is None else
+                     f"{inv.kind}: P = a0 + a2*Ipk^2 (no Vdc/fsw/Tj/modulation dependence)",
+                     "basis": "synthetic energy-loss surrogate, not a device conduction/switching model"
+                     if inv is not None and inv.kind == "quadratic_current_surrogate" else "declared"})
     rot = motor.rotational_loss
     uses.append({"use": "rotational / iron loss", "status": "MISSING (shaft torque undefined)" if rot is None else
                  rot.basis, "basis": "loss-equivalent resisting torque; not a dq iron-loss-current model"})

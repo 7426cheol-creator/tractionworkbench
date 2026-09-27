@@ -13,7 +13,7 @@ import copy
 import math
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea,
+from PySide6.QtWidgets import (QFormLayout, QGroupBox, QHBoxLayout, QLineEdit, QPushButton, QScrollArea,
                                QSplitter, QTabWidget, QVBoxLayout, QWidget)
 
 from ... import api
