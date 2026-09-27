@@ -150,3 +150,26 @@ def fmt_seconds(s: float | None) -> str:
     if s < 1:
         return f"{s * 1e3:.3g} ms"
     return f"{s:.3g} s"
+
+
+def passive_curves(res: dict, samples: int = 400) -> dict:
+    """Bleeder discharge V(t) (and with the active resistor in parallel, if given)."""
+    t_end = 1.25 * max(res["t_target_s"], res["t_reach_s"])
+    t = np.linspace(0.0, t_end, samples)
+    out = {"t_s": t, "V": res["V0_V"] * np.exp(-t / res["tau_s"])}
+    wa = res.get("with_active")
+    if wa:
+        out["V_with_active"] = res["V0_V"] * np.exp(-t / wa["tau_s"])
+    floor = res.get("back_emf_ll_peak_V")
+    if floor:
+        out["V_with_back_emf"] = np.maximum(out["V"], floor)
+    return out
+
+
+def passive_window(res: dict, samples: int = 300) -> dict:
+    """Design window of the bleeder: discharge time and continuous loss versus R_p."""
+    C, ln = res["C_F"], math.log(res["V0_V"] / res["Vf_V"])
+    anchors = [res["R_max_ohm"], res["R_used_ohm"]] + ([res["R_min_ohm"]] if res.get("R_min_ohm") else [])
+    R = np.geomspace(min(anchors) / 20.0, max(anchors) * 20.0, samples)
+    return {"R_ohm": R, "t_reach_s": R * C * ln, "P_cont_max_W": res["V_max_V"] ** 2 / R,
+            "P_cont_nom_W": res["V_nom_V"] ** 2 / R}

@@ -7,7 +7,8 @@ import pytest
 from conftest import golden, scenario
 from traction_workbench import spec_fixtures as sf
 from traction_workbench.errors import InputValidationError
-from traction_workbench.extensions.dclink import active_discharge, back_emf_ll_peak, regen_disconnect_overvoltage
+from traction_workbench.extensions.dclink import (active_discharge, back_emf_ll_peak, passive_discharge,
+                                                  regen_disconnect_overvoltage)
 from traction_workbench.extensions.safe_state import asc_steady_state, safe_state_screening
 from traction_workbench.extensions.thermal import (FosterNetwork, ThermalModel, ThermalNode, temperature,
                                                    thermal_duration, time_to_limit, torque_availability)
@@ -70,6 +71,31 @@ def test_discharge_blocked_by_back_emf(drive):
     assert r["claim"]["status"] == "INFEASIBLE"
     assert r["back_emf_ll_peak_V"] == pytest.approx(math.sqrt(3) * 4 * 2 * math.pi * 2000 / 60 * 0.1)
     assert r["max_speed_for_target_rpm"] == pytest.approx(60 / (math.sqrt(3) * 0.1) / 4 * 60 / (2 * math.pi))
+
+
+def test_passive_discharge_bleeder(drive):
+    C, V0, Vf = 500e-6, 600.0, 60.0
+    ln = math.log(V0 / Vf)
+    r = passive_discharge(C, V0, Vf, 120.0, V_nom_V=400.0, V_max_V=600.0, P_allow_W=5.0)
+    assert r["R_max_ohm"] == pytest.approx(120.0 / (C * ln)) and r["t_reach_s"] == pytest.approx(120.0)
+    assert r["R_min_ohm"] == pytest.approx(600.0 ** 2 / 5.0) and r["window_ohm"] == [r["R_min_ohm"], r["R_max_ohm"]]
+    assert r["P_cont_nom_W"] == pytest.approx(400.0 ** 2 / r["R_used_ohm"])
+    assert r["P_cont_nom_W"] * r["t_reach_s"] == pytest.approx(r["loss_time_product_Ws"])     # P*t = C V^2 ln(V0/Vf)
+    assert r["claim"]["status"] == "FEASIBLE"
+    fixed = passive_discharge(C, V0, Vf, 120.0, R_ohm=90e3, active_R_ohm=1737.0)
+    rp = 1737.0 * 90e3 / (1737.0 + 90e3)
+    assert fixed["with_active"]["R_parallel_ohm"] == pytest.approx(rp)
+    assert fixed["with_active"]["t_reach_s"] == pytest.approx(rp * C * ln)
+    fast = passive_discharge(C, V0, Vf, 5.0, V_max_V=600.0, P_allow_W=5.0)          # no window: loss vs time
+    assert fast["claim"]["status"] == "INFEASIBLE" and fast["window_ohm"] is None
+    assert "no passive-only design" in fast["claim"]["detail"]
+    slow = passive_discharge(C, V0, Vf, 120.0, R_ohm=200e3)
+    assert slow["claim"]["status"] == "INFEASIBLE" and slow["t_reach_s"] > 120.0
+    spinning = passive_discharge(C, V0, Vf, 120.0, drive=drive, speed_rpm=2000.0)
+    assert spinning["back_emf_ll_peak_V"] > Vf and spinning["claim"]["status"] == "INFEASIBLE"
+    assert "NECESSARY_CONDITION_VIOLATED" in spinning["claim"]["reasons"]
+    with pytest.raises(InputValidationError):
+        passive_discharge(C, 60.0, 60.0, 120.0)
 
 
 def test_regen_disconnect_overvoltage(drive):

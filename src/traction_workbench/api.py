@@ -15,7 +15,7 @@ from . import spec_fixtures as sf
 from .decision import _jsonable
 from .errors import InputValidationError
 from .extensions.coolant import PROPERTY_SOURCE, CoolantLoop, CoolantStation, eg_water_properties
-from .extensions.dclink import active_discharge, regen_disconnect_overvoltage
+from .extensions.dclink import active_discharge, passive_discharge, regen_disconnect_overvoltage
 from .extensions.safe_state import safe_state_screening
 from .extensions.thermal import (CauerNetwork, FosterNetwork, ThermalModel, ThermalNode, flow_scaled, thermal_duration,
                                  torque_availability)
@@ -209,6 +209,20 @@ def discharge(body):
                                       speed_rpm=None if body.get("speed_rpm") in (None, "") else float(body["speed_rpm"])))
 
 
+def _opt(body, key, scale=1.0):
+    v = body.get(key)
+    return None if v in (None, "") else float(v) * scale
+
+
+def passive(body):
+    d = _drive(body)
+    return _jsonable(passive_discharge(_num(body, "C_uF") * 1e-6, _num(body, "V0_V"), _num(body, "Vf_V"),
+                                       _num(body, "t_target_s"), _opt(body, "R_kohm", 1e3), _opt(body, "V_nom_V"),
+                                       _opt(body, "V_max_V"), _opt(body, "P_allow_W"), _opt(body, "active_R_ohm"),
+                                       drive=d if body.get("speed_rpm") not in (None, "") else None,
+                                       speed_rpm=_opt(body, "speed_rpm")))
+
+
 def overvoltage(body):
     d = _drive(body)
     p = body.get("P_in_W")
@@ -315,6 +329,6 @@ def acceptance(body):
 
 ROUTES = {
     "info": info, "evaluate": evaluate, "curve": curve, "map": idiq, "sizing": sizing, "dominance": dominance,
-    "relaxation": relaxation, "timing": timing, "discharge": discharge, "overvoltage": overvoltage,
+    "relaxation": relaxation, "timing": timing, "discharge": discharge, "passive": passive, "overvoltage": overvoltage,
     "safe_state": safe_state, "thermal": thermal, "acceptance": acceptance,
 }

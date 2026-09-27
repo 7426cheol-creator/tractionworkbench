@@ -92,11 +92,12 @@ def run_self_test(app, out_dir) -> int:
         check("performance", perf.res is not None and perf.res["map"]["status"].size > 0)
         des = visit("design", 4, ["run1", "run2"], [(None, "12_design_sizing"), (lambda pg: pg.tabs.setCurrentIndex(1), "13_design_dominance")])
         check("design", des.p_curve._draw is not None and des.p_dom._draw is not None)
-        saf = visit("safety", 5, ["run_ftti", "run_discharge", "run_overvoltage", "run_safe"],
+        saf = visit("safety", 5, ["run_ftti", "run_discharge", "run_passive", "run_overvoltage", "run_safe"],
                     [(None, "14_safety_ftti"), (lambda pg: pg.tabs.setCurrentIndex(1), "15_safety_dclink"),
-                     (lambda pg: pg.dc_tabs.setCurrentIndex(1), "15b_safety_overvoltage"),
+                     (lambda pg: pg.dc_tabs.setCurrentIndex(1), "15a_safety_passive"),
+                     (lambda pg: pg.dc_tabs.setCurrentIndex(2), "15b_safety_overvoltage"),
                      (lambda pg: pg.tabs.setCurrentIndex(2), "16_safety_state")])
-        check("safety", all(p._draw is not None for p in (saf.p_ftti, saf.p_dis, saf.p_ov, saf.p_safe)))
+        check("safety", all(p._draw is not None for p in (saf.p_ftti, saf.p_dis, saf.p_pas, saf.p_ov, saf.p_safe)))
         th = visit("thermal", 6, ["run"], [(None, "17_thermal"), (lambda pg: pg.tabs.setCurrentIndex(1), "17b_thermal_network"),
                                            (lambda pg: pg.tabs.setCurrentIndex(2), "17c_thermal_zth"),
                                            (lambda pg: pg.tabs.setCurrentIndex(3), "17d_thermal_editor")])
@@ -109,7 +110,7 @@ def run_self_test(app, out_dir) -> int:
               f"10 L/min {t_ref} s, 5 L/min {t_low} s")
         th.c_flow.setValue(10.0)
         th.tabs.setCurrentIndex(0)
-        check("schematics", all(p._draw is not None for p in (saf.s_dis, saf.s_ov, saf.s_safe, page.views.overview)))
+        check("schematics", all(p._draw is not None for p in (saf.s_dis, saf.s_pas, saf.s_ov, saf.s_safe, page.views.overview)))
         visit("model", 7, [], [(None, "18_model")])
         vv = visit("verification", 8, ["run"], [(None, "19_verification")])
         check("acceptance", "PASS" in vv.summary.text() and "MISMATCH" not in vv.summary.text(), vv.summary.text())

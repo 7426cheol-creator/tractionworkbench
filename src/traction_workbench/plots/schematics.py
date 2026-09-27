@@ -195,11 +195,11 @@ def block(ax, x, y, w, h, label, fc=None, ec=None, size=FS, weight="bold"):
 # powertrain
 # ---------------------------------------------------------------------------
 
-X_CAP, X_DIS = 3.6, 5.4
-LEGS = ((6.9, 2.55, "a"), (8.4, 2.0, "b"), (9.9, 1.45, "c"))
-MX, MR = 12.0, 0.85
+X_PAS, X_CAP, X_DIS = 3.45, 4.45, 6.05
+LEGS = ((7.5, 2.55, "a"), (9.0, 2.0, "b"), (10.5, 1.45, "c"))
+MX, MR = 12.6, 0.85
 TOP, BOT = 4.0, 0.0
-XLIM = (-1.7, 14.6)
+XLIM = (-1.7, 15.2)
 YLIM = (-1.35, 5.7)
 
 
@@ -208,7 +208,8 @@ def _num(v: float) -> str:
 
 
 def draw_powertrain(ax, relay_closed=True, precharge=False, discharge_on=False, bridge="pwm", power_flow=None,
-                    rectifying=False, labels=None, show_battery=True, spinning=True, show_discharge=True):
+                    rectifying=False, labels=None, show_battery=True, spinning=True, show_discharge=True,
+                    show_passive=True, passive_on=False):
     """bridge: 'pwm' | 'off' | 'asc_low' | 'asc_high'; power_flow: 'motoring' | 'regen' | 'rectify' | None."""
     c = _c()
     L = labels or {}
@@ -240,6 +241,17 @@ def draw_powertrain(ax, relay_closed=True, precharge=False, discharge_on=False, 
     capacitor(ax, (X_CAP, TOP), (X_CAP, BOT), L.get("cap", "C_dc"), lab_off=(0.32, 0.0))
     dot(ax, X_CAP, TOP)
     dot(ax, X_CAP, BOT)
+    if show_passive and show_battery:
+        pcol = c["hot"] if passive_on else c["muted"]
+        resistor(ax, (X_PAS, TOP), (X_PAS, 2.35), None, color=pcol, body=0.8)
+        wire(ax, (X_PAS, 2.35), (X_PAS, BOT), color=pcol)
+        text(ax, X_PAS - 0.2, 3.2, L.get("pas_r", "R_p"), ha="right", size=6.8, color=pcol if passive_on else None)
+        text(ax, X_PAS - 0.2, 1.25, tr("패시브\n방전\n(상시)", "passive\nbleeder\n(always)"), ha="right", size=6.3,
+             color=c["muted"])
+        dot(ax, X_PAS, TOP)
+        dot(ax, X_PAS, BOT)
+        if passive_on:
+            flow(ax, (X_PAS + 0.3, 3.45), (X_PAS + 0.3, 2.45), None, color=c["hot"], lw=1.8)
     if show_discharge:
         dcol = c["hot"] if discharge_on else None
         resistor(ax, (X_DIS, TOP), (X_DIS, 2.0), L.get("dis_r", "R_dis"), color=dcol, lab_off=(0.25, 0.0))
@@ -321,7 +333,16 @@ def fig_dclink_schematic(fig, scenario: str, info: dict, title: str | None = Non
     if title:
         fig.suptitle(title, fontsize=10, fontweight="bold", color=S.theme()["fg"])
     ax = new_axes(fig, XLIM, YLIM, rect=[0.01, 0.02, 0.98, 0.9])
-    if scenario == "discharge":
+    if scenario == "passive":
+        rect = bool(info.get("rectifying"))
+        draw_powertrain(ax, relay_closed=False, passive_on=True, discharge_on=bool(info.get("active_parallel")),
+                        bridge="off", power_flow="rectify" if rect else None, rectifying=rect,
+                        spinning=info.get("spinning", False),
+                        labels={"cap": f"C {info['C_uF']:.0f} µF\n{info['V0_V']:.0f}→{info['Vf_V']:.0f} V",
+                                "pas_r": "R_p" if info.get("R_ohm") is None else f"R_p {info['R_ohm'] / 1e3:.4g} kΩ",
+                                "dc_flow": tr("역기전력 정류", "rectified back-EMF") if rect else None,
+                                "motor": info.get("motor_label"), "note": info.get("note")})
+    elif scenario == "discharge":
         rect = bool(info.get("rectifying"))
         draw_powertrain(ax, relay_closed=False, discharge_on=True, bridge="off",
                         power_flow="rectify" if rect else None, rectifying=rect, spinning=info.get("spinning", False),

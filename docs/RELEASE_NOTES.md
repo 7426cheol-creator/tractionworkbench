@@ -30,6 +30,10 @@
 - **회로 개요도** (`plots/schematics.py`): 배터리–메인 릴레이(±, 프리차지)–DC 링크–능동 방전–3상 브리지(스위치+역병렬 다이오드)–모터–축.
   시나리오별 상태(릴레이 개방, 방전 스위치, 다이오드 정류, ASC 하단 ON)와 전력 흐름 화살표. 운전점 “시스템 개요” 탭, DC 링크(방전·
   배터리 차단), ASC/Freewheel 비교, PDF 보고서에 사용. 프로젝트 안전 규칙은 표로 입력.
+- **패시브 방전** (`extensions/dclink.passive_discharge`): 스위치 없이 상시 연결된 블리더 R_p. V(t) = V₀e^(−t/(R_p C)),
+  t = R_p C ln(V₀/V_f), 상시 손실 P = V²/R_p(릴레이 닫힘 동안), 불변량 P·t = C V² ln(V₀/V_f)(R_p와 무관: 빠른 방전 ↔ 상시 손실),
+  설계 창 V_max²/P_허용 ≤ R_p ≤ t_req/(C ln(V₀/V_f)), 능동 저항과 병렬(R_a‖R_p), 회전 중 역기전력 하한. 회로도(R_p 상시 연결)와
+  V(t)·설계 창 그래프.
 - 모든 페이지에 접이식 **개념 설명**(그래프 읽는 법·핵심 식).
 - 예시 열 모델을 4단 Foster(인버터 접합, 마지막 단 유량 의존) + 3단 Cauer(권선)와 냉각수 루프(10 L/min, EG 50%)로 교체:
   65 °C·3000 rpm에서 450 N·m 유지 4.24 s(냉각수 상승 반영 전 5.47 s), 연속 426 N·m.
@@ -185,7 +189,7 @@ Blueprint는 ASC/6SO 전환·열 지속시간·FuSa를 MVP non-goal로 두었으
 | 모듈 | 내용 | 판정 규칙 |
 |---|---|---|
 | `extensions/timing.py` | 이벤트 체인(고장→감지→…→안전상태), min/nom/max, 주기 태스크 샘플링 지연, **중복 예산(같은 구간을 두 담당자가 예산화) 자동 검출**, FDTI/FRTI 분할과 할당 비교 | 선언된 최대값의 합 ≤ FTTI면 FEASIBLE(값 자체는 미검증), 공백/누락은 UNKNOWN |
-| `extensions/dclink.py` | 저항 능동 방전(R_max, I0, P0, E_R, 도달 시간), 회전 중 역기전력 > V_f이면 방전 불가(속도 한계 산출); 회생 중 배터리 차단 시 ½C(V₂²−V₁²) = E_in으로 과전압 도달 시간·허용 반응 시간 | 선언한 전력 프로파일·반응 시간 기준 |
+| `extensions/dclink.py` | 저항 능동 방전(R_max, I0, P0, E_R, 도달 시간), 패시브 방전(블리더 R_p: 도달 시간, 상시 손실 V²/R_p, P·t 불변량, R_p 설계 창, 능동 병렬), 회전 중 역기전력 > V_f이면 방전 불가(속도 한계 산출); 회생 중 배터리 차단 시 ½C(V₂²−V₁²) = E_in으로 과전압 도달 시간·허용 반응 시간 | 선언한 전력 프로파일·반응 시간·허용 손실 기준 |
 | `extensions/safe_state.py` | Freewheel(6SO): 역기전력 선간 peak vs V_dc(비제어 정류 개시 속도), HV 차단 시 과전압 위험; ASC: v=0 정상상태 전류·제동 토크(상수 모델 해석해, 맵은 커버리지 내 수치해); 소자 정격·경로 가용성·전환 시간(선언값); 프로젝트/고객 규칙 별도 계층 | 항상 UNKNOWN(OUT_OF_SCOPE): 과도 peak, UCG 전류 크기, SOA, 검출, FuSa 미평가 — 안전 상태를 선택하지 않음 |
 | `extensions/thermal.py` | Foster Z_th(t), 노드별 손실 배분, 한계 도달 시간, 지속시간별 가용 토크(“X N·m는 t초 유지, 이후 Y N·m”) | 검증된 열모델 + 조건 일치 시에만 FEASIBLE/INFEASIBLE, 그 외 UNKNOWN(UNVALIDATED_DURATION) + 추정치 |
 
@@ -205,7 +209,7 @@ fixture E01(1-node 열) 값 77.6424 °C / 138.6294 s를 재현합니다.
 - 참조 패키지 manifest: 10/10 일치.
 - 독립 검산(production 비의존, 다른 방법): 136/136.
 - Production vs golden: 정방향 6건 정규화 오차 ≤ 2e-16, 역문제 11건 id/iq 최대 오차 5.5e-6 A(경계해는 ~1e-13 A), 라벨 일치, capability 4건 오차 ≤ 3e-7 N·m(구동 3건 certified, 인증 상한 = golden 1e-13 이내), fixture의 Lagrangian 승수·Hessian 고유값 상대오차 < 1e-6.
-- pytest 214개 통과(그래프 데이터의 물리 일관성, 냉각수·Cauer·유량 보정, 회로도, PDF 보고서, 데스크톱 headless smoke 포함).
+- pytest 215개 통과(그래프 데이터의 물리 일관성, 냉각수·Cauer·유량 보정, 패시브 방전, 회로도, PDF 보고서, 데스크톱 headless smoke 포함).
 - 데스크톱 self-test 20/20. Windows CI에서 PyInstaller exe를 빌드하고 **동결된 exe로** acceptance 21/21과 self-test를 통과했습니다
   (아티팩트 `TractionWorkbench-windows-x64`).
 - 관찰: MTPA 내부점 golden(I00/I09/I10)은 평탄한 목적함수 때문에 정확 해와 최대 5.5e-6 A 차이(50자리 계산으로 확인). 허용오차 1e-3 A 이내이며 expected 값은 그대로 둡니다.

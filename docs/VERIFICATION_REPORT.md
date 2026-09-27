@@ -1,6 +1,6 @@
 # Verification Report — Traction Workbench
 
-자동 생성: `python verification/make_report.py` · software 0.2.0 · commit `dc7b338` · 2026-09-27 · Python 3.11.15, NumPy 2.4.6, SciPy 1.17.1
+자동 생성: `python verification/make_report.py` · software 0.2.0 · commit `60530cb` · 2026-09-27 · Python 3.11.15, NumPy 2.4.6, SciPy 1.17.1
 
 > 범위: 합성(synthetic) 참조 fixture에 대한 검증(verification)입니다. 하드웨어·공급사 데이터·외부 시뮬레이터에 대한 validation은 수행하지 않았습니다. 수치 자릿수는 회귀 검산용이며 실제 제품 정확도가 아닙니다.
 
@@ -11,8 +11,8 @@
 | 참조 패키지 무결성 (manifest SHA-256, 10 files) | OK |
 | 독립 fixture 검산 (production 코드 미사용) | 136/136 pass (36 s) |
 | Production vs golden acceptance | 21/21 pass |
-| pytest | 214 passed in 78.22s (0:01:18) (79 s) |
-| 데스크톱 앱 self-test (headless, `twb selftest`) | 20/20 pass (112 s) |
+| pytest | 215 passed in 75.23s (0:01:15) (76 s) |
+| 데스크톱 앱 self-test (headless, `twb selftest`) | 20/20 pass (110 s) |
 
 ## 2. 독립 fixture 검산 (`verification/independent_fixture_check.py`)
 
@@ -91,7 +91,7 @@ PASS  inverse:I10_STANDSTILL_TORQUE:golden                             |did|=5.5
 | thermal | PASS | 냉각수 입구 65 °C (유량 10 L/min, EG 50%)에서 450 N·m는 약 <b>4.24 s</b> 유지 가능, 이후 <b>426 N·m</b> (연속)<br><span style='font-size:9p |
 | thermal:coolant_flow | PASS | 10 L/min 4.239895719475726 s, 5 L/min 1.4845071749499539 s |
 | schematics | PASS |  |
-| acceptance | PASS | <span style='color:#1a7f37; font-weight:600'>21/21 PASS · manifest OK</span> · 1.62 s · verification against synthetic f |
+| acceptance | PASS | <span style='color:#1a7f37; font-weight:600'>21/21 PASS · manifest OK</span> · 1.50 s · verification against synthetic f |
 | decision:flux_map | PASS | UNKNOWN |
 | no_error_dialogs | PASS |  |
 

@@ -72,6 +72,8 @@ def test_schematics_render(tmp_path):
     info = O.overview_info(O.point_view(d, sc, pt.id_A, pt.iq_A, -80.0))
     assert info["energy_mode"] == "REGENERATING" and info["Pdc_W"] < 0
     det = api.thermal_details(api.EXAMPLE_THERMAL, 65.0)
+    pas = api.passive({"C_uF": 500, "V0_V": 600, "Vf_V": 60, "t_target_s": 120, "R_kohm": 90, "V_max_V": 600,
+                       "P_allow_W": 5, "active_R_ohm": 1737})
     nodes = [{"name": "j", "kind": "foster", "R": [0.01, 0.03], "tau": [0.01, 1.0], "ref": "T_f"},
              {"name": "w", "kind": "cauer", "R": [0.003, 0.005], "C": [1500.0, 6000.0], "ref": "T_f"}]
     jobs = [(SC.fig_system_overview, (info,)),
@@ -79,6 +81,8 @@ def test_schematics_render(tmp_path):
                                                      "spinning": True})),
             (SC.fig_dclink_schematic, ("overvoltage", {"C_uF": 500, "V1_V": 600, "V_limit_V": 850, "P_in_W": 95000.0})),
             (SC.fig_safe_state_schematic, ({"Vdc_V": 600, "rectifying": True, "asc_label": "a", "fw_label": "b"},)),
+            (SC.fig_dclink_schematic, ("passive", {"C_uF": 500, "V0_V": 600, "Vf_V": 60, "R_ohm": 9e4})),
+            (F.fig_passive_discharge, (pas, SF2.passive_curves(pas), SF2.passive_window(pas))),
             (SC.fig_thermal_network, (nodes, det["coolant"])),
             (F.fig_zth, (SF2.zth_curves(det["model"]),))]
     for i, (fn, args) in enumerate(jobs):
@@ -144,9 +148,10 @@ def test_desktop_smoke(tmp_path):
         assert R == [0.01, 0.03] and X == [0.002, 0.03]
         sp = win.pages["safety"]
         sp.run_discharge()
+        sp.run_passive()
         sp.run_overvoltage()
         sp.run_safe()
-        assert all(p._draw is not None for p in (sp.s_dis, sp.s_ov, sp.s_safe))
+        assert all(p._draw is not None for p in (sp.s_dis, sp.s_pas, sp.p_pas, sp.s_ov, sp.s_safe))
         assert page.views.overview._draw is not None or ex.views.overview._draw is not None
         win.set_theme("dark")
         win.set_theme("light")

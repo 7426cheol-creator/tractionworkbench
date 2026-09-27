@@ -958,3 +958,70 @@ def fig_zth(fig, zc: dict, title: str | None = None):
     _note(ax, tr("점 = 각 단의 시정수 τ_i · 점선 = 정상상태 R_th\n계산에 쓰인 값 (유량 보정·Cauer→Foster 변환 후)",
                  "dots = stage time constants τ_i · dashed = steady-state R_th\nvalues as used (after flow scaling and Cauer→Foster)"),
           loc="upper left")
+
+
+def fig_passive_discharge(fig, res: dict, cur: dict, win: dict, title: str | None = None):
+    """Bleeder (passive) discharge: V(t) and the R_p design window (discharge time vs continuous loss)."""
+    _reset(fig, title)
+    t = S.theme()
+    ax1, ax2 = fig.subplots(1, 2)
+    ts = cur["t_s"]
+    ax1.plot(ts, cur["V"], color=S.ACCENT, lw=2.2, label=tr(f"패시브 R_p = {res['R_used_ohm'] / 1e3:.4g} kΩ (τ = {res['tau_s']:.3g} s)",
+                                                           f"passive R_p = {res['R_used_ohm'] / 1e3:.4g} kΩ (τ = {res['tau_s']:.3g} s)"))
+    wa = res.get("with_active")
+    if "V_with_active" in cur and wa:
+        ax1.plot(ts, cur["V_with_active"], color=S.REQUEST, lw=1.6, ls="--",
+                 label=tr(f"능동 R_a {wa['R_active_ohm']:.4g} Ω 병렬 → {wa['t_reach_s']:.3g} s",
+                          f"with active R_a {wa['R_active_ohm']:.4g} Ω in parallel → {wa['t_reach_s']:.3g} s"))
+    if "V_with_back_emf" in cur:
+        ax1.plot(ts, cur["V_with_back_emf"], color="#cf222e", lw=1.4, ls="--",
+                 label=tr(f"역기전력 정류 하한 {res['back_emf_ll_peak_V']:.1f} V", f"back-EMF floor {res['back_emf_ll_peak_V']:.1f} V"))
+    ax1.axhline(res["Vf_V"], color=S.VERDICT["PASS"], ls=":", lw=1.2, label=tr(f"목표 {res['Vf_V']:g} V", f"target {res['Vf_V']:g} V"))
+    ax1.axvline(res["t_target_s"], color=t["fg"], ls=":", lw=1.1, label=tr(f"허용 시간 {res['t_target_s']:g} s", f"allowed {res['t_target_s']:g} s"))
+    ax1.plot(res["t_reach_s"], res["Vf_V"], marker="o", ms=7, color=S.ACCENT)
+    ax1.annotate(f"t = {res['t_reach_s']:.4g} s", (res["t_reach_s"], res["Vf_V"]), xytext=(6, 8), textcoords="offset points", fontsize=8)
+    ax1.set_ylim(0, res["V0_V"] * 1.08)
+    ax1.set_xlabel(tr("배터리 분리 후 시간 [s]", "time after battery disconnect [s]"))
+    ax1.set_ylabel(tr("DC 링크 전압 [V]", "DC-link voltage [V]"))
+    ax1.set_title(tr("패시브 방전 V(t) = V₀·e^(−t/(R_p·C))", "passive discharge V(t) = V₀·e^(−t/(R_p·C))"), fontsize=9)
+    ax1.legend(loc="upper right", fontsize=7)
+    c = res["claim"]
+    _note(ax1, f"{c['status']}: " + c["detail"].split(";")[0], loc="lower left", fontsize=7)
+    R = win["R_ohm"] / 1e3
+    ax2.loglog(R, win["t_reach_s"], color=S.ACCENT, lw=2, label=tr("방전 시간 t = R_p·C·ln(V₀/V_f)", "discharge time t = R_p·C·ln(V₀/V_f)"))
+    ax2.axhline(res["t_target_s"], color=S.ACCENT, ls=":", lw=1)
+    ax2.set_xlabel("R_p [kΩ]")
+    ax2.set_ylabel(tr("방전 시간 [s]", "discharge time [s]"), color=S.ACCENT)
+    ax2.grid(True, which="both", alpha=0.4)
+    a3 = ax2.twinx()
+    a3.loglog(R, win["P_cont_max_W"], color="#cf222e", lw=2, label=tr(f"상시 손실 V_max²/R_p @ {res['V_max_V']:g} V", f"continuous loss @ {res['V_max_V']:g} V"))
+    a3.loglog(R, win["P_cont_nom_W"], color="#cf222e", lw=1, ls="--", label=tr(f"상시 손실 @ {res['V_nom_V']:g} V", f"continuous loss @ {res['V_nom_V']:g} V"))
+    a3.set_ylabel(tr("상시 손실 [W] (릴레이 닫힘 동안)", "continuous loss [W] (contactors closed)"), color="#cf222e")
+    a3.grid(False)
+    a3.spines["right"].set_visible(True)
+    rmax = res["R_max_ohm"] / 1e3
+    ax2.axvline(rmax, color=S.ACCENT, lw=1.3)
+    ax2.annotate(tr(f"시간 한계\nR_p ≤ {rmax:.4g} kΩ", f"time limit\nR_p ≤ {rmax:.4g} kΩ"), (rmax, 0.9),
+                 xycoords=("data", "axes fraction"), xytext=(5, 0), textcoords="offset points", fontsize=7.5,
+                 color=S.ACCENT, ha="left", va="top")
+    if res.get("P_allow_W"):
+        a3.axhline(res["P_allow_W"], color="#cf222e", ls=":", lw=1)
+        rmin = res["R_min_ohm"] / 1e3
+        ax2.axvline(rmin, color="#cf222e", lw=1.3)
+        ax2.annotate(tr(f"손실 한계\nR_p ≥ {rmin:.4g} kΩ", f"loss limit\nR_p ≥ {rmin:.4g} kΩ"), (rmin, 0.9),
+                     xycoords=("data", "axes fraction"), xytext=(-5, 0), textcoords="offset points", fontsize=7.5,
+                     color="#cf222e", ha="right", va="top")
+        if rmin <= rmax:
+            ax2.axvspan(rmin, rmax, color=t["feasible"], alpha=0.6, lw=0, zorder=0)
+            ax2.text((rmin * rmax) ** 0.5, 0.04, tr("설계 창", "design window"), transform=ax2.get_xaxis_transform(),
+                     ha="center", fontsize=8, color=S.VERDICT["PASS"], fontweight="bold")
+        else:
+            _note(ax2, tr("설계 창 없음: 패시브만으로는 시간·손실을 동시에 만족 못 함", "no window: the bleeder alone cannot meet both"),
+                  loc="upper left", fontsize=7.5)
+    ax2.plot(res["R_used_ohm"] / 1e3, res["t_reach_s"], marker="D", ms=7, color=t["fg"], zorder=5)
+    h1, l1 = ax2.get_legend_handles_labels()
+    h2, l2 = a3.get_legend_handles_labels()
+    ax2.legend(h1 + h2, l1 + l2, loc="lower right", fontsize=7)
+    ax2.set_title(tr(f"R_p 설계 창 · P·t = C·V²·ln(V₀/V_f) = {res['loss_time_product_Ws']:.4g} W·s (R_p와 무관)",
+                     f"R_p design window · P·t = C·V²·ln(V₀/V_f) = {res['loss_time_product_Ws']:.4g} W·s (independent of R_p)"),
+                  fontsize=8.5)

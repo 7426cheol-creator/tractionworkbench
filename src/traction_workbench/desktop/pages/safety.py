@@ -30,6 +30,17 @@ NOTE_DISCHARGE = lambda: (tr("<b>능동 방전</b>: 배터리 릴레이가 열�
                      "<b>Active discharge</b>: after the battery contactors open, the DC-link energy ½·C·V² is dissipated in the "
                      "discharge resistor. V(t) = V₀·e<sup>−t/RC</sup>, t = R·C·ln(V₀/V_f). While the motor spins, the rectified "
                      "back-EMF (line-line peak √3·ω_e·ψ) holds the link above it, so the discharge completes only at low speed."))
+NOTE_PASSIVE = lambda: (tr(
+    "<b>패시브 방전</b>: DC 링크에 스위치 없이 항상 연결된 블리더 저항 R_p입니다. 제어기 전원 상실·고장으로 능동 방전이 안 될 때의 "
+    "백업입니다.<br>V(t) = V₀·e<sup>−t/(R_p·C)</sup>, 목표 V_f 도달 시간 t = R_p·C·ln(V₀/V_f) → 시간 조건은 "
+    "R_p ≤ t_req/(C·ln(V₀/V_f)).<br>대신 릴레이가 닫혀 있는(주행) 동안 항상 P = V²/R_p를 소모합니다 → 손실·저항 정격 조건은 "
+    "R_p ≥ V_max²/P_허용. 두 조건 사이가 <b>설계 창</b>이며, P·t = C·V²·ln(V₀/V_f)는 R_p와 무관하므로 빠른 방전과 작은 상시 손실은 "
+    "맞바꿈 관계입니다. 능동 방전 저항 R_a가 켜지면 병렬(R_a‖R_p)로 더 빨리 방전합니다. 모터가 돌면 역기전력 정류가 방전을 막습니다.",
+    "<b>Passive discharge</b>: a bleeder R_p permanently across the DC link — the backup when the active discharge is "
+    "unavailable. V(t) = V₀·e<sup>−t/(R_p·C)</sup>, t = R_p·C·ln(V₀/V_f) → R_p ≤ t_req/(C·ln(V₀/V_f)). It always "
+    "dissipates P = V²/R_p while the contactors are closed → R_p ≥ V_max²/P_allow. Between the two is the <b>design "
+    "window</b>; P·t = C·V²·ln(V₀/V_f) does not depend on R_p, so a fast discharge costs continuous loss. With the "
+    "active resistor on, R_a‖R_p discharges faster. A spinning motor's rectified back-EMF blocks the discharge."))
 NOTE_OV = lambda: (tr("<b>회생 중 배터리 차단</b>: 모터가 발전(회생)하는 동안 릴레이가 열리면 회생 전력 P가 갈 곳이 커패시터뿐입니다.<br>"
               "½·C·(V₂² − V₁²) = ∫P dt → 한계 V_lim까지 시간 t = C·(V_lim² − V₁²)/(2P).<br>"
               "그 전에 토크를 줄이거나(반응 시간) ASC로 전환해야 합니다. 인버터를 끄는 것(freewheel)만으로는 역기전력이 "
@@ -269,6 +280,32 @@ class SafetyPage(QWidget):
         f.addRow(b)
         v.addWidget(g)
         v.addWidget(ConceptNote(NOTE_DISCHARGE()))
+        g = QGroupBox(tr("패시브 방전 (상시 연결 블리더 저항)", "passive discharge (always-connected bleeder)"))
+        f = QFormLayout(g)
+        self.p_C = number(500, 0.1, 1e6, "µF", 1, 10)
+        self.p_V0 = number(600, 1, 5000, "V", 1, 10)
+        self.p_Vf = number(60, 0.1, 5000, "V", 1, 5)
+        self.p_t = number(120, 0.001, 1e6, "s", 3, 5, tr("요구 방전 시간 (사내·고객 요구값을 입력)", "required discharge time"))
+        self.p_R_on = check(tr("R_p 지정", "given R_p"), True, tr("해제하면 시간 조건을 만족하는 최대 R_p를 사용", "off: the largest R_p meeting the time"))
+        self.p_R = number(90, 0.001, 1e6, "kΩ", 3, 1)
+        self.p_Vnom = number(400, 1, 5000, "V", 1, 10, tr("상시 손실 계산용 정격 링크 전압", "nominal link voltage for the continuous loss"))
+        self.p_Vmax = number(600, 1, 5000, "V", 1, 10, tr("최대 링크 전압 (저항 손실·정격 확인)", "maximum link voltage (loss/rating check)"))
+        self.p_P_on = check(tr("허용 상시 손실", "allowed continuous loss"), True, tr("저항 전력 정격(디레이팅 반영) 또는 허용 대기 손실",
+                                                                                     "resistor rating (derated) or allowed standby loss"))
+        self.p_P = number(5, 0.001, 1e5, "W", 3, 0.5)
+        self.p_a_on = check(tr("능동 저항 병렬", "active resistor in parallel"), True)
+        self.p_Ra = number(1737, 0.001, 1e9, "Ω", 1, 10)
+        self.p_n_on = check(tr("회전 중 (역기전력 확인)", "spinning (check back-EMF)"), False)
+        self.p_n = number(300, 0, 30000, "rpm", 0, 100)
+        for lab, wd in (("C", self.p_C), ("V0", self.p_V0), (tr("목표 V", "target V"), self.p_Vf), (tr("요구 시간", "required time"), self.p_t),
+                        (self.p_R_on, self.p_R), (tr("정격 전압", "nominal V"), self.p_Vnom), (tr("최대 전압", "maximum V"), self.p_Vmax),
+                        (self.p_P_on, self.p_P), (self.p_a_on, self.p_Ra), (self.p_n_on, self.p_n)):
+            f.addRow(lab, wd)
+        b = primary_button(tr("패시브 방전 계산", "compute passive discharge"))
+        b.clicked.connect(self.run_passive)
+        f.addRow(b)
+        v.addWidget(g)
+        v.addWidget(ConceptNote(NOTE_PASSIVE()))
         g = QGroupBox(tr("회생 중 배터리 차단 과전압", "battery disconnect during regen"))
         f = QFormLayout(g)
         self.o_C = number(500, 0.1, 1e6, "µF", 1, 10)
@@ -294,7 +331,8 @@ class SafetyPage(QWidget):
         split.addWidget(sc)
         right = QTabWidget()
         self.dc_tabs = right
-        for key, label in (("dis", tr("능동 방전", "active discharge")), ("ov", tr("회생 중 배터리 차단 (과전압)", "battery disconnect while regenerating"))):
+        for key, label in (("dis", tr("능동 방전", "active discharge")), ("pas", tr("패시브 방전", "passive discharge")),
+                           ("ov", tr("회생 중 배터리 차단 (과전압)", "battery disconnect while regenerating"))):
             w2 = QWidget()
             l2 = QVBoxLayout(w2)
             l2.setContentsMargins(0, 0, 0, 0)
@@ -313,12 +351,49 @@ class SafetyPage(QWidget):
         lay.addWidget(split)
         return w
 
+    def run_passive(self):
+        s = self.win.state
+        body = s.body(C_uF=self.p_C.value(), V0_V=self.p_V0.value(), Vf_V=self.p_Vf.value(), t_target_s=self.p_t.value(),
+                      R_kohm=self.p_R.value() if self.p_R_on.isChecked() else None, V_nom_V=self.p_Vnom.value(),
+                      V_max_V=self.p_Vmax.value(), P_allow_W=self.p_P.value() if self.p_P_on.isChecked() else None,
+                      active_R_ohm=self.p_Ra.value() if self.p_a_on.isChecked() else None,
+                      speed_rpm=self.p_n.value() if self.p_n_on.isChecked() else None)
+        try:
+            res = api.passive(body)
+        except Exception as exc:  # noqa: BLE001
+            error_box(self, tr("입력 오류", "input error"), str(exc))
+            return
+        cur = SF.passive_curves(res)
+        win = SF.passive_window(res)
+        self.p_pas.draw(F.fig_passive_discharge, res, cur, win, title=tr("패시브 방전 (블리더)", "passive discharge (bleeder)"),
+                        name="passive_discharge",
+                        csv=lambda: {"t_s": cur["t_s"], "V": cur["V"], "R_ohm": win["R_ohm"], "t_reach_s": win["t_reach_s"],
+                                     "P_cont_max_W": win["P_cont_max_W"]})
+        bemf = res.get("back_emf_ll_peak_V")
+        rect = bool(bemf and bemf > res["Vf_V"])
+        note = tr(f"{res['claim']['status']}: t = {res['t_reach_s']:.4g} s · 상시 손실 {res['P_cont_nom_W']:.3g} W @ {res['V_nom_V']:g} V · "
+                  f"{res['P_cont_max_W']:.3g} W @ {res['V_max_V']:g} V",
+                  f"{res['claim']['status']}: t = {res['t_reach_s']:.4g} s · continuous loss {res['P_cont_nom_W']:.3g} W @ {res['V_nom_V']:g} V · "
+                  f"{res['P_cont_max_W']:.3g} W @ {res['V_max_V']:g} V")
+        self.s_pas.draw(SC.fig_dclink_schematic, "passive",
+                        {"C_uF": res["C_F"] * 1e6, "V0_V": res["V0_V"], "Vf_V": res["Vf_V"], "R_ohm": res["R_used_ohm"],
+                         "rectifying": rect, "spinning": self.p_n_on.isChecked(),
+                         "motor_label": (tr(f"역기전력 {bemf:.0f} V (선간 peak)", f"back-EMF {bemf:.0f} V (LL peak)") if bemf else None),
+                         "note": note},
+                        title=tr("패시브 방전 회로 (R_p 상시 연결)", "passive discharge circuit (R_p always connected)"),
+                        name="passive_circuit")
+
     def _default_dclink_schematics(self):
         self.s_dis.draw(SC.fig_dclink_schematic, "discharge",
                         {"C_uF": self.d_C.value(), "V0_V": self.d_V0.value(), "Vf_V": self.d_Vf.value(), "R_ohm": None,
                          "note": tr("배터리 릴레이 개방 → 방전 스위치 ON → 커패시터 에너지를 저항으로 소모",
                                     "contactors open → discharge switch on → capacitor energy dissipated in R")},
                         title=tr("능동 방전 회로", "active discharge circuit"), name="discharge_circuit")
+        self.s_pas.draw(SC.fig_dclink_schematic, "passive",
+                        {"C_uF": self.p_C.value(), "V0_V": self.p_V0.value(), "Vf_V": self.p_Vf.value(), "R_ohm": None,
+                         "note": tr("릴레이 개방 → 스위치 없이 연결된 R_p가 항상 방전 (능동 방전의 백업)",
+                                    "contactors open → the always-connected R_p discharges (backup of the active discharge)")},
+                        title=tr("패시브 방전 회로", "passive discharge circuit"), name="passive_circuit")
         self.s_ov.draw(SC.fig_dclink_schematic, "overvoltage",
                        {"C_uF": self.o_C.value(), "V1_V": self.o_V1.value(), "V_limit_V": self.o_Vlim.value(), "P_in_W": None,
                         "note": tr("회생 중 릴레이 개방 → 회생 전력이 커패시터로만 유입", "contactors open while regenerating → power only into C")},
@@ -473,5 +548,5 @@ class SafetyPage(QWidget):
         self.t_safe.set_rows(rows)
 
     def redraw(self):
-        for p in (self.p_ftti, self.p_dis, self.p_ov, self.p_safe, self.s_dis, self.s_ov, self.s_safe):
+        for p in (self.p_ftti, self.p_dis, self.p_ov, self.p_safe, self.s_dis, self.s_ov, self.s_safe, self.p_pas, self.s_pas):
             p.redraw()

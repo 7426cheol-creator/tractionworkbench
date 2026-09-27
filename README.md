@@ -28,7 +28,7 @@
 | **궤적** | 토크 스윕 @ 속도(MTPA → 약계자 → 한계), 속도 스윕 @ 토크(기저속도·약계자 진입). dq 전류 궤적 + 여러 속도의 전압 타원, 변수 추이, 표 |
 | **성능 곡선·맵** | 정책(DC 포함) vs 전기적 T–n 곡선(활성 제약별 색), 비교 Vdc, 효율·모터/인버터 효율·손실·전류·변조율·역률·id·iq·P_dc 맵, 기저속도 곡선, 최대 토크 곡선을 따라가는 운전점 |
 | **설계·병목** | capability vs 파라미터(Vdc, 전류 정격, 예약분, DC 한계, …)와 bisection 역설계, 제약 1% 완화 병목 기여도, 요구 달성 최소 완화·공동 병목 |
-| **안전 스크리닝** | FTTI 체인 Gantt(중복 예산 자동 검출), **회로 개요도**(릴레이 개방·방전 스위치·다이오드 정류·ASC 스위치 상태와 전력 흐름 화살표) + 능동 방전 V(t)(역기전력 하한), 회생 중 배터리 차단 과전압 V(t), ASC/Freewheel 회로 비교와 속도별 곡선, 프로젝트 규칙 표(예: HVDC < 60 V → Freewheel, 물리와 분리된 계층) |
+| **안전 스크리닝** | FTTI 체인 Gantt(중복 예산 자동 검출), **회로 개요도**(릴레이 개방·방전 스위치·다이오드 정류·ASC 스위치 상태와 전력 흐름 화살표) + 능동 방전 V(t)(역기전력 하한), **패시브 방전**(상시 연결 블리더 R_p: V(t), 능동 저항 병렬 효과, 방전 시간–상시 손실 R_p 설계 창), 회생 중 배터리 차단 과전압 V(t), ASC/Freewheel 회로 비교와 속도별 곡선, 프로젝트 규칙 표(예: HVDC < 60 V → Freewheel, 물리와 분리된 계층) |
 | **열·지속시간** | **냉각수**(입구 온도, 유량, 에틸렌글리콜:물 50:50 기본 물성·직접 입력, 순환 순서, 기준 유체 온도) → 부품별 냉각수 온도 상승 ΔT = P/(ṁ·c_p). **열 회로망 표 편집**(Foster r_i/τ_i 또는 Cauer R_i/C_i, 4단 템플릿, 데이터시트 붙여넣기, 유량 의존 단 R·(Q_ref/Q)^n), RC 회로도·냉각수 순환도·Z_th(t), 지속시간별 가용 토크와 노드 온도, “냉각수 입구 65 °C(10 L/min, EG 50%)에서 450 N·m는 약 4.24 s 유지, 이후 426 N·m(연속)” (미검증 열모델이면 UNKNOWN 유지) |
 | **모델·데이터** | 내장 드라이브(상수 dq D1 / flux map D2) 선택, 단위가 선언된 드라이브 JSON·case 파일 불러오기, DC 소스 한계, provenance |
 | **검증 (V&V)** | production vs golden acceptance(오차/허용오차 그래프), 참조 패키지 SHA-256, 알려진 한계 |
@@ -111,14 +111,14 @@ src/traction_workbench/
   api.py service.py cli.py
 packaging/       PyInstaller spec, launcher(TractionWorkbench.exe + twb.exe), build.py, 아이콘
 verification/    independent_fixture_check.py (production 비의존), make_report.py
-tests/           골든·의미론·검증·확장·냉각수/열망·그래프 데이터·회로도·보고서·데스크톱 (214개)
+tests/           골든·의미론·검증·확장·냉각수/열망·그래프 데이터·회로도·보고서·데스크톱 (215개)
 examples/        case 파일, 단위가 선언된 drive 정의
 docs/            RELEASE_NOTES.md (모델 계약·한계·추적표), VERIFICATION_REPORT.md, screenshots/
 ```
 
 ## 검증 상태
 
-- 참조 패키지 10개 파일 SHA-256 일치, 독립 검산 136/136, production vs golden 21/21, pytest 214 통과, 데스크톱 self-test 20/20,
+- 참조 패키지 10개 파일 SHA-256 일치, 독립 검산 136/136, production vs golden 21/21, pytest 215 통과, 데스크톱 self-test 20/20,
   Windows CI에서 동결된 exe로 acceptance·self-test 통과 — 상세: [`docs/VERIFICATION_REPORT.md`](docs/VERIFICATION_REPORT.md)
 - **합성 fixture에 대한 verification입니다.** 하드웨어·공급사 데이터·외부 시뮬레이터 validation은 수행하지 않았습니다(V4–V5 미수행).
 
