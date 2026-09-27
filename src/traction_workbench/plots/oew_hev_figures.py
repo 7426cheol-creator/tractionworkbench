@@ -412,3 +412,116 @@ def fig_planetary(fig, pl: dict, title: str | None = None):
     _note(ax, f"{chk['status']}: {chk['detail']}\n" + tr("토크는 기어로 들어가는 방향이 +, 이상 무손실·무질량",
                                                           "torques positive into the gear set; ideal massless, lossless"),
           loc="lower right", fontsize=7)
+
+
+# ---------------------------------------------------------------------------------------------- conducted EMI
+
+def fig_emi_screening(fig, res: dict, title: str | None = None):
+    _reset(fig, title)
+    t = S.theme()
+    ax, ax2 = fig.subplots(2, 1, sharex=True, gridspec_kw={"height_ratios": [2.2, 1.0]})
+    f = np.asarray(res["grid_Hz"]) / 1e6
+    L = np.asarray(res["limit_dBuV"], dtype=float)
+    ax.plot(f, res["plus_dBuV"], color=S.ACCENT, lw=1.3, label=tr("HV+ 측정단 (추정)", "HV+ port (estimate)"))
+    ax.plot(f, res["minus_dBuV"], color="#8250df", lw=1.1, label=tr("HV− 측정단 (추정)", "HV− port (estimate)"))
+    ax.plot(f, res["from_cm_source_dBuV"], color="#bf8700", lw=1.0, ls="--", label=tr("CM 소스 기여 (HV+)", "CM-source share (HV+)"))
+    ax.plot(f, res["from_dm_source_dBuV"], color="#1a7f37", lw=1.0, ls="--", label=tr("DM 소스 기여 (HV+)", "DM-source share (HV+)"))
+    if np.any(np.isfinite(L)):
+        ax.plot(f, L, color=t["fg"], lw=2.0, label=tr("한계 (입력 곡선)", "limit (entered curve)"))
+        rs = res["profile"].get("design_reserve_dB") or 0.0
+        ax.plot(f, L - rs, color=t["fg"], lw=1.0, ls=":", label=tr(f"한계 − 설계 여유 {rs:g} dB", f"limit − reserve {rs:g} dB"))
+        ex = np.asarray(res["margin_dB"], dtype=float) < 0
+        ax.fill_between(f, L - rs, np.asarray(res["E_upper_dBuV"]), where=ex, color="#cf222e", alpha=0.12,
+                        label=tr("예측 초과 (스크리닝)", "predicted exceedance (screening)"))
+    ax.set_xscale("log")
+    ax.set_ylabel("dBµV")
+    ax.legend(fontsize=6.8, loc="upper right", ncols=2)
+    c = res["claim"]
+    ax.set_title(tr("HV 전도성 방출: 소스(PWM 에지) → 경로(CM/DM 망) → 수신기(RBW 선합) — 스크리닝",
+                    "HV conducted emission: source (PWM edges) -> path (CM/DM network) -> receiver (RBW line sum)"),
+                 fontsize=9)
+    _note(ax, f"{c['status']}: {c['detail'][:120]}\n" + tr("선합 추정치 ≠ CISPR 수신기 판독 (QP/AV 미모델)",
+                                                           "line-sum estimate != CISPR receiver reading (QP/AV not modelled)"),
+          loc="lower left", fontsize=6.6)
+    A = np.asarray(res["required_attenuation_dB"], dtype=float)
+    dom = np.asarray(res["dominant_source"])
+    cols = np.where(dom == "CM", "#bf8700", "#1a7f37")
+    ax2.bar(f, np.nan_to_num(A), width=f * 0.03, color=cols)
+    ax2.set_xscale("log")
+    ax2.set_ylabel(tr("필요 감쇠 [dB]", "required attenuation [dB]"))
+    ax2.set_xlabel(tr("주파수 [MHz]", "frequency [MHz]"))
+    ax2.legend(handles=[Patch(color="#bf8700", label=tr("CM 지배 → Y-cap/CM 초크/본딩", "CM-dominated -> Y-cap / CM choke / bonding")),
+                        Patch(color="#1a7f37", label=tr("DM 지배 → X-cap/DM 인덕턴스/DC-link ESL", "DM-dominated -> X-cap / DM L / DC-link ESL"))],
+               fontsize=6.8, loc="upper right")
+
+
+def fig_emi_measured(fig, res: dict, title: str | None = None):
+    _reset(fig, title)
+    t = S.theme()
+    ax = fig.subplots()
+    m = res.get("measured") or {}
+    if not m:
+        ax.text(0.5, 0.5, tr("측정 trace를 가져오세요 (CSV: f_Hz, level_dB)", "import a measured trace (CSV: f_Hz, level_dB)"),
+                ha="center", va="center", transform=ax.transAxes, color=t["muted"])
+        return
+    f = np.asarray(m["f_Hz"]) / 1e6
+    x = np.asarray(m["level_dB"])
+    U = m.get("U_meas_dB") or 0.0
+    ax.plot(f, x, color=S.ACCENT, lw=1.2, label=tr("측정 trace", "measured trace"))
+    ax.fill_between(f, x - U, x + U, color=S.ACCENT, alpha=0.15, label=tr(f"측정 불확도 ±{U:g} dB", f"measurement uncertainty ±{U:g} dB"))
+    L = np.asarray(m.get("limit") or [], dtype=float)
+    if L.size == f.size:
+        ax.plot(f, L, color=t["fg"], lw=2, label=tr("한계", "limit"))
+        rs = res["profile"].get("design_reserve_dB") or 0.0
+        ax.plot(f, L - rs, color=t["fg"], lw=1, ls=":", label=tr("한계 − 여유", "limit − reserve"))
+    ax.set_xscale("log")
+    ax.set_xlabel(tr("주파수 [MHz]", "frequency [MHz]"))
+    ax.set_ylabel("dBµV")
+    ax.legend(fontsize=7, loc="upper right")
+    ax.set_title(tr(f"측정 trace 판정 (같은 요구 프로파일): {m.get('verdict')}",
+                    f"measured-trace verdict (same profile): {m.get('verdict')}"), fontsize=9)
+    _note(ax, (m.get("reason") or "")[:120] + "\n" + tr("시험 대표성·승인은 별도", "representativeness / approval are separate"),
+          loc="lower left", fontsize=7)
+
+
+def fig_oew_cm(fig, res: dict, title: str | None = None):
+    _reset(fig, title)
+    t = S.theme()
+    ax1, ax2 = fig.subplots(1, 2, gridspec_kw={"width_ratios": [1.5, 1.0]})
+    cases = res["cases"]
+    styles = {"0": ("-", tr("캐리어 동위상", "carriers in phase")), "0.5": ("--", tr("캐리어 180° 교차", "carriers interleaved 180°"))}
+    for k, c in cases.items():
+        ls, lab = styles.get(k, ("-", k))
+        f = np.asarray(c["f_Hz"]) / 1e3
+        ax1.plot(f, np.asarray(c["u0_amp_V"]), color="#cf222e", ls=ls, lw=1.0, label=f"u0 ({tr('권선', 'winding')}) · {lab}")
+        ax1.plot(f, np.asarray(c["cm6_amp_V"]), color=S.ACCENT, ls=ls, lw=1.0, label=f"v_cm6 ({tr('섀시', 'chassis')}) · {lab}")
+    ax1.set_yscale("log")
+    ax1.set_ylim(bottom=1e-2)
+    ax1.set_xlabel(tr("주파수 [kHz]", "frequency [kHz]"))
+    ax1.set_ylabel(tr("선 진폭 [V]", "line amplitude [V]"))
+    ax1.legend(fontsize=6.5, loc="upper right")
+    ax1.set_title(tr("공통 bus OEW: 권선 영상분 u0 ≠ 섀시 공통모드 v_cm6", "common-bus OEW: winding u0 != chassis common mode"),
+                  fontsize=9)
+    names, u0s, cms, ia, isum = [], [], [], [], []
+    for k, c in cases.items():
+        names.append(styles.get(k, ("", k))[1])
+        u0s.append(c["u0_rms_V"])
+        cms.append(c["cm6_rms_V"])
+        dc = c.get("dc_currents") or {}
+        ia.append(dc.get("I_A_rms_A", 0.0))
+        isum.append(dc.get("I_sum_rms_A", 0.0))
+    x = np.arange(len(names))
+    ax2.bar(x - 0.3, u0s, 0.2, color="#cf222e", label="u0 RMS [V]")
+    ax2.bar(x - 0.1, cms, 0.2, color=S.ACCENT, label="v_cm6 RMS [V]")
+    ax2.bar(x + 0.1, ia, 0.2, color="#bf8700", label=tr("브리지 A 직류측 리플 [A]", "bridge A DC ripple [A]"))
+    ax2.bar(x + 0.3, isum, 0.2, color="#1a7f37", label=tr("합성 bus 리플 [A]", "combined bus ripple [A]"))
+    ax2.set_xticks(x)
+    ax2.set_xticklabels(names, fontsize=7.5)
+    ax2.legend(fontsize=6.5, loc="upper left")
+    ax2.set_title(tr("한쪽을 줄이면 다른 쪽이 커질 수 있음 (C-01/C-02)", "suppressing one can raise the other (C-01 / C-02)"),
+                  fontsize=9)
+    z = res.get("zsv_free") or {}
+    if z:
+        _note(ax1, tr(f"영상분 제거 상태쌍 시퀀스: u0 최대 {z['u0_max_V']:.1f} V, v_cm6 계단 {z['v_cm6_steps_V']}",
+                      f"zero-u0 pair sequence: u0 max {z['u0_max_V']:.1f} V, v_cm6 steps {z['v_cm6_steps_V']}"),
+              loc="lower left", fontsize=6.3)

@@ -679,3 +679,65 @@ def fig_hev_schematic(fig, info: dict, title: str | None = None):
     text(ax, 8.6, -1.2, tr("P0–P4 위치 표기는 약칭일 뿐: 축·기어·클러치·DC 노드의 실제 접속 그래프가 입력입니다",
                            "P0-P4 labels are shorthand: the actual shaft / gear / clutch / DC-node graph is the input"),
          size=7, box=True)
+
+
+def fig_emi_network(fig, net: dict, title: str | None = None):
+    """Equivalent CM / DM network of the HV port (declared elements only; single-line to chassis)."""
+    fig.clear()
+    fig.set_layout_engine("none")
+    if title:
+        fig.suptitle(title, fontsize=10, fontweight="bold", color=S.theme()["fg"])
+    c = _c()
+    ax = new_axes(fig, (-0.6, 20.6), (-2.6, 6.6), rect=[0.01, 0.02, 0.98, 0.9])
+    top, bot, gnd = 4.6, 1.4, -1.2
+    # inverter block with DM current source and CM voltage source
+    block(ax, 1.6, 3.0, 2.2, 4.2, tr("인버터\n(PWM 에지)", "inverter\n(PWM edges)"), size=7.5)
+    wire(ax, (2.7, top), (13.0, top))
+    wire(ax, (2.7, bot), (13.0, bot))
+    text(ax, 4.4, top + 0.35, "HV+", size=7.5, weight="bold")
+    text(ax, 4.4, bot - 0.35, "HV−", size=7.5, weight="bold")
+    capacitor(ax, (5.0, top), (5.0, bot), f"C_dc {net.get('C_dc_uF', '?')} µF\nESL {net.get('ESL_dc_nH', '?')} nH",
+              lab_off=(0.3, 0.0))
+    dot(ax, 5.0, top)
+    dot(ax, 5.0, bot)
+    # CM path: switch node -> C_par -> chassis
+    wire(ax, (1.6, 0.9), (1.6, 0.2))
+    capacitor(ax, (1.6, 0.2), (1.6, gnd), f"C_par {net.get('C_par_nF', '?')} nF\n({tr('스위치노드·모터·케이블', 'switch node, motor, cable')})",
+              lab_off=(0.3, 0.0), color=c["hot"])
+    text(ax, 1.6, 0.55, "v_CM", size=7, color=c["hot"], weight="bold", ha="right")
+    # Y caps: one from each rail to the chassis-bonded midpoint
+    capacitor(ax, (7.2, top), (7.2, 3.35), None)
+    capacitor(ax, (7.2, bot), (7.2, 2.55), None)
+    wire(ax, (7.2, 3.35), (7.2, 2.55))
+    dot(ax, 7.2, 2.95)
+    wire(ax, (7.2, 2.95), (7.9, 2.95), (7.9, gnd))
+    text(ax, 8.05, 3.25, f"C_y {net.get('C_y_nF', '?')} nF\n+ L_y {net.get('L_y_nH', '?')} nH", size=6.5, ha="left")
+    dot(ax, 7.2, top)
+    dot(ax, 7.2, bot)
+    # harness + choke
+    for y in (top, bot):
+        ax.add_patch(Rectangle((9.0, y - 0.22), 1.6, 0.44, fc=c["panel"], ec=c["fg"], lw=1.2, zorder=4))
+    text(ax, 9.8, top + 0.55, tr(f"하네스 {net.get('L_h_uH', '?')} µH", f"harness {net.get('L_h_uH', '?')} µH"), size=6.5)
+    if float(net.get("L_ch_uH") or 0) > 0:
+        ax.add_patch(Rectangle((11.2, bot - 0.4), 1.0, top - bot + 0.8, fill=False, ec=c["on"], lw=1.4, ls="--"))
+        text(ax, 11.7, 3.0, tr(f"CM 초크\n{net.get('L_ch_uH')} µH\nk={net.get('k_ch')}", f"CM choke\n{net.get('L_ch_uH')} µH\nk={net.get('k_ch')}"),
+             size=6.3, color=c["on"])
+    # artificial networks
+    for y, lab in ((top, "AN+"), (bot, "AN−")):
+        block(ax, 14.6, y, 2.2, 1.1, f"{lab}\n{net.get('an_L_uH', 5)} µH / {net.get('an_R_meas_ohm', 50)} Ω", size=6.8)
+        wire(ax, (13.0, y), (13.5, y))
+        wire(ax, (15.7, y), (17.4, y))
+    wire(ax, (14.6, bot - 0.55), (14.6, gnd))
+    wire(ax, (14.6, top - 0.55), (14.6, 3.25), (16.6, 3.25), (16.6, gnd))
+    battery(ax, 18.2, bot, top, tr("HV 전원", "HV source"))
+    wire(ax, (17.4, top), (18.2, top))
+    wire(ax, (17.4, bot), (18.2, bot))
+    text(ax, 16.4, 5.6, tr("수신기 50 Ω (각 라인-섀시)", "receiver 50 Ω (each line to chassis)"), size=6.8, color=c["muted"])
+    # chassis
+    wire(ax, (1.0, gnd), (17.0, gnd), lw=2.4, color=c["muted"])
+    text(ax, 10.0, gnd - 0.4, tr("섀시 / 접지면 (본딩 임피던스는 선언 시만)", "chassis / ground plane (bonding impedance only if declared)"),
+         size=6.8, color=c["muted"])
+    flow(ax, (3.2, 0.1), (6.8, gnd + 0.25), "i_CM", color=c["hot"], lw=1.6, lab_off=(0.0, 0.3))
+    flow(ax, (3.0, top - 0.5), (4.6, top - 0.5), "i_DM", color=c["ok"], lw=1.6, lab_off=(0.0, 0.3))
+    text(ax, 10.0, -2.2, tr("모든 소자는 선언값: 보정 전에는 스크리닝 (예측 초과 ≠ FAIL)",
+                            "every element is declared: screening until calibrated (predicted exceedance != FAIL)"), size=7, box=True)

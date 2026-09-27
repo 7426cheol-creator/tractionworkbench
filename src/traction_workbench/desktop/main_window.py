@@ -15,6 +15,7 @@ from ..io import load_json_file
 from . import theme
 from .pages.decision import DecisionPage
 from .pages.design import DesignPage
+from .pages.emi import EmiPage
 from .pages.explorer import ExplorerPage
 from .pages.model import ModelPage, examples_dir
 from .pages.oew_hev import OewHevPage
@@ -40,6 +41,7 @@ PAGES = (
     ("thermal", lambda: tr("열·지속시간", "Thermal & duration"), ThermalPage),
     ("power", lambda: tr("전력변환·수명", "Power stage & life"), PowerPage),
     ("oew_hev", lambda: tr("OEW·HEV", "OEW & HEV"), OewHevPage),
+    ("emi", lambda: tr("EMI (전도성)", "EMI (conducted)"), EmiPage),
     ("model", lambda: tr("모델·데이터", "Model & data"), ModelPage),
     ("verification", lambda: tr("검증 (V&V)", "Verification"), VerificationPage),
 )

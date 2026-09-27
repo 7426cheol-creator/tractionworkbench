@@ -910,6 +910,122 @@ def hev_planetary(body):
                       "convention": "torques positive INTO the gear set; massless, lossless ideal set"})
 
 
+# ---------------------------------------------------------------------------------------------- conducted EMI (P1-C)
+
+EXAMPLE_EMI = {
+    "speed_rpm": 6000.0, "torque_Nm": 150.0, "Vdc_V": 600.0,
+    "source": {"fsw_kHz": 10.0, "t_rise_ns": 50.0, "t_fall_ns": 50.0, "t_dead_us": 1.0, "modulation": "svpwm",
+               "basis": "example gate setting (not a measured switch-node waveform)"},
+    "network": {"C_dc_uF": 500.0, "ESR_dc_mohm": 1.0, "ESL_dc_nH": 15.0, "C_y_nF": 100.0, "L_y_nH": 10.0,
+                "R_y_mohm": 5.0, "C_par_nF": 2.0, "R_par_ohm": 1.0, "L_par_nH": 100.0, "R_h_mohm": 5.0, "L_h_uH": 1.0,
+                "L_ch_uH": 0.0, "k_ch": 0.0, "an_L_uH": 5.0, "an_C_coup_nF": 100.0, "an_R_meas_ohm": 50.0,
+                "an_R_par_ohm": 1000.0, "an_C_sup_uF": 1.0, "R_bat_mohm": 10.0, "L_bat_uH": 0.0,
+                "validated_up_to_MHz": None, "basis": "synthetic example network (not characterised)"},
+    "profile": {"standard": "EXAMPLE (enter the standard)", "edition": "EXAMPLE", "customer_revision": "EXAMPLE",
+                "curve_id": "EXAMPLE-FLAT-70", "port": "HV+ / HV-", "method": "voltage via artificial network",
+                "detector": "peak", "rbw_Hz": 9000.0, "network": "AN 5 uH / 50 ohm (declare per your standard)",
+                "fixture": "EXAMPLE", "operating_condition": "EXAMPLE", "design_reserve_dB": 6.0},
+    "limit": {"points": [[150e3, 70.0], [30e6, 70.0]], "unit": "dBuV", "detector": "peak",
+              "source": "EXAMPLE ONLY - not a standard limit; enter the approved curve"},
+    "band_MHz": [0.15, 30.0], "n_grid": 160, "calibration": None, "E_y_allowed_J": None, "f_control_Hz": 1000.0,
+    "measured": None,
+}
+
+
+def _emi_network(n: dict):
+    from .extensions.emi import HvNetwork
+    g = lambda k, sc, d=0.0: (float(n.get(k)) if n.get(k) not in (None, "") else d) * sc
+    return HvNetwork(C_dc_F=g("C_dc_uF", 1e-6), ESR_dc_ohm=g("ESR_dc_mohm", 1e-3), ESL_dc_H=g("ESL_dc_nH", 1e-9),
+                     C_y_F=g("C_y_nF", 1e-9), L_y_H=g("L_y_nH", 1e-9), R_y_ohm=g("R_y_mohm", 1e-3),
+                     C_par_F=g("C_par_nF", 1e-9), R_par_ohm=g("R_par_ohm", 1.0), L_par_H=g("L_par_nH", 1e-9),
+                     R_h_ohm=g("R_h_mohm", 1e-3), L_h_H=g("L_h_uH", 1e-6), L_ch_H=g("L_ch_uH", 1e-6),
+                     k_ch=g("k_ch", 1.0), an_L_H=g("an_L_uH", 1e-6, 5.0), an_C_coup_F=g("an_C_coup_nF", 1e-9, 100.0),
+                     an_R_meas_ohm=g("an_R_meas_ohm", 1.0, 50.0), an_R_par_ohm=g("an_R_par_ohm", 1.0, 1000.0),
+                     an_C_sup_F=g("an_C_sup_uF", 1e-6, 1.0), R_bat_ohm=g("R_bat_mohm", 1e-3, 10.0),
+                     L_bat_H=g("L_bat_uH", 1e-6), basis=str(n.get("basis", "")),
+                     validated_up_to_Hz=None if n.get("validated_up_to_MHz") in (None, "") else
+                     float(n["validated_up_to_MHz"]) * 1e6)
+
+
+def _emi_profile(pr: dict, lim: dict | None):
+    from .extensions.emi import PROFILE_FIELDS, EmiProfile, LimitCurve
+    curve = None
+    if lim and lim.get("points"):
+        curve = LimitCurve(tuple(tuple(x) for x in lim["points"]), lim.get("unit", "dBuV"), lim.get("detector", "peak"),
+                           str(lim.get("source", "")))
+    fields = {k: pr.get(k) for k in PROFILE_FIELDS}
+    return EmiProfile(fields, curve, float(pr.get("design_reserve_dB") or 0.0))
+
+
+def emi(body):
+    """Conducted-emission screening of the HV DC port at one operating point (source -> path -> receiver)."""
+    from .extensions.emi import (SwitchingSource, conducted_emission_screening, coupling_checks,
+                                 measured_trace_verdict)
+    b = {**EXAMPLE_EMI, **(body or {})}
+    d = _drive(b)
+    n, T, vdc = _num(b, "speed_rpm"), _num(b, "torque_Nm"), _num(b, "Vdc_V")
+    sol = PolicyEvaluator(d, Scenario("emi", n, vdc, _limits(b))).solve(T)
+    pt = sol.point
+    if pt is None:
+        raise InputValidationError("no operating point for the EMI source: " + sol.policy_claim.detail, field="torque_Nm")
+    if abs(pt.f_e_Hz) <= 0:
+        raise InputValidationError("EMI screening needs a rotating operating point (fe > 0)", field="speed_rpm")
+    sc = {**EXAMPLE_EMI["source"], **(b.get("source") or {})}
+    src = SwitchingSource(vdc, pt.i_peak_A, math.atan2(pt.iq_A, pt.id_A), pt.v_peak_V / (0.5 * vdc),
+                          math.atan2(pt.vq_V, pt.vd_V), abs(pt.f_e_Hz), float(sc["fsw_kHz"]) * 1e3,
+                          float(sc["t_rise_ns"]) * 1e-9, float(sc["t_fall_ns"]) * 1e-9,
+                          float(sc.get("t_dead_us") or 0.0) * 1e-6, sc.get("modulation", "svpwm"), str(sc.get("basis", "")))
+    net = _emi_network({**EXAMPLE_EMI["network"], **(b.get("network") or {})})
+    prof = _emi_profile({**EXAMPLE_EMI["profile"], **(b.get("profile") or {})}, b.get("limit"))
+    lo, hi = (float(x) * 1e6 for x in b.get("band_MHz") or (0.15, 30.0))
+    r = conducted_emission_screening(src, net, prof, lo, hi, int(b.get("n_grid", 160)), b.get("calibration"))
+    r["coupling"] = coupling_checks(net, vdc, src, _opt(b, "E_y_allowed_J"), _opt(b, "f_control_Hz"))
+    r["operating_point"] = {"speed_rpm": n, "torque_Nm": T, "Vdc_V": vdc, "i_peak_A": pt.i_peak_A,
+                            "modulation_index": src.m, "f_e_Hz": src.fe_Hz, "policy": sol.policy_claim.status.value}
+    r["source"] = {"fsw_kHz": sc["fsw_kHz"], "t_rise_ns": sc["t_rise_ns"], "t_fall_ns": sc["t_fall_ns"],
+                   "t_dead_us": sc.get("t_dead_us"), "basis": src.basis}
+    r["network"] = {**EXAMPLE_EMI["network"], **(b.get("network") or {})}
+    r["profile"] = {**prof.fields, "design_reserve_dB": prof.design_reserve_dB,
+                    "limit_source": None if prof.limit is None else prof.limit.source}
+    ms = b.get("measured")
+    if ms and ms.get("f_Hz"):
+        band = ms.get("band_MHz")
+        r["measured"] = measured_trace_verdict(ms["f_Hz"], ms["level_dB"], prof, float(ms.get("U_meas_dB") or 0.0),
+                                               ms.get("noise_floor_dB"),
+                                               None if not band else (float(band[0]) * 1e6, float(band[1]) * 1e6))
+        r["measured"]["f_Hz"] = list(ms["f_Hz"])
+        r["measured"]["level_dB"] = list(ms["level_dB"])
+    return _jsonable(r)
+
+
+def emi_oew(body):
+    """Common-bus OEW: winding zero sequence vs chassis common mode, branch DC currents (C-01, C-02)."""
+    from .extensions.emi import oew_common_mode, zsv_free_sequence_example
+    from .extensions.oew import OewTopology, oew_min_current_point
+    b = {**EXAMPLE_OEW, **(body or {})}
+    topo = oew_topology_from_dict({**b["topology"], "kind": "common_bus", "VB_V": None, "limits_B": None})
+    d = _drive(b)
+    n, T = _num(b, "speed_rpm"), _num(b, "torque_Nm")
+    r = oew_min_current_point(d, OewTopology("common_bus", topo.VA_V, zero_sequence=topo.zero_sequence,
+                                             zs_policy=topo.zs_policy), n, T)
+    w = r.get("witness")
+    if w is None:
+        raise InputValidationError("no OEW operating point: " + r.get("reason", ""), field="torque_Nm")
+    op = w["operating_point"]
+    we = d.motor.pole_pairs * 2 * math.pi * n / 60
+    zs = topo.zero_sequence
+    u0 = (lambda th: we * zs.dpsi0(th)) if (zs is not None and topo.zs_policy == "regulate_i0") else None
+    t_edge = float(b.get("t_edge_ns") or 50.0) * 1e-9
+    out = {"operating_point": op, "V_V": topo.VA_V, "cases": {}}
+    for shift in (0.0, 0.5):
+        cm = oew_common_mode(topo.VA_V, op["U_phase_pk_V"], math.atan2(op["vq_V"], op["vd_V"]), we / (2 * math.pi),
+                             float(b.get("fsw_kHz", 10.0)) * 1e3, t_edge, topo.split, shift, u0, 40,
+                             op["i_dq_A"], math.atan2(op["iq_A"], op["id_A"]))
+        out["cases"][f"{shift:g}"] = cm
+    out["zsv_free"] = zsv_free_sequence_example(topo.VA_V)
+    return _jsonable(out)
+
+
 def acceptance(body):
     return S.acceptance_summary()
 
@@ -920,5 +1036,5 @@ ROUTES = {
     "safe_state": safe_state, "thermal": thermal, "acceptance": acceptance, "protection": protection,
     "module_losses": module_losses, "dclink_ripple": dclink_ripple, "asc": asc,
     "lifetime": lifetime, "oew": oew, "oew_compare": oew_compare, "hev_joint": hev_joint, "hev_crank": hev_crank,
-    "hev_rejection": hev_rejection, "hev_planetary": hev_planetary,
+    "hev_rejection": hev_rejection, "hev_planetary": hev_planetary, "emi": emi, "emi_oew": emi_oew,
 }

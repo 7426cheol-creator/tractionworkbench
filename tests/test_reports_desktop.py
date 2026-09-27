@@ -112,6 +112,8 @@ def test_review_and_oew_hev_figures_render(tmp_path, lang, theme):
         cr = api.hev_crank({"crank": {**api.EXAMPLE_HEV["crank"], "theta0_deg": [0, 90]}})
         rej = api.hev_rejection({})
         pl = api.hev_planetary({})
+        em = api.emi({"n_grid": 40})
+        eo = api.emi_oew({})
         rq = js["request"]
         jobs = [(RF.fig_protection_timeline, (prot,)), (RF.fig_threshold_window, (prot,)),
                 (RF.fig_protection_loop, (prot,)), (RF.fig_asc_transient, (asc,)), (RF.fig_module_losses, (mod,)),
@@ -119,7 +121,8 @@ def test_review_and_oew_hev_figures_render(tmp_path, lang, theme):
                 (OH.fig_oew_voltage_sets, (oew,)), (OH.fig_oew_point, (oew,)), (OH.fig_oew_compare, (cmp,)),
                 (OH.fig_oew_paired, (oew,)), (OH.fig_oew_ripple, (oew,)), (OH.fig_hev_joint, (js,)),
                 (OH.fig_hev_crank, (cr,)), (OH.fig_hev_rejection, (rej,)), (OH.fig_planetary, (pl,)),
-                (SC.fig_oew_schematic, (oew["topology"],)),
+                (SC.fig_oew_schematic, (oew["topology"],)), (OH.fig_emi_screening, (em,)), (OH.fig_emi_measured, (em,)),
+                (OH.fig_oew_cm, (eo,)), (SC.fig_emi_network, (em["network"],)),
                 (SC.fig_hev_schematic, ({"p1_W": rq["branch_P_dc_W"][0], "p2_W": rq["branch_P_dc_W"][1],
                                          "p_src_W": rq["P_source_W"]},))]
         for i, (fn, args) in enumerate(jobs):
@@ -204,6 +207,9 @@ def test_desktop_smoke(tmp_path):
         assert oh.last_oew is not None and oh.last_oew["result"]["witness"] is not None
         oh.run_rej()
         assert oh.last_rej["claim"]["status"] == "INFEASIBLE"             # example 9.4: 1 ms reaction is too slow
+        ep = win.pages["emi"]
+        ep.run()
+        assert ep.last is not None and ep.last["claim"]["status"] == "UNKNOWN"      # screening is never a pass
         win.set_theme("dark")
         win.set_theme("light")
         assert not (app.property("twb_errors") or [])

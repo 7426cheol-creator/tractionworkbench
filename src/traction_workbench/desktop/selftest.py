@@ -169,6 +169,15 @@ def run_self_test(app, out_dir) -> int:
         oh.run_planetary()
         shot(win, "36_hev_planetary")
         check("hev:planetary", oh.last_pl is not None and oh.last_pl["check"]["status"] == "FEASIBLE")
+        em = visit("emi", 0, ["run"], [(None, "37_emi_spectrum"), (lambda pg: pg.e_tabs.setCurrentIndex(1), "38_emi_network")])
+        check("emi:screening", em.last is not None and em.last["claim"]["status"] == "UNKNOWN"
+              and "SCREENING_ONLY" in em.last["claim"]["reasons"], em.last and em.last["claim"]["detail"])
+        em.tabs.setCurrentIndex(1)
+        em.run_oew()
+        shot(win, "39_emi_oew_cm")
+        cs = (em.last_oew or {}).get("cases", {})
+        check("emi:oew_cm", len(cs) == 2 and cs["0"]["u0_rms_V"] < cs["0.5"]["u0_rms_V"]
+              and cs["0"]["cm6_rms_V"] > cs["0.5"]["cm6_rms_V"])
         visit("model", 7, [], [(None, "18_model")])
         vv = visit("verification", 8, ["run"], [(None, "19_verification")])
         check("acceptance", "PASS" in vv.summary.text() and "MISMATCH" not in vv.summary.text(), vv.summary.text())
