@@ -251,7 +251,8 @@ class SafetyPage(QWidget):
                 (tr("여유 [ms]", "margin [ms]"), fmt(None if res.get("margin_s") is None else res["margin_s"] * 1e3))]
         rows += [(tr("중복 예산", "duplicate budget"), d["message"]) for d in res["duplicate_budgets"]]
         rows += [(tr("공백", "gap"), str(g)) for g in res.get("gaps", [])]
-        rows += [(c["budget"], f"{'OK' if c['ok'] else 'NG'} · {c}") for c in res.get("budget_checks", [])]
+        word = lambda ok: "UNKNOWN" if ok is None else ("OK" if ok else "NG")
+        rows += [(c["budget"], f"{word(c['ok'])} · {c}") for c in res.get("budget_checks", [])]
         rows += [(tr("주석", "note"), n) for n in res.get("notes", [])]
         self.t_ftti.set_rows(rows)
 

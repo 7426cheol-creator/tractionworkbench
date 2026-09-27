@@ -524,19 +524,31 @@ class PolicyEvaluator:
     def _physical_dc(self, T, curve, point, screens, scope, quantity, conditional, cond_reasons, cond_q, certs):
         k = self.k
         q = quantity + " by any control in the allowed domain incl. DC limits (diagnostic)"
-        scr = [sc for sc in screens if sc.violated and sc.name in
-               ("shaft_power_exceeds_discharge_cap", "charge_cap_unreachable_even_with_maximum_loss")]
+        # an exclusion may only rest on assumptions that hold: the shaft-power screen needs no loss or motor data
+        # (losses are passive), the maximum-loss charge screen depends on Rs / loss data and therefore on the
+        # model issues and on the rotational-loss model being present
+        scr = [sc for sc in screens if sc.violated and (
+            sc.name == "shaft_power_exceeds_discharge_cap" or
+            (sc.name == "charge_cap_unreachable_even_with_maximum_loss" and not conditional))]
         scr_ev = tuple(Evidence.make(EvidenceKind.ANALYTIC_BOUND, sc.statement, scope=sc.scope, **dict(sc.values))
                        for sc in scr)
-        if scr and k.tau_rot is not None:
+        if scr:
             return Claim("physical_existence_with_dc", Status.INFEASIBLE, q, scope, "any control",
                          reasons=(Reason.NECESSARY_CONDITION_VIOLATED,), evidence=scr_ev,
                          detail="an analytic bound excludes every control, independent of the optimiser"), None
         if curve.empty:
-            return Claim("physical_existence_with_dc", Status.UNKNOWN if curve.coverage_limited or not curve.exact
-                         else Status.INFEASIBLE, q, scope, "any control",
-                         reasons=(Reason.CONSTRAINT_VIOLATION,) if curve.exact and not curve.coverage_limited
-                         else (Reason.NUMERICAL_UNRESOLVED,),
+            proven = curve.exact and not curve.coverage_limited
+            if proven and conditional:
+                # the curve was traced under assumed data (e.g. zero drag for a missing rotational-loss model,
+                # fallback Rs): the exclusion does not hold for the shaft request itself
+                return Claim("physical_existence_with_dc", Status.UNKNOWN, q, scope, "any control",
+                             reasons=cond_reasons, qualifiers=cond_q,
+                             detail="no electrical solution under the assumed data; with the missing data the "
+                                    "exclusion is not established (e.g. unknown passive drag changes the required "
+                                    "electromagnetic torque)"), None
+            return Claim("physical_existence_with_dc", Status.INFEASIBLE if proven else Status.UNKNOWN, q, scope,
+                         "any control",
+                         reasons=(Reason.CONSTRAINT_VIOLATION,) if proven else (Reason.NUMERICAL_UNRESOLVED,),
                          detail="no electrical solution, hence none with DC limits"), None
         if k.module is not None and k.tau_rot is not None:
             # the I^2-band certificate belongs to the quadratic surrogate: with the datasheet module model only a

@@ -67,8 +67,11 @@ def run_self_test(app, out_dir) -> int:
                 check("pdf_report", pdf.is_file() and pdf.stat().st_size > 50_000, f"{pdf.stat().st_size} bytes")
                 page.tabs.setCurrentIndex(0)
 
-        def visit(key, row, actions, shots):
-            win.nav.setCurrentRow(row)
+        from .main_window import PAGES
+        rows = {k: i for i, (k, *_rest) in enumerate(PAGES)}
+
+        def visit(key, _row, actions, shots):
+            win.nav.setCurrentRow(rows[key])            # rows follow PAGES (pages can be inserted)
             pg = win.pages[key]
             for a in actions:
                 getattr(pg, a)() if isinstance(a, str) else a(pg)
@@ -111,6 +114,34 @@ def run_self_test(app, out_dir) -> int:
         th.c_flow.setValue(10.0)
         th.tabs.setCurrentIndex(0)
         check("schematics", all(p._draw is not None for p in (saf.s_dis, saf.s_pas, saf.s_ov, saf.s_safe, page.views.overview)))
+        pro = visit("protection", 0, ["run"], [(None, "22_protection_timeline"),
+                                               (lambda pg: pg.ptabs.setCurrentIndex(1), "23_protection_window"),
+                                               (lambda pg: pg.ptabs.setCurrentIndex(2), "24_protection_loop")])
+        prot_ids = [r["id"] for r in (pro.last or {}).get("rows", [])]
+        check("protection:ov", pro.last is not None and pro.last["trace"]["protected"] and len(prot_ids) == 9,
+              f"{pro.last and pro.last['summary_status']} {prot_ids}")
+        pro.preset.setCurrentIndex(1)
+        pro.run()
+        check("protection:ot", pro.last is not None and pro.last["unit"] == "degC" and pro.last["trace"]["protected"])
+        pro.tabs.setCurrentIndex(1)
+        pro.run_asc()
+        asc_ok = pro.last_asc is not None and pro.last_asc["claim"]["status"] == "UNKNOWN" and \
+            len(pro.last_asc["requirements"]) == 2
+        check("protection:asc", asc_ok, pro.last_asc and pro.last_asc["claim"]["detail"])
+        shot(win, "25_asc_transient")
+        pw = visit("power", 0, ["run_module"], [(None, "26_power_module")])
+        check("power:module", pw.last_module is not None and pw.last_module["losses"]["established"]
+              and pw.last_module["operating_point"]["Pinv_module_W"] > 0)
+        pw.tabs.setCurrentIndex(1)
+        pw.run_ripple()
+        shot(win, "27_power_ripple")
+        check("power:ripple", pw.last_ripple is not None and pw.last_ripple["I_cap_rms_A"] > 0
+              and pw.last_ripple["claims"]["capacitor_life"]["status"] == "UNKNOWN")
+        pw.tabs.setCurrentIndex(2)
+        pw.run_life()
+        shot(win, "28_power_life")
+        check("power:lifetime", pw.last_life is not None and pw.last_life["damage"]["claim"]["status"] == "UNKNOWN"
+              and pw.last_life["damage"]["cycles_counted"] > 0)
         visit("model", 7, [], [(None, "18_model")])
         vv = visit("verification", 8, ["run"], [(None, "19_verification")])
         check("acceptance", "PASS" in vv.summary.text() and "MISMATCH" not in vv.summary.text(), vv.summary.text())

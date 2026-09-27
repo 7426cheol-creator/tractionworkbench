@@ -651,3 +651,140 @@ def test_zero_torque_and_equal_limits_are_explicit(drive, limits):
     assert p.policy_claim.status in (Status.FEASIBLE, Status.INFEASIBLE)
     if p.point is not None:
         assert p.point.id_A == pytest.approx(-50.0, abs=1e-9)
+
+
+# --------------------------------------------------------------------------- audit evidence (solver memo F06)
+
+def test_missing_rotational_loss_keeps_physical_claim_open():
+    """Solver-audit F06: an exact empty curve traced with zero assumed drag must not prove the shaft request
+    infeasible; all claims stay consistent (UNKNOWN)."""
+    from dataclasses import replace
+
+    from traction_workbench.solvers.policy import solve_policy
+    from traction_workbench.spec_fixtures import synthetic_drive, synthetic_scenario
+    base = synthetic_drive()
+    missing = replace(base, motor=replace(base.motor, rotational_loss=None))
+    s = solve_policy(missing, synthetic_scenario(3000, 600), -1000.0)
+    st = {c.name: c.status.value for c in s.claims}
+    assert st["electrical_existence"] == "UNKNOWN"
+    assert st["physical_existence_with_dc"] == "UNKNOWN"
+    assert "INFEASIBLE" not in st.values()
+    # with the rotational-loss model the same exclusion is proven
+    full = solve_policy(base, synthetic_scenario(3000, 600), -1000.0)
+    assert {c.name: c.status.value for c in full.claims}["physical_existence_with_dc"] == "INFEASIBLE"
+
+
+def test_loss_independent_shaft_power_screen_survives_missing_data():
+    """The shaft-power screen needs no loss data (losses are passive), so it may exclude even when the
+    rotational-loss model is missing."""
+    from dataclasses import replace
+
+    from traction_workbench.scenario import DcSourceLimits
+    from traction_workbench.solvers.policy import solve_policy
+    from traction_workbench.spec_fixtures import synthetic_drive, synthetic_scenario
+    base = synthetic_drive()
+    missing = replace(base, motor=replace(base.motor, rotational_loss=None))
+    lim = DcSourceLimits(discharge_power_max_W=50e3, charge_power_max_W=50e3)
+    s = solve_policy(missing, synthetic_scenario(6000, 600, source_limits=lim), 150.0)   # 94 kW shaft > 50 kW
+    phys = {c.name: c for c in s.claims}["physical_existence_with_dc"]
+    assert phys.status.value == "INFEASIBLE"
+    assert "NECESSARY_CONDITION_VIOLATED" in [r.value for r in phys.reasons]
+
+
+# --------------------------------------------------------------------------- audit evidence (decision memo DV-03)
+
+def _hold_limits():
+    from traction_workbench.spec_fixtures import synthetic_limits
+    return synthetic_limits()
+
+
+def test_fixed_calibration_row_uses_the_witness_gate():
+    """DV-03: the fixed-calibration uncertainty row may not pass with undeclared DC limits or missing loss data."""
+    from dataclasses import replace
+
+    from traction_workbench.analysis.uncertainty import ParameterInterval, bounded_input_analysis
+    from traction_workbench.scenario import DcSourceLimits
+    from traction_workbench.spec_fixtures import synthetic_drive, synthetic_scenario
+    d = synthetic_drive()
+    s = synthetic_scenario(3000, 600)
+    iv = [ParameterInterval("Vdc_V", 600, 600)]
+    no_lim = bounded_input_analysis(d, replace(s, source_limits=DcSourceLimits()), 100, iv)
+    assert {r["fixed_calibration_status"] for r in no_lim["combinations"]} == {"UNKNOWN"}
+    no_loss = bounded_input_analysis(replace(d, inverter=replace(d.inverter, loss=None)), s, 100, iv)
+    assert {r["fixed_calibration_status"] for r in no_loss["combinations"]} == {"UNKNOWN"}
+    ok = bounded_input_analysis(d, s, 100, iv)
+    assert {r["fixed_calibration_status"] for r in ok["combinations"]} == {"FEASIBLE"}
+
+
+def test_fixed_calibration_torque_error_needs_a_stated_accuracy():
+    """A torque error from a parameter change is judged against the stated accuracy, not the solver residual."""
+    from traction_workbench.analysis.uncertainty import ParameterInterval, bounded_input_analysis
+    from traction_workbench.spec_fixtures import synthetic_drive, synthetic_scenario
+    d = synthetic_drive()
+    s = synthetic_scenario(3000, 600)
+    iv = [ParameterInterval("psi_pm_Wb", 0.095, 0.105, basis="test tolerance")]
+    none = bounded_input_analysis(d, s, 100, iv)
+    fixed = {c["name"]: c for c in none["claims"]}["robust_fixed_calibration"]
+    assert fixed["status"] == "UNKNOWN"                       # not a counterexample without an accuracy requirement
+    assert any("REQUIREMENT_INCOMPLETE" in " ".join(r["fixed_calibration_notes"]) for r in none["combinations"])
+    wide = bounded_input_analysis(d, s, 100, iv, torque_accuracy_Nm=10.0)
+    assert {r["fixed_calibration_status"] for r in wide["combinations"]} == {"FEASIBLE"}
+    tight = bounded_input_analysis(d, s, 100, iv, torque_accuracy_Nm=0.5)
+    assert {c["name"]: c for c in tight["claims"]}["robust_fixed_calibration"]["status"] == "INFEASIBLE"
+
+
+# --------------------------------------------------------------------------- audit evidence (decision memo DV-05)
+
+def test_synthetic_or_unvalidated_envelope_is_a_model_experiment_not_a_rating():
+    from traction_workbench.analysis.rating import RatingEnvelope, duration_claim
+    from traction_workbench.models.provenance import DataOrigin, Provenance
+
+    def env(origin, status, kind="supplier_rated"):
+        return RatingEnvelope("E10", "0", 10.0, (0.0, 12000.0), (200.0, 200.0),
+                              Provenance(origin, "audit example", "0", status), evidence_kind=kind)
+    syn = duration_claim((env(DataOrigin.SYNTHETIC, "UNVALIDATED"),), 10, 12000, 150, {})
+    assert syn.status is Status.UNKNOWN and "model experiment" in syn.detail
+    assert all(e.kind.value != "supplier_rated_envelope" for e in syn.evidence)
+    unval = duration_claim((env(DataOrigin.SUPPLIER, "UNVALIDATED draft"),), 10, 12000, 150, {})
+    assert unval.status is Status.UNKNOWN
+    ok = duration_claim((env(DataOrigin.SUPPLIER, "supplier-rated, released rev 0"),), 10, 12000, 150, {})
+    assert ok.status is Status.FEASIBLE and ok.evidence[0].kind.value == "supplier_rated_envelope"
+    # a synthetic envelope cannot out-vote or create a conflict with an approved one either
+    both = duration_claim((env(DataOrigin.SYNTHETIC, "UNVALIDATED"),
+                           env(DataOrigin.SUPPLIER, "supplier-rated, released rev 0")), 10, 12000, 150, {})
+    assert both.status is Status.FEASIBLE
+
+
+def test_unsplittable_fdti_frti_budgets_are_reported_not_dropped():
+    """System-audit repro: a composite item spanning the detection event; the declared FDTI/FRTI budgets
+    cannot be verified and must be reported as such (ok=None)."""
+    from traction_workbench.extensions.timing import TimingChain, TimingItem, analyze_timing
+    chain = TimingChain("split", "f", .050, ("f", "d", "s"), (TimingItem("whole", "f", "s", "SYS", .020),),
+                        detection_event="d", fdti_budget_s=.001, frti_budget_s=.001)
+    r = analyze_timing(chain)
+    checks = {c["budget"]: c for c in r["budget_checks"]}
+    assert checks["FDTI"]["ok"] is None and checks["FRTI"]["ok"] is None
+    assert "spans the detection event" in checks["FDTI"]["note"]
+
+
+def test_conservative_nodes_pass_but_interpolant_asymmetry_is_reported():
+    """Additional-repro F10: exact conservative nodal data pass the node check on uniform and non-uniform axes,
+    while the bilinear interpolant's off-grid L_dq != L_qd is reported (exact corner maximum) and dynamic use stays
+    NOT QUALIFIED."""
+    import numpy as np
+
+    from traction_workbench.models.flux import FluxMapPlane
+    a = 1e-5
+
+    def plane(daxis, qaxis):
+        da, qa = np.array(daxis, float), np.array(qaxis, float)
+        D, Q = np.meshgrid(da, qa, indexing="ij")
+        return FluxMapPlane(da, qa, .1 + .001 * D + 2 * a * D * Q ** 2, .002 * Q + 2 * a * D ** 2 * Q, label="audit")
+    uni, non = plane([0, 1, 2], [0, 1, 2]), plane([0, 1, 3], [0, 1, 2])
+    assert uni.reciprocity_report()["passed"] and non.reciprocity_report()["passed"]
+    ic = uni.interpolant_consistency()
+    assert ic["max_interior_asymmetry_H"] > 9e-6          # the audit's off-grid mismatch at (0.25, 0.75) A
+    assert ic["max_rel_interior_asymmetry"] > 1e-3
+    q = uni.magnetic_qualification()
+    assert q["dynamic_use"]["status"] == "NOT QUALIFIED"
+    assert any("asymmetry" in r for r in q["dynamic_use"]["reasons"])

@@ -20,7 +20,11 @@ Typed duration semantics (independent review F04):
   envelope of the highest declared priority is evaluated; equally
   authoritative envelopes that disagree give UNKNOWN (CONFLICTING_EVIDENCE);
 * outside a validated envelope the requirement is not *rated*
-  (RATING_NOT_MET); that is not a proof of physical impossibility.
+  (RATING_NOT_MET); that is not a proof of physical impossibility;
+* approval comes from the provenance, not from the declared ``evidence_kind``
+  (review DV-05): a synthetic or estimated envelope, or one whose validation
+  status says it is unvalidated / illustrative, is still evaluated but reported
+  as a model experiment and never answers a requirement.
 """
 
 from __future__ import annotations
@@ -32,7 +36,7 @@ import numpy as np
 
 from ..errors import InputValidationError
 from ..models.flux import _finite
-from ..models.provenance import Provenance
+from ..models.provenance import DataOrigin, Provenance
 from ..status import Claim, Evidence, EvidenceKind, Reason, Status
 
 
@@ -119,6 +123,19 @@ def _match_conditions(env: RatingEnvelope, stated: dict) -> tuple[bool, list[str
 
 COLD_STARTS = ("cold", "ambient", "equilibrium_at_coolant", "coolant_equilibrium")
 
+_NOT_APPROVED_WORDS = ("unvalidated", "not validated", "illustrative", "example", "synthetic", "placeholder", "draft")
+
+
+def approval(env: RatingEnvelope) -> tuple[bool, str]:
+    """Is this envelope approved rating evidence?  Derived from the provenance (conservative wording check)."""
+    prov = env.provenance
+    if prov.origin in (DataOrigin.SYNTHETIC, DataOrigin.ESTIMATED):
+        return False, f"{prov.origin.value} envelope: a model experiment, not an approved rating"
+    status = (prov.validation_status or "").strip().lower()
+    if not status or any(w in status for w in _NOT_APPROVED_WORDS):
+        return False, f"validation status {prov.validation_status!r} does not approve the envelope as a rating"
+    return True, f"{prov.origin.value} envelope, validation status {prov.validation_status!r}"
+
 
 def applicability(env: RatingEnvelope, duration_s: float, stated_conditions: dict) -> tuple[bool, str]:
     """Can this envelope answer a requirement of this duration (typed finite / continuous semantics)?"""
@@ -161,7 +178,13 @@ def _evaluate_envelope(env: RatingEnvelope, speed_rpm: float, torque_Nm: float, 
     cons = min(abs(pair[0]), abs(pair[1]))
     opt = max(abs(pair[0]), abs(pair[1]))
     lim = abs(lin) if env.interpolation == "linear_declared" else cons
-    kind = EvidenceKind.SUPPLIER_RATED if env.evidence_kind == "supplier_rated" else EvidenceKind.VALIDATED_DOMAIN
+    approved, _why = approval(env)
+    if not approved:
+        kind = EvidenceKind.DIRECT_EVALUATION                    # a model experiment, not rating evidence
+    elif env.provenance.origin is DataOrigin.SUPPLIER and env.evidence_kind == "supplier_rated":
+        kind = EvidenceKind.SUPPLIER_RATED
+    else:
+        kind = EvidenceKind.VALIDATED_DOMAIN
     ev = Evidence.make(kind, f"{env.envelope_id} rev {env.revision} ({env.duration_text}): |T| limit {lim:.6g} N*m "
                              f"at {speed_rpm:g} rpm ({env.interpolation})",
                        conservative_limit_Nm=cons, linear_limit_Nm=abs(lin), optimistic_limit_Nm=opt,
@@ -184,7 +207,7 @@ def duration_claim(envelopes, duration_s: float | None, speed_rpm: float, torque
     dtext = "continuous" if math.isinf(duration_s) else f"{duration_s:g} s"
     q = f"{torque_Nm:g} N*m at {speed_rpm:g} rpm sustained for {dtext}"
     scope = "external rating envelope lookup under matching conditions only"
-    notes, results = [], []
+    notes, results, experiments = [], [], []
     for env in envelopes:
         app, why = applicability(env, duration_s, stated_conditions)
         if not app:
@@ -194,14 +217,21 @@ def duration_claim(envelopes, duration_s: float | None, speed_rpm: float, torque
         if res is None:
             notes.append(note)
             continue
+        approved, awhy = approval(env)
+        if not approved:
+            experiments.append(f"{env.envelope_id}: {awhy}; as a model experiment it reads {res[0].value} "
+                               f"({res[1].summary})")
+            continue
         results.append((env, res[0], res[1], why))
     if not results:
         detail = (f"no validated rating envelope applies to a {dtext} requirement; the fixed-temperature electrical "
                   f"result is not renamed a {dtext} rating")
         reasons = (Reason.UNVALIDATED_DURATION,) + ((Reason.MISSING_INPUT,) if notes else ())
+        info = notes + experiments
         return Claim("duration", Status.UNKNOWN, q, scope, None, time_horizon=dtext, reasons=reasons,
-                     evidence=tuple(Evidence.make(EvidenceKind.DIRECT_EVALUATION, n) for n in notes),
-                     detail=detail if not notes else detail + " (" + "; ".join(notes) + ")")
+                     evidence=tuple(Evidence.make(EvidenceKind.DIRECT_EVALUATION, n) for n in info),
+                     qualifiers=("model-experiment envelope(s) shown, not used as a rating",) if experiments else (),
+                     detail=detail if not info else detail + " (" + "; ".join(info) + ")")
     top = max(e.priority for e, *_ in results)
     group = [r for r in results if r[0].priority == top]
     feas = [r for r in group if r[1] is Status.FEASIBLE]

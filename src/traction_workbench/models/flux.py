@@ -385,7 +385,11 @@ class FluxMapPlane:
           bilinear interpolant: psi is linear along each edge).  W = 0 for a conservative (energy-consistent)
           model; the bilinear sampling of even a conservative map leaves W != 0;
         * differential-inductance jumps across cell edges: the bilinear interpolant has a piecewise, discontinuous
-          Jacobian, which a dynamic (current-state) model must not use as L_diff.
+          Jacobian, which a dynamic (current-state) model must not use as L_diff;
+        * interior asymmetry d psi_q/d id - d psi_d/d iq of the interpolant: the cell-boundary work only measures
+          its cell average, which can vanish while the pointwise mismatch does not (audit evidence F10).  In a
+          bilinear cell d psi_q/d id is affine in the q-coordinate and d psi_d/d iq affine in the d-coordinate, so
+          the maximum |asymmetry| is attained at a cell corner - the value below is exact, not sampled.
         """
         ax_d, ax_q = self.id_axis_A, self.iq_axis_A
         psd, psq = self.psi_d_Wb, self.psi_q_Wb
@@ -408,11 +412,20 @@ class FluxMapPlane:
             both = cv[1:, :] & cv[:-1, :]
             jscale = np.maximum(np.abs(ldd_cell[1:, :]), np.abs(ldd_cell[:-1, :])) + 1e-300
         jrel = (jumps / jscale)[both] if np.any(both) else np.array([0.0])
+        with np.errstate(invalid="ignore"):
+            lqd = [(psq[1:, :-1] - psq[:-1, :-1]) / dd, (psq[1:, 1:] - psq[:-1, 1:]) / dd]      # u = 0, u = 1
+            ldq = [(psd[:-1, 1:] - psd[:-1, :-1]) / dq, (psd[1:, 1:] - psd[1:, :-1]) / dq]      # t = 0, t = 1
+            asym = np.maximum.reduce([np.abs(a - b) for a in lqd for b in ldq])
+            lself = np.maximum.reduce([np.abs((psd[1:, :-1] - psd[:-1, :-1]) / dd), np.abs((psd[1:, 1:] - psd[:-1, 1:]) / dd),
+                                       np.abs((psq[:-1, 1:] - psq[:-1, :-1]) / dq), np.abs((psq[1:, 1:] - psq[1:, :-1]) / dq)])
+        arel = (asym / (lself + 1e-300))[cv]
         return {
             "cells": int(cv.sum()),
             "max_closed_path_work_J": float(w.max()) if w.size else 0.0,
             "max_rel_closed_path_work": float(rel.max()) if rel.size else 0.0,
             "max_rel_Ldd_jump_across_edges": float(jrel.max()),
+            "max_interior_asymmetry_H": float(asym[cv].max()) if np.any(cv) else 0.0,
+            "max_rel_interior_asymmetry": float(arel.max()) if arel.size else 0.0,
             "note": "per-unit-of-3/2 energy (Wb*A = J); the factor 3/2 converts to machine co-energy",
         }
 
@@ -435,6 +448,8 @@ class FluxMapPlane:
                             f"edges up to {interp['max_rel_Ldd_jump_across_edges']:.3g} relative)",
                             "closed-path work of the interpolant is not zero (max relative "
                             f"{interp['max_rel_closed_path_work']:.3g}): not energy-consistent",
+                            "pointwise cross-derivative asymmetry inside cells (L_dq != L_qd off-grid) up to "
+                            f"{interp['max_rel_interior_asymmetry']:.3g} relative (exact corner maximum)",
                             "no declared dynamic qualification (inverse map, conditioning, off-grid holdouts)"],
                 "interpolant": interp,
                 "meaning": "static steady-state solves may use the map; transients (ASC, current-control) need a "

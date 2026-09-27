@@ -769,7 +769,8 @@ def fig_ftti(fig, tl: dict, title: str | None = None):
     leg1 = ax.legend(handles=h, loc="lower right", fontsize=7)
     ax.add_artist(leg1)
     ax.legend(loc="upper right", fontsize=7)
-    checks = " · ".join(f"{c['budget']}: {'OK' if c['ok'] else 'NG'}" for c in tl.get("budget_checks", []))
+    checks = " · ".join(f"{c['budget']}: {'UNKNOWN' if c['ok'] is None else ('OK' if c['ok'] else 'NG')}"
+                        for c in tl.get("budget_checks", []))
     if checks:
         _note(ax, checks, loc="lower left")
 

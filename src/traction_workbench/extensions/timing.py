@@ -247,12 +247,15 @@ def analyze_timing(chain: TimingChain) -> dict:
                              f"the declared bounds cannot guarantee the FTTI (not proven to fail - refine with a joint "
                              f"worst-case trace, or declare that the maxima are jointly attainable)")
     budget_checks = []
-    if fdti is not None and chain.fdti_budget_s is not None:
-        budget_checks.append({"budget": "FDTI", "allocated_s": chain.fdti_budget_s, "worst_s": fdti,
-                              "ok": fdti <= chain.fdti_budget_s})
-    if frti is not None and chain.frti_budget_s is not None:
-        budget_checks.append({"budget": "FRTI", "allocated_s": chain.frti_budget_s, "worst_s": frti,
-                              "ok": frti <= chain.frti_budget_s})
+    # a declared budget whose worst case cannot be split out is reported as unverifiable (ok = None), never dropped
+    for name, worst, alloc in (("FDTI", fdti, chain.fdti_budget_s), ("FRTI", frti, chain.frti_budget_s)):
+        if alloc is None:
+            continue
+        if worst is None:
+            budget_checks.append({"budget": name, "allocated_s": alloc, "worst_s": None, "ok": None,
+                                  "note": split_note or "no detection event declared: the split is undefined"})
+        else:
+            budget_checks.append({"budget": name, "allocated_s": alloc, "worst_s": worst, "ok": worst <= alloc})
     if chain.fdti_budget_s is not None and chain.frti_budget_s is not None:
         budget_checks.append({"budget": "FDTI + FRTI < FTTI", "allocated_s": chain.fdti_budget_s + chain.frti_budget_s,
                               "ftti_s": chain.ftti_s, "ok": chain.fdti_budget_s + chain.frti_budget_s < chain.ftti_s})
