@@ -152,7 +152,8 @@ def info(body):
     d = S.resolve_drive(None)
     return {"version": __version__, "drives": ["SYNTH_IPMSM_200KW_REF_V1", "MANUFACTURED_FLUX_MAP_TEST_DRIVE"],
             "drive": S.drive_info(d), "limits": sf.synthetic_limits().describe(), "presets": PRESETS,
-            "example_timing": EXAMPLE_TIMING, "example_thermal": EXAMPLE_THERMAL}
+            "example_timing": EXAMPLE_TIMING, "example_thermal": EXAMPLE_THERMAL,
+            "example_protection": EXAMPLE_PROTECTION, "example_protection_ot": EXAMPLE_PROTECTION_OT}
 
 
 def evaluate(body):
@@ -338,6 +339,91 @@ def thermal(body):
     return _jsonable(out)
 
 
+EXAMPLE_PROTECTION = {
+    "name": "OV after battery disconnect during regeneration (synthetic toy values from the review, section 9.6.1)",
+    "variable": "DC-link capacitor voltage", "unit": "V",
+    "plant": {"kind": "capacitor_energy", "x0": 700.0, "C_uF": 500.0, "P0_kW": 100.0, "t_ramp_ms": 0.0},
+    "sensor": {"gain_error_pct": 0.0, "offset": 5.0, "tau_filter_ms": 0.0, "period_ms": 0.01, "phase_ms": 0.0,
+               "confirm_samples": 2, "exec_delay_ms": 0.0, "comparator": ">="},
+    "thresholds": {"warning": 725.0, "fault": 738.5, "release": 720.0, "E_theta": 3.0},
+    "limit": 800.0, "horizon_ms": 1.0, "action_delay_ms": 0.15, "x_normal_max": 720.0, "warning_needed_ms": 0.05,
+    "normal": [{"kind": "ramp", "x0": 700.0, "slope_per_s": 0.0, "ripple_amp": 15.0, "ripple_hz": 2000.0}],
+    "tight_attainable": False, "hw_path": "not declared", "phases": 16,
+}
+
+EXAMPLE_PROTECTION_OT = {
+    "name": "OT derating on a one-node junction model (synthetic toy values from the review, section 9.6.2)",
+    "variable": "junction temperature", "unit": "degC",
+    "plant": {"kind": "thermal_1node", "x0": 135.0, "R_K_per_W": 0.2, "C_J_per_K": 20.0, "T_coolant_C": 60.0,
+              "P_W": 600.0, "P_after_W": 350.0},
+    "sensor": {"gain_error_pct": 0.0, "offset": 0.0, "tau_filter_ms": 0.0, "period_ms": 1.0, "phase_ms": 0.0,
+               "confirm_samples": 1, "exec_delay_ms": 0.0, "comparator": ">="},
+    "thresholds": {"warning": 130.0, "fault": 135.0, "release": 125.0, "E_theta": 0.0},
+    "limit": 150.0, "horizon_ms": 8000.0, "action_delay_ms": 500.0, "x_normal_max": None, "warning_needed_ms": None,
+    "normal": [], "tight_attainable": False, "hw_path": "not declared", "phases": 8,
+}
+
+
+def _plant(d: dict):
+    from .extensions.protection import Plant
+    kind = d.get("kind")
+    if kind == "capacitor_energy":
+        return Plant(kind, float(d["x0"]), (("C_F", float(d["C_uF"]) * 1e-6), ("P0_W", float(d["P0_kW"]) * 1e3),
+                                            ("t_ramp_s", float(d.get("t_ramp_ms") or 0.0) * 1e-3)))
+    if kind == "thermal_1node":
+        return Plant(kind, float(d["x0"]), tuple((k, float(d[k])) for k in ("R_K_per_W", "C_J_per_K", "T_coolant_C",
+                                                                           "P_W", "P_after_W")))
+    if kind == "ramp":
+        return Plant(kind, float(d["x0"]), tuple((k, float(d.get(k) or 0.0))
+                                                 for k in ("slope_per_s", "ripple_amp", "ripple_hz")))
+    raise InputValidationError("plant kind must be capacitor_energy, thermal_1node or ramp", field="plant.kind")
+
+
+def protection(body):
+    """Threshold / derating / fault-reaction review on one causal trajectory (section 9)."""
+    from .extensions.protection import Sensor, ov_trigger_bound, protection_review, simulate
+    b = body or EXAMPLE_PROTECTION
+    se = b.get("sensor", {})
+    ms = 1e-3
+    sensor = Sensor(gain_error=float(se.get("gain_error_pct") or 0.0) / 100.0, offset=float(se.get("offset") or 0.0),
+                    tau_filter_s=float(se.get("tau_filter_ms") or 0.0) * ms, period_s=float(se["period_ms"]) * ms,
+                    phase_s=float(se.get("phase_ms") or 0.0) * ms, confirm_samples=int(se.get("confirm_samples", 1)),
+                    exec_delay_s=float(se.get("exec_delay_ms") or 0.0) * ms, comparator=se.get("comparator", ">="))
+    plant = _plant(b["plant"])
+    th = b.get("thresholds", {})
+    fault = float(th["fault"])
+    e_theta = float(th.get("E_theta") or 0.0)
+    horizon = float(b["horizon_ms"]) * ms
+    delay = float(b.get("action_delay_ms") or 0.0) * ms
+    bound = None
+    if plant.kind == "capacitor_energy":
+        worst_detect = sensor.confirm_samples * sensor.period_s + sensor.exec_delay_s
+        bound = ov_trigger_bound(plant.p("C_F"), float(b["limit"]), plant.p("P0_W"), worst_detect + delay,
+                                 plant.p("t_ramp_s", 0.0))
+    rv = protection_review(plant, sensor, fault, float(b["limit"]), horizon, delay, e_theta,
+                           tuple(_plant(n) for n in (b.get("normal") or [])),
+                           None if th.get("warning") in (None, "") else float(th["warning"]),
+                           None if b.get("warning_needed_ms") in (None, "") else float(b["warning_needed_ms"]) * ms,
+                           None if th.get("release") in (None, "") else float(th["release"]),
+                           None if b.get("x_normal_max") in (None, "") else float(b["x_normal_max"]),
+                           bool(b.get("tight_attainable")), b.get("hw_path"),
+                           None if bound is None else bound["V_trigger_max_V"], 0.0, int(b.get("phases", 16)))
+    tr = rv["trace"]
+    step = max(1, tr["t_s"].size // 1500)
+    trace = {"t_s": tr["t_s"][::step].tolist(), "x": tr["x"][::step].tolist(), "y": tr["y"][::step].tolist(),
+             "samples_t_s": tr["samples_t_s"][:400].tolist(), "samples_y": tr["samples_y"][:400].tolist(),
+             "events": tr["events"], "threshold_true": tr["threshold_true"], "limit": tr["limit"],
+             "protected": tr["protected"]}
+    free = simulate(plant, sensor, 1e18, math.inf, horizon)          # no reaction: where would the variable go?
+    trace["no_reaction_x"] = free["x"][::max(1, free["x"].size // 1500)].tolist()
+    trace["no_reaction_t_s"] = free["t_s"][::max(1, free["t_s"].size // 1500)].tolist()
+    return _jsonable({"name": b.get("name", ""), "variable": b.get("variable", "x"), "unit": b.get("unit", ""),
+                      "thresholds": th, "limit": float(b["limit"]), "rows": rv["rows"],
+                      "summary_status": rv["summary_status"], "window": rv["window"], "ov_bound": bound,
+                      "phase_sweep": {k: v for k, v in rv["phase_sweep"].items() if k != "rows"},
+                      "phase_rows": rv["phase_sweep"]["rows"], "trace": trace, "note": rv["note"]})
+
+
 def acceptance(body):
     return S.acceptance_summary()
 
@@ -345,5 +431,5 @@ def acceptance(body):
 ROUTES = {
     "info": info, "evaluate": evaluate, "curve": curve, "map": idiq, "sizing": sizing, "dominance": dominance,
     "relaxation": relaxation, "timing": timing, "discharge": discharge, "passive": passive, "overvoltage": overvoltage,
-    "safe_state": safe_state, "thermal": thermal, "acceptance": acceptance,
+    "safe_state": safe_state, "thermal": thermal, "acceptance": acceptance, "protection": protection,
 }
