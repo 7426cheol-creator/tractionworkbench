@@ -181,13 +181,26 @@ class PolicyEvaluator:
         return (T + k.tau_rot_or_zero) * k.omega_m + (1.5 * k.Rs + k.inv_loss.ipk2_coeff_W_per_A2) * I2 \
             + k.inv_loss.offset_W
 
-    def dc_status(self, T: float, I2_found: float, i2_lb: float, certified: bool) -> tuple[str, str]:
-        """DC-limit status of the (possibly uncertified) policy point; P_dc is monotone in I^2 on the curve."""
+    def dc_status(self, T: float, I2_found: float, i2_lb: float, certified: bool,
+                  pdc_found: float | None = None) -> tuple[str, str]:
+        """DC-limit status of the (possibly uncertified) policy point; P_dc is monotone in I^2 on the curve.
+
+        With the datasheet module loss model P_dc is taken from the evaluated point (``pdc_found``); the
+        I^2-monotonicity argument belongs to the quadratic surrogate, so an uncertified point is UNKNOWN.
+        """
         k = self.k
         if not k.limits.any_declared:
             return "UNKNOWN", "no DC source limits declared"
-        pf = self._pdc_at(T, I2_found)
-        ends = [pf] if certified else [pf, self._pdc_at(T, i2_lb)]
+        if k.module is not None:
+            if pdc_found is None:
+                return "UNKNOWN", "module loss not established at the policy point"
+            if not certified:
+                return "UNKNOWN", "policy point not certified (no I^2 argument with the module loss model)"
+            pf = pdc_found
+            ends = [pf]
+        else:
+            pf = self._pdc_at(T, I2_found)
+            ends = [pf] if certified else [pf, self._pdc_at(T, i2_lb)]
         oks = [bool(dc_ok(k, np.array([p]))[0]) for p in ends]
         if not any(oks):
             same_side = all(p > 0 for p in ends) or all(p < 0 for p in ends)
@@ -221,12 +234,18 @@ class PolicyEvaluator:
         if c.empty:
             return ("INFEASIBLE" if c.exact and not c.coverage_limited else "UNKNOWN"), None
         p = c.min_point
-        if k.inv_loss is None or k.tau_rot is None:
+        if (k.inv_loss is None and k.module is None) or k.tau_rot is None:
             return "UNKNOWN", p
         cert = self.certify_min_point(T, c)
         if not cert["certified"]:
             return "UNKNOWN", p
-        st, _why = self.dc_status(T, p.I2, cert["i2_lb"], True)
+        pdc = None
+        if k.module is not None:
+            try:
+                pdc = evaluate_point(k, p.id_A, p.iq_A).Pdc_W
+            except OutsideModelDomain:
+                return "UNKNOWN", p
+        st, _why = self.dc_status(T, p.I2, cert["i2_lb"], True, pdc)
         return st, p
 
     # -- full solve ----------------------------------------------------------
@@ -419,10 +438,14 @@ class PolicyEvaluator:
             relevant_missing.update(missing_relevant_dc_limits(k, point.Pdc_W))
             if not certified and i2_lb is not None and k.inv_loss is not None:
                 relevant_missing.update(missing_relevant_dc_limits(k, self._pdc_at(T, i2_lb)))
+        if k.module is not None and point.Pdc_W is not None and not certified:
+            return Claim("dc_source", Status.UNKNOWN, q, scope, POLICY_NAME, reasons=(Reason.NUMERICAL_UNRESOLVED,),
+                         detail="the policy point is not certified and the datasheet module loss has no I^2 "
+                                "monotonicity argument: DC compatibility of the true policy point is not established")
         extra_q = tuple(f"{m} limit not declared (cannot bind at this point)" for m in missing
                         if m not in relevant_missing)
-        if k.inv_loss is None or point.Pdc_W is None:
-            # P_inv in [0, inf): P_dc >= P_ac only
+        if point.Pdc_W is None:
+            # P_inv in [0, inf): P_dc >= P_ac only (loss model missing or module loss not established here)
             pac = point.Pac_W
             viol = k.P_dis_eff is not None and pac > k.P_dis_eff
             chg_ok = k.P_chg_eff is None or pac >= -k.P_chg_eff
@@ -442,9 +465,9 @@ class PolicyEvaluator:
         active = [c for c in dcs if c.state == "ACTIVE"]
         ev = [Evidence.make(EvidenceKind.DIRECT_EVALUATION, f"{c.name}: demand {c.demand:.6g} vs limit {c.limit:.6g} "
                             f"{c.unit} (slack {c.slack:.6g})") for c in dcs]
-        c2 = 1.5 * k.Rs + k.inv_loss.ipk2_coeff_W_per_A2
         tem = T + k.tau_rot_or_zero
-        if not certified and i2_lb is not None:
+        if not certified and i2_lb is not None and k.inv_loss is not None:
+            c2 = 1.5 * k.Rs + k.inv_loss.ipk2_coeff_W_per_A2
             pdc_lb = tem * k.omega_m + c2 * i2_lb + k.inv_loss.offset_W
             dis_viol = any(c.group == "DISCHARGE_SOURCE" for c in viol)
             chg_viol = any(c.group == "CHARGE_SOURCE" for c in viol)
@@ -515,6 +538,24 @@ class PolicyEvaluator:
                          reasons=(Reason.CONSTRAINT_VIOLATION,) if curve.exact and not curve.coverage_limited
                          else (Reason.NUMERICAL_UNRESOLVED,),
                          detail="no electrical solution, hence none with DC limits"), None
+        if k.module is not None and k.tau_rot is not None:
+            # the I^2-band certificate belongs to the quadratic surrogate: with the datasheet module model only a
+            # directly verified witness counts (here the policy point); otherwise the claim stays open
+            if point is not None:
+                chk = check_witness(k, point.id_A, point.iq_A, T_request=T, require_dc=True, point=point,
+                                    include_validity=False)
+                if chk.accepted:
+                    return Claim("physical_existence_with_dc", Status.UNKNOWN if conditional else Status.FEASIBLE,
+                                 q, scope, "any control", reasons=cond_reasons,
+                                 evidence=(Evidence.make(EvidenceKind.NUMERICAL_WITNESS,
+                                                         f"policy point with module losses: P_dc = {point.Pdc_W:.6g} W",
+                                                         **chk.to_dict()),),
+                                 qualifiers=cond_q, detail="the policy point itself is DC-compatible (module losses)"), \
+                        None
+            return Claim("physical_existence_with_dc", Status.UNKNOWN, q, scope, "any control",
+                         reasons=(Reason.NUMERICAL_UNRESOLVED,),
+                         detail="with the datasheet module loss model the I^2-band certificate does not apply; no "
+                                "verified DC-compatible witness at the policy point"), None
         band = dc_band_I2(k, curve.target_Tem_Nm) if k.tau_rot is not None else None
         if band is None or (k.P_dis_eff is None and k.P_chg_eff is None):
             return Claim("physical_existence_with_dc", Status.UNKNOWN, q, scope, "any control",

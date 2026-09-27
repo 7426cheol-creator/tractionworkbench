@@ -182,8 +182,18 @@ class InverterModel:
     loss: InverterLossModel | None
     switching_frequency_context_Hz: float | None = None
     current_limit_basis: str = "fundamental phase peak (dq norm)"
+    module_loss: object | None = None        # extensions.module_loss.ModuleLossModel (datasheet-based)
+    module_Tj_C: float | None = None         # junction temperature at which the datasheet curves are evaluated
 
     def __post_init__(self):
+        if self.module_loss is not None:
+            if self.loss is not None:
+                raise InputValidationError("declare one inverter loss model: the quadratic surrogate OR the "
+                                           "datasheet module model (never both summed)", field="inverter.loss")
+            if self.module_Tj_C is None:
+                raise InputValidationError("a datasheet module loss model needs the evaluation junction temperature "
+                                           "(module_Tj_C)", field="inverter.module_Tj_C")
+            object.__setattr__(self, "module_Tj_C", _finite("module_Tj_C", self.module_Tj_C))
         imax = _finite("current_limit_A_peak", self.current_limit_A_peak)
         if imax <= 0:
             raise InputValidationError("current limit must be > 0", field="current_limit_A_peak")
@@ -203,6 +213,14 @@ class InverterModel:
             "current_limit_note": "fundamental amplitude only; PWM ripple, pulse peak, OC overshoot and SOA are not covered",
             "voltage": self.voltage.describe(),
             "loss": None if self.loss is None else self.loss.describe(),
+            "module_loss": None if self.module_loss is None else {
+                "technology": self.module_loss.device.technology, "fsw_Hz": self.module_loss.fsw_Hz,
+                "modulation": self.module_loss.modulation, "deadtime_s": self.module_loss.deadtime_s,
+                "parallel": self.module_loss.parallel, "energy_basis": self.module_loss.device.energy_basis,
+                "value_kind": self.module_loss.device.value_kind, "v_test_V": self.module_loss.device.v_test_V,
+                "evaluation_Tj_C": self.module_Tj_C, "source": self.module_loss.device.source,
+                "note": "datasheet-based average model at the evaluation Tj; the quadratic I^2 certificates do not "
+                        "apply - DC claims rest on direct witnesses"},
             "switching_frequency_context_Hz": self.switching_frequency_context_Hz,
         }
 

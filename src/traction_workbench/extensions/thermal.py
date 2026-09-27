@@ -47,7 +47,7 @@ from ..solvers.policy import PolicyEvaluator
 from ..status import Claim, Evidence, EvidenceKind, Reason, Status
 from .coolant import CoolantLoop
 
-LOSS_KEYS = ("inverter", "copper", "rotational")
+LOSS_KEYS = ("inverter", "copper", "rotational", "inverter_hottest_device")
 COLD_STARTS = ("equilibrium_at_coolant", "coolant_equilibrium", "cold", "ambient")
 
 
@@ -143,7 +143,15 @@ class ThermalNode:
                 raise InputValidationError(f"loss share {k}={v} invalid (keys {LOSS_KEYS}, 0..1)", field=self.node_id)
 
     def power(self, losses: dict) -> float:
-        return sum(float(v) * losses.get(k, 0.0) for k, v in self.loss_share)
+        """Heat into the node; NaN when a declared heat source is not available (never read as zero)."""
+        total = 0.0
+        for k, v in self.loss_share:
+            if float(v) == 0.0:
+                continue
+            if k not in losses or losses[k] is None or (isinstance(losses[k], float) and math.isnan(losses[k])):
+                return math.nan
+            total += float(v) * losses[k]
+        return total
 
 
 @dataclass(frozen=True)
@@ -211,8 +219,16 @@ class ThermalModel:
                             f"coolant; hot starts need the node temperatures as initial state)")
         if losses:
             for key, val in losses.items():
-                if val > 0 and not any(dict(nd.loss_share).get(key, 0.0) > 0 for nd in self.nodes):
+                if key == "inverter_hottest_device":
+                    continue            # a subset of 'inverter', monitored through a device node when present
+                if val > 0 and not any(dict(nd.loss_share).get(key, 0.0) > 0 or
+                                       (key == "inverter" and dict(nd.loss_share).get("inverter_hottest_device", 0) > 0)
+                                       for nd in self.nodes):
                     problems.append(f"{key} loss {val:.4g} W heats no node: the heat source is unmonitored")
+            for nd in self.nodes:
+                if dict(nd.loss_share).get("inverter_hottest_device", 0.0) > 0 and "inverter_hottest_device" not in losses:
+                    problems.append(f"node {nd.node_id!r} needs the hottest-device loss, which only a device-level "
+                                    f"(datasheet module) loss model provides - total/6 is not substituted")
         return problems
 
 
@@ -241,7 +257,13 @@ def time_to_limit(node: ThermalNode, P_W: float, coolant_C: float) -> float:
 
 
 def _losses(pt) -> dict:
-    return {"inverter": pt.Pinv_W or 0.0, "copper": pt.Pcu_W, "rotational": pt.Prot_W or 0.0}
+    """Heat sources at the operating point.  'inverter_hottest_device' exists only with a device-level (datasheet
+    module) loss model; the total inverter loss divided by six is never substituted for it."""
+    out = {"inverter": pt.Pinv_W or 0.0, "copper": pt.Pcu_W, "rotational": pt.Prot_W or 0.0}
+    det = getattr(pt, "inverter_loss_detail", None)
+    if det and det.get("established"):
+        out["inverter_hottest_device"] = det["hottest_position_W"]
+    return out
 
 
 def thermal_duration(drive: DriveModel, scenario: Scenario, model: ThermalModel, T_request: float,
@@ -264,9 +286,16 @@ def thermal_duration(drive: DriveModel, scenario: Scenario, model: ThermalModel,
     rows = []
     worst_t = math.inf
     violated = False
+    missing = []
     for nd in model.nodes:
         p = nd.power(losses)
         ref = model.reference_C(nd, scenario.coolant_temp_C, losses, fluid)
+        if math.isnan(p):
+            missing.append(nd.node_id)
+            rows.append({"node": nd.node_id, "power_W": None, "temperature_at_duration_C": None, "limit_C": nd.limit_C,
+                         "time_to_limit_s": None, "steady_state_C": None, "fluid_reference_C": ref,
+                         "station": nd.station, "note": "heat source not available at this point"})
+            continue
         tt = time_to_limit(nd, p, ref)
         temp = temperature(nd, p, duration_s, ref)
         rows.append({"node": nd.node_id, "power_W": p, "temperature_at_duration_C": temp, "limit_C": nd.limit_C,
@@ -278,6 +307,9 @@ def thermal_duration(drive: DriveModel, scenario: Scenario, model: ThermalModel,
               "switching_frequency_Hz": scenario.switching_frequency_Hz, "speed_rpm": scenario.speed_rpm,
               "torque_Nm": T_request, **model.stated_conditions()}
     problems = model.qualification(stated, scenario.initial_state, losses)
+    if missing:
+        problems.append("heat source not available for node(s) " + ", ".join(missing)
+                        + ": their temperature is not evaluated (never read as zero heat)")
     qualified = not problems
     ev = Evidence.make(EvidenceKind.VALIDATED_DOMAIN if qualified else EvidenceKind.SAMPLED,
                        f"{model.model_id} rev {model.revision}: sustainable for {worst_t:.4g} s at constant loss",
@@ -350,7 +382,10 @@ def torque_availability(drive: DriveModel, scenario: Scenario, model: ThermalMod
         fluid = model.coolant.fluid_temperatures(scenario.coolant_temp_C, losses) if model.coolant is not None else None
         for nd in model.nodes:
             ref = model.reference_C(nd, scenario.coolant_temp_C, losses, fluid)
-            if temperature(nd, nd.power(losses), t, ref) > nd.limit_C:
+            pw = nd.power(losses)
+            if math.isnan(pw):
+                return None, nd.node_id          # heat source not available: not established, not "ok"
+            if temperature(nd, pw, t, ref) > nd.limit_C:
                 return False, nd.node_id
         return True, None
 

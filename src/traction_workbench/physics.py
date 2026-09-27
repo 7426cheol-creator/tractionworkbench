@@ -94,6 +94,8 @@ class DriveKernel:
             self.tau_rot = self.rot.torque(self.omega_m)
             self.P_rot = self.rot.power(self.omega_m)
         self.inv_loss = inv.loss
+        self.module = inv.module_loss
+        self.module_Tj = inv.module_Tj_C
         if self.inv_loss is not None and self.inv_loss.valid_Vdc_V is not None:
             lo, hi = self.inv_loss.valid_Vdc_V
             if not (lo <= self.Vdc <= hi):
@@ -174,7 +176,31 @@ class DriveKernel:
 
     @property
     def dc_defined(self) -> bool:
-        return self.inv_loss is not None and self.tau_rot is not None
+        return (self.inv_loss is not None or self.module is not None) and self.tau_rot is not None
+
+    def module_loss_at(self, id_A, iq_A, vd, vq) -> dict | None:
+        """Datasheet module losses at one point (scalar); None without a module model."""
+        if self.module is None:
+            return None
+        from dataclasses import replace as _rep
+        from .extensions.module_loss import inverter_losses, standstill_hotspot
+        fsw = self.scenario.switching_frequency_Hz
+        mod = self.module if fsw is None else _rep(self.module, fsw_Hz=fsw)
+        if abs(self.omega_e) <= self.settings.speed_zero_tol_rad_s:
+            # DC phase currents: the fundamental-period average is meaningless; worst electrical angle instead
+            h = standstill_hotspot(mod, float(np.hypot(id_A, iq_A)), self.Vdc, self.module_Tj)
+            if not h.get("established"):
+                return {"established": False, "problems": [h.get("problem", "standstill loss not established")],
+                        "value_kind": mod.device.value_kind}
+            tot = max(r[2] for r in h["curve"])
+            return {"established": True, "semiconductor_W": tot, "conduction_W": float("nan"),
+                    "switching_W": float("nan"), "per_position_W": {}, "hottest_position": "worst angle",
+                    "hottest_position_W": h["hottest_device_W"], "modulation_index": 0.0, "power_factor": float("nan"),
+                    "Tj_eval_C": self.module_Tj, "fsw_Hz": mod.fsw_Hz, "value_kind": mod.device.value_kind,
+                    "problems": [], "dc_side_W": tot + (mod.driver_aux_W if mod.aux_from_hv_dc else 0.0),
+                    "standstill": {"angle_at_max_deg": h["angle_at_max_deg"], "total_over_six_W": h["total_over_six_W"],
+                                   "note": "worst electrical angle (sampled); total/6 is not a device-level input"}}
+        return inverter_losses(mod, id_A, iq_A, vd, vq, self.Vdc, self.module_Tj, refine_check=False)
 
     @property
     def tau_rot_or_zero(self) -> float:
@@ -446,6 +472,7 @@ class OperatingPoint:
     constraints: tuple[ConstraintResult, ...]
     pwm_ratio: float | None
     notes: tuple[str, ...] = ()
+    inverter_loss_detail: dict | None = None
 
     @property
     def identities_ok(self) -> bool:
@@ -508,6 +535,7 @@ class OperatingPoint:
             "Pdc_W": self.Pdc_W,
             "Idc_A_average": self.Idc_A,
             "loss_breakdown_W": {"copper": self.Pcu_W, "rotational": self.Prot_W, "inverter": self.Pinv_W},
+            "inverter_loss_detail": self.inverter_loss_detail,
             "power_identity_residuals_W": {
                 "Pac - (Te*wm + Pcu)": self.residual_pac_tem_W,
                 "Pac - (Pshaft + Pcu + Prot)": self.residual_pac_shaft_W,
@@ -563,11 +591,17 @@ def evaluate_point(kernel: DriveKernel, id_A: float, iq_A: float) -> OperatingPo
     p_shaft = tsh * wm if tsh is not None else None
     p_rot = k.P_rot
     p_inv = f["pinv"] if k.inv_loss is not None else None
+    ml = None
+    if k.module is not None:
+        ml = k.module_loss_at(d, q, f["vd"], f["vq"])
+        p_inv = ml["dc_side_W"] if ml["established"] else None
     p_dc = (f["pac"] + p_inv) if (p_inv is not None) else None
     i_dc = p_dc / k.Vdc if p_dc is not None else None
     res1 = f["pac"] - (f["tem"] * wm + f["pcu"])
     res2 = f["pac"] - (p_shaft + f["pcu"] + p_rot) if p_shaft is not None else None
     res3 = p_dc - (f["pac"] + p_inv) if p_dc is not None else None
+    if ml is not None:
+        f["pinv"] = p_inv if p_inv is not None else float("nan")
     scale = max(abs(f["pac"]), abs(f["pcu"]), abs(p_dc or 0.0), abs(p_shaft or 0.0), abs(f["tem"] * wm))
     id_tol = max(s.power_identity_abs_W, s.power_identity_rel * scale)
     mode, eta, eta_note = classify_energy(p_shaft, p_dc, wm, s)
@@ -581,8 +615,16 @@ def evaluate_point(kernel: DriveKernel, id_A: float, iq_A: float) -> OperatingPo
     notes = list(k.notes)
     if not k.shaft_defined:
         notes.append("rotational loss model missing: shaft torque/power undefined (electromagnetic values only)")
-    if k.inv_loss is None:
+    if k.inv_loss is None and k.module is None:
         notes.append("inverter loss model missing: DC power/current undefined")
+    if ml is not None:
+        if ml["established"]:
+            notes.append(f"inverter loss from the datasheet module model at Tj = {k.module_Tj:g} degC: "
+                         f"{ml['semiconductor_W']:.5g} W (conduction {ml['conduction_W']:.4g} W, switching "
+                         f"{ml['switching_W']:.4g} W; {ml['value_kind']} values)")
+        else:
+            notes.append("datasheet module loss not established at this point: " + "; ".join(ml["problems"])
+                         + " - DC power undefined (a missing loss is never set to zero)")
     return OperatingPoint(
         id_A=d, iq_A=q, speed_rpm=k.speed_rpm, omega_m=wm, omega_e=k.omega_e, f_e_Hz=fe, Vdc_V=k.Vdc,
         psi_d_Wb=f["psd"], psi_q_Wb=f["psq"], vd_V=f["vd"], vq_V=f["vq"], v_peak_V=v_peak,
@@ -593,6 +635,10 @@ def evaluate_point(kernel: DriveKernel, id_A: float, iq_A: float) -> OperatingPo
         energy_mode=mode, efficiency=eta, efficiency_note=eta_note, voltage_budget_V=k.Vb,
         voltage_ceiling_V=k.V_ceiling, voltage_margin_V=k.Vb - v_cmd, constraints=constraints,
         pwm_ratio=pwm_ratio, notes=tuple(notes),
+        inverter_loss_detail=None if ml is None else {
+            k2: ml[k2] for k2 in ("established", "semiconductor_W", "conduction_W", "switching_W", "per_position_W",
+                                  "hottest_position", "hottest_position_W", "modulation_index", "power_factor",
+                                  "Tj_eval_C", "fsw_Hz", "value_kind", "problems")},
     )
 
 

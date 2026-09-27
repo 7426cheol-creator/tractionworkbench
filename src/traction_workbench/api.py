@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
+
 from . import __version__
 from . import service as S
 from . import spec_fixtures as sf
@@ -153,7 +155,8 @@ def info(body):
     return {"version": __version__, "drives": ["SYNTH_IPMSM_200KW_REF_V1", "MANUFACTURED_FLUX_MAP_TEST_DRIVE"],
             "drive": S.drive_info(d), "limits": sf.synthetic_limits().describe(), "presets": PRESETS,
             "example_timing": EXAMPLE_TIMING, "example_thermal": EXAMPLE_THERMAL,
-            "example_protection": EXAMPLE_PROTECTION, "example_protection_ot": EXAMPLE_PROTECTION_OT}
+            "example_protection": EXAMPLE_PROTECTION, "example_protection_ot": EXAMPLE_PROTECTION_OT,
+            "example_module": EXAMPLE_MODULE}
 
 
 def evaluate(body):
@@ -424,6 +427,127 @@ def protection(body):
                       "phase_rows": rv["phase_sweep"]["rows"], "trace": trace, "note": rv["note"]})
 
 
+def _curve(c: dict, name: str):
+    from .extensions.module_loss import Table2D
+    try:
+        return Table2D(tuple(c["temps_C"]), tuple(c["currents_A"]), tuple(tuple(r) for r in c["values"]), c["unit"],
+                       c.get("source", ""))
+    except KeyError as exc:
+        raise InputValidationError(f"curve {name!r} needs temps_C, currents_A, values and unit ({exc})",
+                                   field=f"module.curves.{name}") from None
+
+
+def module_model_from_dict(m: dict):
+    """Datasheet module description -> ModuleLossModel (curves, test conditions, PWM, parallel modules)."""
+    from .extensions.module_loss import ModuleLossModel, SwitchDevice
+    cv = m.get("curves") or {}
+    for key in ("v_on", "v_rev", "e_on", "e_off"):
+        if key not in cv:
+            raise InputValidationError(f"module curve {key!r} is required", field="module.curves")
+    sc = m.get("vdc_scaling") or {}
+    dev = SwitchDevice(
+        technology=m.get("technology", "IGBT"), v_on=_curve(cv["v_on"], "v_on"), v_rev=_curve(cv["v_rev"], "v_rev"),
+        e_on=_curve(cv["e_on"], "e_on"), e_off=_curve(cv["e_off"], "e_off"),
+        e_rr=_curve(cv["e_rr"], "e_rr") if cv.get("e_rr") else None,
+        v_channel_rev=_curve(cv["v_channel_rev"], "v_channel_rev") if cv.get("v_channel_rev") else None,
+        energy_basis=m.get("energy_basis", "per_device"), v_test_V=float(m["v_test_V"]),
+        vdc_scaling_exponent=None if sc.get("exponent") in (None, "") else float(sc["exponent"]),
+        vdc_scaling_basis=str(sc.get("basis", "")), vdc_scaling_valid_V=tuple(sc["valid_V"]) if sc.get("valid_V") else None,
+        value_kind=m.get("value_kind", "typical"), test_conditions=tuple((m.get("test_conditions") or {}).items()),
+        source=m.get("source", ""))
+    return ModuleLossModel(dev, fsw_Hz=float(m.get("fsw_kHz", 10.0)) * 1e3, modulation=m.get("modulation", "svpwm"),
+                           deadtime_s=float(m.get("deadtime_us") or 0.0) * 1e-6, parallel=int(m.get("parallel", 1)),
+                           sharing_error=float(m.get("sharing_error_pct") or 0.0) / 100.0,
+                           driver_aux_W=float(m.get("driver_aux_W") or 0.0), aux_from_hv_dc=bool(m.get("aux_from_hv_dc")))
+
+
+def _lin_curve(unit, temps, i_max, a_by_t, b_by_t, n=9):
+    cur = [round(i_max * k / (n - 1), 6) for k in range(n)]
+    return {"unit": unit, "temps_C": list(temps), "currents_A": cur,
+            "values": [[round(a + b * i, 6) for i in cur] for a, b in zip(a_by_t, b_by_t)],
+            "source": "synthetic example curve (not a product datasheet)"}
+
+
+EXAMPLE_MODULE = {
+    "name": "synthetic 750 V / 800 A IGBT half-bridge example (NOT a real product - replace with datasheet curves)",
+    "technology": "IGBT", "value_kind": "typical", "energy_basis": "per_device", "v_test_V": 600.0,
+    "source": "synthetic example for demonstration; curves are linear stand-ins",
+    "test_conditions": {"Rg_on_ohm": 1.8, "Rg_off_ohm": 1.8, "Vge_V": 15.0, "deadtime_test_us": 1.5,
+                        "stray_L_nH": 20.0},
+    "curves": {
+        "v_on": _lin_curve("V", (25.0, 150.0), 800.0, (0.80, 0.70), (1.10e-3, 1.60e-3)),
+        "v_rev": _lin_curve("V", (25.0, 150.0), 800.0, (0.90, 0.80), (1.00e-3, 1.30e-3)),
+        "e_on": _lin_curve("mJ", (25.0, 150.0), 800.0, (3.0, 5.0), (0.030, 0.040)),
+        "e_off": _lin_curve("mJ", (25.0, 150.0), 800.0, (5.0, 8.0), (0.035, 0.045)),
+        "e_rr": _lin_curve("mJ", (25.0, 150.0), 800.0, (2.0, 4.0), (0.012, 0.020)),
+    },
+    "fsw_kHz": 10.0, "modulation": "svpwm", "deadtime_us": 1.5, "parallel": 1, "sharing_error_pct": 0.0,
+    "driver_aux_W": 12.0, "aux_from_hv_dc": False, "Tj_eval_C": 150.0, "Rth_K_per_W": 0.09, "T_ref_C": 65.0,
+}
+
+
+def module_losses(body):
+    """Datasheet-based inverter losses at the decision operating point, fed into P_dc (review 8.8)."""
+    from dataclasses import replace as _rep
+    from .extensions.module_loss import electrothermal_fixed_point, inverter_losses, loss_claim, standstill_hotspot
+    b = body or {}
+    mspec = b.get("module") or EXAMPLE_MODULE
+    model = module_model_from_dict(mspec)
+    base = _drive(b)
+    tj = float(mspec.get("Tj_eval_C", 150.0))
+    drv = _rep(base, inverter=_rep(base.inverter, loss=None, module_loss=model, module_Tj_C=tj))
+    n, vdc, T = _num(b, "speed_rpm", 12000.0), _num(b, "Vdc_V", 600.0), _num(b, "torque_Nm", 150.0)
+    sc = Scenario("module", n, vdc, _limits(b))
+    sol_m = PolicyEvaluator(drv, sc).solve(T)
+    sol_q = PolicyEvaluator(base, sc).solve(T)
+    pt = sol_m.point
+    out = {"module": {"name": mspec.get("name", ""), "technology": model.device.technology,
+                      "value_kind": model.device.value_kind, "energy_basis": model.device.energy_basis,
+                      "v_test_V": model.device.v_test_V, "fsw_Hz": model.fsw_Hz, "modulation": model.modulation,
+                      "deadtime_s": model.deadtime_s, "Tj_eval_C": tj, "source": model.device.source},
+           "request": {"speed_rpm": n, "Vdc_V": vdc, "torque_Nm": T},
+           "policy_with_module": {c.name: c.status.value for c in sol_m.claims},
+           "policy_with_surrogate": {c.name: c.status.value for c in sol_q.claims}}
+    if pt is None:
+        out["note"] = "no operating point: " + sol_m.policy_claim.detail
+        return _jsonable(out)
+    full = inverter_losses(model, pt.id_A, pt.iq_A, pt.vd_V, pt.vq_V, vdc, tj)
+    out["operating_point"] = {"id_A": pt.id_A, "iq_A": pt.iq_A, "i_peak_A": pt.i_peak_A, "Pac_W": pt.Pac_W,
+                              "Pdc_module_W": pt.Pdc_W, "Pinv_module_W": pt.Pinv_W,
+                              "Pinv_surrogate_W": None if sol_q.point is None else sol_q.point.Pinv_W,
+                              "Pdc_surrogate_W": None if sol_q.point is None else sol_q.point.Pdc_W}
+    out["losses"] = {k: full[k] for k in ("per_position_W", "conduction_W", "switching_W", "semiconductor_W",
+                                         "driver_aux_W", "dc_side_W", "hottest_position", "hottest_position_W",
+                                         "modulation_index", "power_factor", "phi_deg", "established", "problems",
+                                         "angle_refinement_rel_diff", "not_modelled")}
+    out["leg_detail"] = {"conduction_W": full["leg"]["conduction_W"], "switching_W": full["leg"]["switching_W"],
+                         "switching_fraction": full["leg"]["switching_fraction"],
+                         "energy_scaling": full["leg"]["energy_scaling"]}
+    out["claim"] = loss_claim(full, None if b.get("P_allow_W") in (None, "") else float(b["P_allow_W"]))
+    out["standstill"] = {k: v for k, v in standstill_hotspot(model, pt.i_peak_A, vdc, tj).items() if k != "curve"}
+    if mspec.get("Rth_K_per_W"):
+        fp = electrothermal_fixed_point(model, {"id_A": pt.id_A, "iq_A": pt.iq_A, "vd_V": pt.vd_V, "vq_V": pt.vq_V,
+                                                "Vdc_V": vdc}, float(mspec["Rth_K_per_W"]),
+                                        float(mspec.get("T_ref_C", 65.0)))
+        out["electrothermal"] = {k: v for k, v in fp.items() if k != "history"}
+        out["electrothermal"]["iterations_history"] = fp.get("history", [])[:20]
+    # losses along the torque axis (same speed): module vs surrogate
+    tq = [float(x) for x in np.linspace(0.0, max(T, 1.0) * 1.25, 11)]
+    rows = []
+    ev_m, ev_q = PolicyEvaluator(drv, sc), PolicyEvaluator(base, sc)
+    for t in tq:
+        sm, sq = ev_m.solve(t).point, ev_q.solve(t).point
+        det = None if sm is None else sm.inverter_loss_detail
+        rows.append({"torque_Nm": t,
+                     "module_W": None if sm is None or sm.Pinv_W is None else sm.Pinv_W,
+                     "conduction_W": None if not det or not det["established"] else det["conduction_W"],
+                     "switching_W": None if not det or not det["established"] else det["switching_W"],
+                     "hottest_W": None if not det or not det["established"] else det["hottest_position_W"],
+                     "surrogate_W": None if sq is None else sq.Pinv_W})
+    out["torque_sweep"] = rows
+    return _jsonable(out)
+
+
 def acceptance(body):
     return S.acceptance_summary()
 
@@ -432,4 +556,5 @@ ROUTES = {
     "info": info, "evaluate": evaluate, "curve": curve, "map": idiq, "sizing": sizing, "dominance": dominance,
     "relaxation": relaxation, "timing": timing, "discharge": discharge, "passive": passive, "overvoltage": overvoltage,
     "safe_state": safe_state, "thermal": thermal, "acceptance": acceptance, "protection": protection,
+    "module_losses": module_losses,
 }
