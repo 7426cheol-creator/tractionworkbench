@@ -163,6 +163,32 @@ def test_efficiency_figures_render(tmp_path, lang, theme):
 
 
 @pytest.mark.parametrize("lang, theme", [("ko", "light"), ("en", "dark")])
+def test_pwm_and_driveline_figures_render(tmp_path, lang, theme):
+    """Variable-PWM policies, timing / transition, ripple; anti-jerk variants (with and without wheel radius) and
+    the stability map."""
+    from traction_workbench.plots import pwm_figures as PF
+    set_language(lang)
+    style.apply(theme)
+    try:
+        segs = api.EXAMPLE_PWM["segments"][:2]
+        dl_nor = {**api.EXAMPLE_DRIVELINE, "driveline": {**api.EXAMPLE_DRIVELINE["driveline"], "wheel_radius_m": None},
+                  "requirement": {"t_to_90_max_s": 0.3, "peak_jerk_max": 1e4, "settle_max_s": 1.0}}
+        jobs = [(PF.fig_pwm_policies, api.pwm_policies({"segments": segs, "use_capacitor": False})),
+                (PF.fig_pwm_timing, api.pwm_timing({})), (PF.fig_pwm_ripple, api.pwm_ripple({"fsw_list_kHz": [10.0]})),
+                (PF.fig_driveline, api.driveline({})), (PF.fig_driveline, api.driveline(dl_nor)),
+                (PF.fig_driveline_stability, api.driveline_stability({"stability": {"Kd_list": [1.0, 3.0],
+                                                                                     "delay_ms_list": [0.0, 10.0, 30.0]}}))]
+        for i, (fn, res) in enumerate(jobs):
+            fig = Figure(figsize=(11, 6))
+            fn(fig, res)
+            fig.savefig(tmp_path / f"p{i}.png", dpi=50)
+        assert len(list(tmp_path.glob("p*.png"))) == len(jobs)
+    finally:
+        set_language("ko")
+        style.apply("light")
+
+
+@pytest.mark.parametrize("lang, theme", [("ko", "light"), ("en", "dark")])
 def test_machine_design_figures_render(tmp_path, lang, theme):
     """Trade study, winding (balanced, fractional-slot and infeasible) and concept-sizing figures."""
     from traction_workbench.plots import machine_figures as MF
@@ -271,6 +297,13 @@ def test_desktop_smoke(tmp_path):
         efp.ab_mis.setChecked(False)
         efp.run_ab()
         assert efp.last_ab["rows"][0]["compare"]["verdict"] in ("A_LOWER_LOSS", "B_LOWER_LOSS", "UNDECIDED")
+        pd = win.pages["pwm_driveline"]
+        pd.t_seg.load([[5.0, 6000.0, 45.0, 600.0, 70.0], [5.0, 3000.0, 250.0, 600.0, 95.0]])
+        pd.p_cap.setChecked(False)
+        pd.run_policies()
+        assert pd.last_pol is not None and len(pd.last_pol["policies"]) == 3
+        pd.run_driveline()
+        assert pd.last_dl["variants"]["combined"]["stability"]["stable"]
         mp = win.pages["machine"]
         mp.t_cand.load([["ref", 1.0, 1.0, 1.0, None, None], ["N+10%", 1.1, 1.0, 1.0, None, None],
                         ["L+", 1.2, 1.2, 1.0, None, None]])            # stack change without end shares: refused

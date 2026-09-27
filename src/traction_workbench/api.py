@@ -561,11 +561,8 @@ EXAMPLE_RIPPLE = {
 }
 
 
-def dclink_ripple(body):
-    """Capacitor current, ripple and ESR loss at the decision operating point (review 8.9)."""
-    from .extensions.dclink_ripple import CapacitorBank, SourceImpedance, ripple_analysis
-    b = body or {}
-    cfg = {**EXAMPLE_RIPPLE, **(b.get("ripple") or {})}
+def _ripple_bank(cfg: dict):
+    from .extensions.dclink_ripple import CapacitorBank, SourceImpedance
     cap = cfg["capacitor"]
     k_esr = {"mohm": 1e-3, "ohm": 1.0}[cap.get("ESR_unit", "mohm")]
     bank = CapacitorBank(float(cap["C_uF"]) * 1e-6, tuple((float(f), float(r) * k_esr) for f, r in cap["ESR_table"]),
@@ -577,6 +574,16 @@ def dclink_ripple(body):
     src = cfg.get("source")
     source = None if not src else SourceImpedance(float(src["R_mohm"]) * 1e-3, float(src["L_uH"]) * 1e-6,
                                                   str(src.get("basis", "")))
+    return bank, source
+
+
+def dclink_ripple(body):
+    """Capacitor current, ripple and ESR loss at the decision operating point (review 8.9)."""
+    from .extensions.dclink_ripple import ripple_analysis
+    b = body or {}
+    cfg = {**EXAMPLE_RIPPLE, **(b.get("ripple") or {})}
+    cap = cfg["capacitor"]
+    bank, source = _ripple_bank(cfg)
     d = _drive(b)
     n, vdc, T = _num(b, "speed_rpm", 6000.0), _num(b, "Vdc_V", 600.0), _num(b, "torque_Nm", 150.0)
     sol = PolicyEvaluator(d, Scenario("ripple", n, vdc, _limits(b))).solve(T)
@@ -1230,6 +1237,311 @@ def module_compare(body):
     return _jsonable(r)
 
 
+# ------------------------------------------------------------------ variable PWM (variable-PWM / anti-jerk addendum)
+
+EXAMPLE_PWM = {
+    "module": EXAMPLE_MODULE, "Rth_K_per_W": 0.09, "coolant_C": 65.0, "modulation": "svpwm", "L_hf_uH": 200.0,
+    "baseline_fsw_kHz": 10.0,
+    "min_dwell_s": 0.5, "hysteresis": {"speed_rpm": 300.0, "torque_abs_Nm": 10.0, "sensor_temp_C": 3.0},
+    "schedules": [
+        {"name": "light-load 8 kHz", "revision": "A", "basis": "example schedule (declare the target policy)",
+         "rules": [{"name": "hot module (protective)", "fsw_kHz": 8.0, "sensor_temp_C": [90.0, 200.0], "protective": True},
+                   {"name": "light load", "fsw_kHz": 8.0, "torque_abs_Nm": [0.0, 60.0]},
+                   {"name": "default", "fsw_kHz": 10.0}]},
+        {"name": "thermal fallback 6 kHz", "revision": "A", "basis": "example schedule (declare the target policy)",
+         "rules": [{"name": "hot module (protective)", "fsw_kHz": 6.0, "sensor_temp_C": [90.0, 200.0], "protective": True},
+                   {"name": "high speed: pulse ratio", "fsw_kHz": 16.0, "speed_rpm": [9000.0, 30000.0]},
+                   {"name": "default", "fsw_kHz": 10.0}]}],
+    "segments": [{"duration_s": 20.0, "speed_rpm": 1500.0, "torque_Nm": 250.0, "Vdc_V": 600.0, "sensor_temp_C": 75.0},
+                 {"duration_s": 40.0, "speed_rpm": 6000.0, "torque_Nm": 45.0, "Vdc_V": 600.0, "sensor_temp_C": 72.0},
+                 {"duration_s": 30.0, "speed_rpm": 11000.0, "torque_Nm": 40.0, "Vdc_V": 600.0, "sensor_temp_C": 74.0},
+                 {"duration_s": 10.0, "speed_rpm": 5000.0, "torque_Nm": -100.0, "Vdc_V": 600.0, "sensor_temp_C": 73.0},
+                 {"duration_s": 15.0, "speed_rpm": 3000.0, "torque_Nm": 280.0, "Vdc_V": 600.0, "sensor_temp_C": 93.0}],
+    "timing": {"sample_to_latch_us": 25.0, "filter_delay_us": 5.0, "updates_per_period": 1,
+               "modulator_delay_fraction": 0.5, "min_pulse_us": 1.5, "wcet_source": "declared estimate",
+               "basis": "example target timing (replace with the measured delay chain of the ECU)"},
+    "loop": {"L_uH": 300.0, "R_mohm": 15.0, "bandwidth_Hz": 500.0, "gain_mapping": "continuous",
+             "reference_fsw_kHz": 10.0, "basis": "example PI with pole-zero cancellation at the mean dq inductance"},
+    "harmonic": {"f_Hz": [0.0, 1e3, 5e3, 10e3, 20e3, 50e3, 1e5, 3e5, 1e6, 3e6],
+                 "rac_over_rdc": [1.0, 1.02, 1.3, 1.8, 2.8, 5.0, 8.0, 14.0, 25.0, 45.0],
+                 "iron_bound_W": [[6e3, 420.0], [8e3, 350.0], [10e3, 300.0], [16e3, 220.0]],
+                 "basis": "synthetic example (declare FEA / measured R_ac(f) and the harmonic iron-loss bound)"},
+    "pwm_limits": {"Tj_max_C": 150.0, "i_peak_incl_ripple_max_A": 700.0, "cap_rms_max_A": 250.0,
+                   "phase_margin_min_deg": 45.0, "pulse_ratio_min": None},
+    "use_capacitor": True,
+    "transition": {"from_kHz": 10.0, "to_kHz": 20.0, "duty": 0.9, "deadtime_us": 1.0, "write_fraction": 0.3},
+    "note": "example schedule, timing, harmonic data and limits are synthetic",
+}
+
+
+def _schedule(sd: dict, common: dict):
+    """A schedule; fallback, dwell and hysteresis default to the common settings of the comparison."""
+    from .extensions.pwm_policy import FswRule, FswSchedule
+    sd = {"fallback_fsw_kHz": common.get("baseline_fsw_kHz"), "min_dwell_s": common.get("min_dwell_s"),
+          "hysteresis": common.get("hysteresis"), **sd}
+    rules = []
+    for r in sd["rules"]:
+        rules.append(FswRule(str(r.get("name", "rule")), float(r["fsw_kHz"]) * 1e3,
+                             *(tuple(r[k]) if r.get(k) not in (None, "") else None
+                               for k in ("speed_rpm", "torque_abs_Nm", "Vdc_V", "sensor_temp_C")),
+                             protective=bool(r.get("protective"))))
+    return FswSchedule(str(sd.get("name", "schedule")), tuple(rules), float(sd["fallback_fsw_kHz"]) * 1e3,
+                       tuple((k, float(v)) for k, v in (sd.get("hysteresis") or {}).items()),
+                       float(sd.get("min_dwell_s") or 0.0), str(sd.get("revision", "1")), str(sd.get("basis", "")))
+
+
+def _timing(t: dict):
+    from .extensions.pwm_policy import TimingConfig
+    return TimingConfig(float(t["sample_to_latch_us"]) * 1e-6, float(t.get("filter_delay_us") or 0.0) * 1e-6,
+                        int(t.get("updates_per_period") or 1), float(t.get("modulator_delay_fraction", 0.5)),
+                        float(t.get("min_pulse_us") or 0.0) * 1e-6, str(t.get("basis", "")),
+                        str(t.get("wcet_source", "declared estimate")))
+
+
+def _loop(lp: dict | None):
+    from .extensions.pwm_policy import CurrentLoop
+    if not lp:
+        return None
+    L, R = float(lp["L_uH"]) * 1e-6, float(lp["R_mohm"]) * 1e-3
+    kp = 2 * math.pi * float(lp["bandwidth_Hz"]) * L
+    return CurrentLoop(L, R, kp, kp * R / L, str(lp.get("gain_mapping", "continuous")),
+                       None if lp.get("reference_fsw_kHz") in (None, "") else float(lp["reference_fsw_kHz"]) * 1e3,
+                       str(lp.get("basis", "")))
+
+
+def pwm_policies(body):
+    """Fixed-frequency baseline vs a declared schedule on the same trajectory (P1-PWM)."""
+    from .analysis.efficiency import ModuleCandidate
+    from .extensions.pwm_policy import HarmonicLossData, PwmLimits, evaluate_policies, fixed_schedule
+    b = {**EXAMPLE_PWM, **(body or {})}
+    model = module_model_from_dict(b.get("module") or EXAMPLE_MODULE)
+    cand = ModuleCandidate(str((b.get("module") or {}).get("name", "module")), model, float(b["Rth_K_per_W"]))
+    hd = b.get("harmonic")
+    harm = None if not hd else HarmonicLossData(tuple(float(x) for x in hd["f_Hz"]),
+                                                tuple(float(x) for x in hd["rac_over_rdc"]),
+                                                tuple((float(f), float(w)) for f, w in (hd.get("iron_bound_W") or [])),
+                                                str(hd.get("basis", "")))
+    bank, source = _ripple_bank(EXAMPLE_RIPPLE) if b.get("use_capacitor") else (None, None)
+    lim = PwmLimits(**{k: (None if v in (None, "") else float(v)) for k, v in (b.get("pwm_limits") or {}).items()})
+    pols = [fixed_schedule(float(b["baseline_fsw_kHz"]) * 1e3)] + [_schedule(sd, b) for sd in b.get("schedules") or []]
+    names = [p.name for p in pols]
+    if len(set(names)) != len(names):
+        raise InputValidationError("policy names must be unique", field="schedules")
+    segs = [{**s, "Vdc_V": float(s.get("Vdc_V") or 600.0)} for s in b["segments"]]
+    r = evaluate_policies(_drive(b), cand, segs, pols, float(b["coolant_C"]), _limits(b), _timing(b["timing"]),
+                          float(b["L_hf_uH"]) * 1e-6, _loop(b.get("loop")), harm, bank, source,
+                          str(b.get("modulation", "svpwm")), lim)
+    return _jsonable(r)
+
+
+def pwm_timing(body):
+    """Delay ledger, current-loop margin and phase lag vs carrier frequency; one clock-level period transition."""
+    from .extensions.pwm_policy import delay_ledger, phase_lag_deg, transition_check
+    b = {**EXAMPLE_PWM, **(body or {})}
+    tc = _timing(b["timing"])
+    loop = _loop(b.get("loop"))
+    f_mode = float(b.get("mode_frequency_Hz") or 20.0)
+    rows = []
+    for fsw in [float(x) * 1e3 for x in (b.get("fsw_sweep_kHz") or [4, 5, 6, 8, 10, 12, 16, 20, 25, 30, 40])]:
+        led = delay_ledger(fsw, tc)
+        row = {"fsw_Hz": fsw, "deadline_ok": led["deadline_ok"], "deadline_margin_s": led["deadline_margin_s"],
+               "total_delay_s": led["total_delay_s"]}
+        if led["total_delay_s"] is not None:
+            row["phase_at_mode_deg"] = phase_lag_deg(f_mode, led["total_delay_s"])
+            if loop is not None:
+                mg = loop.margins(led["total_delay_s"], loop.effective_Ki(fsw, tc.updates_per_period))
+                row.update({"phase_margin_deg": mg["phase_margin_deg"], "crossover_Hz": mg["crossover_Hz"],
+                            "phase_at_crossover_deg": mg.get("delay_phase_at_crossover_deg")})
+        rows.append(row)
+    trn = b["transition"]
+    out = {"rows": rows, "mode_frequency_Hz": f_mode, "timing": tc.__dict__,
+           "loop": None if loop is None else loop.__dict__}
+    for sh in (True, False):
+        r = transition_check(float(trn["from_kHz"]) * 1e3, float(trn["to_kHz"]) * 1e3, float(trn["duty"]),
+                             float(trn["deadtime_us"]) * 1e-6, tc.min_pulse_s, write_fraction=float(trn["write_fraction"]),
+                             shadow=sh)
+        out["transition_shadow" if sh else "transition_immediate"] = r
+    return _jsonable(out)
+
+
+def pwm_ripple(body):
+    """Phase-current ripple vs carrier frequency at one operating point (time integration and edge-sum spectrum)."""
+    from .extensions.pwm_policy import minimum_pulse, phase_ripple
+    b = {**EXAMPLE_PWM, **(body or {})}
+    d = _drive(b)
+    n, T, vdc = _num(b, "speed_rpm", 6000.0), _num(b, "torque_Nm", 150.0), _num(b, "Vdc_V", 600.0)
+    sol = PolicyEvaluator(d, Scenario("ripple", n, vdc, _limits(b))).solve(T)
+    if sol.point is None:
+        raise InputValidationError("no operating point: " + sol.policy_claim.detail, field="torque_Nm")
+    pt = sol.point
+    m = pt.v_peak_V / (0.5 * vdc)
+    fe = abs(pt.f_e_Hz)
+    L = float(b["L_hf_uH"]) * 1e-6
+    rows = []
+    for fsw in [float(x) * 1e3 for x in (b.get("fsw_list_kHz") or [5.0, 10.0, 20.0])]:
+        r = phase_ripple(vdc, m, 0.0, max(fe, fsw / 400.0), fsw, L, str(b.get("modulation", "svpwm")))
+        mp = minimum_pulse(m, str(b.get("modulation", "svpwm")), fsw, float(b["timing"].get("min_pulse_us") or 0) * 1e-6)
+        rows.append({"fsw_Hz": fsw, **{k: r[k] for k in ("ripple_rms_A", "ripple_rms_spectrum_A", "ripple_pp_A",
+                                                          "ripple_peak_A", "carrier_ratio")},
+                     "t_s": r["t_s"][:: max(1, r["t_s"].size // 3000)], "di_A": r["di_A"][:: max(1, r["t_s"].size // 3000)],
+                     "harmonic_f_Hz": r["harmonic_f_Hz"], "harmonic_I_pk_A": r["harmonic_I_pk_A"],
+                     "narrowest_pulse_s": mp["narrowest_pulse_s"], "min_pulse_ok": mp["ok"],
+                     "pulse_ratio": fsw / fe if fe > 0 else None})
+    return _jsonable({"point": {"speed_rpm": n, "torque_Nm": T, "Vdc_V": vdc, "i_peak_A": pt.i_peak_A, "m": m,
+                                "f_e_Hz": fe}, "L_hf_H": L, "rows": rows})
+
+
+# ------------------------------------------------------------------ anti-jerk / active damping (P1-DAMP)
+
+EXAMPLE_DRIVELINE = {
+    "driveline": {"Jm_kgm2": 0.04, "J_out_kgm2": 200.0, "k_out_Nm_per_rad": 12000.0, "c_out_Nms_per_rad": 30.0,
+                  "ratio": 9.0, "wheel_radius_m": 0.33, "contact": "maintained", "backlash_out_rad": None,
+                  "basis": "synthetic two-inertia ROM (1800 kg, r 0.33 m, two half-shafts) - replace with an "
+                           "FRF-identified / validated torsional model"},
+    "maneuver": {"T0_Nm": 20.0, "T1_Nm": 150.0, "t_step_s": 0.05, "t_end_s": 1.2, "speed_rpm": 2000.0,
+                 "Vdc_V": 600.0, "TL_out_Nm": 0.0, "window": "capability", "emergency_t_s": None,
+                 "emergency_T_Nm": None},
+    "controller": {"sample_ms": 1.0, "delay_ms": 2.0, "actuator_tau_ms": 1.5,
+                   "basis": "example timing / current-loop ROM (replace with the target delay chain and a "
+                            "validated torque response)"},
+    "variants": {"off": {},
+                 "shaping": {"shaper": {"kind": "rate", "rate_Nm_per_s": 1500.0}},
+                 "feedback": {"damping": {"kind": "motor_speed_hpf", "Kd_Nms_per_rad": 1.5, "hpf_Hz": 2.0}},
+                 "combined": {"shaper": {"kind": "rate", "rate_Nm_per_s": 1500.0},
+                              "damping": {"kind": "motor_speed_hpf", "Kd_Nms_per_rad": 1.5, "hpf_Hz": 2.0}}},
+    "requirement": {"t_to_90_max_s": 0.25, "peak_vehicle_jerk_max_m_s3": 35.0, "settle_max_s": 0.6,
+                    "basis": "example comfort / response targets (declare the program's definitions)"},
+    "stability": {"Kd_list": [0.5, 1.0, 1.5, 2.5, 4.0], "delay_ms_list": [0.0, 1.0, 2.0, 4.0, 6.0, 8.0, 12.0, 16.0, 24.0]},
+    "note": "example driveline, controller and targets are synthetic",
+}
+
+
+def _driveline(dd: dict):
+    from .extensions.driveline import Driveline
+    return Driveline(float(dd["Jm_kgm2"]), float(dd["J_out_kgm2"]), float(dd["k_out_Nm_per_rad"]),
+                     float(dd["c_out_Nms_per_rad"]), float(dd.get("ratio") or 1.0), _opt(dd, "wheel_radius_m"),
+                     str(dd.get("contact", "maintained")), _opt(dd, "backlash_out_rad"), str(dd.get("basis", "")))
+
+
+def _controller(c: dict, v: dict):
+    from .extensions.driveline import Controller, Damping, Shaper
+    sh = v.get("shaper") or {}
+    dp = v.get("damping") or {}
+    return Controller(float(c["sample_ms"]) * 1e-3, float(c["delay_ms"]) * 1e-3,
+                      float(c.get("actuator_tau_ms") or 0.0) * 1e-3,
+                      Shaper(sh.get("kind", "none"), _opt(sh, "rate_Nm_per_s"), _opt(sh, "tau_s"), _opt(sh, "zv_f_Hz"),
+                             _opt(sh, "zv_zeta")),
+                      Damping(dp.get("kind", "none"), float(dp.get("Kd_Nms_per_rad") or 0.0), _opt(dp, "hpf_Hz"),
+                              float(dp.get("quantization_rad_s") or 0.0)))
+
+
+def _torque_window(d, n, vdc, lim):
+    """Allowed actual torque window at the operating speed: the policy capability in both directions (incl. DC)."""
+    from .solvers.capability import policy_capability
+    ev = PolicyEvaluator(d, Scenario("window", n, vdc, lim))
+    hi = policy_capability(ev, +1)
+    lo = policy_capability(ev, -1)
+    return (lo.value_Nm if lo.accepted else None, hi.value_Nm if hi.accepted else None)
+
+
+def _loss_lookup(d, n, vdc, lim, T_lo, T_hi, npts=41):
+    """Electrical loss vs torque at the operating speed from the policy points (for the damping energy cost)."""
+    grid = np.linspace(T_lo, T_hi, npts)
+    ev = PolicyEvaluator(d, Scenario("loss", n, vdc, lim))
+    w = []
+    for T in grid:
+        sol = ev.solve(float(T))
+        p = sol.point
+        w.append(np.nan if (p is None or p.Pdc_W is None or p.Pshaft_W is None) else p.Pdc_W - p.Pshaft_W)
+    w = np.array(w)
+
+    def fn(T, _n):
+        T = np.asarray(T, float)
+        if np.any(T < grid[0] - 1e-9) or np.any(T > grid[-1] + 1e-9) or np.any(np.isnan(w)):
+            return None
+        return np.interp(T, grid, w)
+    return fn
+
+
+def driveline(body):
+    """Off / shaping / feedback / combined on one maneuver: response, jerk, correction, clipping, loss, stability."""
+    from .extensions.driveline import Maneuver, evaluate_variants
+    b = {**EXAMPLE_DRIVELINE, **(body or {})}
+    dl = _driveline(b["driveline"])
+    m = b["maneuver"]
+    d = _drive(b)
+    lim = _limits(b)
+    n, vdc = float(m["speed_rpm"]), float(m.get("Vdc_V") or 600.0)
+    win = m.get("window")
+    window_info = None
+    if win == "capability":
+        lo, hi = _torque_window(d, n, vdc, lim)
+        if lo is None or hi is None:
+            raise InputValidationError("the torque window (capability) is not established at this operating point",
+                                       field="window")
+        window = (lo, hi)
+        window_info = {"source": "policy capability at the operating speed and Vdc (incl. DC limits)",
+                       "T_min_Nm": lo, "T_max_Nm": hi}
+    elif win:
+        window = (float(win[0]), float(win[1]))
+        window_info = {"source": "declared", "T_min_Nm": window[0], "T_max_Nm": window[1]}
+    else:
+        window = None
+    man = Maneuver(float(m["T0_Nm"]), float(m["T1_Nm"]), float(m["t_step_s"]), float(m["t_end_s"]), n,
+                   float(m.get("TL_out_Nm") or 0.0), window, _opt(m, "emergency_t_s"), _opt(m, "emergency_T_Nm"))
+    variants = {name: _controller(b["controller"], v or {}) for name, v in b["variants"].items()}
+    loss_fn = None
+    if window is not None:
+        loss_fn = _loss_lookup(d, n, vdc, lim, window[0], window[1])
+    req = {k: v for k, v in (b.get("requirement") or {}).items() if k != "basis"}
+    r = evaluate_variants(dl, variants, man, req, loss_fn)
+    r["window"] = window_info
+    r["wheel_radius_m"] = dl.wheel_radius_m
+    if window is not None:
+        r["dynamic_reserve"] = {"positive_Nm": window[1] - man.T1_Nm, "negative_Nm": man.T1_Nm - window[0],
+                                "note": "quasi-static capability window at the operating speed; the electrical "
+                                        "di/dt at the torsional mode frequency is not the binding term here"}
+    r["requirement"] = b.get("requirement")
+    r["maneuver"] = m
+    r["controller"] = b["controller"]
+    return _jsonable(r)
+
+
+def driveline_stability(body):
+    """Sampled-loop stability and damping over (Kd, delay); continuous delay crossings for relative-speed feedback."""
+    from dataclasses import replace as _rep
+    from .extensions.driveline import (Controller, Damping, delay_crossings, relative_mode_coefficients,
+                                       sampled_eigenvalues, undelayed_damping)
+    b = {**EXAMPLE_DRIVELINE, **(body or {})}
+    dl = _driveline(b["driveline"])
+    c = b["controller"]
+    st = b["stability"]
+    kind = (b["variants"].get("feedback") or {}).get("damping", {}).get("kind", "relative_speed")
+    hpf = (b["variants"].get("feedback") or {}).get("damping", {}).get("hpf_Hz")
+    base = Controller(float(c["sample_ms"]) * 1e-3, 0.0, float(c.get("actuator_tau_ms") or 0.0) * 1e-3)
+    grid = []
+    for Kd in st["Kd_list"]:
+        row = []
+        for dms in st["delay_ms_list"]:
+            ctl = _rep(base, delay_s=float(dms) * 1e-3, damping=Damping(kind, float(Kd), hpf))
+            e = sampled_eigenvalues(dl, ctl)
+            row.append({"Kd": Kd, "delay_ms": dms, "stable": e["stable"], "rho": e["spectral_radius_excl_rigid"],
+                        "zeta": e["dominant_zeta"]})
+        grid.append(row)
+    cont = []
+    for Kd in st["Kd_list"]:
+        co = relative_mode_coefficients(dl, float(Kd))
+        cr = delay_crossings(co["a1"], co["a0"], co["b1"], 0.2)
+        first = next((x for x in cr if x["direction"] == "into RHP"), None)
+        cont.append({"Kd": Kd, "zeta_undelayed": undelayed_damping(dl, float(Kd))["zeta"],
+                     "first_destabilising_delay_ms": None if first is None else first["tau_s"] * 1e3,
+                     "crossing_omega_rad_s": None if first is None else first["omega_rad_s"]})
+    return _jsonable({"grid": grid, "continuous_relative_speed": cont, "modal": dl.modal(), "feedback_kind": kind,
+                      "sample_ms": float(c["sample_ms"]), "actuator_tau_ms": float(c.get("actuator_tau_ms") or 0.0),
+                      "meaning": "sampled loop: exact ZOH + fractional delay; continuous crossings are for ideal "
+                                 "relative-speed feedback (an analysis reference, not the target controller)"})
+
+
 # ------------------------------------------------------------------ machine design (handoff section 10)
 
 EXAMPLE_MACHINE = {
@@ -1340,5 +1652,6 @@ ROUTES = {
     "hev_rejection": hev_rejection, "hev_planetary": hev_planetary, "emi": emi, "emi_oew": emi_oew,
     "machine_trade": machine_trade, "winding": winding, "concept_sizing": concept_sizing,
     "efficiency": efficiency, "efficiency_map": efficiency_map, "efficiency_mission": efficiency_mission,
-    "module_compare": module_compare,
+    "module_compare": module_compare, "pwm_policies": pwm_policies, "pwm_timing": pwm_timing, "pwm_ripple": pwm_ripple,
+    "driveline": driveline, "driveline_stability": driveline_stability,
 }

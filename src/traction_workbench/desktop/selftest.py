@@ -201,6 +201,30 @@ def run_self_test(app, out_dir) -> int:
                                                             for r in ab_rows)
               and all(r["compare"]["verdict"] in ("A_LOWER_LOSS", "B_LOWER_LOSS", "UNDECIDED") for r in ab_rows),
               str([r["compare"]["verdict"] for r in ab_rows]))
+        pw_ = visit("pwm_driveline", 0, ["run_policies"], [(None, "47_pwm_policies")])
+        pol = {p["policy"]["name"]: p for p in (pw_.last_pol or {}).get("policies", [])}
+        check("pwm:policies", pol.get("fixed 10 kHz", {}).get("admissible") and
+              not pol.get("thermal fallback 6 kHz", {}).get("admissible", True) and
+              (pw_.last_pol or {}).get("best_inverter_energy_among_evaluated") == "light-load 8 kHz",
+              str({k: v.get("violations") for k, v in pol.items()}))
+        pw_.run_timing()
+        shot(win, "48_pwm_timing")
+        check("pwm:transition", bool(pw_.last_tim) and pw_.last_tim["transition_shadow"]["ok"]
+              and not pw_.last_tim["transition_immediate"]["ok"])
+        pw_.run_ripple()
+        rr = (pw_.last_rip or {}).get("rows", [])
+        check("pwm:ripple", bool(rr) and all(abs(x["ripple_rms_A"] / x["ripple_rms_spectrum_A"] - 1) < 1e-3 for x in rr))
+        pw_.tabs.setCurrentIndex(1)
+        pw_.run_driveline()
+        shot(win, "49_antijerk_variants")
+        dv = (pw_.last_dl or {}).get("variants", {})
+        check("antijerk:variants", set(dv) == {"off", "shaping", "feedback", "combined"}
+              and dv["off"]["metrics"]["peak_vehicle_jerk_m_s3"] > dv["combined"]["metrics"]["peak_vehicle_jerk_m_s3"],
+              str({k: v["status"] for k, v in dv.items()}))
+        pw_.run_stability()
+        shot(win, "50_antijerk_stability")
+        gr = (pw_.last_stab or {}).get("grid", [])
+        check("antijerk:stability", any(not x["stable"] for row in gr for x in row) and any(x["stable"] for row in gr for x in row))
         mc = visit("machine", 0, ["run_trade"], [(None, "40_machine_trade")])
         mrows = {r["candidate"]: r for r in (mc.last_trade or {}).get("rows", []) if "checks" in r}
         check("machine:trade", "ref" in mrows and "N+10%" in mrows and mrows["ref"]["all_feasible"]
@@ -224,6 +248,9 @@ def run_self_test(app, out_dir) -> int:
         visit("model", 7, [], [(None, "18_model")])
         vv = visit("verification", 8, ["run"], [(None, "19_verification")])
         check("acceptance", "PASS" in vv.summary.text() and "MISMATCH" not in vv.summary.text(), vv.summary.text())
+        xp = vv.export_exchange(str(out / "twb_exchange.json"))
+        xj = json.loads(Path(xp).read_text(encoding="utf-8")) if xp else {}
+        check("exchange:package", xj.get("schema") == "twb-exchange/1" and len(xj.get("fixtures", {})) >= 12)
         # flux-map drive: model switch + a decision on the D2 test drive
         win.state.set_drive({"builtin": "MANUFACTURED_FLUX_MAP_TEST_DRIVE"}, "flux map", "builtin")
         win.nav.setCurrentRow(0)

@@ -24,6 +24,7 @@ from .pages.oew_hev import OewHevPage
 from .pages.performance import PerformancePage
 from .pages.power import PowerPage
 from .pages.protection import ProtectionPage
+from .pages.pwm_driveline import PwmDrivelinePage
 from .pages.safety import SafetyPage
 from .pages.thermal import ThermalPage
 from .pages.trajectory import TrajectoryPage
@@ -43,6 +44,7 @@ PAGES = (
     ("thermal", lambda: tr("열·지속시간", "Thermal & duration"), ThermalPage),
     ("power", lambda: tr("전력변환·수명", "Power stage & life"), PowerPage),
     ("efficiency", lambda: tr("효율·모듈 비교", "Efficiency & modules"), EfficiencyPage),
+    ("pwm_driveline", lambda: tr("가변 PWM·Anti-jerk", "Variable PWM & anti-jerk"), PwmDrivelinePage),
     ("oew_hev", lambda: tr("OEW·HEV", "OEW & HEV"), OewHevPage),
     ("emi", lambda: tr("EMI (전도성)", "EMI (conducted)"), EmiPage),
     ("machine", lambda: tr("모터 설계", "Machine design"), MachinePage),

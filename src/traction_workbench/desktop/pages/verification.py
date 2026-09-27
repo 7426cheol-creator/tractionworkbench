@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QSplitter, QTabWidget, QTextBrowser, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (QFileDialog, QHBoxLayout, QLabel, QPushButton, QSplitter, QTabWidget, QTextBrowser,
+                               QVBoxLayout, QWidget)
 
 from ... import __version__
 from ... import service as S
@@ -19,7 +20,9 @@ validation(V4–V5)은 수행하지 않았습니다. 수치 자릿수는 회귀 
 선형 SVPWM 전압 예산 (1 − r_v)·Vdc/√3, 기본파 전류 한계, 선언된 운전 도메인, DC 평균 전력·전류 한계.
 
 **알려진 한계**
-- 과변조·6-step, PWM 리플·데드타임·소자 강하(명시한 저항 모델 제외), 과도 현상, 철손 분리, 온도-손실 결합은 모델 밖입니다.
+- 판정 모델(요구 판정·capability)은 정상상태 기본파입니다. 과변조·6-step, 소자 강하(명시한 저항 모델 제외), 과도 현상, 철손
+  분리는 그 밖입니다. PWM 리플·최소 펄스·지연·전환은 '가변 PWM' 페이지의 선언 기반 스크리닝이며, 데이터시트 모듈 손실의 온도
+  결합은 효율·모듈 비교에서 계산됩니다.
 - 파형·듀티 그래프는 같은 기본파 값의 재표현(평균값 모델)이며 스위칭 파형이 아닙니다.
 - Vdc 범위 요구는 표본점 통과만으로 PASS가 되지 않습니다(SAMPLED_COVERAGE).
 - flux map 모델은 셀 단위 쌍선형 보간, 데이터 밖 외삽 없음. 격자 기반 곡선·맵은 시각화용 근사입니다.
@@ -36,8 +39,10 @@ validation (V4–V5) has been performed. Digits are regression checks, not produ
 limit, declared operating domain, average DC power/current limits.
 
 **Known limitations**
-- Overmodulation/six-step, PWM ripple, dead time, device drops (except a declared resistive model), transients,
-  separate iron loss and loss-temperature coupling are outside the model.
+- The decision model (requirement verdicts, capability) is the steady-state fundamental. Overmodulation / six-step,
+  device drops (except a declared resistive model), transients and separate iron loss are outside it. PWM ripple,
+  minimum pulse, delay and transitions are declared-data screenings on the 'Variable PWM' page; the temperature
+  coupling of datasheet module losses is computed in 'Efficiency & modules'.
 - Waveform and duty plots re-express the same fundamental values (average model); they are not switching waveforms.
 - A Vdc range requirement never becomes PASS from samples alone (SAMPLED_COVERAGE).
 - Flux maps: bilinear per cell, no extrapolation. Grid-based curves/maps are visualisation approximations.
@@ -64,6 +69,12 @@ class VerificationPage(QWidget):
         top.addWidget(self.run_btn)
         self.summary = QLabel(f"software {__version__}")
         top.addWidget(self.summary, 1)
+        self.exch_btn = QPushButton(tr("교환 패키지 내보내기 (JSON)", "export exchange package (JSON)"))
+        self.exch_btn.setToolTip(tr("MathWorks 이식·도구 간 parity용: 규약, 모델 식별, 예시 입력, fixture (구현 검증이며 물리 승인 아님)",
+                                    "for a MathWorks port / cross-tool parity: conventions, identities, example inputs, "
+                                    "fixtures (implementation verification, not physical qualification)"))
+        self.exch_btn.clicked.connect(self.export_exchange)
+        top.addWidget(self.exch_btn)
         lay.addLayout(top)
         split = QSplitter(Qt.Horizontal)
         self.tabs = QTabWidget()
@@ -105,6 +116,21 @@ class VerificationPage(QWidget):
             colors[(i, 6)] = "#1a7f37" if r["pass"] else "#cf222e"
         self.table.set_rows(rows, colors)
         self.manifest.set_rows([(m["name"], m["sha256"], "OK" if m["ok"] else "MISMATCH") for m in acc["manifest"]])
+
+    def export_exchange(self, path: str | None = None):
+        import json
+        from ...decision import _jsonable
+        from ...exchange import build_package
+        if path is None:
+            path, _ = QFileDialog.getSaveFileName(self, tr("교환 패키지 저장", "save exchange package"),
+                                                  "twb_exchange.json", "JSON (*.json)")
+        if not path:
+            return None
+        pkg = build_package()
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(_jsonable(pkg), fh, indent=2, ensure_ascii=False)
+        self.summary.setText(tr(f"교환 패키지 저장: {path}", f"exchange package written: {path}"))
+        return path
 
     def redraw(self):
         self.plot.redraw()
