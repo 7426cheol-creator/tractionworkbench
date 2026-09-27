@@ -1,0 +1,423 @@
+{
+  "metadata": {
+    "schema_purpose": "Engineering reference fixture, not a required production serialization format",
+    "version": "1.0",
+    "date": "2026-09-27",
+    "origin": "Synthetic analytic/numerical construction; no OEM or confidential data",
+    "verification_status": "Algebraic identities, independently reduced 1D inverse reference calculations and selected bound checks performed; no hardware or external-simulator validation performed",
+    "scope": "Balanced sinusoidal three-phase steady-state fundamental model",
+    "convention": "Amplitude-invariant Park; d axis PM-aligned; dq quantities phase peak; p=pole pairs"
+  },
+  "reference_method": "Eliminate iq using exact torque equation; compute current/voltage polynomial boundary roots; partition the entire declared id interval; minimize current over all valid subintervals and boundaries.",
+  "cases": [
+    {
+      "case_id": "I00_MTPA",
+      "input": {
+        "n_rpm": 3000,
+        "Tshaft_requested_Nm": 300,
+        "Vdc_V": 600
+      },
+      "expected_policy_solution": {
+        "n_rpm": 3000,
+        "id_A_peak": -190.57470879684746,
+        "iq_A_peak": 362.7755195554041,
+        "i_peak_A": 409.7862823737473,
+        "i_phase_rms_A": 289.7626591037021,
+        "vd_V_peak": -185.2094857739492,
+        "vq_V_peak": 83.20869052762758,
+        "v_peak_V": 203.04245812138208,
+        "Te_Nm": 300.6283185307179,
+        "Tshaft_Nm": 299.99999999999994,
+        "Pshaft_W": 94247.77960769378,
+        "Pcu_W": 3778.307937488173,
+        "Prot_W": 197.39208802178717,
+        "Pac_W": 98223.47963320374,
+        "Pinv_W": 1543.3983777735727,
+        "Pdc_W": 99766.8780109773,
+        "Idc_A": 166.2781300182955,
+        "Vmargin_V": 126.04719531670463,
+        "dc_ok": true
+      },
+      "reference_feasible_id_intervals_A": [
+        [
+          -500.0,
+          0
+        ]
+      ],
+      "electrical_existence": "FEASIBLE",
+      "minimum_current_policy_with_dc": "FEASIBLE",
+      "duration_status": "UNKNOWN"
+    },
+    {
+      "case_id": "I01_FIELD_WEAKENING",
+      "input": {
+        "n_rpm": 6000,
+        "Tshaft_requested_Nm": 300,
+        "Vdc_V": 600
+      },
+      "expected_policy_solution": {
+        "n_rpm": 6000,
+        "id_A_peak": -315.2178221880179,
+        "iq_A_peak": 307.9510662284028,
+        "i_peak_A": 440.6769050179133,
+        "i_phase_rms_A": 311.6056278504666,
+        "vd_V_peak": -314.3144456778744,
+        "vq_V_peak": 97.50091916597736,
+        "v_peak_V": 329.08965343808654,
+        "Te_Nm": 301.2566370614359,
+        "Tshaft_Nm": 300.0,
+        "Pshaft_W": 188495.5592153876,
+        "Pcu_W": 4369.413028863757,
+        "Prot_W": 789.5683520871487,
+        "Pac_W": 193654.5405963385,
+        "Pinv_W": 1753.569076929336,
+        "Pdc_W": 195408.10967326784,
+        "Idc_A": 325.68018278877975,
+        "Vmargin_V": 1.7053025658242404e-13,
+        "dc_ok": true
+      },
+      "reference_feasible_id_intervals_A": [
+        [
+          -500.0,
+          -315.2178221880179
+        ]
+      ],
+      "electrical_existence": "FEASIBLE",
+      "minimum_current_policy_with_dc": "FEASIBLE",
+      "duration_status": "UNKNOWN"
+    },
+    {
+      "case_id": "I02_HIGH_SPEED_MATCH",
+      "input": {
+        "n_rpm": 12000,
+        "Tshaft_requested_Nm": 150,
+        "Vdc_V": 600
+      },
+      "expected_policy_solution": {
+        "n_rpm": 12000,
+        "id_A_peak": -367.6759620645362,
+        "iq_A_peak": 146.47679624544,
+        "i_peak_A": 395.77906073769293,
+        "i_phase_rms_A": 279.85805769926515,
+        "vd_V_peak": -300.02421271483576,
+        "vq_V_peak": 135.2237840945265,
+        "v_peak_V": 329.0896534380869,
+        "Te_Nm": 152.51327412287185,
+        "Tshaft_Nm": 150.0,
+        "Pshaft_W": 188495.5592153876,
+        "Pcu_W": 3524.423960664234,
+        "Prot_W": 3158.273408348595,
+        "Pac_W": 195178.25658440043,
+        "Pinv_W": 1453.1285193472834,
+        "Pdc_W": 196631.3851037477,
+        "Idc_A": 327.71897517291285,
+        "Vmargin_V": -1.7053025658242404e-13,
+        "dc_ok": true
+      },
+      "reference_feasible_id_intervals_A": [
+        [
+          -500.0,
+          -367.6759620645362
+        ]
+      ],
+      "electrical_existence": "FEASIBLE",
+      "minimum_current_policy_with_dc": "FEASIBLE",
+      "duration_status": "UNKNOWN"
+    },
+    {
+      "case_id": "I03_LOW_VOLTAGE_INFEASIBLE",
+      "input": {
+        "n_rpm": 12000,
+        "Tshaft_requested_Nm": 150,
+        "Vdc_V": 450
+      },
+      "expected_policy_solution": null,
+      "reference_feasible_id_intervals_A": [],
+      "electrical_existence": "INFEASIBLE",
+      "minimum_current_policy_with_dc": "INFEASIBLE",
+      "duration_status": "UNKNOWN",
+      "independent_infeasibility_bound": {
+        "reason": "In declared id range [-500,0], required iq >= Te/[6*0.2]. Since Rs*id<=0 and iq>0, |vd|>=omega_e*Lq*iq_min.",
+        "iq_min_A": 127.0943951023932,
+        "required_abs_vd_lower_bound_V": 255.53844349831493,
+        "allowed_voltage_peak_V": 246.81724007856502
+      }
+    },
+    {
+      "case_id": "I04_HIGH_SPEED_PART_LOAD",
+      "input": {
+        "n_rpm": 12000,
+        "Tshaft_requested_Nm": 100,
+        "Vdc_V": 600
+      },
+      "expected_policy_solution": {
+        "n_rpm": 12000,
+        "id_A_peak": -265.85886024126944,
+        "iq_A_peak": 111.54500244185219,
+        "i_peak_A": 288.3109799132521,
+        "i_phase_rms_A": 203.86664898719903,
+        "vd_V_peak": -228.26241744184523,
+        "vq_V_peak": 237.05752209876186,
+        "v_peak_V": 329.08965343808694,
+        "Te_Nm": 102.51327412287183,
+        "Tshaft_Nm": 100.0,
+        "Pshaft_W": 125663.70614359173,
+        "Pcu_W": 1870.2724756171417,
+        "Prot_W": 3158.273408348595,
+        "Pac_W": 130692.25202755748,
+        "Pinv_W": 864.9857691083171,
+        "Pdc_W": 131557.2377966658,
+        "Idc_A": 219.26206299444303,
+        "Vmargin_V": -2.2737367544323206e-13,
+        "dc_ok": true
+      },
+      "reference_feasible_id_intervals_A": [
+        [
+          -500.0,
+          -265.85886024126944
+        ]
+      ],
+      "electrical_existence": "FEASIBLE",
+      "minimum_current_policy_with_dc": "FEASIBLE",
+      "duration_status": "UNKNOWN"
+    },
+    {
+      "case_id": "I05_MAX_DECLARED_SPEED",
+      "input": {
+        "n_rpm": 16000,
+        "Tshaft_requested_Nm": 50,
+        "Vdc_V": 600
+      },
+      "expected_policy_solution": {
+        "n_rpm": 16000,
+        "id_A_peak": -284.53397609863356,
+        "iq_A_peak": 56.66955775573456,
+        "i_peak_A": 290.1224264525725,
+        "i_phase_rms_A": 205.1475351189094,
+        "vd_V_peak": -156.18921824102992,
+        "vq_V_peak": 289.66347388867655,
+        "v_peak_V": 329.08965343808677,
+        "Te_Nm": 53.35103216382911,
+        "Tshaft_Nm": 50.0,
+        "Pshaft_W": 83775.80409572781,
+        "Pcu_W": 1893.848002441387,
+        "Prot_W": 5614.708281508611,
+        "Pac_W": 91284.3603796778,
+        "Pinv_W": 873.3681786458266,
+        "Pdc_W": 92157.72855832364,
+        "Idc_A": 153.59621426387272,
+        "Vmargin_V": -5.684341886080802e-14,
+        "dc_ok": true
+      },
+      "reference_feasible_id_intervals_A": [
+        [
+          -500.0,
+          -284.53397609863356
+        ]
+      ],
+      "electrical_existence": "FEASIBLE",
+      "minimum_current_policy_with_dc": "FEASIBLE",
+      "duration_status": "UNKNOWN"
+    },
+    {
+      "case_id": "I06_DISCHARGE_FAIL",
+      "input": {
+        "n_rpm": 6000,
+        "Tshaft_requested_Nm": 350,
+        "Vdc_V": 600
+      },
+      "expected_policy_solution": {
+        "n_rpm": 6000,
+        "id_A_peak": -420.3877532560136,
+        "iq_A_peak": 318.0332019655225,
+        "i_peak_A": 527.1346892778749,
+        "i_phase_rms_A": 372.7405133870491,
+        "vd_V_peak": -326.02766298444806,
+        "vq_V_peak": 44.78797795055255,
+        "v_peak_V": 329.0896534380867,
+        "Te_Nm": 351.25663706143587,
+        "Tshaft_Nm": 349.99999999999994,
+        "Pshaft_W": 219911.48575128548,
+        "Pcu_W": 6252.097064401841,
+        "Prot_W": 789.5683520871487,
+        "Pac_W": 226953.15116777451,
+        "Pinv_W": 2422.9678451206546,
+        "Pdc_W": 229376.11901289516,
+        "Idc_A": 382.29353168815857,
+        "Vmargin_V": 0.0,
+        "dc_ok": false
+      },
+      "reference_feasible_id_intervals_A": [
+        [
+          -500.0,
+          -420.3877532560136
+        ]
+      ],
+      "electrical_existence": "FEASIBLE",
+      "minimum_current_policy_with_dc": "INFEASIBLE",
+      "duration_status": "UNKNOWN",
+      "independent_infeasibility_bound": {
+        "reason": "Requested shaft power alone exceeds maximum DC discharge power, even with zero losses.",
+        "required_shaft_power_W": 219911.48575128554,
+        "dc_discharge_cap_W": 200000
+      }
+    },
+    {
+      "case_id": "I07_CHARGE_FAIL",
+      "input": {
+        "n_rpm": 12000,
+        "Tshaft_requested_Nm": -100,
+        "Vdc_V": 600
+      },
+      "expected_policy_solution": {
+        "n_rpm": 12000,
+        "id_A_peak": -249.78389841701892,
+        "iq_A_peak": -108.34980372672155,
+        "i_peak_A": 272.2713276788849,
+        "i_phase_rms_A": 192.52490212440404,
+        "vd_V_peak": 214.10344786343396,
+        "vq_V_peak": 249.91941423784988,
+        "v_peak_V": 329.08965343808694,
+        "Te_Nm": -97.48672587712815,
+        "Tshaft_Nm": -99.99999999999999,
+        "Pshaft_W": -125663.70614359171,
+        "Pcu_W": 1667.9627072105109,
+        "Prot_W": 3158.273408348595,
+        "Pac_W": -120837.47002803264,
+        "Pinv_W": 793.0534070081817,
+        "Pdc_W": -120044.41662102446,
+        "Idc_A": -200.07402770170742,
+        "Vmargin_V": -2.2737367544323206e-13,
+        "dc_ok": false
+      },
+      "reference_feasible_id_intervals_A": [
+        [
+          -500.0,
+          -249.78389841701892
+        ]
+      ],
+      "electrical_existence": "FEASIBLE",
+      "minimum_current_policy_with_dc": "INFEASIBLE",
+      "duration_status": "UNKNOWN",
+      "independent_infeasibility_bound": {
+        "reason": "Even maximum allowed I^2 cannot dissipate enough power to satisfy the charge cap in this synthetic model.",
+        "maximum_possible_Pdc_W": -111325.43273524313,
+        "required_Pdc_lower_bound_W": -100000
+      }
+    },
+    {
+      "case_id": "I08_REGEN_FEASIBLE",
+      "input": {
+        "n_rpm": 12000,
+        "Tshaft_requested_Nm": -80,
+        "Vdc_V": 600
+      },
+      "expected_policy_solution": {
+        "n_rpm": 12000,
+        "id_A_peak": -222.31897135387646,
+        "iq_A_peak": -89.39578513802928,
+        "i_peak_A": 239.61913826798235,
+        "i_phase_rms_A": 169.43631757136725,
+        "vd_V_peak": 176.4061062146675,
+        "vq_V_peak": 277.8144807064235,
+        "v_peak_V": 329.08965343808717,
+        "Te_Nm": -77.48672587712817,
+        "Tshaft_Nm": -80.0,
+        "Pshaft_W": -100530.96491487339,
+        "Pcu_W": 1291.8899570465348,
+        "Prot_W": 3158.273408348595,
+        "Pac_W": -96080.80154947826,
+        "Pinv_W": 659.3386513943235,
+        "Pdc_W": -95421.46289808393,
+        "Idc_A": -159.03577149680655,
+        "Vmargin_V": -4.547473508864641e-13,
+        "dc_ok": true
+      },
+      "reference_feasible_id_intervals_A": [
+        [
+          -500.0,
+          -222.31897135387646
+        ]
+      ],
+      "electrical_existence": "FEASIBLE",
+      "minimum_current_policy_with_dc": "FEASIBLE",
+      "duration_status": "UNKNOWN"
+    },
+    {
+      "case_id": "I09_LOW_SPEED_REGEN",
+      "input": {
+        "n_rpm": 3000,
+        "Tshaft_requested_Nm": -300,
+        "Vdc_V": 600
+      },
+      "expected_policy_solution": {
+        "n_rpm": 3000,
+        "id_A_peak": -189.70261654423928,
+        "iq_A_peak": -361.71589789582833,
+        "i_peak_A": 408.44274202673256,
+        "i_phase_rms_A": 288.81263261353024,
+        "vd_V_peak": 178.97270195442363,
+        "vq_V_peak": 72.56049995498282,
+        "v_peak_V": 193.12238140252936,
+        "Te_Nm": -299.37168146928207,
+        "Tshaft_Nm": -300.0,
+        "Pshaft_W": -94247.7796076938,
+        "Pcu_W": 3753.57315407211,
+        "Prot_W": 197.39208802178717,
+        "Pac_W": -90296.81436559992,
+        "Pinv_W": 1534.603788114528,
+        "Pdc_W": -88762.21057748538,
+        "Idc_A": -147.9370176291423,
+        "Vmargin_V": 135.96727203555736,
+        "dc_ok": true
+      },
+      "reference_feasible_id_intervals_A": [
+        [
+          -500.0,
+          0
+        ]
+      ],
+      "electrical_existence": "FEASIBLE",
+      "minimum_current_policy_with_dc": "FEASIBLE",
+      "duration_status": "UNKNOWN"
+    },
+    {
+      "case_id": "I10_STANDSTILL_TORQUE",
+      "input": {
+        "n_rpm": 0,
+        "Tshaft_requested_Nm": 300,
+        "Vdc_V": 600
+      },
+      "expected_policy_solution": {
+        "n_rpm": 0,
+        "id_A_peak": -190.13877900980086,
+        "iq_A_peak": 362.24598240761895,
+        "i_peak_A": 409.11478469226563,
+        "i_phase_rms_A": 289.2878385395754,
+        "vd_V_peak": -2.8520816851470125,
+        "vq_V_peak": 5.433689736114284,
+        "v_peak_V": 6.136721770383985,
+        "Te_Nm": 299.99999999999994,
+        "Tshaft_Nm": 299.99999999999994,
+        "Pshaft_W": 0.0,
+        "Pcu_W": 3765.935408710474,
+        "Prot_W": 0.0,
+        "Pac_W": 3765.935408710475,
+        "Pinv_W": 1538.9992564303907,
+        "Pdc_W": 5304.934665140865,
+        "Idc_A": 8.841557775234776,
+        "Vmargin_V": 322.9529316677027,
+        "dc_ok": true
+      },
+      "reference_feasible_id_intervals_A": [
+        [
+          -500.0,
+          0
+        ]
+      ],
+      "electrical_existence": "FEASIBLE",
+      "minimum_current_policy_with_dc": "FEASIBLE",
+      "duration_status": "UNKNOWN"
+    }
+  ]
+}
