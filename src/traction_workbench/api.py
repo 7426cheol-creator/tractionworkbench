@@ -156,7 +156,7 @@ def info(body):
             "drive": S.drive_info(d), "limits": sf.synthetic_limits().describe(), "presets": PRESETS,
             "example_timing": EXAMPLE_TIMING, "example_thermal": EXAMPLE_THERMAL,
             "example_protection": EXAMPLE_PROTECTION, "example_protection_ot": EXAMPLE_PROTECTION_OT,
-            "example_module": EXAMPLE_MODULE, "example_ripple": EXAMPLE_RIPPLE}
+            "example_module": EXAMPLE_MODULE, "example_ripple": EXAMPLE_RIPPLE, "example_asc": EXAMPLE_ASC}
 
 
 def evaluate(body):
@@ -595,6 +595,45 @@ def dclink_ripple(body):
     return _jsonable(r)
 
 
+EXAMPLE_ASC = {
+    "speed_rpm": 6000.0, "Vdc_V": 600.0, "torque_Nm": 150.0, "t_delay_ms": 1.0, "t_6so_ms": 0.0,
+    "horizon_ms": 300.0, "J_kgm2": None,
+    "requirements": [
+        {"req_id": "ASC-PEAK", "quantity": "phase", "operator": "abs_peak", "t_start_s": 0.0, "t_end_s": 0.010,
+         "limit_A": 1200.0, "origin": "asc_established",
+         "text": "example: phase current peak <= 1200 A within 10 ms after the short (synthetic value)"},
+        {"req_id": "ASC-RMS", "quantity": "phase", "operator": "rms", "t_start_s": 0.050, "t_end_s": 0.100,
+         "limit_A": 300.0, "origin": "asc_established",
+         "text": "example: phase RMS <= 300 A between 50 and 100 ms after the short (synthetic value)"}],
+    "demag_id_min_A": None, "demag_basis": "", "device_peak_A": None, "device_i2t_A2s": None, "device_basis": "",
+}
+
+
+def asc(body):
+    """ASC fault transient and the customer's current-time requirements on one trajectory (review 9.13)."""
+    from .extensions.asc_transient import CurrentTimeRequirement, asc_transient
+    b = {**EXAMPLE_ASC, **(body or {})}
+    d = _drive(b)
+    n, vdc = float(b["speed_rpm"]), float(b["Vdc_V"])
+    sc = Scenario("asc", n, vdc, _limits(b), magnet_temp_C=_opt(b, "magnet_temp_C"),
+                  winding_temp_C=_opt(b, "winding_temp_C"))
+    sol = PolicyEvaluator(d, sc).solve(float(b["torque_Nm"]))
+    if sol.point is None:
+        raise InputValidationError("no pre-fault operating point: " + sol.policy_claim.detail, field="torque_Nm")
+    reqs = tuple(CurrentTimeRequirement(**{k: r[k] for k in ("req_id", "quantity", "operator", "t_start_s", "t_end_s",
+                                                              "limit_A", "origin", "text") if k in r},
+                                        level_A=r.get("level_A")) for r in (b.get("requirements") or []))
+    r = asc_transient(d, Scenario("asc", n, vdc, DcSourceLimits(), magnet_temp_C=_opt(b, "magnet_temp_C"),
+                                  winding_temp_C=_opt(b, "winding_temp_C")),
+                      sol.point.id_A, sol.point.iq_A, float(b["t_delay_ms"]) * 1e-3, float(b["horizon_ms"]) * 1e-3,
+                      reqs, float(b.get("t_6so_ms") or 0.0) * 1e-3, _opt(b, "J_kgm2"), _opt(b, "demag_id_min_A"),
+                      str(b.get("demag_basis") or ""), _opt(b, "device_peak_A"), _opt(b, "device_i2t_A2s"),
+                      str(b.get("device_basis") or ""))
+    r["request"] = {k: b[k] for k in ("speed_rpm", "Vdc_V", "torque_Nm", "t_delay_ms", "horizon_ms")}
+    r["requirement_texts"] = {q.req_id: q.text for q in reqs}
+    return _jsonable(r)
+
+
 def acceptance(body):
     return S.acceptance_summary()
 
@@ -603,5 +642,5 @@ ROUTES = {
     "info": info, "evaluate": evaluate, "curve": curve, "map": idiq, "sizing": sizing, "dominance": dominance,
     "relaxation": relaxation, "timing": timing, "discharge": discharge, "passive": passive, "overvoltage": overvoltage,
     "safe_state": safe_state, "thermal": thermal, "acceptance": acceptance, "protection": protection,
-    "module_losses": module_losses, "dclink_ripple": dclink_ripple,
+    "module_losses": module_losses, "dclink_ripple": dclink_ripple, "asc": asc,
 }
