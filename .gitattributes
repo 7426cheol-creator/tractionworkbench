@@ -1,0 +1,8 @@
+# The reference package is an immutable, hash-pinned baseline: manifest.json records the SHA-256 of the exact
+# bytes, so line endings must never be converted on checkout (e.g. core.autocrlf=true on Windows).
+reference/** -text
+
+# binary assets
+*.png binary
+*.jpg binary
+*.ico binary
