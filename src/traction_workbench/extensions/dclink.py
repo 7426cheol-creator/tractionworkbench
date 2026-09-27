@@ -6,9 +6,16 @@ Active discharge through a resistor R (battery disconnected):
     V(t) = V0 exp(-t / (R C)),  t_reach = R C ln(V0 / Vf)
     to reach Vf within t:  R <= -t / (C ln(Vf / V0))
     I0 = V0 / R,  P0 = V0^2 / R,  E_R = 1/2 C (V0^2 - Vf^2)
-A spinning PM motor behind an open inverter rectifies its back-EMF into the
-DC link: while the line-to-line back-EMF peak sqrt(3)*omega_e*psi exceeds Vf
-the target cannot be reached, whatever R is.
+A spinning PM motor behind an open inverter can rectify its back-EMF into the
+DC link once the link voltage falls below the line-to-line back-EMF peak
+sqrt(3)*omega_e*psi (independent review F08b: this is a *rectification risk*,
+not a voltage floor independent of R).  The diode bridge can only charge the
+link, so the RC time is a lower bound of the true time (a too-slow RC design
+stays INFEASIBLE); whether the target is reached with the machine feeding the
+link depends on the coupled source/load (machine impedance vs R) and is
+UNKNOWN (COUPLED_MODEL_REQUIRED).  A fundamental-harmonic screening estimate
+of the link voltage the machine would hold across R is reported for the
+constant-parameter model (diode bridge as R_eq = pi^2/18 * R per phase).
 
 Passive discharge through a bleeder R_p permanently across the link (the
 backup when the active discharge is unavailable):
@@ -48,38 +55,115 @@ def _pos(name, v):
     return x
 
 
-def pm_flux_at_zero_current(drive: DriveModel) -> float | None:
-    flux = drive.motor.flux
-    if isinstance(flux, ConstantFluxModel):
-        return flux.psi_pm_Wb
-    try:
-        plane = flux.planes[0]
-        psd, _, ok = plane.interpolate(0.0, 0.0)
-        return float(psd) if bool(ok) else None
-    except Exception:  # pragma: no cover - defensive
-        return None
+def _flux_state(drive: DriveModel, magnet_temp_C: float | None):
+    """(psi(0,0) or None, note) at the stated magnet temperature - never a silently chosen plane."""
+    from ..physics import DriveKernel
+    from ..scenario import DcSourceLimits, Scenario
+    k = DriveKernel(drive, Scenario("emf", 0.0, 1.0, DcSourceLimits(), magnet_temp_C=magnet_temp_C))
+    bad = [i for i in k.issues if "magnet" in i.message or "flux-map" in i.message or "psi" in i.message]
+    if bad or not k.evaluable:
+        return None, "; ".join(i.message for i in (bad or k.issues)) or "flux model not evaluable"
+    if isinstance(drive.motor.flux, ConstantFluxModel):
+        return k.psi, f"constant model psi_PM = {k.psi:.6g} Wb"
+    psd, _, ok = k.plane.interpolate(0.0, 0.0)
+    if not bool(ok):
+        return None, "flux at zero current not covered by the map"
+    return float(psd), k.notes[-1] if k.notes else "flux-map plane"
 
 
-def back_emf_ll_peak(drive: DriveModel, speed_rpm: float) -> float | None:
+def pm_flux_at_zero_current(drive: DriveModel, magnet_temp_C: float | None = None) -> float | None:
+    """psi_d(0, 0) at the stated magnet temperature (a multi-plane map needs the temperature)."""
+    return _flux_state(drive, magnet_temp_C)[0]
+
+
+def back_emf_ll_peak(drive: DriveModel, speed_rpm: float, magnet_temp_C: float | None = None) -> float | None:
     """Open-circuit fundamental line-to-line back-EMF peak sqrt(3)*omega_e*psi(0, 0)."""
-    psi = pm_flux_at_zero_current(drive)
+    psi = pm_flux_at_zero_current(drive, magnet_temp_C)
     if psi is None:
         return None
     we = drive.motor.pole_pairs * 2 * math.pi * abs(speed_rpm) / 60.0
     return SQRT3 * we * psi
 
 
-def speed_for_back_emf(drive: DriveModel, v_ll_peak: float) -> float | None:
-    psi = pm_flux_at_zero_current(drive)
+def speed_for_back_emf(drive: DriveModel, v_ll_peak: float, magnet_temp_C: float | None = None) -> float | None:
+    psi = pm_flux_at_zero_current(drive, magnet_temp_C)
     if not psi:
         return None
     we = v_ll_peak / (SQRT3 * psi)
     return we / drive.motor.pole_pairs * 60 / (2 * math.pi)
 
 
+def rectified_link_voltage_screening(drive: DriveModel, speed_rpm: float, R_ohm: float,
+                                     magnet_temp_C: float | None = None) -> dict | None:
+    """Fundamental-harmonic screening of the link voltage a spinning machine holds across R through the diodes.
+
+    Diode bridge + R as a per-phase resistance R_eq = (pi^2/18) R (inductive, current-fed source); the
+    steady dq equations with v = -R_eq * i give the ASC-like solution with Rs -> Rs + R_eq, and
+    V_dc = (3 sqrt(3)/pi) * |v_phase_peak|.  Commutation overlap, saliency harmonics, diode drops and the
+    speed decay are neglected: a screening estimate, not a bound.  Constant-parameter model only.
+    """
+    flux = drive.motor.flux
+    if not isinstance(flux, ConstantFluxModel):
+        return None
+    psi = pm_flux_at_zero_current(drive, magnet_temp_C)
+    if psi is None:
+        return None
+    we = drive.motor.pole_pairs * 2 * math.pi * abs(speed_rpm) / 60.0
+    r_eq = math.pi ** 2 / 18.0 * R_ohm
+    rt = drive.motor.Rs_ohm + r_eq
+    den = rt * rt + we * we * flux.Ld_H * flux.Lq_H
+    if den <= 0:
+        return None
+    iq = -we * psi * rt / den
+    idd = -we * we * psi * flux.Lq_H / den
+    i_pk = math.hypot(idd, iq)
+    v_pk = r_eq * i_pk
+    vdc = 3.0 * SQRT3 / math.pi * v_pk
+    return {"V_dc_V": vdc, "I_dc_A": vdc / R_ohm, "P_W": vdc * vdc / R_ohm, "phase_current_A_peak": i_pk,
+            "R_eq_per_phase_ohm": r_eq,
+            "method": "fundamental-harmonic diode-bridge equivalent (R_eq = pi^2/18 R), constant-parameter machine; "
+                      "screening estimate, not a bound"}
+
+
+def _emf_assessment(drive, speed_rpm, Vf, R, magnet_temp_C, out, status, reasons, problems, ev):
+    """Shared back-EMF handling for active/passive discharge (review F08b)."""
+    psi, note = _flux_state(drive, magnet_temp_C)
+    vll = None if psi is None else SQRT3 * drive.motor.pole_pairs * 2 * math.pi * abs(speed_rpm) / 60.0 * psi
+    out["back_emf_ll_peak_V"] = vll
+    out["back_emf_basis"] = note
+    out["max_speed_for_target_rpm"] = None if not psi else speed_for_back_emf(drive, Vf, magnet_temp_C)
+    if vll is None:
+        if status is Status.FEASIBLE:
+            status = Status.UNKNOWN
+        reasons.append(Reason.MISSING_INPUT)
+        problems.append(f"back-EMF unknown ({note})")
+        return status
+    if vll <= Vf:
+        out["rectification_risk"] = False
+        return status
+    out["rectification_risk"] = True
+    est = rectified_link_voltage_screening(drive, speed_rpm, R, magnet_temp_C)
+    out["rectified_link_screening"] = est
+    ev.append(Evidence.make(EvidenceKind.ANALYTIC_BOUND,
+                            "open-inverter back-EMF sqrt(3)*omega_e*psi above Vf: the diodes can feed the link "
+                            "(the RC time is a lower bound of the true time)"))
+    msg = (f"rectification risk at {speed_rpm:g} rpm: line-line back-EMF peak {vll:.4g} V > {Vf:g} V, so the machine "
+           f"can feed the link through the diodes below {vll:.4g} V; the discharge is slower than RC and whether "
+           f"{Vf:g} V is reached depends on the machine impedance vs R (coupled source/load model required)")
+    if est is not None:
+        msg += (f"; screening estimate of the link voltage held across R: {est['V_dc_V']:.4g} V "
+                f"({'above' if est['V_dc_V'] > Vf else 'below'} the target, not a bound)")
+    problems.append(msg)
+    if status is Status.FEASIBLE:
+        status = Status.UNKNOWN
+    reasons.append(Reason.COUPLED_MODEL_REQUIRED)
+    return status
+
+
 def active_discharge(C_F: float, V0_V: float, Vf_V: float, t_target_s: float, R_ohm: float | None = None,
                      resistor_peak_power_W: float | None = None, resistor_energy_J: float | None = None,
-                     drive: DriveModel | None = None, speed_rpm: float | None = None) -> dict:
+                     drive: DriveModel | None = None, speed_rpm: float | None = None,
+                     magnet_temp_C: float | None = None) -> dict:
     C = _pos("C_F", C_F)
     V0 = _pos("V0_V", V0_V)
     Vf = _pos("Vf_V", Vf_V)
@@ -120,18 +204,11 @@ def active_discharge(C_F: float, V0_V: float, Vf_V: float, t_target_s: float, R_
         reasons.append(Reason.CONSTRAINT_VIOLATION)
         detail += "; " + "; ".join(stress)
     if drive is not None and speed_rpm is not None:
-        vll = back_emf_ll_peak(drive, speed_rpm)
-        out["back_emf_ll_peak_V"] = vll
-        out["max_speed_for_target_rpm"] = speed_for_back_emf(drive, Vf)
-        if vll is None:
-            status, detail = Status.UNKNOWN, detail + "; back-EMF unknown (flux at zero current not covered)"
-            reasons.append(Reason.MISSING_INPUT)
-        elif vll > Vf:
-            status = Status.INFEASIBLE
-            reasons.append(Reason.NECESSARY_CONDITION_VIOLATED)
-            detail += (f"; at {speed_rpm:g} rpm the rectified back-EMF ({vll:.4g} V line-line peak) keeps the link "
-                       f"above {Vf:g} V - discharge cannot finish until |n| < {out['max_speed_for_target_rpm']:.5g} rpm")
-            ev.append(Evidence.make(EvidenceKind.ANALYTIC_BOUND, "open-inverter back-EMF sqrt(3)*omega_e*psi vs Vf"))
+        problems = []
+        status = _emf_assessment(drive, _finite("speed_rpm", speed_rpm), Vf, R, magnet_temp_C, out, status, reasons,
+                                 problems, ev)
+        if problems:
+            detail += "; " + "; ".join(problems)
     claim = Claim("active_discharge", status, f"DC link {V0:g} V -> {Vf:g} V within {t:g} s", scope,
                   reasons=tuple(dict.fromkeys(reasons)), evidence=tuple(ev),
                   qualifiers=("screening: ideal RC, battery disconnected",), detail=detail)
@@ -142,7 +219,7 @@ def active_discharge(C_F: float, V0_V: float, Vf_V: float, t_target_s: float, R_
 def passive_discharge(C_F: float, V0_V: float, Vf_V: float, t_target_s: float, R_ohm: float | None = None,
                       V_nom_V: float | None = None, V_max_V: float | None = None, P_allow_W: float | None = None,
                       active_R_ohm: float | None = None, drive: DriveModel | None = None,
-                      speed_rpm: float | None = None) -> dict:
+                      speed_rpm: float | None = None, magnet_temp_C: float | None = None) -> dict:
     """Bleeder resistor permanently across the DC link: discharge time vs continuous loss."""
     C = _pos("C_F", C_F)
     V0 = _pos("V0_V", V0_V)
@@ -198,20 +275,8 @@ def passive_discharge(C_F: float, V0_V: float, Vf_V: float, t_target_s: float, R
         r_par = ra * R / (ra + R)
         out["with_active"] = {"R_active_ohm": ra, "R_parallel_ohm": r_par, "tau_s": r_par * C, "t_reach_s": r_par * C * ln}
     if drive is not None and speed_rpm is not None:
-        vll = back_emf_ll_peak(drive, speed_rpm)
-        out["back_emf_ll_peak_V"] = vll
-        out["max_speed_for_target_rpm"] = speed_for_back_emf(drive, Vf)
-        if vll is None:
-            if status is Status.FEASIBLE:
-                status = Status.UNKNOWN
-            reasons.append(Reason.MISSING_INPUT)
-            problems.append("back-EMF unknown (flux at zero current not covered)")
-        elif vll > Vf:
-            status = Status.INFEASIBLE
-            reasons.append(Reason.NECESSARY_CONDITION_VIOLATED)
-            problems.append(f"at {speed_rpm:g} rpm the rectified back-EMF ({vll:.4g} V line-line peak) keeps the link "
-                            f"above {Vf:g} V until |n| < {out['max_speed_for_target_rpm']:.5g} rpm")
-            ev.append(Evidence.make(EvidenceKind.ANALYTIC_BOUND, "open-inverter back-EMF sqrt(3)*omega_e*psi vs Vf"))
+        status = _emf_assessment(drive, _finite("speed_rpm", speed_rpm), Vf, R, magnet_temp_C, out, status, reasons,
+                                 problems, ev)
     detail = (f"reaches {Vf:g} V in {t_reach:.4g} s (target {t:g} s); continuous loss {vnom * vnom / R:.4g} W at {vnom:g} V"
               + ("; " + "; ".join(problems) if problems else ""))
     claim = Claim("passive_discharge", status, f"DC link {V0:g} V -> {Vf:g} V within {t:g} s by the bleeder alone", scope,
@@ -223,19 +288,39 @@ def passive_discharge(C_F: float, V0_V: float, Vf_V: float, t_target_s: float, R
 
 def regen_disconnect_overvoltage(C_F: float, V1_V: float, P_in_W: float, V_limit_V: float,
                                  reaction_time_s: float | None = None, profile: str = "constant",
-                                 drive: DriveModel | None = None, speed_rpm: float | None = None) -> dict:
-    """DC-link rise when the battery disconnects while regenerating P_in (W into the link)."""
+                                 drive: DriveModel | None = None, speed_rpm: float | None = None,
+                                 ramp_s: float | None = None, magnet_temp_C: float | None = None) -> dict:
+    """DC-link rise when the battery disconnects while regenerating P_in (W into the link).
+
+    Profiles: ``constant`` (P_in until the reaction removes it at reaction_time_s),
+    ``linear_ramp_down`` (a ramp from P_in to 0 that starts immediately - optimistic when a detection delay
+    precedes the ramp), ``delay_then_ramp`` (constant P_in for reaction_time_s, then a ramp to 0 over ramp_s:
+    E = P t_delay + P t_ramp / 2).  Negative times are invalid input.
+    """
     C = _pos("C_F", C_F)
     V1 = _pos("V1_V", V1_V)
     P = _pos("P_in_W", P_in_W)
     Vlim = _pos("V_limit_V", V_limit_V)
     if Vlim <= V1:
         raise InputValidationError("voltage limit must exceed the initial link voltage", field="V_limit_V")
-    if profile not in ("constant", "linear_ramp_down"):
-        raise InputValidationError("profile must be 'constant' or 'linear_ramp_down'", field="profile")
+    if profile not in ("constant", "linear_ramp_down", "delay_then_ramp"):
+        raise InputValidationError("profile must be 'constant', 'linear_ramp_down' or 'delay_then_ramp'",
+                                   field="profile")
+    tramp = 0.0
+    if profile == "delay_then_ramp":
+        if ramp_s is None:
+            raise InputValidationError("delay_then_ramp needs ramp_s", field="ramp_s")
+        tramp = _finite("ramp_s", ramp_s)
+        if tramp < 0:
+            raise InputValidationError("ramp time must be >= 0", field="ramp_s")
     headroom_J = 0.5 * C * (Vlim ** 2 - V1 ** 2)
     t_ov_const = headroom_J / P
-    t_allow = t_ov_const if profile == "constant" else 2 * t_ov_const
+    if profile == "constant":
+        t_allow = t_ov_const
+    elif profile == "linear_ramp_down":
+        t_allow = 2 * t_ov_const
+    else:
+        t_allow = t_ov_const - 0.5 * tramp          # allowed delay before the ramp starts
     out = {
         "C_F": C, "V1_V": V1, "P_in_W": P, "V_limit_V": Vlim, "profile": profile,
         "energy_headroom_J": headroom_J,
@@ -248,7 +333,7 @@ def regen_disconnect_overvoltage(C_F: float, V1_V: float, P_in_W: float, V_limit
     scope = "capacitor energy-balance screening after battery disconnect"
     notes = []
     if drive is not None and speed_rpm is not None:
-        vll = back_emf_ll_peak(drive, speed_rpm)
+        vll = back_emf_ll_peak(drive, speed_rpm, magnet_temp_C)
         out["back_emf_ll_peak_V"] = vll
         if vll is not None and vll > Vlim:
             notes.append(f"if the inverter opens (freewheel) at {speed_rpm:g} rpm the rectified back-EMF "
@@ -262,7 +347,11 @@ def regen_disconnect_overvoltage(C_F: float, V1_V: float, P_in_W: float, V_limit
                       detail="reaction time not given: the result is the maximum allowed reaction time")
     else:
         tr = _finite("reaction_time_s", reaction_time_s)
-        e_in = P * tr if profile == "constant" else 0.5 * P * tr
+        if tr < 0:
+            raise InputValidationError("reaction time must be >= 0 (a negative time would inject negative energy)",
+                                       field="reaction_time_s")
+        e_in = P * tr if profile == "constant" else (0.5 * P * tr if profile == "linear_ramp_down"
+                                                     else P * tr + 0.5 * P * tramp)
         v2 = math.sqrt(V1 ** 2 + 2 * e_in / C)
         out["reaction_time_s"] = tr
         out["energy_in_J"] = e_in

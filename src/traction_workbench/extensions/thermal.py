@@ -16,9 +16,16 @@ stages may be declared flow-dependent: R_i(Q) = R_i,ref * (Q_ref / Q)^n.
 
 Loss-temperature feedback, changing losses during the transient and
 non-equilibrium initial states are not modelled.  A duration claim is
-FEASIBLE/INFEASIBLE only when the thermal model is declared *validated* for
-the stated conditions; otherwise the numbers are a screening estimate and the
-duration claim stays UNKNOWN (UNVALIDATED_DURATION).
+FEASIBLE/INFEASIBLE only when the thermal model is *qualified* for the stated
+question (independent review F07): a ``validated`` flag is not evidence by
+itself - it needs a validation-evidence reference, a declared validity domain
+that covers the stated conditions (coolant, flow, speed, torque, ...), a start
+that matches the model's initial state (equilibrium at the coolant) and a node
+for every heat source that is present.  An empty network is invalid input.
+Otherwise the numbers are a screening estimate and the duration claim stays
+UNKNOWN.  The thermally available torque is scanned over the static policy
+torque set and reported as a (possibly disconnected) set: a failure at zero
+torque does not remove the rest of the set (F07b).
 """
 
 from __future__ import annotations
@@ -41,6 +48,7 @@ from ..status import Claim, Evidence, EvidenceKind, Reason, Status
 from .coolant import CoolantLoop
 
 LOSS_KEYS = ("inverter", "copper", "rotational")
+COLD_STARTS = ("equilibrium_at_coolant", "coolant_equilibrium", "cold", "ambient")
 
 
 @dataclass(frozen=True)
@@ -147,8 +155,13 @@ class ThermalModel:
     validated: bool = False
     validity: tuple = ()          # (("coolant_temp_C", (60, 70)), ("coolant_flow_L_per_min", (8, 12)), ...)
     coolant: CoolantLoop | None = None
+    validation_evidence: str = ""  # test report / document id + revision behind "validated"
+    initial_state: str = "equilibrium_at_coolant"   # the only start the step response represents
 
     def __post_init__(self):
+        if not self.nodes:
+            raise InputValidationError("a thermal model needs at least one node: an empty network cannot support a "
+                                       "duration claim (it would read as 'never exceeds')", field="nodes")
         if self.coolant is not None:
             names = set(self.coolant.station_names())
             for nd in self.nodes:
@@ -177,6 +190,30 @@ class ThermalModel:
             elif not (rng[0] <= v <= rng[1]):
                 problems.append(f"{key}={v:g} outside {list(rng)}")
         return not problems, problems
+
+    def qualification(self, stated: dict, initial_state: str | None, losses: dict | None = None) -> list[str]:
+        """Everything that prevents a definite (FEASIBLE/INFEASIBLE) duration claim; empty list = qualified."""
+        problems = []
+        if not self.validated:
+            problems.append("thermal model not declared validated")
+        else:
+            if not self.validation_evidence.strip():
+                problems.append("'validated' is declared without a validation-evidence reference (a flag is not evidence)")
+            if not self.validity:
+                problems.append("no validity domain declared: a validated model must state where it was validated")
+        ok, cond = self.conditions_ok(stated)
+        problems += cond
+        start = str(initial_state or "").strip().lower()
+        if not start:
+            problems.append("initial thermal state not stated (the model starts from equilibrium at the coolant)")
+        elif start not in COLD_STARTS:
+            problems.append(f"initial state {initial_state!r} is not modelled (only a start from equilibrium at the "
+                            f"coolant; hot starts need the node temperatures as initial state)")
+        if losses:
+            for key, val in losses.items():
+                if val > 0 and not any(dict(nd.loss_share).get(key, 0.0) > 0 for nd in self.nodes):
+                    problems.append(f"{key} loss {val:.4g} W heats no node: the heat source is unmonitored")
+        return problems
 
 
 def temperature(node: ThermalNode, P_W: float, t_s: float, coolant_C: float) -> float:
@@ -212,6 +249,9 @@ def thermal_duration(drive: DriveModel, scenario: Scenario, model: ThermalModel,
     if scenario.coolant_temp_C is None:
         raise InputValidationError("coolant temperature must be stated for a thermal evaluation",
                                    field="coolant_temp_C")
+    d = _finite("duration_s", duration_s) if not (isinstance(duration_s, float) and math.isinf(duration_s)) else duration_s
+    if d <= 0:
+        raise InputValidationError("duration must be > 0 s", field="duration_s")
     sol = PolicyEvaluator(drive, scenario, settings).solve(T_request)
     q = f"{T_request:g} N*m at {scenario.speed_rpm:g} rpm for {duration_s:g} s"
     if sol.point is None or sol.policy_claim.status is not Status.FEASIBLE:
@@ -235,24 +275,27 @@ def thermal_duration(drive: DriveModel, scenario: Scenario, model: ThermalModel,
         worst_t = min(worst_t, tt)
         violated |= temp > nd.limit_C
     stated = {"coolant_temp_C": scenario.coolant_temp_C, "Vdc_V": scenario.Vdc_V,
-              "switching_frequency_Hz": scenario.switching_frequency_Hz, **model.stated_conditions()}
-    ok, problems = model.conditions_ok(stated)
-    ev = Evidence.make(EvidenceKind.VALIDATED_DOMAIN if (model.validated and ok) else EvidenceKind.SAMPLED,
+              "switching_frequency_Hz": scenario.switching_frequency_Hz, "speed_rpm": scenario.speed_rpm,
+              "torque_Nm": T_request, **model.stated_conditions()}
+    problems = model.qualification(stated, scenario.initial_state, losses)
+    qualified = not problems
+    ev = Evidence.make(EvidenceKind.VALIDATED_DOMAIN if qualified else EvidenceKind.SAMPLED,
                        f"{model.model_id} rev {model.revision}: sustainable for {worst_t:.4g} s at constant loss",
-                       validated=model.validated, provenance=model.provenance.to_dict())
-    if model.validated and ok:
+                       validated=model.validated, validation_evidence=model.validation_evidence,
+                       provenance=model.provenance.to_dict())
+    if qualified:
         st = Status.INFEASIBLE if violated else Status.FEASIBLE
-        claim = Claim("thermal_duration", st, q, "validated thermal model at matching conditions", None, f"{duration_s:g} s",
-                      reasons=(Reason.CONSTRAINT_VIOLATION,) if violated else (), evidence=(ev,),
+        claim = Claim("thermal_duration", st, q, "qualified thermal model at matching conditions", None,
+                      f"{duration_s:g} s", reasons=(Reason.CONSTRAINT_VIOLATION,) if violated else (), evidence=(ev,),
                       detail=f"time to the first node limit {worst_t:.4g} s")
     else:
-        why = "thermal model not declared validated" if not model.validated else "; ".join(problems)
         claim = Claim("thermal_duration", Status.UNKNOWN, q, "thermal screening estimate", None, f"{duration_s:g} s",
                       reasons=(Reason.UNVALIDATED_DURATION,), evidence=(ev,),
                       qualifiers=(f"screening estimate: {'exceeds' if violated else 'within'} limits "
                                   f"(first limit after {worst_t:.4g} s)",),
-                      detail=f"{why}: the estimate is not a duration rating")
+                      detail="; ".join(problems) + ": the estimate is not a duration rating")
     return {"claim": claim.to_dict(), "nodes": rows, "time_to_first_limit_s": worst_t,
+            "qualification_problems": problems,
             "operating_point": {"id_A": sol.point.id_A, "iq_A": sol.point.iq_A, "losses_W": losses},
             "coolant": _coolant_report(model, fluid)}
 
@@ -266,60 +309,109 @@ def _coolant_report(model: ThermalModel, fluid: dict | None) -> dict:
 
 def torque_availability(drive: DriveModel, scenario: Scenario, model: ThermalModel,
                         durations_s=(1.0, 10.0, 30.0, 60.0, math.inf), direction: int = 1,
-                        settings: NumericalSettings = DEFAULT_SETTINGS) -> dict:
-    """Largest static-policy torque whose node temperatures stay within limits for each duration."""
+                        settings: NumericalSettings = DEFAULT_SETTINGS, samples: int = 41) -> dict:
+    """Static-policy torques whose node temperatures stay within limits, per duration (sampled set).
+
+    The torque axis is scanned over the static policy-feasible set; every duration gets the set of
+    thermally feasible torques (possibly several segments) and its extreme value in ``direction``.
+    Losses are not monotonic in torque (field-weakening current at zero torque), so a failure at one
+    torque - zero included - says nothing about the others.
+    """
     if scenario.coolant_temp_C is None:
         raise InputValidationError("coolant temperature must be stated", field="coolant_temp_C")
     ev = PolicyEvaluator(drive, scenario, settings)
     cap = policy_capability(ev, direction, certify=False)
-    if cap.value_Nm is None:
-        return {"static_capability_Nm": None, "rows": [], "note": "no static policy capability"}
+    base = {"coolant_temp_C": scenario.coolant_temp_C, "validated": model.validated,
+            "status_note": ("qualified thermal model" if not model.qualification(
+                {"coolant_temp_C": scenario.coolant_temp_C, **model.stated_conditions()}, scenario.initial_state)
+                            else "screening estimate: not a duration rating (model not qualified for this question)"),
+            "coolant": _coolant_report(model, None)}
+    if not cap.segments:
+        return {**base, "static_capability_Nm": None, "static_segments_Nm": [], "rows": [],
+                "note": "no static policy-feasible torque"}
+    span = sum(b - a for a, b in cap.segments) or 1.0
+    grid = set()
+    for a, b in cap.segments:
+        n = max(3, int(math.ceil(samples * (b - a) / span)) + 1)
+        grid.update(float(x) for x in np.linspace(a, b, n))
+    grid = sorted(grid)
+    cache: dict[float, dict | None] = {}
+
+    def losses_at(T):
+        if T not in cache:
+            s = ev.solve(T)
+            cache[T] = _losses(s.point) if (s.point is not None and s.policy_claim.status is Status.FEASIBLE) else None
+        return cache[T]
 
     def ok_for(T, t):
-        s = ev.solve(T)
-        if s.point is None or s.policy_claim.status is not Status.FEASIBLE:
-            return False, None
-        losses = _losses(s.point)
+        losses = losses_at(T)
+        if losses is None:
+            return None, None
         fluid = model.coolant.fluid_temperatures(scenario.coolant_temp_C, losses) if model.coolant is not None else None
-        worst = None
         for nd in model.nodes:
             ref = model.reference_C(nd, scenario.coolant_temp_C, losses, fluid)
             if temperature(nd, nd.power(losses), t, ref) > nd.limit_C:
                 return False, nd.node_id
-        return True, worst
+        return True, None
 
+    def refine(a, b, t):
+        """a thermally feasible, b not (both statically feasible): bisect the thermal boundary."""
+        for _ in range(40):
+            if abs(b - a) <= 1e-6 * max(1.0, abs(a)):
+                break
+            m = 0.5 * (a + b)
+            g, _n = ok_for(m, t)
+            if g is None:
+                break
+            a, b = (m, b) if g else (a, m)
+        return a
+
+    cap_ext = max((x for seg in cap.segments for x in seg), key=lambda x: direction * x)
     rows = []
     for t in durations_s:
-        hi = cap.value_Nm
-        good, _ = ok_for(hi, t)
-        if good:
-            rows.append({"duration_s": t, "torque_Nm": hi, "limited_by": "static capability"})
-            continue
-        lo = 0.0
-        if not ok_for(lo, t)[0]:
-            rows.append({"duration_s": t, "torque_Nm": None, "limited_by": "thermal even at zero torque"})
-            continue
-        limiting = None
-        for _ in range(60):
-            mid = 0.5 * (lo + hi)
-            g, node = ok_for(mid, t)
+        flags = [ok_for(T, t) for T in grid]
+        segs, cur, limiting = [], None, None
+        for i, (T, (g, node)) in enumerate(zip(grid, flags)):
+            if g is False and node:
+                limiting = limiting or node
             if g:
-                lo = mid
+                if cur is None:
+                    lo_T = T
+                    if i > 0 and flags[i - 1][0] is False:
+                        lo_T = refine(T, grid[i - 1], t)
+                    cur = [lo_T, T]
+                else:
+                    cur[1] = T
             else:
-                hi, limiting = mid, node or limiting
-            if abs(hi - lo) <= 1e-6 * max(1.0, abs(hi)):
-                break
-        rows.append({"duration_s": t, "torque_Nm": lo, "limited_by": f"thermal node {limiting}"})
+                if cur is not None:
+                    if g is False:
+                        cur[1] = refine(grid[i - 1], T, t)
+                    segs.append(tuple(cur))
+                    cur = None
+        if cur is not None:
+            segs.append(tuple(cur))
+        zero = next((f for T, f in zip(grid, flags) if abs(T) <= 1e-9), (None, None))[0]
+        if not segs:
+            rows.append({"duration_s": t, "torque_Nm": None, "feasible_segments_Nm": [],
+                         "limited_by": f"thermal node {limiting} at every examined torque" if limiting else
+                                       "no statically feasible torque examined",
+                         "zero_torque_feasible": zero})
+            continue
+        ext = max((x for seg in segs for x in seg), key=lambda x: direction * x)
+        at_cap = abs(ext - cap_ext) <= 1e-6 * max(1.0, abs(cap_ext))
+        rows.append({"duration_s": t, "torque_Nm": ext, "feasible_segments_Nm": [list(sg) for sg in segs],
+                     "limited_by": "static capability" if at_cap else f"thermal node {limiting}",
+                     "zero_torque_feasible": zero,
+                     "disconnected": len(segs) > 1})
     return {
-        "static_capability_Nm": cap.value_Nm,
-        "coolant_temp_C": scenario.coolant_temp_C,
+        **base,
+        "static_capability_Nm": cap_ext,
+        "static_segments_Nm": [list(sg) for sg in cap.segments],
         "rows": rows,
-        "validated": model.validated,
-        "status_note": ("validated thermal model" if model.validated else
-                        "screening estimate from an unvalidated thermal model: not a duration rating"),
+        "method": f"sampled scan of {len(grid)} torques over the static policy set + bisection of thermal boundaries",
         "assumptions": ["start from equilibrium at the coolant", "constant losses at the minimum-current point",
                         "no loss-temperature feedback", "declared loss shares per node",
                         ("coolant rise along the declared loop (m_dot*c_p)" if model.coolant is not None
-                         else "no coolant loop: inlet temperature reference (infinite flow)")],
-        "coolant": _coolant_report(model, None),
+                         else "no coolant loop: inlet temperature reference (infinite flow)"),
+                        "sampled: narrow features between samples can be missed; the set may be disconnected"],
     }

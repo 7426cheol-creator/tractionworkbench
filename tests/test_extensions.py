@@ -73,9 +73,16 @@ def test_active_discharge_formulas():
     assert slow["claim"]["status"] == "INFEASIBLE"
 
 
-def test_discharge_blocked_by_back_emf(drive):
+def test_discharge_back_emf_is_a_rectification_risk(drive):
+    # review F08b: the back-EMF is not a voltage floor independent of R - the diodes can only charge the link,
+    # so a fast-enough RC design becomes UNKNOWN (coupled source/load), a too-slow one stays INFEASIBLE
     r = active_discharge(500e-6, 600.0, 60.0, 2.0, drive=drive, speed_rpm=2000.0)
-    assert r["claim"]["status"] == "INFEASIBLE"
+    assert r["claim"]["status"] == "UNKNOWN" and r["claim"]["reasons"] == ["COUPLED_MODEL_REQUIRED"]
+    assert r["rectification_risk"] is True and r["rectified_link_screening"]["V_dc_V"] > 0
+    slow = active_discharge(500e-6, 600.0, 60.0, 2.0, R_ohm=5000.0, drive=drive, speed_rpm=2000.0)
+    assert slow["claim"]["status"] == "INFEASIBLE"
+    still = active_discharge(500e-6, 600.0, 60.0, 2.0, drive=drive, speed_rpm=100.0)     # EMF below Vf
+    assert still["claim"]["status"] == "FEASIBLE" and still["rectification_risk"] is False
     assert r["back_emf_ll_peak_V"] == pytest.approx(math.sqrt(3) * 4 * 2 * math.pi * 2000 / 60 * 0.1)
     assert r["max_speed_for_target_rpm"] == pytest.approx(60 / (math.sqrt(3) * 0.1) / 4 * 60 / (2 * math.pi))
 
@@ -99,8 +106,9 @@ def test_passive_discharge_bleeder(drive):
     slow = passive_discharge(C, V0, Vf, 120.0, R_ohm=200e3)
     assert slow["claim"]["status"] == "INFEASIBLE" and slow["t_reach_s"] > 120.0
     spinning = passive_discharge(C, V0, Vf, 120.0, drive=drive, speed_rpm=2000.0)
-    assert spinning["back_emf_ll_peak_V"] > Vf and spinning["claim"]["status"] == "INFEASIBLE"
-    assert "NECESSARY_CONDITION_VIOLATED" in spinning["claim"]["reasons"]
+    assert spinning["back_emf_ll_peak_V"] > Vf and spinning["claim"]["status"] == "UNKNOWN"     # rectification risk
+    assert spinning["rectification_risk"] is True
+    assert "COUPLED_MODEL_REQUIRED" in spinning["claim"]["reasons"]
     with pytest.raises(InputValidationError):
         passive_discharge(C, 60.0, 60.0, 120.0)
 
@@ -154,19 +162,21 @@ def _thermal(validated):
     return ThermalModel("TM", "1", (ThermalNode("junction", FosterNetwork((0.05, 0.15), (0.05, 2.0)), 150.0,
                                                 (("inverter", 1 / 6),)),
                                     ThermalNode("winding", FosterNetwork((0.004, 0.01), (20.0, 300.0)), 180.0,
-                                                (("copper", 1.0),))),
-                        prov, validated=validated, validity=(("coolant_temp_C", (60.0, 70.0)),))
+                                                (("copper", 1.0), ("rotational", 1.0)))),
+                        prov, validated=validated, validity=(("coolant_temp_C", (60.0, 70.0)),),
+                        validation_evidence="TEST-REPORT-1 rev A (test fixture)" if validated else "")
 
 
 def test_thermal_duration_needs_validation(drive):
-    sc = scenario(3000, 600, coolant_temp_C=65.0)
+    sc = scenario(3000, 600, coolant_temp_C=65.0, initial_state="equilibrium_at_coolant")
     unval = thermal_duration(drive, sc, _thermal(False), 450.0, 10.0)
     assert unval["claim"]["status"] == "UNKNOWN" and unval["claim"]["reasons"] == ["UNVALIDATED_DURATION"]
     val = thermal_duration(drive, sc, _thermal(True), 450.0, 10.0)
     assert val["claim"]["status"] == "INFEASIBLE"      # junction limit reached before 10 s at 450 N*m
     ok = thermal_duration(drive, sc, _thermal(True), 300.0, 10.0)
     assert ok["claim"]["status"] == "FEASIBLE"
-    wrong_coolant = thermal_duration(drive, scenario(3000, 600, coolant_temp_C=90.0), _thermal(True), 300.0, 10.0)
+    wrong_coolant = thermal_duration(drive, scenario(3000, 600, coolant_temp_C=90.0, initial_state="cold"),
+                                     _thermal(True), 300.0, 10.0)
     assert wrong_coolant["claim"]["status"] == "UNKNOWN"
 
 

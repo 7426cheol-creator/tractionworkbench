@@ -40,10 +40,20 @@ from .dclink import back_emf_ll_peak, speed_for_back_emf
 SUPPORTED_RULE_KEYS = ("Vdc_below_V", "Vdc_above_V", "speed_above_rpm", "speed_below_rpm", "hv_state")
 
 
-def asc_steady_state(drive: DriveModel, speed_rpm: float, Vdc_V: float = 1.0) -> dict:
-    """Steady-state active-short-circuit currents (v_d = v_q = 0)."""
-    sc = Scenario("asc", speed_rpm, Vdc_V, DcSourceLimits())
+def asc_steady_state(drive: DriveModel, speed_rpm: float, Vdc_V: float = 1.0, magnet_temp_C: float | None = None,
+                     winding_temp_C: float | None = None) -> dict:
+    """Steady-state active-short-circuit currents (v_d = v_q = 0) at the stated temperatures.
+
+    A model that is not valid at these temperatures (e.g. a multi-plane flux map without a magnet
+    temperature) gives an explicit ``evaluable: False`` with the reason - never an exception.
+    """
+    sc = Scenario("asc", speed_rpm, Vdc_V, DcSourceLimits(), magnet_temp_C=magnet_temp_C,
+                  winding_temp_C=winding_temp_C)
     k = DriveKernel(drive, sc)
+    if not k.evaluable or k.issues:
+        return {"evaluable": False,
+                "reason": "; ".join(i.message for i in k.issues) or "model not evaluable at this scenario",
+                "reason_code": (k.issues[0].reason.value if k.issues else "OUTSIDE_MODEL_DOMAIN")}
     we, rs = k.omega_e, k.Rs
     if k.kind == "constant_dq":
         psi, ld, lq = k.psi, k.Ld, k.Lq
@@ -101,7 +111,8 @@ def _rule_applies(rule: dict, speed_rpm: float, Vdc_V: float, hv_state: str) -> 
 def safe_state_screening(drive: DriveModel, speed_rpm: float, Vdc_V: float, hv_state: str = "battery_connected",
                          device_voltage_rating_V: float | None = None, dc_link_limit_V: float | None = None,
                          hardware_paths: dict | None = None, transition_times_s: dict | None = None,
-                         project_rules: list | None = None) -> dict:
+                         project_rules: list | None = None, magnet_temp_C: float | None = None,
+                         winding_temp_C: float | None = None) -> dict:
     n = _finite("speed_rpm", speed_rpm)
     vdc = _finite("Vdc_V", Vdc_V)
     if vdc <= 0:
@@ -110,14 +121,14 @@ def safe_state_screening(drive: DriveModel, speed_rpm: float, Vdc_V: float, hv_s
         raise InputValidationError("hv_state must be 'battery_connected' or 'battery_disconnected'", field="hv_state")
     hardware_paths = hardware_paths or {}
     transition_times_s = transition_times_s or {}
-    vll = back_emf_ll_peak(drive, n)
-    onset = speed_for_back_emf(drive, vdc)
-    asc = asc_steady_state(drive, n, vdc)
+    vll = back_emf_ll_peak(drive, n, magnet_temp_C)
+    onset = speed_for_back_emf(drive, vdc, magnet_temp_C)
+    asc = asc_steady_state(drive, n, vdc, magnet_temp_C, winding_temp_C)
     rows = []
     # --- freewheel / 6SO -------------------------------------------------
     fw = {"candidate": "FREEWHEEL (6SO)", "back_emf_ll_peak_V": vll, "ucg_onset_speed_rpm": onset}
     if vll is None:
-        fw["back_emf_risk"] = "UNKNOWN (flux at zero current not covered)"
+        fw["back_emf_risk"] = "UNKNOWN (flux at zero current not available at the stated magnet temperature)"
         fw["braking_torque"] = "UNKNOWN"
         fw["dc_overvoltage_risk"] = "UNKNOWN"
     elif vll <= vdc:

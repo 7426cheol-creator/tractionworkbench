@@ -605,6 +605,7 @@ class ForwardResult:
     reason: Reason | None
     message: str
     issues: tuple = ()
+    gate_messages: tuple = ()    # why the point is not admissible evidence (common witness gate)
 
     @property
     def all_constraints_ok(self) -> bool | None:
@@ -617,9 +618,9 @@ class ForwardResult:
 
     @property
     def accepted(self) -> bool:
-        """The evaluated point is admissible evidence: model valid, covered, every constraint evaluated and met."""
+        """Admissible evidence: model valid, covered, every constraint evaluated and met, relevant DC limits declared."""
         return bool(self.evaluable and self.validity_gate_passed and self.point is not None
-                    and self.point.all_satisfied() and self.point.identities_ok)
+                    and self.point.all_satisfied() and self.point.identities_ok and not self.gate_messages)
 
     def to_dict(self) -> dict:
         return {
@@ -636,6 +637,7 @@ class ForwardResult:
             },
             "all_constraints_satisfied": self.all_constraints_ok,
             "accepted_as_evidence": self.accepted,
+            "not_accepted_because": list(self.gate_messages),
             "semantics": "the point is evaluated as given and never moved; a violating point or a point evaluated "
                          "outside the model-validity gate is a diagnostic, not a feasible witness",
             "operating_point": None if self.point is None else self.point.to_dict(),
@@ -655,8 +657,10 @@ def forward_evaluation(drive: DriveModel, scenario: Scenario, id_A: float, iq_A:
         bad = [c.name for c in pt.violations()] + [f"{c.name} (not evaluated)" for c in pt.constraints
                                                    if c.state == NOT_EVALUATED]
         msg = "constraint violation(s) / not evaluated: " + ", ".join(bad)
+    from .solvers.gate import check_witness          # local import: the gate builds on this module
+    gate = check_witness(k, id_A, iq_A, point=pt, require_dc=True)
     if k.issues:
         msg = ("DIAGNOSTIC ONLY - model validity gate failed (" + "; ".join(i.message for i in k.issues) + "); "
                + msg)
-        return ForwardResult(pt, True, k.issues[0].reason, msg, tuple(k.issues))
-    return ForwardResult(pt, True, None, msg, tuple(k.issues))
+        return ForwardResult(pt, True, k.issues[0].reason, msg, tuple(k.issues), tuple(gate.messages))
+    return ForwardResult(pt, True, None, msg, tuple(k.issues), tuple(gate.messages))

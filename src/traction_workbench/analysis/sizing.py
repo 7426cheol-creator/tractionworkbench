@@ -5,6 +5,13 @@ recomputes the coupled problem (constraints and losses) at every sample and
 bisects the status transitions.  Nothing is extrapolated beyond the range;
 a non-monotonic response is reported as several feasible ranges, never as a
 single "minimum" found by bisection alone.
+
+Independent review F13: the search range is split into FEASIBLE (witnessed),
+INFEASIBLE (proven excluded at the samples) and UNKNOWN (unresolved) regions.
+Only a FEASIBLE <-> INFEASIBLE transition is bisected into a bracketed
+boundary; the smallest feasible value is called a bracketed minimum only when
+the region below it is proven excluded - next to an UNKNOWN region it is the
+"smallest feasible value found", never a minimal sizing.
 """
 
 from __future__ import annotations
@@ -36,6 +43,9 @@ class SizingResult:
     solution_at_minimal: dict | None
     evidence: tuple
     notes: tuple
+    regions: tuple = ()
+    minimal_is_bracketed: bool = False
+    maximal_is_bracketed: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -45,7 +55,13 @@ class SizingResult:
             "samples": self.samples,
             "feasible_ranges": [list(r) for r in self.feasible_ranges],
             "minimal_feasible_value": self.minimal_feasible,
+            "minimal_meaning": ("bracketed boundary: proven excluded just below (sampled between samples)"
+                                if self.minimal_is_bracketed else
+                                "smallest feasible value FOUND - not a proven minimum (unresolved or unexplored below)"),
             "maximal_feasible_value": self.maximal_feasible,
+            "maximal_meaning": ("bracketed boundary: proven excluded just above" if self.maximal_is_bracketed else
+                                "largest feasible value FOUND - not a proven maximum"),
+            "regions": [{"range": [a, b], "status": st} for a, b, st in self.regions],
             "solution_at_minimal_value": self.solution_at_minimal,
             "status_samples": [list(s) for s in self.status_samples],
             "evidence": [e.to_dict() for e in self.evidence],
@@ -75,33 +91,41 @@ def size_parameter(drive: DriveModel, scenario: Scenario, T_request: float, para
     st = [status(float(x)) for x in xs]
     tol = 1e-9 * max(abs(lo), abs(hi), 1.0)
 
-    def bisect(a, b):
-        # status(a) == FEASIBLE != status(b)
+    def bisect(a, b, keep):
+        # status(a) == keep, status(b) != keep: move a towards b while the status stays `keep`
         for _ in range(100):
             if abs(b - a) <= tol:
                 break
             m = 0.5 * (a + b)
-            if status(m) == "FEASIBLE":
+            if status(m) == keep:
                 a = m
             else:
                 b = m
         return a
 
-    ranges = []
+    # runs of equal status -> regions; only FEASIBLE <-> INFEASIBLE transitions are bisected
+    runs = []
     i = 0
     while i < samples:
-        if st[i] != "FEASIBLE":
-            i += 1
-            continue
         j = i
-        while j + 1 < samples and st[j + 1] == "FEASIBLE":
+        while j + 1 < samples and st[j + 1] == st[i]:
             j += 1
-        a = xs[i] if i == 0 else bisect(xs[i], xs[i - 1])
-        b = xs[j] if j == samples - 1 else bisect(xs[j], xs[j + 1])
-        ranges.append((float(a), float(b)))
+        runs.append([i, j, st[i]])
         i = j + 1
+    regions = []
+    for r, (i, j, sti) in enumerate(runs):
+        a, b = float(xs[i]), float(xs[j])
+        if sti == "FEASIBLE":
+            if i > 0:
+                a = float(bisect(xs[i], xs[i - 1], "FEASIBLE"))
+            if j < samples - 1:
+                b = float(bisect(xs[j], xs[j + 1], "FEASIBLE"))
+        regions.append((a, b, sti))
+    ranges = [(a, b) for a, b, sti in regions if sti == "FEASIBLE"]
     notes = [f"one-parameter change of {parameter} ({PARAMETERS[parameter][0]}); coupled constraints and losses "
-             f"recomputed at every sample; searched only inside [{lo:g}, {hi:g}] (no extrapolation)"]
+             f"recomputed at every sample; searched only inside [{lo:g}, {hi:g}] (no extrapolation)",
+             "regions: FEASIBLE = witnessed, INFEASIBLE = proven excluded at the samples, UNKNOWN = unresolved; "
+             "between samples every statement is sampled, not a continuous proof"]
     if parameter == "Vdc_V":
         notes.append("the synthetic inverter-loss surrogate has no Vdc dependence; switching-loss change with Vdc "
                      "needs loss data before this becomes a hardware proposal")
@@ -111,8 +135,17 @@ def size_parameter(drive: DriveModel, scenario: Scenario, T_request: float, para
         notes.append("non-monotonic response: several feasible ranges; bisection alone would not give a global minimum")
     if not ranges:
         notes.append("no feasible value found inside the searched range")
+    if any(sti == "UNKNOWN" for *_, sti in regions):
+        notes.append("unresolved (UNKNOWN) regions exist: a feasible value next to them is not a minimal/maximal "
+                     "sizing")
     if ranges and ranges[0][0] == lo:
         notes.append("feasible at the lower end of the range: smaller values were not explored")
+    first = next((r for r, (*_, sti) in enumerate(regions) if sti == "FEASIBLE"), None)
+    last = max((r for r, (*_, sti) in enumerate(regions) if sti == "FEASIBLE"), default=None)
+    min_br = first is not None and first > 0 and all(sti in ("INFEASIBLE", "INVALID")
+                                                       for *_, sti in regions[:first])
+    max_br = last is not None and last < len(regions) - 1 and all(sti in ("INFEASIBLE", "INVALID")
+                                                                   for *_, sti in regions[last + 1:])
     sol = None
     mn = ranges[0][0] if ranges else None
     mx = ranges[-1][1] if ranges else None
@@ -123,6 +156,8 @@ def size_parameter(drive: DriveModel, scenario: Scenario, T_request: float, para
         sol = None if pt is None else {"id_A": pt.id_A, "iq_A": pt.iq_A, "i_peak_A": pt.i_peak_A, "Pdc_W": pt.Pdc_W,
                                        "Idc_A": pt.Idc_A, "voltage_margin_V": pt.voltage_margin_V,
                                        "active_constraints": [c.name for c in pt.active()]}
-    ev = (Evidence.make(EvidenceKind.SAMPLED, f"{samples} samples + bisection of every status transition to {tol:.1e}"),)
+    ev = (Evidence.make(EvidenceKind.SAMPLED, f"{samples} samples + bisection of every FEASIBLE edge to {tol:.1e} "
+                                              f"(the found witness side)"),)
     return SizingResult(describe_parameter(parameter), base, (lo, hi), samples, tuple(ranges),
-                        tuple((float(x), s) for x, s in zip(xs, st)), mn, mx, sol, ev, tuple(notes))
+                        tuple((float(x), s) for x, s in zip(xs, st)), mn, mx, sol, ev, tuple(notes),
+                        tuple(regions), min_br, max_br)

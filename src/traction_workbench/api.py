@@ -80,7 +80,8 @@ DEFAULT_LOOP = [{"station": "inverter", "losses": {"inverter": 1.0}},
                 {"station": "motor", "losses": {"copper": 1.0, "rotational": 1.0}}]
 
 EXAMPLE_THERMAL = {
-    "model_id": "EXAMPLE_THERMAL_UNVALIDATED", "revision": "2", "validated": False,
+    "model_id": "EXAMPLE_THERMAL_UNVALIDATED", "revision": "2", "validated": False, "origin": "synthetic",
+    "validation_evidence": "",
     "source": "synthetic example networks for demonstration (not a product model)",
     "coolant": {"glycol_vol_pct": 50.0, "flow_L_per_min": 10.0, "cp_J_per_kgK": None, "rho_kg_per_m3": None,
                 "reference": "mean", "loop": DEFAULT_LOOP},
@@ -210,7 +211,8 @@ def discharge(body):
                                       _num(body, "t_target_s"),
                                       None if body.get("R_ohm") in (None, "") else float(body["R_ohm"]),
                                       drive=d if body.get("speed_rpm") not in (None, "") else None,
-                                      speed_rpm=None if body.get("speed_rpm") in (None, "") else float(body["speed_rpm"])))
+                                      speed_rpm=None if body.get("speed_rpm") in (None, "") else float(body["speed_rpm"]),
+                                      magnet_temp_C=_opt(body, "magnet_temp_C")))
 
 
 def _opt(body, key, scale=1.0):
@@ -224,7 +226,7 @@ def passive(body):
                                        _num(body, "t_target_s"), _opt(body, "R_kohm", 1e3), _opt(body, "V_nom_V"),
                                        _opt(body, "V_max_V"), _opt(body, "P_allow_W"), _opt(body, "active_R_ohm"),
                                        drive=d if body.get("speed_rpm") not in (None, "") else None,
-                                       speed_rpm=_opt(body, "speed_rpm")))
+                                       speed_rpm=_opt(body, "speed_rpm"), magnet_temp_C=_opt(body, "magnet_temp_C")))
 
 
 def overvoltage(body):
@@ -242,7 +244,8 @@ def overvoltage(body):
     out = regen_disconnect_overvoltage(_num(body, "C_uF") * 1e-6, _num(body, "V1_V"), float(p), _num(body, "V_limit_V"),
                                        None if body.get("reaction_time_ms") in (None, "") else float(body["reaction_time_ms"]) * 1e-3,
                                        body.get("profile", "constant"), drive=d,
-                                       speed_rpm=None if body.get("speed_rpm") in (None, "") else float(body["speed_rpm"]))
+                                       speed_rpm=None if body.get("speed_rpm") in (None, "") else float(body["speed_rpm"]),
+                                       ramp_s=_opt(body, "ramp_ms", 1e-3), magnet_temp_C=_opt(body, "magnet_temp_C"))
     out["regen_operating_point"] = point
     return _jsonable(out)
 
@@ -252,7 +255,8 @@ def safe_state(body):
         _drive(body), _num(body, "speed_rpm"), _num(body, "Vdc_V"), body.get("hv_state", "battery_connected"),
         None if body.get("device_voltage_rating_V") in (None, "") else float(body["device_voltage_rating_V"]),
         None if body.get("dc_link_limit_V") in (None, "") else float(body["dc_link_limit_V"]),
-        body.get("hardware_paths"), body.get("transition_times_s"), body.get("rules")))
+        body.get("hardware_paths"), body.get("transition_times_s"), body.get("rules"),
+        magnet_temp_C=_opt(body, "magnet_temp_C"), winding_temp_C=_opt(body, "winding_temp_C")))
 
 
 def coolant_properties(glycol_vol_pct: float, T_C: float) -> dict:
@@ -293,13 +297,19 @@ def _thermal_model(spec, inlet_C: float | None = None) -> ThermalModel:
     nodes = tuple(ThermalNode(str(n["id"]), _network(n, coolant), float(n["limit_C"]),
                               tuple((k, float(v)) for k, v in n["loss_share"].items()),
                               n.get("station") if coolant is not None else None) for n in spec["nodes"])
-    prov = Provenance(DataOrigin.SYNTHETIC if not spec.get("validated") else DataOrigin.SUPPLIER,
-                      spec.get("source", "UI example network"), spec.get("revision", "1"),
-                      "validated" if spec.get("validated") else "unvalidated example network")
+    # the data origin is declared, never derived from the 'validated' flag (a flag is not supplier evidence)
+    try:
+        origin = DataOrigin(str(spec.get("origin", "estimated")))
+    except ValueError:
+        raise InputValidationError(f"origin must be one of {[o.value for o in DataOrigin]}", field="origin") from None
+    evidence = str(spec.get("validation_evidence") or "").strip()
+    prov = Provenance(origin, spec.get("source", "UI example network"), spec.get("revision", "1"),
+                      (f"declared validated ({evidence})" if evidence else "declared validated WITHOUT evidence reference")
+                      if spec.get("validated") else "unvalidated")
     return ThermalModel(spec.get("model_id", "UI_THERMAL"), spec.get("revision", "1"), nodes, prov,
                         validated=bool(spec.get("validated")),
                         validity=tuple((k, tuple(v)) for k, v in (spec.get("validity") or {}).items()),
-                        coolant=coolant)
+                        coolant=coolant, validation_evidence=evidence)
 
 
 def thermal_details(spec, inlet_C: float | None = None) -> dict:
@@ -317,7 +327,8 @@ def thermal_details(spec, inlet_C: float | None = None) -> dict:
 def thermal(body):
     d = _drive(body)
     sc = Scenario("thermal", _num(body, "speed_rpm"), _num(body, "Vdc_V"), _limits(body),
-                  coolant_temp_C=_num(body, "coolant_temp_C"))
+                  coolant_temp_C=_num(body, "coolant_temp_C"),
+                  initial_state=body.get("initial_state", "equilibrium_at_coolant") or None)
     model = _thermal_model(body.get("model"), sc.coolant_temp_C)
     durs = body.get("durations_s") or [1, 3, 10, 30, 60, 300, "inf"]
     durs = tuple(math.inf if x in ("inf", "continuous") else float(x) for x in durs)

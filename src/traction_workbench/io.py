@@ -123,7 +123,7 @@ def drive_from_dict(d: dict, conv: Conversions | None = None) -> DriveModel:
     rs = resistance_per_phase(_req(m, "Rs", "drive.motor"), connection, "drive.motor.Rs", conv)
     model = _req(m, "model", "drive.motor")
     if model == "constant_dq":
-        psi = pm_flux_linkage(m, p, conv)
+        psi = pm_flux_linkage(m, p, conv, connection)
         ld = quantity(_req(m, "Ld", "drive.motor"), "inductance", "drive.motor.Ld", conv)
         lq = quantity(_req(m, "Lq", "drive.motor"), "inductance", "drive.motor.Lq", conv)
         val = m.get("parameter_validity")

@@ -47,8 +47,8 @@ def resolve_limits(spec: dict | None, drive_spec: dict | None) -> DcSourceLimits
 def drive_info(drive: DriveModel) -> dict:
     out = drive.describe()
     if isinstance(drive.motor.flux, FluxMapModel):
-        out["magnetic_consistency"] = [p.reciprocity_report(drive.motor.flux.reciprocity_rel_tol)
-                                       for p in drive.motor.flux.planes]
+        out["magnetic_qualification"] = [p.magnetic_qualification(drive.motor.flux.reciprocity_rel_tol)
+                                         for p in drive.motor.flux.planes]
     return _jsonable(out)
 
 

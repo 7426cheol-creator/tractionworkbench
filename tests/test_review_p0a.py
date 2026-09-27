@@ -306,3 +306,348 @@ def test_f05_composite_across_detection_event_gives_unknown_split():
                                    detection_event="confirmed", fdti_budget_s=0.005, frti_budget_s=0.01))
     assert r["claim"]["status"] == "FEASIBLE" and r["fdti_worst_s"] is None and r["frti_worst_s"] is None
     assert any("cannot be split" in n for n in r["notes"])
+
+
+# ----------------------------------------------------------------------------------------------
+# F06 - supplied / fixed policy: missing != unlimited, NOT_EVALUATED != pass, residual != accuracy
+# ----------------------------------------------------------------------------------------------
+
+def _single_point_table(drive, idq, torque=(0.0, 400.0), speed=(0.0, 16000.0), tol=0.5):
+    from traction_workbench.analysis.supplied_policy import CurrentPolicyTable
+    from traction_workbench.models.provenance import DataOrigin, Provenance
+    ids = np.full((2, 2), idq[0])
+    iqs = np.full((2, 2), idq[1])
+    prov = Provenance(DataOrigin.SUPPLIER, "test map", "T", "test data")
+    return CurrentPolicyTable("FIXED", "T", np.array(torque), np.array(speed), ids, iqs, prov, torque_tolerance_Nm=tol)
+
+
+def test_f06_missing_loss_model_or_dc_limits_is_not_a_pass(drive, limits):
+    from traction_workbench.analysis.supplied_policy import evaluate_supplied_policy
+    sc = Scenario("s", 3000.0, 600.0, limits)
+    pt = PolicyEvaluator(drive, sc).solve(100.0).point
+    table = _single_point_table(drive, (pt.id_A, pt.iq_A))
+    ok = evaluate_supplied_policy(table, drive, sc, 100.0, compare_min_current=False)
+    assert ok["claim"]["status"] == "FEASIBLE"
+    no_loss = replace(drive, inverter=replace(drive.inverter, loss=None))
+    r1 = evaluate_supplied_policy(table, no_loss, sc, 100.0, compare_min_current=False)
+    assert r1["claim"]["status"] == "UNKNOWN" and r1["claim"]["reasons"] == ["MISSING_INPUT"]
+    only_charge = Scenario("s", 3000.0, 600.0, DcSourceLimits(charge_power_max_W=1e5, charge_current_max_A=200.0))
+    r2 = evaluate_supplied_policy(table, drive, only_charge, 100.0, compare_min_current=False)
+    assert r2["claim"]["status"] == "UNKNOWN" and "discharge" in r2["claim"]["detail"]
+    unlimited = Scenario("s", 3000.0, 600.0, DcSourceLimits(math.inf, 1e5, math.inf, 200.0))
+    assert evaluate_supplied_policy(table, drive, unlimited, 100.0, compare_min_current=False)["claim"]["status"] == "FEASIBLE"
+
+
+def test_f06_numerical_residual_is_not_a_customer_torque_accuracy(drive, limits):
+    from traction_workbench.analysis.supplied_policy import evaluate_supplied_policy
+    sc = Scenario("s", 3000.0, 600.0, limits)
+    pt = PolicyEvaluator(drive, sc).solve(100.0).point
+    table = _single_point_table(drive, (pt.id_A, pt.iq_A), tol=5.0)      # the table claims +-5 N*m
+    r = evaluate_supplied_policy(table, drive, sc, 102.0, compare_min_current=False)   # 2 N*m short
+    assert r["claim"]["status"] == "UNKNOWN" and r["claim"]["reasons"] == ["REQUIREMENT_INCOMPLETE"]
+    assert evaluate_supplied_policy(table, drive, sc, 102.0, compare_min_current=False,
+                                    accuracy_Nm=3.0)["claim"]["status"] == "FEASIBLE"
+    assert evaluate_supplied_policy(table, drive, sc, 102.0, compare_min_current=False,
+                                    accuracy_Nm=1.0)["claim"]["status"] == "INFEASIBLE"
+
+
+def test_f06_supplied_policy_honours_the_validity_gate(drive, limits):
+    from traction_workbench.analysis.supplied_policy import evaluate_supplied_policy
+    sc = Scenario("s", 3000.0, 600.0, limits, winding_temp_C=150.0)
+    table = _single_point_table(drive, (-50.0, 200.0))
+    assert evaluate_supplied_policy(table, drive, sc, 100.0, compare_min_current=False)["claim"]["status"] == "UNKNOWN"
+
+
+def test_f06_forward_point_without_relevant_dc_limit_is_not_accepted(drive):
+    sc = Scenario("s", 3000.0, 600.0, DcSourceLimits(charge_power_max_W=1e5, charge_current_max_A=200.0))
+    fr = forward_evaluation(drive, sc, -50.0, 200.0)          # motoring point: discharge limits can bind
+    assert fr.point.all_satisfied() and not fr.accepted and fr.gate_messages
+
+
+# ----------------------------------------------------------------------------------------------
+# F07 / F07b - thermal evidence and disconnected feasible sets
+# ----------------------------------------------------------------------------------------------
+
+def _tm(validated=True, evidence="TR-9 rev B", validity=(("coolant_temp_C", (60.0, 70.0)),), nodes=None):
+    from traction_workbench.extensions.thermal import FosterNetwork, ThermalModel, ThermalNode
+    from traction_workbench.models.provenance import DataOrigin, Provenance
+    nodes = nodes if nodes is not None else (
+        ThermalNode("junction", FosterNetwork((0.05, 0.15), (0.05, 2.0)), 150.0, (("inverter", 1 / 6),)),
+        ThermalNode("winding", FosterNetwork((0.004, 0.01), (20.0, 300.0)), 180.0,
+                    (("copper", 1.0), ("rotational", 1.0))))
+    return ThermalModel("TM", "1", nodes, Provenance(DataOrigin.ESTIMATED, "t", "1", "test"), validated=validated,
+                        validity=validity, validation_evidence=evidence)
+
+
+def test_f07_validated_flag_is_not_evidence(drive):
+    from traction_workbench.extensions.thermal import thermal_duration
+    sc = scenario(3000, 600, coolant_temp_C=65.0, initial_state="equilibrium_at_coolant")
+    assert thermal_duration(drive, sc, _tm(), 300.0, 10.0)["claim"]["status"] == "FEASIBLE"
+    r = thermal_duration(drive, sc, _tm(evidence=""), 300.0, 10.0)
+    assert r["claim"]["status"] == "UNKNOWN" and any("flag is not evidence" in p for p in r["qualification_problems"])
+    r = thermal_duration(drive, sc, _tm(validity=()), 300.0, 10.0)
+    assert r["claim"]["status"] == "UNKNOWN" and any("validity domain" in p for p in r["qualification_problems"])
+
+
+def test_f07_empty_network_is_invalid_input():
+    from traction_workbench.errors import InputValidationError
+    with pytest.raises(InputValidationError):
+        _tm(nodes=())
+
+
+def test_f07_unmonitored_heat_source_and_initial_state_and_domain(drive):
+    from traction_workbench.extensions.thermal import FosterNetwork, ThermalNode, thermal_duration
+    only_j = (ThermalNode("junction", FosterNetwork((0.05, 0.15), (0.05, 2.0)), 150.0, (("inverter", 1 / 6),)),)
+    sc = scenario(3000, 600, coolant_temp_C=65.0, initial_state="equilibrium_at_coolant")
+    r = thermal_duration(drive, sc, _tm(nodes=only_j), 300.0, 10.0)
+    assert r["claim"]["status"] == "UNKNOWN" and any("heats no node" in p for p in r["qualification_problems"])
+    hot = scenario(3000, 600, coolant_temp_C=65.0, initial_state="after_peak_hot")
+    assert thermal_duration(drive, hot, _tm(), 300.0, 10.0)["claim"]["status"] == "UNKNOWN"
+    unstated = scenario(3000, 600, coolant_temp_C=65.0)
+    assert thermal_duration(drive, unstated, _tm(), 300.0, 10.0)["claim"]["status"] == "UNKNOWN"
+    dom = _tm(validity=(("coolant_temp_C", (60.0, 70.0)), ("speed_rpm", (0.0, 2000.0))))
+    r = thermal_duration(drive, sc, dom, 300.0, 10.0)            # 3000 rpm is outside the validated speed range
+    assert r["claim"]["status"] == "UNKNOWN" and any("speed_rpm" in p for p in r["qualification_problems"])
+
+
+def test_f07_api_does_not_turn_the_flag_into_supplier_origin():
+    from traction_workbench import api
+    spec = dict(api.EXAMPLE_THERMAL, validated=True)
+    m = api._thermal_model(spec, 65.0)
+    assert m.provenance.origin.value == "synthetic" and "WITHOUT evidence" in m.provenance.validation_status
+
+
+def test_f07b_zero_torque_failure_does_not_remove_the_feasible_set(drive):
+    from traction_workbench.extensions.thermal import FosterNetwork, ThermalNode, torque_availability
+    lim = DcSourceLimits(200000.0, 100000.0, 400.0, 200.0)
+    sc = Scenario("fw", 16000.0, 450.0, lim, coolant_temp_C=65.0, initial_state="equilibrium_at_coolant")
+    ev = PolicyEvaluator(drive, sc)
+    p0, p5 = ev.solve(0.0).point, ev.solve(-5.0).point
+    assert p5.Pcu_W < p0.Pcu_W and p5.Pdc_W > 0          # -5 N*m: less copper loss, braking but drawing DC power
+    limit = 65.0 + 0.05 * 0.5 * (p0.Pcu_W + p5.Pcu_W)    # between the two winding temperatures
+    node = ThermalNode("winding", FosterNetwork((0.05,), (1.0,)), limit, (("copper", 1.0),))
+    ta = torque_availability(drive, sc, _tm(nodes=(node,), evidence=""), durations_s=(math.inf,), direction=-1,
+                             samples=81)
+    row = ta["rows"][0]
+    assert row["zero_torque_feasible"] is False
+    assert row["feasible_segments_Nm"], "a failure at zero torque must not remove the feasible set"
+    assert any(a <= -5.0 <= b or abs(a + 5.0) < 3.0 for a, b in row["feasible_segments_Nm"])
+
+
+# ----------------------------------------------------------------------------------------------
+# F08 / F08b - input/time/temperature gates; the back-EMF is a rectification risk, not a floor
+# ----------------------------------------------------------------------------------------------
+
+def _two_plane_drive():
+    p = sf.manufactured_flux_plane()
+    cold = FluxMapPlane(p.id_axis_A, p.iq_axis_A, p.psi_d_Wb, p.psi_q_Wb, p.valid, 20.0)
+    hot = FluxMapPlane(p.id_axis_A, p.iq_axis_A, p.psi_d_Wb * 0.9, p.psi_q_Wb, p.valid, 120.0)
+    return sf.manufactured_map_drive(FluxMapModel((cold, hot)))
+
+
+def test_f08_negative_reaction_time_is_invalid_input():
+    from traction_workbench.errors import InputValidationError
+    from traction_workbench.extensions.dclink import regen_disconnect_overvoltage
+    with pytest.raises(InputValidationError):
+        regen_disconnect_overvoltage(500e-6, 700.0, 100e3, 800.0, reaction_time_s=-1e-3)
+
+
+def test_f08_delay_then_ramp_energy_is_not_an_immediate_ramp():
+    from traction_workbench.extensions.dclink import regen_disconnect_overvoltage
+    P, td, tr = 100e3, 0.1e-3, 0.2e-3
+    r = regen_disconnect_overvoltage(500e-6, 700.0, P, 800.0, reaction_time_s=td, profile="delay_then_ramp", ramp_s=tr)
+    assert r["energy_in_J"] == pytest.approx(P * td + 0.5 * P * tr)
+    ramp_only = regen_disconnect_overvoltage(500e-6, 700.0, P, 800.0, reaction_time_s=td + tr, profile="linear_ramp_down")
+    assert ramp_only["energy_in_J"] < r["energy_in_J"]          # an immediate ramp overstates the headroom
+
+
+def test_f08_multi_plane_map_needs_the_magnet_temperature():
+    from traction_workbench.extensions.dclink import back_emf_ll_peak
+    from traction_workbench.extensions.safe_state import asc_steady_state, safe_state_screening
+    dm = _two_plane_drive()
+    assert back_emf_ll_peak(dm, 6000.0) is None                  # no silently chosen first plane
+    cold, hot = back_emf_ll_peak(dm, 6000.0, 20.0), back_emf_ll_peak(dm, 6000.0, 120.0)
+    assert cold == pytest.approx(hot / 0.9)
+    a = asc_steady_state(dm, 6000.0, 600.0)                       # used to raise AttributeError
+    assert a["evaluable"] is False and a["reason_code"] == "MISSING_INPUT"
+    s = safe_state_screening(dm, 6000.0, 600.0)
+    assert s["candidates"][1]["steady_state"] == "UNKNOWN"
+
+
+def test_f08b_back_emf_is_not_a_resistor_independent_floor(drive):
+    from traction_workbench.extensions.dclink import active_discharge, rectified_link_voltage_screening
+    r = active_discharge(500e-6, 600.0, 60.0, 2.0, drive=drive, speed_rpm=2000.0)
+    assert r["claim"]["status"] == "UNKNOWN" and "COUPLED_MODEL_REQUIRED" in r["claim"]["reasons"]
+    # the held link voltage depends on R (a smaller R pulls it down): not a floor
+    lo = rectified_link_voltage_screening(drive, 2000.0, 10.0)["V_dc_V"]
+    hi = rectified_link_voltage_screening(drive, 2000.0, 10000.0)["V_dc_V"]
+    assert lo < hi < r["back_emf_ll_peak_V"] * 1.0001
+    # the diodes can only charge the link: a too-slow RC design is still proven too slow
+    slow = active_discharge(500e-6, 600.0, 60.0, 2.0, R_ohm=5000.0, drive=drive, speed_rpm=2000.0)
+    assert slow["claim"]["status"] == "INFEASIBLE"
+
+
+# ----------------------------------------------------------------------------------------------
+# F09 - Kt units and current reference are explicit; garbage is rejected, not read as N*m/A
+# ----------------------------------------------------------------------------------------------
+
+def _kt(value, unit, basis="fundamental_peak", ref="line"):
+    d = {"value": value, "unit": unit, "definition": "shaft_or_em_torque_per_current_at_id0",
+         "torque": "electromagnetic", "current_basis": basis}
+    if ref is not None:
+        d["current_reference"] = ref
+    return {"Kt": d}
+
+
+def test_f09_kt_units_are_converted_or_rejected():
+    from traction_workbench.errors import InputValidationError
+    from traction_workbench.units import Conversions, pm_flux_linkage
+    si = pm_flux_linkage(_kt(0.6, "N*m/A"), 4, Conversions())
+    assert si == pytest.approx(0.6 / 6.0)
+    assert pm_flux_linkage(_kt(600.0, "mN*m/A"), 4, Conversions()) == pytest.approx(si)
+    assert pm_flux_linkage(_kt(0.0006, "kN*m/A"), 4, Conversions()) == pytest.approx(si)
+    for bad in ("", "garbage", "N*m", "Nm/Arms"):
+        with pytest.raises(InputValidationError):
+            pm_flux_linkage(_kt(0.6, bad), 4, Conversions())
+    with pytest.raises(InputValidationError):
+        pm_flux_linkage(_kt(0.6, "N*m/A", ref=None), 4, Conversions())       # current reference not declared
+    with pytest.raises(InputValidationError):
+        pm_flux_linkage(_kt(0.6, "N*m/A", ref="winding_phase"), 4, Conversions(), connection="wye_equivalent")
+    assert pm_flux_linkage(_kt(0.6 * math.sqrt(2), "N*m/A", basis="fundamental_rms"), 4, Conversions()) == \
+        pytest.approx(si)
+
+
+# ----------------------------------------------------------------------------------------------
+# F10 - node reciprocity is static data plausibility, not dynamic qualification of the interpolant
+# ----------------------------------------------------------------------------------------------
+
+def _analytic_flux(d, q):
+    return (0.1 + 0.0002 * d - 1e-10 * d ** 3 - 1e-10 * d * q ** 2,
+            0.0004 * q - 2e-10 * q ** 3 - 1e-10 * d ** 2 * q)
+
+
+def test_f10_non_uniform_axes_use_a_true_derivative():
+    ax = np.array([-200.0, -101.0, -100.0, -1.0, 0.0, 99.0, 100.0, 200.0])     # alternating 1 A / 99 A spacing
+    D, Q = np.meshgrid(ax, ax, indexing="ij")
+    psd, psq = _analytic_flux(D, Q)
+    pl = FluxMapPlane(ax, ax, psd, psq)
+    rep = pl.reciprocity_report()
+    assert rep["passed"] is True and rep["max_rel_mismatch"] < 1e-9            # conservative data: no false alarm
+    # the plain secant used before is only first order on this grid and raises a false reciprocity failure
+    hd = (ax[2:] - ax[:-2])
+    ldq = (psd[1:-1, 2:] - psd[1:-1, :-2]) / hd[None, :]
+    lqd = (psq[2:, 1:-1] - psq[:-2, 1:-1]) / hd[:, None]
+    scale = np.maximum(np.abs((psd[2:, 1:-1] - psd[:-2, 1:-1]) / hd[:, None]),
+                       np.abs((psq[1:-1, 2:] - psq[1:-1, :-2]) / hd[None, :]))
+    assert np.max(np.abs(ldq - lqd) / scale) > 1e-3
+
+
+def test_f10_static_plausibility_is_not_dynamic_qualification():
+    ax = np.arange(-200.0, 201.0, 20.0)
+    D, Q = np.meshgrid(ax, ax, indexing="ij")
+    psd, psq = _analytic_flux(D, Q)
+    good = FluxMapPlane(ax, ax, psd, psq).magnetic_qualification()
+    assert good["static_use"]["status"].startswith("PLAUSIBLE")
+    assert good["dynamic_use"]["status"] == "NOT QUALIFIED"
+    bad_q = psq + 1e-5 * np.linspace(-1, 1, ax.size)[:, None] ** 3 * 200        # non-conservative data
+    bad = FluxMapPlane(ax, ax, psd, bad_q).magnetic_qualification()
+    assert bad["static_use"]["status"].startswith("INCONSISTENT")
+    assert bad["dynamic_use"]["interpolant"]["max_rel_closed_path_work"] > \
+        1e3 * max(good["dynamic_use"]["interpolant"]["max_rel_closed_path_work"], 1e-12)
+
+
+def test_f10_drive_info_reports_the_split():
+    from traction_workbench import service
+    info = service.drive_info(sf.manufactured_map_drive())
+    q = info["magnetic_qualification"][0]
+    assert q["dynamic_use"]["status"] == "NOT QUALIFIED" and "static_use" in q
+
+
+# ----------------------------------------------------------------------------------------------
+# F13 - an UNKNOWN boundary is not a minimal sizing; an unresolved gain is not "not limiting"
+# ----------------------------------------------------------------------------------------------
+
+def test_f13_unknown_region_boundary_is_not_a_minimal_sizing(drive, limits):
+    from traction_workbench.analysis.sizing import size_parameter
+    sc = Scenario("s", 12000.0, 450.0, limits)
+    full = size_parameter(drive, sc, 150.0, "Vdc_V", (400.0, 700.0), samples=31)
+    assert full.minimal_is_bracketed and 480.0 < full.minimal_feasible < 510.0
+    # the loss surrogate is only validated from 520 V: below it the model says nothing (UNKNOWN)
+    dl = replace(drive, inverter=replace(drive.inverter, loss=replace(drive.inverter.loss, valid_Vdc_V=(520.0, 700.0))))
+    r = size_parameter(dl, sc, 150.0, "Vdc_V", (400.0, 700.0), samples=31)
+    assert r.minimal_feasible == pytest.approx(520.0) and not r.minimal_is_bracketed
+    assert [st for *_, st in r.regions] == ["UNKNOWN", "FEASIBLE"]
+    d = r.to_dict()
+    assert "not a proven minimum" in d["minimal_meaning"]
+
+
+def test_f13_unresolved_gain_is_not_classified_not_limiting(drive, limits):
+    from traction_workbench.analysis.dominance import capability_dominance
+    sc = Scenario("hot", 12000.0, 600.0, limits, winding_temp_C=150.0)     # validity gate fails: nothing established
+    r = capability_dominance(drive, sc, +1, samples=21)
+    cls = {dict(x)["constraint"]: dict(x)["classification"] for x in r.rows}
+    assert cls and all(c.startswith("unresolved") for c in cls.values())
+    ok = capability_dominance(drive, Scenario("ok", 12000.0, 600.0, limits), +1, samples=21)
+    row = {dict(x)["constraint"]: dict(x) for x in ok.rows}["VOLTAGE"]
+    lo, hi = row["gain_interval_Nm"]
+    assert row["classification"] == "limiting" and lo > 0 and lo <= row["gain_Nm"] <= hi
+
+
+# ----------------------------------------------------------------------------------------------
+# F11 / F12 - mathematical / model / requirement / qualification layers are separate statements
+# ----------------------------------------------------------------------------------------------
+
+def test_f12_claim_layers_are_separate(drive, limits):
+    from traction_workbench.decision import evaluate_requirement
+    from traction_workbench.models.provenance import DataOrigin, Provenance
+    from traction_workbench.requirement import Requirement
+    req = Requirement("R-L", "150 N*m @ 12000 rpm, 600 V", 150.0, 12000.0, 600.0)
+    rec = evaluate_requirement(req, drive, source_limits=limits)
+    lay = rec.to_dict()["verdict"]["layers"]
+    assert rec.verdict.status is Status.FEASIBLE
+    assert lay["model"]["verdict"] == "PASS" and lay["mathematical"]["status"] == "CERTIFIED"
+    assert lay["qualification"]["status"].startswith("NOT QUALIFIED")       # synthetic data
+    assert any("duration not stated" in x for x in lay["requirement"]["open_items"])
+    assert any("a0 + a2*Ipk^2" in x for x in lay["qualification"]["sub_models"])
+    sup = replace(drive, provenance=Provenance(DataOrigin.SUPPLIER, "sheet", "B", "supplier-declared"))
+    lay2 = evaluate_requirement(req, sup, source_limits=limits).layers
+    assert lay2["qualification"]["status"].startswith("DATA-DECLARED")      # never promoted to "qualified"
+    rng = Requirement("R-R", "range", 100.0, 12000.0, (550.0, 650.0), Vdc_quantifier="for_all")
+    assert evaluate_requirement(rng, drive, source_limits=limits).layers["mathematical"]["status"] == \
+        "SAMPLED_OR_BOUNDED"
+
+
+# ----------------------------------------------------------------------------------------------
+# additional boundary cases requested in the P0-A acceptance (negative speed, zero torque, equal limits)
+# ----------------------------------------------------------------------------------------------
+
+def _sym_speed(drive):
+    return replace(drive, domain=replace(drive.domain, speed_rpm=(-16000.0, 16000.0)))
+
+
+def test_negative_speed_uses_power_sign_not_torque_sign(drive, limits):
+    d = _sym_speed(drive)
+    sol = PolicyEvaluator(d, Scenario("rev", -3000.0, 600.0, limits)).solve(-100.0)
+    assert sol.policy_claim.status is Status.FEASIBLE
+    pt = sol.point
+    assert pt.Pshaft_W > 0 and pt.Pdc_W > 0 and pt.energy_mode == "MOTORING"   # negative torque, reverse motoring
+    reg = PolicyEvaluator(d, Scenario("rev", -3000.0, 600.0, limits)).solve(100.0).point
+    assert reg.Pshaft_W < 0 and reg.energy_mode in ("REGENERATING", "BRAKING_WITHOUT_NET_DC_RECOVERY")
+
+
+def test_zero_torque_and_equal_limits_are_explicit(drive, limits):
+    from traction_workbench.decision import evaluate_requirement
+    from traction_workbench.requirement import Requirement
+    z = PolicyEvaluator(drive, Scenario("z", 3000.0, 600.0, limits)).solve(0.0)
+    assert z.policy_claim.status is Status.FEASIBLE and z.point.Tshaft_Nm == pytest.approx(0.0, abs=1e-6)
+    eq = Requirement("R-EQ", "equal range ends", 100.0, 3000.0, (600.0, 600.0), Vdc_quantifier="for_all")
+    rec = evaluate_requirement(eq, drive, source_limits=limits)
+    assert len(rec.conditions) == 1 and rec.verdict.status is Status.FEASIBLE     # [600, 600] is one point
+    zero_dc = Scenario("z", 3000.0, 600.0, DcSourceLimits(0.0, 0.0, 0.0, 0.0))
+    s = PolicyEvaluator(drive, zero_dc).solve(50.0)                              # no DC power allowed at all
+    assert s.policy_claim.status is Status.INFEASIBLE
+    pinned = replace(drive, domain=replace(drive.domain, id_A=(-50.0, -50.0)))  # id pinned to one value
+    p = PolicyEvaluator(pinned, Scenario("p", 3000.0, 600.0, limits)).solve(100.0)
+    assert p.policy_claim.status in (Status.FEASIBLE, Status.INFEASIBLE)
+    if p.point is not None:
+        assert p.point.id_A == pytest.approx(-50.0, abs=1e-9)

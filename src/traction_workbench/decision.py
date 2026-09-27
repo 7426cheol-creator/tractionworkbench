@@ -105,13 +105,18 @@ class DecisionRecord:
     settings: NumericalSettings
     analyses: dict = field(default_factory=dict)
 
+    @property
+    def layers(self) -> dict:
+        return claim_layers(self.requirement, self.drive, self.conditions, self.verdict)
+
     def to_dict(self) -> dict:
         return _jsonable({
             "record_type": "EngineeringDecisionRecord",
             "record_id": self.record_id,
             "software": {"name": "traction-workbench", "version": __version__},
             "input_sha256": self.input_sha256,
-            "verdict": {**self.verdict.to_dict(), "scope": self.verdict_scope, "qualifiers": list(self.qualifiers)},
+            "verdict": {**self.verdict.to_dict(), "scope": self.verdict_scope, "qualifiers": list(self.qualifiers),
+                        "layers": self.layers},
             "requirement": self.requirement.describe(),
             "model": {
                 "drive_id": self.drive.drive_id,
@@ -140,6 +145,90 @@ class DecisionRecord:
 
 
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Claim layers (independent review F11/F12): mathematical / model / requirement / qualification
+# ---------------------------------------------------------------------------
+
+_CERTIFIED_KINDS = (EvidenceKind.EXACT_ENUMERATION, EvidenceKind.CERTIFIED_BOUND)
+
+
+def _sub_models(drive: DriveModel) -> list[str]:
+    out = []
+    inv = drive.inverter.loss
+    if inv is None:
+        out.append("inverter loss: not modelled (DC claims UNKNOWN)")
+    else:
+        rng = "" if inv.valid_Vdc_V is None else f", declared valid Vdc {list(inv.valid_Vdc_V)} V"
+        out.append(f"inverter loss: {inv.kind} P = a0 + a2*Ipk^2 (no Vdc/fsw/Tj/modulation dependence{rng})")
+    rot = drive.motor.rotational_loss
+    out.append("rotational loss: " + ("not modelled" if rot is None else f"{rot.basis}"))
+    out.append("DC source: average power/current limits at the inverter DC terminal (no source impedance, sag or "
+               "charge-acceptance dynamics)")
+    out.append("thermal: not part of the static claim (duration only via a matching rating envelope)")
+    return out
+
+
+def claim_layers(req: Requirement, drive: DriveModel, conditions, verdict: Aggregate) -> dict:
+    """Four separate statements that must not be merged into one boolean.
+
+    * mathematical  - the numerical evidence (exact enumeration / certificates / residuals vs sampled search);
+    * model         - the requirement verdict for THIS model and data (the headline verdict);
+    * requirement   - whether the requirement is complete enough to be decided (duration, quantifier, ...);
+    * qualification - the evidence level of the data behind the model.  Never promoted automatically:
+                      synthetic or unvalidated data, or a numerical certificate, are not hardware qualification.
+    """
+    kinds, acc_ok, cert_ok, sampled = set(), True, True, False
+    for cr in conditions:
+        sol = cr.witness_solution or cr.solution
+        for c in sol.claims:
+            kinds.update(e.kind for e in c.evidence)
+        acc = dict(sol.acceptance)
+        if acc and not acc.get("passed", True):
+            acc_ok = False
+        mc = dict(sol.certificates).get("minimum_current")
+        if mc and not mc.get("certified"):
+            cert_ok = False
+    sampled = any(Reason.SAMPLED_COVERAGE in c.requirement_claim.reasons for c in conditions) or req.is_range
+    if not acc_ok:
+        m_status, m_text = "UNRESOLVED", "numerical acceptance failed at a witness"
+    elif kinds & set(_CERTIFIED_KINDS) and cert_ok and not sampled:
+        m_status, m_text = "CERTIFIED", "exact enumeration / certified bounds; residuals within the numerical budget"
+    elif cert_ok:
+        m_status, m_text = "SAMPLED_OR_BOUNDED", "sampled search and/or cell bounds; sampled coverage is not a proof"
+    else:
+        m_status, m_text = "UNCERTIFIED", "the minimum-current point is not certified (coverage or bound gap)"
+    open_items = []
+    if req.duration_s is None:
+        open_items.append("duration not stated: static item only (the duration aspect is undetermined)")
+    elif req.initial_state is None:
+        open_items.append("initial (thermal) state not stated for a duration requirement")
+    if req.is_range:
+        open_items.append("Vdc range examined at sampled points: a continuous-range claim needs monotonicity or "
+                          "denser analysis")
+    if req.operator == "band":
+        open_items.append("band requirement: existence of one torque inside the band (not tracking of every torque)")
+    prov = drive.provenance
+    origin = prov.origin.value
+    if origin in ("synthetic", "estimated"):
+        q_status = f"NOT QUALIFIED ({origin} data)"
+    elif origin in ("supplier", "fea"):
+        q_status = f"DATA-DECLARED ({origin} data; no hardware correlation evidence in this record)"
+    else:
+        q_status = "MEASURED DATA (correlation, holdouts and uncertainty are not verified by this tool)"
+    return {
+        "mathematical": {"status": m_status, "meaning": m_text + " - numerical evidence, not physical accuracy"},
+        "model": {"status": verdict.status.value, "verdict": verdict.status.verdict,
+                  "meaning": "requirement verdict for this model and its data (static fundamental steady state, "
+                             "minimum-current policy, declared domain)"},
+        "requirement": {"status": "COMPLETE" if not open_items else "OPEN_ITEMS", "open_items": open_items},
+        "qualification": {"status": q_status, "data_origin": origin, "validation_status": prov.validation_status,
+                          "fidelity": drive.fidelity.value, "sub_models": _sub_models(drive),
+                          "meaning": "hardware qualification is a separate claim: a model PASS or a numerical "
+                                     "certificate never qualifies the product; simplified loss/thermal/source models "
+                                     "hold only in their declared narrow domain"},
+    }
+
 
 def _condition_points(req: Requirement, samples: int) -> tuple[list[float], bool]:
     if not req.is_range:
