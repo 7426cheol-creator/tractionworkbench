@@ -372,20 +372,22 @@ def protection_review(plant: Plant, sensor: Sensor, fault_threshold: float, limi
     # PROT-01 no nuisance on every declared normal trajectory (over-reading sensor, low threshold)
     if normal_plants:
         trips = []
+        n_ph = max(1, int(phases))
         for i, npl in enumerate(normal_plants):
-            r = simulate(npl, over, fault_threshold, math.inf, horizon_s, action_delay_s, -E_theta)
-            closest = float(np.max(r["samples_y"])) - (fault_threshold - E_theta)
-            if r["detected"]:
-                trips.append((i, r["events"]["t_confirm_s"], closest))
+            nsw = phase_sweep(npl, over, fault_threshold, math.inf, horizon_s, action_delay_s, -E_theta, n_ph)
+            hit = [r for r in nsw["rows"] if r["t_confirm_s"] is not None]
+            if hit:
+                trips.append((i, hit[0]["t_confirm_s"], hit[0]["phase_s"]))
         if trips:
             rows.append(_row("PROT-01", "no nuisance trip", Status.INFEASIBLE,
                              f"normal trajectory #{trips[0][0]} confirms a fault at {trips[0][1]:.4g} s "
-                             f"(over-reading sensor, threshold at its low tolerance): a valid counterexample",
-                             "causal simulation witness"))
+                             f"(sample phase {trips[0][2]:.4g} s, over-reading sensor, threshold at its low "
+                             f"tolerance): a valid counterexample", "causal simulation witness"))
         else:
             rows.append(_row("PROT-01", "no nuisance trip", Status.FEASIBLE,
-                             f"{len(normal_plants)} declared normal trajectories never confirm (sampled phases 0; "
-                             f"coverage limited to the declared set)", "causal simulation, declared set only"))
+                             f"{len(normal_plants)} declared normal trajectories never confirm in {n_ph} sampled "
+                             f"phases (coverage limited to the declared set and sampled phases)",
+                             "causal simulation, declared set only"))
     else:
         rows.append(_row("PROT-01", "no nuisance trip", Status.UNKNOWN,
                          "no normal operating/transient trajectory declared: nuisance behaviour not covered"))

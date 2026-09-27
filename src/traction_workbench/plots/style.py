@@ -8,6 +8,8 @@ import matplotlib as mpl
 
 # equal-aspect id-iq views use adjustable="datalim"; matplotlib logs a notice every time it widens a fixed limit
 logging.getLogger("matplotlib.axes._base").setLevel(logging.ERROR)
+# a Korean fallback font without a bold face makes the font manager log a notice for every bold label
+logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
 
 PHASE = ("#1f77b4", "#ff7f0e", "#2ca02c")          # a, b, c
 GROUP = {

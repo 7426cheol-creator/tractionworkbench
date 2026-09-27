@@ -352,7 +352,7 @@ EXAMPLE_PROTECTION = {
     "thresholds": {"warning": 725.0, "fault": 738.5, "release": 720.0, "E_theta": 3.0},
     "limit": 800.0, "horizon_ms": 1.0, "action_delay_ms": 0.15, "x_normal_max": 720.0, "warning_needed_ms": 0.05,
     "normal": [{"kind": "ramp", "x0": 700.0, "slope_per_s": 0.0, "ripple_amp": 15.0, "ripple_hz": 2000.0}],
-    "tight_attainable": False, "hw_path": "not declared", "phases": 16,
+    "tight_attainable": False, "hw_path": None, "phases": 16,
 }
 
 EXAMPLE_PROTECTION_OT = {
@@ -364,7 +364,7 @@ EXAMPLE_PROTECTION_OT = {
                "confirm_samples": 1, "exec_delay_ms": 0.0, "comparator": ">="},
     "thresholds": {"warning": 130.0, "fault": 135.0, "release": 125.0, "E_theta": 0.0},
     "limit": 150.0, "horizon_ms": 8000.0, "action_delay_ms": 500.0, "x_normal_max": None, "warning_needed_ms": None,
-    "normal": [], "tight_attainable": False, "hw_path": "not declared", "phases": 8,
+    "normal": [], "tight_attainable": False, "hw_path": None, "phases": 8,
 }
 
 
