@@ -52,6 +52,86 @@ def drive_info(drive: DriveModel) -> dict:
     return _jsonable(out)
 
 
+def data_audit(drive: DriveModel) -> dict:
+    """Machine-data package audit (independent review P0-B, section 10.2): what the data may be used for.
+
+    Static, dynamic, loss, thermal, demagnetisation and fault-domain uses are stated separately; nothing is
+    promoted because a neighbouring use is supported.  The audit states gaps; it does not fill them.
+    """
+    flux = drive.motor.flux
+    motor = drive.motor
+    uses, gaps = [], []
+    if isinstance(flux, FluxMapModel):
+        quals = [p.magnetic_qualification(flux.reciprocity_rel_tol) for p in flux.planes]
+        coverage = [p.coverage_summary() for p in flux.planes]
+        holes = [c["total_cells"] - c["valid_cells"] for c in coverage]
+        static_status = ("SUPPORTED within the covered cells (bilinear, no extrapolation)"
+                         if all(q["static_use"]["status"].startswith("PLAUSIBLE") for q in quals) else
+                         "SUPPORTED with node-plausibility warnings - check the data")
+        uses.append({"use": "static steady-state torque / voltage / current", "status": static_status,
+                     "basis": f"{len(flux.planes)} plane(s); invalid cells per plane: {holes}"})
+        uses.append({"use": "dynamic transients (ASC entry, current control)", "status": "NOT QUALIFIED",
+                     "basis": quals[0]["dynamic_use"]["reasons"][0]})
+        temps = [p.magnet_temp_C for p in flux.planes]
+        uses.append({"use": "magnet-temperature dependence",
+                     "status": ("plane selection at stated temperatures " + str(temps) +
+                                (f"; linear interpolation declared ({flux.temperature_interpolation_basis})"
+                                 if flux.temperature_interpolation else "; no interpolation between planes")),
+                     "basis": "planes are raw per-temperature data: no additional psi scaling is applied"})
+        magnetic = {"kind": "flux_map", "planes": coverage, "qualification": quals}
+    else:
+        v = flux.validity
+        uses.append({"use": "static steady-state torque / voltage / current",
+                     "status": "SUPPORTED on the declared domain" if v is None else
+                     f"SUPPORTED inside the parameter validity box id {list(v.id_A)} A, iq {list(v.iq_A)} A",
+                     "basis": "constant psi_PM, Ld, Lq (no saturation, no cross-coupling)"})
+        uses.append({"use": "dynamic transients (ASC entry, current control)",
+                     "status": "SCREENING ONLY (linear constant-inductance model; saturation not represented)",
+                     "basis": "apparent = differential inductance only for a linear magnetic model"})
+        uses.append({"use": "magnet-temperature dependence",
+                     "status": ("declared coefficient " + str(motor.psi_temperature.coeff_per_K) + " /K valid "
+                                + str(list(motor.psi_temperature.valid_C)) + " degC") if motor.psi_temperature else
+                     "not declared: a stated magnet temperature away from the reference gives UNKNOWN",
+                     "basis": f"reference {motor.reference_magnet_temp_C} degC"})
+        magnetic = {"kind": "constant_dq", **flux.describe()}
+        if v is not None:
+            gaps.append("parameter validity box declared: outside it the model says nothing (control domain != "
+                        "data domain)")
+    uses.append({"use": "winding resistance vs temperature",
+                 "status": ("declared coefficient " + str(motor.rs_temperature.coeff_per_K) + " /K valid "
+                            + str(list(motor.rs_temperature.valid_C)) + " degC") if motor.rs_temperature else
+                 "not declared: a stated winding temperature away from the reference gives UNKNOWN",
+                 "basis": f"reference {motor.reference_winding_temp_C} degC"})
+    inv = drive.inverter.loss
+    uses.append({"use": "inverter loss / DC power",
+                 "status": "MISSING (DC claims UNKNOWN)" if inv is None else
+                 f"{inv.kind}: P = a0 + a2*Ipk^2 (no Vdc/fsw/Tj/modulation dependence)",
+                 "basis": "synthetic energy-loss surrogate, not a device conduction/switching model"
+                 if inv is not None and inv.kind == "quadratic_current_surrogate" else "declared"})
+    rot = motor.rotational_loss
+    uses.append({"use": "rotational / iron loss", "status": "MISSING (shaft torque undefined)" if rot is None else
+                 rot.basis, "basis": "loss-equivalent resisting torque; not a dq iron-loss-current model"})
+    uses.append({"use": "thermal duration", "status": "NOT PART OF THE MOTOR MODEL",
+                 "basis": "needs a matching rating envelope or a qualified thermal model"})
+    uses.append({"use": "demagnetisation", "status": "NOT SUPPORTED",
+                 "basis": "the declared id domain is a restriction, not a demagnetisation safe-domain"})
+    uses.append({"use": "fault-current domain (ASC/short circuit beyond normal Imax)",
+                 "status": "NOT COVERED unless the data extend beyond the normal current limit",
+                 "basis": "normal-operation maps are never clipped or extrapolated into the fault domain"})
+    uses.append({"use": "extrapolation outside the data", "status": "NEVER", "basis": "no-extrapolation policy"})
+    prov = drive.provenance
+    if prov.origin.value in ("synthetic", "estimated"):
+        gaps.append(f"{prov.origin.value} data: no engineering qualification (P0-C needs one real motor-inverter "
+                    f"combination with calibration and holdout data)")
+    gaps.append("no calibration / holdout split, uncertainty or correlation model is declared")
+    return _jsonable({"identity": {"drive_id": drive.drive_id, "revision": drive.revision,
+                                   "provenance": prov.to_dict(), "fidelity": drive.fidelity.value},
+                      "conventions": {"dq": "amplitude-invariant Park, phase-peak values, d on PM flux",
+                                      "connection": motor.connection, "speed": "mechanical rpm",
+                                      "torque": "shaft torque = T_em - tau_rot (sign: + with + speed = motoring)"},
+                      "magnetic": magnetic, "supported_uses": uses, "qualification_gaps": gaps})
+
+
 def evaluate_case(case_dict: dict) -> dict:
     return evaluate_case_full(case_dict)[0]
 

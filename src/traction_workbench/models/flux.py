@@ -446,6 +446,15 @@ class FluxMapPlane:
 def _mirror_q(plane: FluxMapPlane) -> FluxMapPlane:
     """Apply declared q-axis symmetry: psi_d even in iq, psi_q odd in iq."""
     ax_q = plane.iq_axis_A
+    # the zero seam: odd symmetry requires psi_q(id, iq = 0) = 0 (otherwise the mirrored map jumps at iq = 0)
+    j0 = 0 if ax_q[0] == 0.0 else (ax_q.size - 1 if ax_q[-1] == 0.0 else None)
+    if j0 is not None:
+        seam = np.abs(plane.psi_q_Wb[:, j0][plane.valid[:, j0]])
+        ref = max(float(np.nanmax(np.abs(plane.psi_q_Wb[plane.valid]))), 1e-12)
+        if seam.size and float(seam.max()) > 1e-6 * ref:
+            raise InputValidationError(
+                f"declared q-odd symmetry needs psi_q(iq = 0) = 0, found {float(seam.max()):.3g} Wb at the seam",
+                field="symmetry")
     if ax_q[0] == 0.0 and ax_q[-1] > 0:
         neg = -ax_q[:0:-1]
         new_q = np.concatenate([neg, ax_q])
