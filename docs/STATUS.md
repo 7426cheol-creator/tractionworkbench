@@ -56,9 +56,12 @@ provenance, stale 표시), 데이터시트 가져오기·대표값 직접 입력
 - MATLAB/Simulink/System Composer 단계는 GNU Octave로 MATLAB 코드만 실행했습니다(Simulink 등은 NOT_RUN).
 
 ### 2.3 CI
-- 2026-09-28 14:29 UTC 이후 GitHub Actions가 이 저장소의 작업에 **runner를 배정하지 않습니다**(`runner_id 0`, 로그 없음, 3초
-  만에 실패). 코드와 무관한 계정 수준 문제(Actions 사용량·지출 한도 등)로 보이며, 저장소 소유자가 GitHub 설정(Billing & plans →
-  Actions)에서 확인해야 합니다. 같은 검사는 로컬에서 모두 통과합니다.
+- **정상 동작 중**: run 41(b10da87, 2026-09-28 22:45 UTC)부터 세 job — Linux 테스트, MathWorks/Octave, Windows 실행 파일(동결
+  self-test 포함) — 이 모두 실제 runner에서 실행·통과합니다.
+- 참고(해소된 문제): 2026-09-28 14:29–22:45 UTC 사이 GitHub Actions가 작업에 runner를 배정하지 않았습니다(run 35–40과 재실행:
+  `runner_id 0`, 단계·로그 없음, 몇 초 만에 실패). 코드와 무관한 계정 수준 문제였고 저장소 소유자가 계정 설정을 정리한 뒤
+  풀렸습니다. 같은 증상(몇 초 만에 실패, 로그 없음)이 다시 보이면 코드보다 먼저 계정의 Billing(Actions 사용량·지출 한도)을
+  확인하세요.
 - 대안 — **로컬 CI** `python verification/local_ci.py`: workflow의 세 job(Linux 테스트, MathWorks/Octave, 패키징)을 커밋의 깨끗한
   clone과 job별 새 Python 3.12 가상환경에서 같은 단계로 실행하고 `build/local_ci/<commit>/summary.md`에 기록합니다. 패키징 job은
   Windows job의 단계를 이 OS에서 실행하므로 PyInstaller 사양·데이터 파일·동결 self-test는 확인하지만 Windows 실행 파일 자체는
