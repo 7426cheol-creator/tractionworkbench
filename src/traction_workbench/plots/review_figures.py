@@ -191,18 +191,20 @@ def fig_asc_transient(fig, res: dict, title: str | None = None):
         ax2.plot(tm, w[ph], color=col, lw=1.1, label=ph[:2])
     t_asc = w["t_asc_s"]
     for k, (rid, r) in enumerate((res.get("requirements") or {}).items()):
-        if not r or r.get("status") == "REQUIREMENT_INCOMPLETE":
+        if not r or r.get("status") in ("REQUIREMENT_INCOMPLETE", "NOT_COVERED"):
             continue
         off = t_asc if r["origin"] == "asc_established" else 0.0
         a, b = (r["window_s"][0] + off) * 1e3, (r["window_s"][1] + off) * 1e3
-        col = "#1a7f37" if r["screening_verdict"] == "PASS" else "#cf222e"
+        col = {"PASS": "#1a7f37", "FAIL": "#cf222e"}.get(r["screening_verdict"], "#b7791f")
         ax2.axvspan(a, b, color=col, alpha=0.08)
         if r["operator"] in ("abs_peak", "envelope_after"):
             ax2.hlines([r["limit"], -r["limit"]], a, b, colors=col, lw=1.6)
         elif r["operator"] == "rms":        # an RMS limit is not an instantaneous band: value vs limit, positive side
             ax2.hlines(r["value"], a, b, colors=col, lw=2.0)
             ax2.hlines(r["limit"], a, b, colors=col, lw=1.2, ls="--")
-        ax2.text(a, 0.98 - 0.09 * k, f" {rid}: {r['operator']} {r['value']:.4g} / {r['limit']:g} A",
+        elif r.get("level_A") is not None:   # time above: the current level is drawn, the limit is a duration
+            ax2.hlines([r["level_A"], -r["level_A"]], a, b, colors=col, lw=1.0, ls=":")
+        ax2.text(a, 0.98 - 0.09 * k, f" {rid}: {r['operator']} {r['value']:.4g} / {r['limit']:g} {r.get('unit', 'A')}",
                  transform=ax2.get_xaxis_transform(), fontsize=6.5, va="top", color=col, zorder=8,
                  bbox=dict(boxstyle="round,pad=0.15", fc=t["bg"], ec="none", alpha=0.8))
     ax2.set_xlabel(tr("고장 발생 후 시간 [ms]", "time after fault [ms]"))

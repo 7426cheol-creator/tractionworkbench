@@ -327,9 +327,11 @@ def protection(body):
     delay = float(b.get("action_delay_ms") or 0.0) * ms
     bound = None
     if plant.kind == "capacitor_energy":
+        # the bound carries its validity and the sensor dynamics (review R2 PD-01): sampling / debounce /
+        # execution / action delays are in the energy, the filter lag in the measured trigger bound
         worst_detect = sensor.confirm_samples * sensor.period_s + sensor.exec_delay_s
         bound = ov_trigger_bound(plant.p("C_F"), float(b["limit"]), plant.p("P0_W"), worst_detect + delay,
-                                 plant.p("t_ramp_s", 0.0))
+                                 plant.p("t_ramp_s", 0.0), tau_filter_s=sensor.tau_filter_s, V_start_min_V=plant.x0)
     rv = protection_review(plant, sensor, fault, float(b["limit"]), horizon, delay, e_theta,
                            tuple(_plant(n) for n in (b.get("normal") or [])),
                            None if th.get("warning") in (None, "") else float(th["warning"]),
@@ -337,7 +339,9 @@ def protection(body):
                            None if th.get("release") in (None, "") else float(th["release"]),
                            None if b.get("x_normal_max") in (None, "") else float(b["x_normal_max"]),
                            bool(b.get("tight_attainable")), b.get("hw_path"),
-                           None if bound is None else bound["V_trigger_max_V"], 0.0, int(b.get("phases", 16)))
+                           None if bound is None else {k: bound.get(k) for k in ("status", "value", "reason",
+                                                                                  "assumptions")},
+                           0.0, int(b.get("phases", 16)))
     tr = rv["trace"]
     step = max(1, tr["t_s"].size // 1500)
     trace = {"t_s": tr["t_s"][::step].tolist(), "x": tr["x"][::step].tolist(), "y": tr["y"][::step].tolist(),
@@ -347,6 +351,8 @@ def protection(body):
     free = simulate(plant, sensor, 1e18, math.inf, horizon)          # no reaction: where would the variable go?
     trace["no_reaction_x"] = free["x"][::max(1, free["x"].size // 1500)].tolist()
     trace["no_reaction_t_s"] = free["t_s"][::max(1, free["t_s"].size // 1500)].tolist()
+    trace["no_reaction_note"] = "counterfactual without any reaction (not the reviewed trajectory)"
+    trace["sensor_initial_state"] = tr["sensor_initial_state"]
     return _jsonable({"name": b.get("name", ""), "variable": b.get("variable", "x"), "unit": b.get("unit", ""),
                       "thresholds": th, "limit": float(b["limit"]), "rows": rv["rows"],
                       "summary_status": rv["summary_status"], "window": rv["window"], "ov_bound": bound,
@@ -513,7 +519,7 @@ def asc(body):
     if sol.point is None:
         raise InputValidationError("no pre-fault operating point: " + sol.policy_claim.detail, field="torque_Nm")
     reqs = tuple(CurrentTimeRequirement(**{k: r[k] for k in ("req_id", "quantity", "operator", "t_start_s", "t_end_s",
-                                                              "limit_A", "origin", "text") if k in r},
+                                                              "limit_A", "origin", "text", "limit_s") if k in r},
                                         level_A=r.get("level_A")) for r in (b.get("requirements") or []))
     r = asc_transient(d, Scenario("asc", n, vdc, DcSourceLimits(), magnet_temp_C=_opt(b, "magnet_temp_C"),
                                   winding_temp_C=_opt(b, "winding_temp_C")),

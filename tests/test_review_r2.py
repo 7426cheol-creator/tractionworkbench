@@ -718,3 +718,184 @@ def test_hev_cranking_solver_gaps_and_screening_clips_are_not_counterexamples():
     free = H.cranking_replay(d, 2.5, comp, bat, 20.0, 800.0, 0.3, V_floor_V=300.0, theta0_deg=[45.0])
     held = H.cranking_replay(d, 2.5, comp, bat, 20.0, 800.0, 0.3, V_floor_V=300.0, theta0_deg=[45.0], backstop=True)
     assert free["runs"][0]["reversed"] and not held["runs"][0]["reversed"]    # rebound only without a backstop
+
+
+# ---------------------------------------------------------------------------------------------- D: PD-01 .. PD-07
+
+def _ov_api(tau_ms, delay_ms):
+    import copy
+    b = copy.deepcopy(api.EXAMPLE_PROTECTION)
+    b["sensor"]["tau_filter_ms"], b["action_delay_ms"], b["phases"], b["horizon_ms"] = tau_ms, delay_ms, 2, 5
+    return api.protection(b)
+
+
+@pytest.mark.parametrize("tau_ms, delay_ms, peak", [(0.2, 0.15, 830.662), (0.0, 2.0, 1167.904)])
+def test_pd01_invalid_or_missing_bound_never_guarantees_protection(tau_ms, delay_ms, peak):
+    r = _ov_api(tau_ms, delay_ms)
+    rows = {x["id"]: x for x in r["rows"]}
+    assert r["trace"]["events"]["peak"] == pytest.approx(peak, abs=1e-3)
+    assert rows["PROT-04"]["status"] == "INFEASIBLE"
+    assert rows["PROT-05"]["status"] != "FEASIBLE" and r["window"]["candidate"]["protection_guaranteed"] is False
+
+
+def test_pd01_bound_validity_filter_lag_and_contradiction():
+    from traction_workbench.extensions.protection import (Plant, Sensor, ov_trigger_bound, protection_review,
+                                                           threshold_window)
+    b0 = ov_trigger_bound(500e-6, 800.0, 1e5, 1e-4)
+    assert b0["status"] == "valid" and b0["value"] == pytest.approx(math.sqrt(800.0 ** 2 - 2 * 10.0 / 500e-6))
+    assert ov_trigger_bound(500e-6, 800.0, 1e5, 1e-4, tau_filter_s=1e-12, V_start_min_V=700.0)["value"] == \
+        pytest.approx(b0["value"], abs=1e-6)                                  # zero-tau limit
+    assert ov_trigger_bound(500e-6, 800.0, 1e5, 2e-3)["status"] == "no_bound"   # radicand <= 0
+    assert ov_trigger_bound(500e-6, 800.0, 1e5, 1e-4, tau_filter_s=1e-4)["status"] == "no_bound"   # no start voltage
+    nb = threshold_window(720.0, 800.0, upper_bound={"status": "no_bound", "reason": "test"}, candidate=730.0)
+    assert nb["claim"]["status"] == "UNKNOWN" and nb["candidate"]["protection_guaranteed"] is False
+    fil = threshold_window(720.0, 800.0, candidate=730.0, sensor_memoryless=False)
+    assert fil["protection_bound"]["status"] == "not_applicable" and fil["claim"]["status"] == "UNKNOWN"
+    # a (wrong) bound that promises protection while a trajectory of the same model fails is not a guarantee
+    plant = Plant("capacitor_energy", 700.0, (("C_F", 500e-6), ("P0_W", 1e5), ("t_ramp_s", 0.0)))
+    rv = protection_review(plant, Sensor(period_s=1e-5, confirm_samples=2), 738.5, 800.0, 5e-3, action_delay_s=2e-3,
+                           x_normal_max=720.0, upper_bound=799.0, phases=2)
+    assert rv["window"]["candidate"]["protection_guaranteed"] is False
+    assert rv["window"]["claim"]["reasons"] == ["CONFLICTING_EVIDENCE"]
+    # a valid filtered bound is sufficient: a threshold inside its window protects in every sampled phase
+    sen = Sensor(period_s=1e-5, confirm_samples=2, tau_filter_s=2e-5)
+    bd = ov_trigger_bound(500e-6, 800.0, 1e5, 2 * 1e-5 + 5e-5, tau_filter_s=2e-5, V_start_min_V=700.0)
+    win = threshold_window(720.0, 800.0, upper_bound={k: bd.get(k) for k in ("status", "value", "assumptions")},
+                           sensor_memoryless=False)
+    assert win["window_exists"]
+    th = 0.5 * (win["nuisance_lower_bound"] + win["protection_upper_bound"])
+    ok = protection_review(plant, sen, th, 800.0, 5e-3, action_delay_s=5e-5, phases=8)
+    assert next(x for x in ok["rows"] if x["id"] == "PROT-04")["status"] == "FEASIBLE"
+
+
+def test_pd02_warning_lead_is_measured_on_the_same_trace():
+    from traction_workbench.extensions.protection import Plant, Sensor, protection_review
+    ramp = Plant("ramp", 0.0, (("slope_per_s", 1.0),))
+    r = protection_review(ramp, Sensor(period_s=0.1), 0.12, 100.0, 1.0, warning_threshold=0.11,
+                          warning_needed_s=0.005, phases=10)
+    row = next(x for x in r["rows"] if x["id"] == "PROT-02")
+    assert row["status"] == "INFEASIBLE" and "minimum lead 0 ms" in row["detail"]   # same samples: 0 ms lead
+    early = protection_review(ramp, Sensor(period_s=0.1), 0.12, 100.0, 1.0, warning_threshold=0.01,
+                              warning_needed_s=0.005, phases=10)
+    assert next(x for x in early["rows"] if x["id"] == "PROT-02")["status"] == "FEASIBLE"
+
+
+def test_pd04_timeline_stays_inside_the_horizon():
+    from traction_workbench.extensions.asc_transient import CurrentTimeRequirement, asc_transient
+    from traction_workbench.extensions.protection import Plant, Sensor, simulate
+    d = sf.synthetic_drive()
+    sc = Scenario("asc", 3000.0, 600.0, DcSourceLimits())
+    late = asc_transient(d, sc, -100.0, 100.0, 0.0, 0.01, (CurrentTimeRequirement("P", "phase", "abs_peak", 0.0,
+                                                                                  0.005, 500.0),), t_6so_s=0.02)
+    assert late["evaluable"] is False and late["requirements"]["P"]["status"] == "NOT_COVERED"
+    at_h = asc_transient(d, sc, -100.0, 100.0, 0.01, 0.01)
+    assert at_h["evaluable"] is False
+    ok = asc_transient(d, sc, -100.0, 100.0, 0.001, 0.01, n_time=400)
+    assert np.all(np.diff(ok["waveform"]["t_s"]) > 0) and ok["waveform"]["t_s"][-1] <= 0.01
+    ramp = Plant("ramp", 0.0, (("slope_per_s", 1.0),))
+    far = simulate(ramp, Sensor(period_s=0.1), 0.1, 100.0, 1.0, action_delay_s=10.0)
+    assert far["t_s"][-1] == 1.0 and far["events"]["action_observed"] is False
+    assert far["events"]["t_action_effective_s"] is None and far["events"]["t_action_scheduled_s"] > 1.0
+    edge = simulate(ramp, Sensor(period_s=0.1), 0.1, 100.0, 1.0, action_delay_s=0.9)     # confirm 0.1 s + 0.9 s = H
+    assert edge["events"]["action_observed"] and edge["events"]["t_action_effective_s"] == pytest.approx(1.0)
+    assert edge["t_s"][-1] == 1.0
+
+
+def test_pd03_customer_phase_and_device_stress_share_one_all_angle_enclosure():
+    from traction_workbench.extensions.asc_transient import CurrentTimeRequirement, asc_transient
+    d = sf.synthetic_drive()
+    r = asc_transient(d, Scenario("asc", 0.0, 600.0, DcSourceLimits()), 100.0, 100.0, 0.0, 0.01,
+                      (CurrentTimeRequirement("P", "phase", "abs_peak", 0.0, 0.01, 139.0),), device_peak_A=139.0,
+                      device_basis="test")
+    assert r["requirements"]["P"]["value"] == pytest.approx(math.hypot(100.0, 100.0), rel=1e-12)   # 141.421 A
+    assert r["requirements"]["P"]["screening_verdict"] == "FAIL"
+    assert r["items"]["device_survival"]["status"] == "SCREENING_FAIL"          # not a 136.6 A SCREENING_PASS
+    assert "proxy" in r["items"]["device_survival"]["signal"]
+    # the all-angle phase RMS enclosure is not exceeded by any sampled initial angle
+    sc = Scenario("asc", 3000.0, 600.0, DcSourceLimits())
+    rm = asc_transient(d, sc, -100.0, 150.0, 0.0, 0.02, (CurrentTimeRequirement("R", "phase", "rms", 0.0, 0.004,
+                                                                                1e4),), n_time=800)
+    w = rm["waveform"]
+    t, i_d, i_q, th = (np.asarray(w[k]) for k in ("t_s", "id_A", "iq_A", "theta_e_rad"))
+    sel = t <= 0.004 + 1e-15
+    trap = getattr(np, "trapezoid", None) or np.trapz
+    sampled = [math.sqrt(trap((i_d * np.cos(a + th) - i_q * np.sin(a + th))[sel] ** 2, t[sel]) / 0.004)
+               for a in np.linspace(0.0, 2 * math.pi, 721)]
+    enc = rm["requirements"]["R"]["value"]
+    assert max(sampled) <= enc * (1 + 1e-3) and max(sampled) >= enc * (1 - 1e-3)      # exact over every angle
+
+
+def test_pd03_time_above_is_per_phase_with_a_duration_limit():
+    from traction_workbench.extensions.asc_transient import CurrentTimeRequirement, _above
+    t = np.arange(11, dtype=float)
+    ph = np.array([[100, 100, 0, 0, 0, 0, 0, 0, 0, 0, 0], [-50, -50, 60, 60, 60, 60, 60, 60, 60, 60, 60],
+                   [-50, -50, -60, -60, -60, -60, -60, -60, -60, -60, -60]], dtype=float)
+    dur = [_above(t, ph[k], 55.0)[0] for k in range(3)]
+    assert dur == pytest.approx([1.45, 10.0 - (1.0 + 105.0 / 110.0), 8.5])   # exact crossings of +/-55 A
+    assert max(dur) > 5.0                                                   # the 9 s-class phase governs, not A
+    tri_t = np.array([0.0, 1.0, 2.0])
+    assert _above(tri_t, np.array([0.0, 100.0, 0.0]), 50.0) == pytest.approx((1.0, 1.0))
+    split = np.array([0.0, 1.0, 2.0, 3.0, 4.0])
+    assert _above(split, np.array([100.0, 100.0, 0.0, 100.0, 100.0]), 50.0) == pytest.approx((3.0, 1.5))
+    miss = CurrentTimeRequirement("T", "phase", "time_above", 0.0, 0.01, 5.0, level_A=55.0)
+    assert any("duration" in m for m in miss.missing())                     # an ampere field is not a duration
+
+
+def test_pd03_phase_permutation_and_angle_invariance():
+    from traction_workbench.extensions.asc_transient import CurrentTimeRequirement, asc_transient
+    d = sf.synthetic_drive()
+    reqs = (CurrentTimeRequirement("P", "phase", "abs_peak", 0.0, 0.004, 1e4),
+            CurrentTimeRequirement("T", "phase", "time_above", 0.0, 0.004, level_A=150.0, limit_s=1.0))
+    a = asc_transient(d, Scenario("asc", 3000.0, 600.0, DcSourceLimits()), -100.0, 150.0, 0.0, 0.01, reqs, n_time=600,
+                      angles=36)
+    b = asc_transient(d, Scenario("asc", 3000.0, 600.0, DcSourceLimits()), -100.0, 150.0, 0.0, 0.01, reqs, n_time=600,
+                      angles=36)
+    assert a["requirements"]["P"]["value"] == b["requirements"]["P"]["value"] == pytest.approx(a["peak_dq_A"])
+    assert a["requirements"]["T"]["numerical_allowance"] >= 0.0
+
+
+def test_pd05_signed_mechanics_mirror_and_energy():
+    from traction_workbench.extensions.asc_transient import asc_transient, transient_integrated
+    d = sf.synthetic_drive()
+    runs = [transient_integrated(DriveKernel(d, Scenario("asc", n, 600.0, DcSourceLimits())), -100.0, iq,
+                                 np.linspace(0.0, 0.5, 1000), 0.02) for n, iq in ((3000.0, 200.0), (-3000.0, -200.0))]
+    assert np.allclose(runs[0]["omega_e"], -runs[1]["omega_e"], atol=1e-9) and abs(runs[1]["omega_e"][-1]) < 1.0
+    assert np.allclose(runs[0]["iq_A"], -runs[1]["iq_A"], atol=1e-9) and np.allclose(runs[0]["id_A"], runs[1]["id_A"],
+                                                                                    atol=1e-9)
+    r = asc_transient(d, Scenario("asc", 3000.0, 600.0, DcSourceLimits()), -100.0, 200.0, 0.0, 0.5, J_kgm2=0.02,
+                      n_time=1000)
+    led = r["energy_ledger"]
+    assert abs(led["residual_J"]) < 1e-4 * led["stored_start_J"]
+    assert r["solver_cross_check_A"] < 1e-3 and r["fixed_speed_sensitivity_A"] > 1.0     # sensitivity != solver error
+    stiff = asc_transient(d, Scenario("asc", 3000.0, 600.0, DcSourceLimits()), -100.0, 200.0, 0.0, 0.02, J_kgm2=1e9,
+                          n_time=400)
+    assert stiff["fixed_speed_sensitivity_A"] < 1e-3                         # J -> infinity: the fixed-speed limit
+
+
+def test_pd06_bounded_heating_to_a_safe_equilibrium_is_containment():
+    from traction_workbench.extensions.protection import Plant, Sensor, protection_review
+    pr = (("R_K_per_W", 0.2), ("C_J_per_K", 20.0), ("T_coolant_C", 60.0), ("P_W", 600.0), ("P_after_W", 350.0))
+    r = protection_review(Plant("thermal_1node", 100.0, pr), Sensor(period_s=0.001), 110.0, 150.0, 20.0,
+                          action_delay_s=0.01, phases=2)
+    rows = {x["id"]: x for x in r["rows"]}
+    assert rows["PROT-04"]["status"] == "FEASIBLE" and rows["PROT-03"]["status"] == "FEASIBLE"   # 130 degC is safe
+    hot = (("R_K_per_W", 0.2), ("C_J_per_K", 20.0), ("T_coolant_C", 60.0), ("P_W", 600.0), ("P_after_W", 500.0))
+    r2 = protection_review(Plant("thermal_1node", 100.0, hot), Sensor(period_s=0.001), 110.0, 150.0, 20.0,
+                           action_delay_s=0.01, phases=2)
+    assert next(x for x in r2["rows"] if x["id"] == "PROT-03")["status"] == "INFEASIBLE"   # equilibrium 160 degC
+    r3 = protection_review(Plant("thermal_1node", 100.0, pr), Sensor(period_s=0.001), 110.0, 150.0, 20.0,
+                           action_delay_s=0.01, phases=2, require_immediate_reversal=True)
+    assert next(x for x in r3["rows"] if x["id"] == "PROT-03")["status"] == "INFEASIBLE"   # a separate requirement
+
+
+def test_pd07_samples_belong_to_the_actual_trajectory():
+    from traction_workbench.extensions.protection import Plant, Sensor, simulate
+    ot = Plant("thermal_1node", 135.0, (("R_K_per_W", 0.2), ("C_J_per_K", 20.0), ("T_coolant_C", 60.0),
+                                         ("P_W", 600.0), ("P_after_W", 350.0)))
+    r = simulate(ot, Sensor(period_s=0.01), 135.0, 150.0, 6.0, action_delay_s=0.5, release_threshold=134.0)
+    assert np.max(np.abs(np.interp(r["samples_t_s"], r["t_s"], r["y"]) - r["samples_y"])) == 0.0
+    assert r["no_action_samples_y"][-1] - r["samples_y"][-1] > 30.0          # the counterfactual is kept apart
+    rel = r["events"]["t_release_sensed_s"]
+    assert rel is not None and np.interp(rel, r["samples_t_s"], r["samples_y"]) < 134.0
+    lag = simulate(ot, Sensor(period_s=0.01, tau_filter_s=0.5, initial_state=60.0), 135.0, 150.0, 6.0)
+    assert lag["sensor_initial_state"]["basis"] == "declared" and lag["y"][0] == pytest.approx(60.0)

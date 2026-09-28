@@ -264,16 +264,23 @@ class ProtectionPage(QWidget):
              "quantity": combo([(tr("상전류", "phase current"), "phase"), (tr("dq 크기", "dq norm"), "dq_norm")], "phase"),
              "operator": combo([(tr("절대 peak", "absolute peak"), "abs_peak"), ("RMS", "rms"),
                                 (tr("이후 포락선", "envelope after"), "envelope_after"),
-                                (tr("초과 시간", "time above"), "time_above")], op),
+                                (tr("초과 시간 (누적)", "time above (cumulative)"), "time_above"),
+                                (tr("초과 시간 (최장 연속)", "time above (longest contiguous)"), "time_above_contiguous")],
+                               op),
              "t0": number(t0, 0, 1e7, "ms", 3, 1), "t1": number(t1, 0, 1e7, "ms", 3, 1),
              "limit": number(lim, 0, 1e9, "A", 2, 10),
              "origin": combo([(tr("단락 성립 시점", "short established"), "asc_established"),
                               (tr("고장 발생 시점", "fault inception"), "fault")], origin),
-             "level": number(0, 0, 1e9, "A", 2, 10)}
+             "level": number(0, 0, 1e9, "A", 2, 10),
+             "limit_ms": number(0, 0, 1e7, "ms", 3, 1,
+                                tip=tr("초과 시간 연산자의 허용 시간 (전류 한계와 다른 차원)",
+                                       "allowed duration of a time-above operator (a different dimension from a current limit)"))}
         for lab, key in ((tr("요구 ID", "requirement id"), "id"), (tr("물리량", "quantity"), "quantity"),
                          (tr("연산자", "operator"), "operator"), (tr("창 시작", "window start"), "t0"),
-                         (tr("창 끝", "window end"), "t1"), (tr("한계", "limit"), "limit"),
-                         (tr("시간 원점", "time origin"), "origin"), (tr("초과 기준 (time_above)", "level (time_above)"), "level")):
+                         (tr("창 끝", "window end"), "t1"), (tr("전류 한계 (peak/RMS)", "current limit (peak/RMS)"), "limit"),
+                         (tr("시간 원점", "time origin"), "origin"),
+                         (tr("초과 기준 전류 (초과 시간)", "current level (time above)"), "level"),
+                         (tr("허용 시간 (초과 시간)", "allowed duration (time above)"), "limit_ms")):
             f.addRow(lab, w[key])
         return g, w
 
@@ -340,8 +347,10 @@ class ProtectionPage(QWidget):
             r = {"req_id": w["id"].text().strip() or "REQ", "quantity": w["quantity"].currentData(),
                  "operator": w["operator"].currentData(), "t_start_s": w["t0"].value() * 1e-3,
                  "t_end_s": w["t1"].value() * 1e-3, "limit_A": w["limit"].value(), "origin": w["origin"].currentData()}
-            if r["operator"] == "time_above":
+            if r["operator"] in ("time_above", "time_above_contiguous"):
                 r["level_A"] = w["level"].value()
+                r["limit_s"] = w["limit_ms"].value() * 1e-3
+                r.pop("limit_A")
             reqs.append(r)
         s = self.win.state
         return {"drive": s.drive_spec, "limits": s.limits_dict, "speed_rpm": self.a_n.value(), "Vdc_V": self.a_vdc.value(),
@@ -373,14 +382,22 @@ class ProtectionPage(QWidget):
                 (tr("사고 전 id, iq", "pre-fault id, iq"), f"{fmt(res['pre_fault']['id_A'])}, {fmt(res['pre_fault']['iq_A'])} A"),
                 (tr("정상 ASC id, iq", "steady ASC id, iq"), f"{fmt(res['steady_asc']['id_A'])}, {fmt(res['steady_asc']['iq_A'])} A"),
                 (tr("dq peak / 최소 id", "dq peak / min id"), f"{fmt(res['peak_dq_A'])} A / {fmt(res['min_id_A'])} A"),
-                (tr("RK 교차검증 차이", "RK cross-check"), f"{fmt(res['rk_cross_check_A'])} A")]
+                (tr("같은 식 수치 교차검증", "same-equation solver cross-check"), f"{fmt(res['rk_cross_check_A'])} A")]
+        if res.get("fixed_speed_sensitivity_A") is not None:
+            rows.append((tr("고정 속도 대비 (모델 민감도)", "vs fixed speed (model sensitivity)"),
+                         f"{fmt(res['fixed_speed_sensitivity_A'])} A"))
+        if res.get("energy_ledger"):
+            rows.append((tr("에너지 장부 잔차", "energy ledger residual"), f"{fmt(res['energy_ledger']['residual_J'], 3)} J"))
         for rid, r in res["requirements"].items():
-            if r.get("status") == "REQUIREMENT_INCOMPLETE":
-                rows.append((rid, "REQUIREMENT_INCOMPLETE: " + "; ".join(r["missing"])))
+            if r.get("status") in ("REQUIREMENT_INCOMPLETE", "NOT_COVERED"):
+                rows.append((rid, r["status"] + ": " + "; ".join(r.get("missing", []))))
             else:
-                rows.append((rid, f"{r['operator']} {r['quantity']} = {fmt(r['value'])} vs {fmt(r['limit'])} → "
-                                  f"{r['screening_verdict']} (screening; margin {fmt(r['margin'])}, worst phase "
-                                  f"{r.get('worst_phase')}, angle {fmt(r.get('worst_initial_angle_deg'))}°)"))
+                u = r.get("unit", "A")
+                rows.append((rid, f"{r['operator']} {r['quantity']} = {fmt(r['value'])} {u} vs {fmt(r['limit'])} {u} → "
+                                  f"{r['screening_verdict']} (screening; margin {fmt(r['margin'])} {u}, numerical allowance "
+                                  f"{fmt(r.get('numerical_allowance'), 3)}, worst phase {r.get('worst_phase')}, angle "
+                                  f"{fmt(r.get('worst_initial_angle_deg'))}°; {r.get('angle_basis', '')}"
+                                  + (f"; {r['why']}" if r.get("why") else "") + ")"))
         for k, it in res["items"].items():
             rows.append((k, f"{it['status']} — {it.get('detail', '')}"))
         self.t_asc.set_rows(rows)
