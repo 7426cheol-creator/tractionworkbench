@@ -16,13 +16,18 @@ from . import service as S
 from . import spec_fixtures as sf
 from .decision import jsonable as _jsonable
 from .errors import InputValidationError
-from .extensions.coolant import PROPERTY_SOURCE, CoolantLoop, CoolantStation, eg_water_properties
+from . import parsers as P
+from .parsers import (DEFAULT_COOLANT_LOOP as DEFAULT_LOOP, capacitor_bank_from_dict as _ripple_bank,  # noqa: F401
+                      coolant_from_dict as _coolant, current_loop_from_dict as _loop, curve_from_dict as _curve,
+                      driveline_from_dict, emi_network_from_dict as _emi_network, module_model_from_dict,
+                      noise_from_dict as _noise, num as _num, opt as _opt, pwm_timing_from_dict as _timing,
+                      reducer_from_dict as _reducer, sensing_from_dict as _sensing, thermal_network_from_dict,
+                      timing_chain_from_dict)
+from .extensions.coolant import eg_water_properties
 from .extensions.dclink import active_discharge, passive_discharge, regen_disconnect_overvoltage
 from .extensions.safe_state import safe_state_screening
-from .extensions.thermal import (CauerNetwork, FosterNetwork, ThermalModel, ThermalNode, flow_scaled, thermal_duration,
-                                 torque_availability)
-from .extensions.timing import TimingChain, TimingItem, analyze_timing
-from .models import DataOrigin, Provenance
+from .extensions.thermal import ThermalModel, thermal_duration, torque_availability
+from .extensions.timing import analyze_timing
 from .scenario import DcSourceLimits, Scenario
 from .solvers.policy import PolicyEvaluator
 from .analysis.dominance import capability_dominance, requirement_relaxation
@@ -78,9 +83,6 @@ EXAMPLE_TIMING = {
     ],
 }
 
-DEFAULT_LOOP = [{"station": "inverter", "losses": {"inverter": 1.0}},
-                {"station": "motor", "losses": {"copper": 1.0, "rotational": 1.0}}]
-
 EXAMPLE_THERMAL = {
     "model_id": "EXAMPLE_THERMAL_UNVALIDATED", "revision": "2", "validated": False, "origin": "synthetic",
     "validation_evidence": "",
@@ -97,19 +99,6 @@ EXAMPLE_THERMAL = {
          "limit_C": 180, "loss_share": {"copper": 1.0}, "station": "motor"},
     ],
 }
-
-
-def _num(body, key, default=None):
-    v = body.get(key, default)
-    if v is None:
-        raise InputValidationError(f"{key} is required", field=key)
-    try:
-        x = float(v)
-    except (TypeError, ValueError):
-        raise InputValidationError(f"{key} must be a number", field=key) from None
-    if not math.isfinite(x):
-        raise InputValidationError(f"{key} must be finite", field=key)
-    return x
 
 
 def _drive(body):
@@ -192,22 +181,7 @@ def relaxation(body):
 
 
 def timing(body):
-    b = body or EXAMPLE_TIMING
-    ms = 1e-3
-    items = tuple(TimingItem(i["id"], i["from"], i["to"], i.get("owner", ""),
-                             None if i.get("max_ms") in (None, "") else float(i["max_ms"]) * ms,
-                             None if i.get("min_ms") in (None, "") else float(i["min_ms"]) * ms,
-                             None if i.get("nom_ms") in (None, "") else float(i["nom_ms"]) * ms,
-                             None if i.get("period_ms") in (None, "") else float(i["period_ms"]) * ms)
-                  for i in b["items"])
-    ch = TimingChain(b.get("chain_id", "chain"), b.get("fault", ""), float(b["ftti_ms"]) * ms, tuple(b["events"]), items,
-                     b.get("detection_event"),
-                     None if b.get("fdti_budget_ms") in (None, "") else float(b["fdti_budget_ms"]) * ms,
-                     None if b.get("frti_budget_ms") in (None, "") else float(b["frti_budget_ms"]) * ms,
-                     safe_event=b.get("safe_event") or None,
-                     endpoint_kind=b.get("endpoint_kind") or "physical_safe_state",
-                     worst_case_attainable=bool(b.get("worst_case_attainable", False)))
-    return _jsonable(analyze_timing(ch))
+    return _jsonable(analyze_timing(timing_chain_from_dict(body or EXAMPLE_TIMING)))
 
 
 def discharge(body):
@@ -218,11 +192,6 @@ def discharge(body):
                                       drive=d if body.get("speed_rpm") not in (None, "") else None,
                                       speed_rpm=None if body.get("speed_rpm") in (None, "") else float(body["speed_rpm"]),
                                       magnet_temp_C=_opt(body, "magnet_temp_C")))
-
-
-def _opt(body, key, scale=1.0):
-    v = body.get(key)
-    return None if v in (None, "") else float(v) * scale
 
 
 def passive(body):
@@ -268,53 +237,9 @@ def coolant_properties(glycol_vol_pct: float, T_C: float) -> dict:
     return eg_water_properties(glycol_vol_pct, T_C)
 
 
-def _coolant(cs: dict | None, inlet_C: float | None) -> CoolantLoop | None:
-    if not cs:
-        return None
-    g = cs.get("glycol_vol_pct")
-    props = eg_water_properties(50.0 if g in (None, "") else float(g), 65.0 if inlet_C is None else float(inlet_C))
-    cp, rho = cs.get("cp_J_per_kgK"), cs.get("rho_kg_per_m3")
-    user = cp not in (None, "") and rho not in (None, "")
-    source = "user-entered coolant properties" if user else PROPERTY_SOURCE
-    loop = tuple(CoolantStation(str(st["station"]), tuple((k, float(v)) for k, v in st["losses"].items()))
-                 for st in (cs.get("loop") or DEFAULT_LOOP))
-    return CoolantLoop(_num(cs, "flow_L_per_min"), float(cp) if cp not in (None, "") else props["cp_J_per_kgK"],
-                       float(rho) if rho not in (None, "") else props["rho_kg_per_m3"], loop,
-                       cs.get("reference", "mean"), None if g in (None, "") else float(g), source)
-
-
-def thermal_network_from_dict(n: dict, coolant: CoolantLoop | None) -> FosterNetwork:
-    kind = str(n.get("network", "foster")).lower()
-    r = flow_scaled(n["R_K_per_W"], n.get("flow_dependent"), n.get("flow_ref_L_per_min"),
-                    None if coolant is None else coolant.flow_L_per_min, n.get("flow_exponent", 0.8))
-    if kind == "cauer":
-        return CauerNetwork(tuple(r), tuple(n["C_J_per_K"])).to_foster()
-    if kind != "foster":
-        raise InputValidationError(f"network must be 'foster' or 'cauer', got {kind!r}", field="network")
-    if n.get("tau_s") is None and n.get("C_J_per_K") is not None:
-        return FosterNetwork(tuple(r), tuple(float(ri) * float(ci) for ri, ci in zip(n["R_K_per_W"], n["C_J_per_K"])))
-    return FosterNetwork(tuple(r), tuple(n["tau_s"]))
-
-
 def thermal_model_from_dict(spec, inlet_C: float | None = None) -> ThermalModel:
-    spec = spec or EXAMPLE_THERMAL
-    coolant = _coolant(spec.get("coolant"), inlet_C)
-    nodes = tuple(ThermalNode(str(n["id"]), thermal_network_from_dict(n, coolant), float(n["limit_C"]),
-                              tuple((k, float(v)) for k, v in n["loss_share"].items()),
-                              n.get("station") if coolant is not None else None) for n in spec["nodes"])
-    # the data origin is declared, never derived from the 'validated' flag (a flag is not supplier evidence)
-    try:
-        origin = DataOrigin(str(spec.get("origin", "estimated")))
-    except ValueError:
-        raise InputValidationError(f"origin must be one of {[o.value for o in DataOrigin]}", field="origin") from None
-    evidence = str(spec.get("validation_evidence") or "").strip()
-    prov = Provenance(origin, spec.get("source", "UI example network"), spec.get("revision", "1"),
-                      (f"declared validated ({evidence})" if evidence else "declared validated WITHOUT evidence reference")
-                      if spec.get("validated") else "unvalidated")
-    return ThermalModel(spec.get("model_id", "UI_THERMAL"), spec.get("revision", "1"), nodes, prov,
-                        validated=bool(spec.get("validated")),
-                        validity=tuple((k, tuple(v)) for k, v in (spec.get("validity") or {}).items()),
-                        coolant=coolant, validation_evidence=evidence)
+    """Thermal model from a spec; None -> the example model."""
+    return P.thermal_model_from_dict(spec or EXAMPLE_THERMAL, inlet_C)
 
 
 def thermal_details(spec, inlet_C: float | None = None) -> dict:
@@ -428,40 +353,6 @@ def protection(body):
                       "phase_rows": rv["phase_sweep"]["rows"], "trace": trace, "note": rv["note"]})
 
 
-def _curve(c: dict, name: str):
-    from .models.module_loss import Table2D
-    try:
-        return Table2D(tuple(c["temps_C"]), tuple(c["currents_A"]), tuple(tuple(r) for r in c["values"]), c["unit"],
-                       c.get("source", ""))
-    except KeyError as exc:
-        raise InputValidationError(f"curve {name!r} needs temps_C, currents_A, values and unit ({exc})",
-                                   field=f"module.curves.{name}") from None
-
-
-def module_model_from_dict(m: dict):
-    """Datasheet module description -> ModuleLossModel (curves, test conditions, PWM, parallel modules)."""
-    from .models.module_loss import ModuleLossModel, SwitchDevice
-    cv = m.get("curves") or {}
-    for key in ("v_on", "v_rev", "e_on", "e_off"):
-        if key not in cv:
-            raise InputValidationError(f"module curve {key!r} is required", field="module.curves")
-    sc = m.get("vdc_scaling") or {}
-    dev = SwitchDevice(
-        technology=m.get("technology", "IGBT"), v_on=_curve(cv["v_on"], "v_on"), v_rev=_curve(cv["v_rev"], "v_rev"),
-        e_on=_curve(cv["e_on"], "e_on"), e_off=_curve(cv["e_off"], "e_off"),
-        e_rr=_curve(cv["e_rr"], "e_rr") if cv.get("e_rr") else None,
-        v_channel_rev=_curve(cv["v_channel_rev"], "v_channel_rev") if cv.get("v_channel_rev") else None,
-        energy_basis=m.get("energy_basis", "per_device"), v_test_V=float(m["v_test_V"]),
-        vdc_scaling_exponent=None if sc.get("exponent") in (None, "") else float(sc["exponent"]),
-        vdc_scaling_basis=str(sc.get("basis", "")), vdc_scaling_valid_V=tuple(sc["valid_V"]) if sc.get("valid_V") else None,
-        value_kind=m.get("value_kind", "typical"), test_conditions=tuple((m.get("test_conditions") or {}).items()),
-        source=m.get("source", ""))
-    return ModuleLossModel(dev, fsw_Hz=float(m.get("fsw_kHz", 10.0)) * 1e3, modulation=m.get("modulation", "svpwm"),
-                           deadtime_s=float(m.get("deadtime_us") or 0.0) * 1e-6, parallel=int(m.get("parallel", 1)),
-                           sharing_error=float(m.get("sharing_error_pct") or 0.0) / 100.0,
-                           driver_aux_W=float(m.get("driver_aux_W") or 0.0), aux_from_hv_dc=bool(m.get("aux_from_hv_dc")))
-
-
 def _lin_curve(unit, temps, i_max, a_by_t, b_by_t, n=9):
     cur = [round(i_max * k / (n - 1), 6) for k in range(n)]
     return {"unit": unit, "temps_C": list(temps), "currents_A": cur,
@@ -559,22 +450,6 @@ EXAMPLE_RIPPLE = {
     "requirement": {"location": "dc_link_bus", "quantity": "voltage_pp", "limit": 15.0, "bandwidth_Hz": 50e3,
                     "note": "example requirement; a real one needs the customer's measurement definition"},
 }
-
-
-def _ripple_bank(cfg: dict):
-    from .extensions.dclink_ripple import CapacitorBank, SourceImpedance
-    cap = cfg["capacitor"]
-    k_esr = {"mohm": 1e-3, "ohm": 1.0}[cap.get("ESR_unit", "mohm")]
-    bank = CapacitorBank(float(cap["C_uF"]) * 1e-6, tuple((float(f), float(r) * k_esr) for f, r in cap["ESR_table"]),
-                         ESL_H=float(cap.get("ESL_nH") or 0.0) * 1e-9,
-                         Rth_K_per_W=None if cap.get("Rth_K_per_W") in (None, "") else float(cap["Rth_K_per_W"]),
-                         life_hours_table=tuple((float(t), float(h)) for t, h in (cap.get("life_hours_table") or [])),
-                         life_voltage_V=None if cap.get("life_voltage_V") in (None, "") else float(cap["life_voltage_V"]),
-                         life_basis=str(cap.get("life_basis") or ""))
-    src = cfg.get("source")
-    source = None if not src else SourceImpedance(float(src["R_mohm"]) * 1e-3, float(src["L_uH"]) * 1e-6,
-                                                  str(src.get("basis", "")))
-    return bank, source
 
 
 def dclink_ripple(body):
@@ -941,21 +816,6 @@ EXAMPLE_EMI = {
 }
 
 
-def _emi_network(n: dict):
-    from .extensions.emi import HvNetwork
-    g = lambda k, sc, d=0.0: (float(n.get(k)) if n.get(k) not in (None, "") else d) * sc
-    return HvNetwork(C_dc_F=g("C_dc_uF", 1e-6), ESR_dc_ohm=g("ESR_dc_mohm", 1e-3), ESL_dc_H=g("ESL_dc_nH", 1e-9),
-                     C_y_F=g("C_y_nF", 1e-9), L_y_H=g("L_y_nH", 1e-9), R_y_ohm=g("R_y_mohm", 1e-3),
-                     C_par_F=g("C_par_nF", 1e-9), R_par_ohm=g("R_par_ohm", 1.0), L_par_H=g("L_par_nH", 1e-9),
-                     R_h_ohm=g("R_h_mohm", 1e-3), L_h_H=g("L_h_uH", 1e-6), L_ch_H=g("L_ch_uH", 1e-6),
-                     k_ch=g("k_ch", 1.0), an_L_H=g("an_L_uH", 1e-6, 5.0), an_C_coup_F=g("an_C_coup_nF", 1e-9, 100.0),
-                     an_R_meas_ohm=g("an_R_meas_ohm", 1.0, 50.0), an_R_par_ohm=g("an_R_par_ohm", 1.0, 1000.0),
-                     an_C_sup_F=g("an_C_sup_uF", 1e-6, 1.0), R_bat_ohm=g("R_bat_mohm", 1e-3, 10.0),
-                     L_bat_H=g("L_bat_uH", 1e-6), basis=str(n.get("basis", "")),
-                     validated_up_to_Hz=None if n.get("validated_up_to_MHz") in (None, "") else
-                     float(n["validated_up_to_MHz"]) * 1e6)
-
-
 def _emi_profile(pr: dict, lim: dict | None):
     from .extensions.emi import PROFILE_FIELDS, EmiProfile, LimitCurve
     curve = None
@@ -1091,18 +951,6 @@ EXAMPLE_EFFICIENCY = {
                              [4000.0, -120.0, 600.0]]},
     "note": "example reducer, auxiliaries, modules and error budgets are synthetic",
 }
-
-
-def _reducer(r):
-    from .analysis.efficiency import LossMap, ReducerModel
-    if not r:
-        return None
-    mk = lambda m: None if not m else LossMap(tuple(m["speeds_rpm"]), tuple(m["torques_Nm"]),   # noqa: E731
-                                              tuple(tuple(x) for x in m["loss_W"]))
-    return ReducerModel(float(r["ratio"]), str(r.get("output_boundary", "")), tuple(r["speed_rpm"]),
-                        tuple(r["torque_Nm"]), tuple(r["oil_temp_C"]), _opt(r, "eta_forward"), _opt(r, "eta_reverse"),
-                        tuple(float(x) for x in (r.get("drag_coeffs") or (0.0, 0.0, 0.0))),
-                        mk(r.get("map_forward")), mk(r.get("map_reverse")), str(r.get("basis", "")))
 
 
 def _aux(b):
@@ -1302,33 +1150,6 @@ def _schedule(sd: dict, common: dict):
                        float(sd.get("min_dwell_s") or 0.0), str(sd.get("revision", "1")), str(sd.get("basis", "")))
 
 
-def _timing(t: dict):
-    from .extensions.pwm_policy import TimingConfig
-    return TimingConfig(float(t["sample_to_latch_us"]) * 1e-6, float(t.get("filter_delay_us") or 0.0) * 1e-6,
-                        int(t.get("updates_per_period") or 1), float(t.get("modulator_delay_fraction", 0.5)),
-                        float(t.get("min_pulse_us") or 0.0) * 1e-6, str(t.get("basis", "")),
-                        str(t.get("wcet_source", "declared estimate")))
-
-
-def _loop(lp: dict | None):
-    """PI current loop(s) with pole-zero cancellation at the DESIGN inductance: per axis ({'d', 'q'}) when L_d and
-    L_q are declared, else one loop whose gains apply to both axes (checked against both machine axes)."""
-    from .extensions.pwm_policy import CurrentLoop
-    if not lp:
-        return None
-    R = float(lp["R_mohm"]) * 1e-3
-    w = 2 * math.pi * float(lp["bandwidth_Hz"])
-
-    def one(L):
-        return CurrentLoop(L, R, w * L, w * R, str(lp.get("gain_mapping", "continuous")),
-                           None if lp.get("reference_fsw_kHz") in (None, "") else float(lp["reference_fsw_kHz"]) * 1e3,
-                           str(lp.get("basis", "")), str(lp.get("integrator_storage", "output")),
-                           str(lp.get("on_transition", "keep")), bool(lp.get("anti_windup", True)))
-    if lp.get("Ld_uH") not in (None, "") and lp.get("Lq_uH") not in (None, ""):
-        return {"d": one(float(lp["Ld_uH"]) * 1e-6), "q": one(float(lp["Lq_uH"]) * 1e-6)}
-    return one(float(lp["L_uH"]) * 1e-6)
-
-
 def _plant_point(b: dict, default_speed: float = 6000.0, default_torque: float = 150.0):
     """Policy point at the body's speed / torque and the machine's differential inductances there."""
     from .extensions.pwm_policy import differential_inductances
@@ -1339,23 +1160,6 @@ def _plant_point(b: dict, default_speed: float = 6000.0, default_torque: float =
     if sol.point is None:
         raise InputValidationError("no operating point: " + sol.policy_claim.detail, field="torque_Nm")
     return sol.point, differential_inductances(d, sc, sol.point.id_A, sol.point.iq_A), (n, T, vdc)
-
-
-def _sensing(sd: dict | None):
-    from .extensions.pwm_policy import SensingConfig
-    if not sd:
-        return None
-    return SensingConfig(str(sd["kind"]), float(sd["settle_us"]) * 1e-6, float(sd["aperture_us"]) * 1e-6,
-                         str(sd.get("sample_points", "valley")), str(sd.get("edge_noise", "any_leg")),
-                         bool(sd.get("reconstruct_from_two", True)), float(sd.get("channel_skew_ns") or 0.0) * 1e-9,
-                         str(sd.get("invalid_policy", "none")), _opt(sd, "predict_error_fraction"),
-                         _opt(sd, "max_sample_age_us", 1e-6), _opt(sd, "current_error_max_A"), str(sd.get("basis", "")))
-
-
-def _noise(nd: dict | None):
-    if not nd:
-        return None
-    return {k: float(v) for k, v in nd.items() if k != "basis" and v not in (None, "")}
 
 
 def pwm_policies(body):
@@ -1534,13 +1338,6 @@ EXAMPLE_DRIVELINE = {
     "stability": {"Kd_list": [0.5, 1.0, 1.5, 2.5, 4.0], "delay_ms_list": [0.0, 1.0, 2.0, 4.0, 6.0, 8.0, 12.0, 16.0, 24.0]},
     "note": "example driveline, controller and targets are synthetic",
 }
-
-
-def driveline_from_dict(dd: dict):
-    from .extensions.driveline import Driveline
-    return Driveline(float(dd["Jm_kgm2"]), float(dd["J_out_kgm2"]), float(dd["k_out_Nm_per_rad"]),
-                     float(dd["c_out_Nms_per_rad"]), float(dd.get("ratio") or 1.0), _opt(dd, "wheel_radius_m"),
-                     str(dd.get("contact", "maintained")), _opt(dd, "backlash_out_rad"), str(dd.get("basis", "")))
 
 
 def _controller(c: dict, v: dict, sensing: dict | None = None):
