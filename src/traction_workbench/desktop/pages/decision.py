@@ -66,8 +66,14 @@ def _pwm_risk_rows(pr: dict) -> list:
             ("RMS", f"{tr('기본파', 'fundamental')} {rm['fundamental_A']:.4g} A · {tr('리플', 'ripple')} {rm['ripple_A']:.4g} A · "
                     f"{tr('합', 'total')} {rm['total_A']:.4g} A (+{fmt(rm['added_percent'], 3)} %)"),
             (tr("주요 선 (상전류)", "dominant lines (phase current)"),
-             " · ".join(f"{ln['f_Hz'] / 1e3:.4g} kHz ({ln['order']:.3g}·f_e) {ln['I_pk_A']:.3g} A" for ln in pr["lines"]))]
+             " · ".join(f"{ln['f_Hz'] / 1e3:.4g} kHz" + ("" if ln.get("order") is None else f" ({ln['order']:.3g}·f_e)")
+                        + f" {ln['I_pk_A']:.3g} A" for ln in pr["lines"])
+             + (tr(" — 정지·저속: f_e 대신 fsw/400으로 계산한 준정적 리플",
+                   " — standstill / low speed: quasi-static ripple at a stand-in f_e = fsw/400")
+                if pr.get("ripple_quasi_static") else ""))]
     dl = pr.get("dc_link")
+    if not dl and pr.get("dc_link_reason"):
+        rows.append((tr("DC-link 부담", "DC-link burden"), pr["dc_link_reason"]))
     if dl:
         rows.append((tr("DC-link 부담", "DC-link burden"),
                      f"I_cap {dl['I_cap_rms_A']:.4g} A rms · P_ESR {fmt(dl['P_cap_W'])} W · ΔV {fmt(dl['V_ripple_pp_V'])} V pp · "

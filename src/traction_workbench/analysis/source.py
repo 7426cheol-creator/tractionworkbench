@@ -108,8 +108,13 @@ def resolve_terminal_voltage(drive, scenario: Scenario, source: TheveninSource, 
     else:
         return {**out, "status": "NOT_RESOLVED", "V_last_V": V, "iterations": max_iter,
                 "reason": "the terminal-voltage fixed point did not converge"}
-    # the point AT the resolved voltage (the one the requirement is judged at)
-    pt = PolicyEvaluator(drive, scenario.with_(Vdc_V=V), settings).solve(T_request).point
+    # the point AT the resolved voltage (the one the requirement is judged at); at a capability edge it can be lost
+    sol = PolicyEvaluator(drive, scenario.with_(Vdc_V=V), settings).solve(T_request)
+    pt = sol.point
+    if pt is None or pt.Pdc_W is None:
+        return {**out, "status": "NOT_RESOLVED", "V_last_V": V, "iterations": len(hist),
+                "reason": f"at the fixed point {V:.6g} V the policy point is not established "
+                          f"({sol.policy_claim.status.value}: {sol.policy_claim.detail})"}
     I = pt.Pdc_W / V
     res = {**out, "status": "RESOLVED", "V_terminal_V": V, "I_dc_A": I, "P_dc_W": pt.Pdc_W,
            "sag_V": V_oc - V, "iterations": len(hist),

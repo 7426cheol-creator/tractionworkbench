@@ -67,6 +67,30 @@ def test_outside_the_source_model_or_no_fixed_point_is_unknown():
     assert any("no operating point can see more than" in q for q in col["verdict"]["qualifiers"])
 
 
+def test_a_fixed_point_where_the_policy_point_is_lost_is_not_resolved(monkeypatch):
+    import types
+
+    from traction_workbench.analysis import source as S
+    d, lim = sf.synthetic_drive(), sf.synthetic_limits()
+    sc, src = Scenario("s", 12000.0, 600.0, lim), TheveninSource(0.03, "test")
+    calls, stop_at = [], [0]
+
+    class Counting(PolicyEvaluator):
+        def solve(self, T):
+            calls.append(T)
+            if len(calls) == stop_at[0]:
+                return types.SimpleNamespace(point=None, policy_claim=types.SimpleNamespace(
+                    status=types.SimpleNamespace(value="UNKNOWN"), detail="lost at the edge"))
+            return super().solve(T)
+
+    monkeypatch.setattr(S, "PolicyEvaluator", Counting)
+    assert S.resolve_terminal_voltage(d, sc, src, 150.0)["status"] == "RESOLVED"
+    stop_at[0], n = len(calls), len(calls)
+    calls.clear()
+    r = S.resolve_terminal_voltage(d, sc, src, 150.0)    # the same path; only the solve at the fixed point fails
+    assert len(calls) == n and r["status"] == "NOT_RESOLVED" and "at the fixed point" in r["reason"]
+
+
 def test_an_ocv_range_maps_to_the_terminal_range():
     r = api.evaluate({"requirement": {**BASE, "torque_Nm": 100.0, "Vdc_V": [550, 650], "Vdc_port": "battery_ocv"},
                       "source_model": {"R_eq_mohm": 30, "basis": "test"}})

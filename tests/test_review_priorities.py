@@ -44,6 +44,15 @@ def test_same_point_same_carrier_for_rms_lines_and_dc_link(point):
     assert any("NVH" in x for x in r["not_evaluated"])
 
 
+def test_at_standstill_the_lines_carry_no_order_and_the_dc_link_says_why():
+    _d, rec, case = S.evaluate_case_full(api.case_from_body(
+        {"requirement": {"id": "R0", "text": "300 N*m at standstill", "torque_Nm": 300, "speed_rpm": 0, "Vdc_V": 600}}))
+    c = rec.conditions[0]
+    r = api.pwm_risk_at(case.drive, c.scenario, c.primary.point)
+    assert r["ripple_quasi_static"] and r["lines"] and all(ln["order"] is None for ln in r["lines"])
+    assert r["dc_link"] is None and "f_e = 0" in r["dc_link_reason"]
+
+
 def test_the_rotational_item_states_its_scope_and_the_efficiency_sensitivity():
     led = api.efficiency({})["ledger"]
     rot = next(i for i in led["loss_items"] if i["item"].startswith("rotational"))

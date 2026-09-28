@@ -20,7 +20,7 @@ the comparison that never trades a mandatory constraint for efficiency.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -1063,13 +1063,14 @@ def point_pwm_risk(drive, scenario, pt, fsw_Hz: float, L_hf_H: float, modulation
     vdc = float(scenario.Vdc_V)
     m = float(pt.v_peak_V) / (0.5 * vdc)
     fe_true = abs(float(pt.f_e_Hz))
+    quasi = fe_true < fsw_Hz / 400.0             # standstill / very low f_e: the ripple at a stand-in f_e (fsw / 400)
     fe = max(fe_true, fsw_Hz / 400.0)
     rip = phase_ripple(vdc, m, 0.0, fe, fsw_Hz, L_hf_H, modulation, n_per_carrier=128)
     k = DriveKernel(drive, scenario)
     base = {"fsw_requested_Hz": fsw_Hz, "fsw_waveform_used_Hz": rip["fsw_used_Hz"],
             "fsw_error_percent": 100.0 * (rip["fsw_used_Hz"] - fsw_Hz) / fsw_Hz, "modulation": modulation,
             "modulation_index": m, "L_hf_H": L_hf_H, "i_fund_peak_A": pt.i_peak_A,
-            "current_limit_A": k.Imax, "ripple_quasi_static": fe_true < fsw_Hz / 400.0}
+            "current_limit_A": k.Imax, "ripple_quasi_static": quasi}
     if rip["overmodulation"]:
         return {**base, "status": "UNKNOWN",
                 "reason": "modulation beyond the linear range of the declared PWM family (ripple not evaluated)"}
@@ -1094,7 +1095,9 @@ def point_pwm_risk(drive, scenario, pt, fsw_Hz: float, L_hf_H: float, modulation
            "instantaneous_peak": peak,
            "rms": {"fundamental_A": rms_f, "ripple_A": rr, "total_A": math.sqrt(rms_f ** 2 + rr ** 2),
                    "added_percent": 100.0 * (math.sqrt(rms_f ** 2 + rr ** 2) / rms_f - 1.0) if rms_f > 0 else None},
-           "lines": [{"f_Hz": float(f[i]), "I_pk_A": float(I[i]), "order": float(f[i] / fe)} for i in top],
+           # the order of a line is relative to the true f_e; a quasi-static line has none (its f_e is a stand-in)
+           "lines": [{"f_Hz": float(f[i]), "I_pk_A": float(I[i]), "order": None if quasi else float(f[i] / fe_true)}
+                     for i in top],
            "motor_pwm_loss": point_hf_losses(drive, scenario, pt, fsw_Hz, L_hf_H, modulation, harmonic)}
     if bank is not None and fe_true > 0:
         from .dclink_ripple import ripple_analysis
@@ -1106,6 +1109,8 @@ def point_pwm_risk(drive, scenario, pt, fsw_Hz: float, L_hf_H: float, modulation
                           "assumption": cr.get("assumption")}
     else:
         out["dc_link"] = None
+        out["dc_link_reason"] = ("no DC-link capacitor declared" if bank is None else
+                                 "not evaluated at f_e = 0 (the capacitor-current model needs a rotating fundamental)")
     out["not_evaluated"] = ["NVH / torque ripple orders", "bearing current / common-mode stress",
                             "exact pulse peak (only the conservative bound)"]
     return out
