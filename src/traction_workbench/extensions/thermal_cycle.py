@@ -182,11 +182,44 @@ def _advance(x, r, tau, P, dt):
     return x * a + r * P * (1.0 - a)
 
 
+def _phase_max(x, r, tau, P, d, with_time: bool = False):
+    """max over t in [0, d] of sum_i x_i(t) on the exact trajectory x_i(t) = c_i + (x_i - c_i) exp(-t / tau_i),
+    c_i = R_i P.  When every term moves the same way the extremes are the ends; when terms move in opposite
+    directions (a fast term heating while a slower one cools, e.g. after a hot soak or from measured node
+    temperatures) the peak can lie inside the phase: the derivative, a sum of exponentials, is bracketed on a dense
+    grid and each + to - root bisected.  ``with_time``: (max, the time it is reached)."""
+    x, r, tau = (np.asarray(v, float) for v in (x, r, tau))
+    e = x - r * P
+    end = float(np.sum(r * P + e * np.exp(-d / tau)))
+    best, t_best = (float(np.sum(x)), 0.0) if float(np.sum(x)) >= end else (end, float(d))
+    if d <= 0 or not (np.any(e > 0) and np.any(e < 0)):
+        return (best, t_best) if with_time else best
+    g = lambda t: float(np.sum(-e / tau * np.exp(-t / tau)))          # noqa: E731
+    ts = np.unique(np.concatenate([np.linspace(0.0, d, 257), d * np.geomspace(1e-7, 1.0, 257)]))
+    gv = np.sum((-e / tau)[None, :] * np.exp(-ts[:, None] / tau[None, :]), axis=1)
+    for k in np.nonzero((gv[:-1] > 0) & (gv[1:] <= 0))[0]:
+        lo, hi = float(ts[k]), float(ts[k + 1])
+        for _ in range(60):
+            mid = 0.5 * (lo + hi)
+            if g(mid) > 0:
+                lo = mid
+            else:
+                hi = mid
+        v = float(np.sum(r * P + e * np.exp(-lo / tau)))
+        if v > best:
+            best, t_best = v, lo
+    return (best, t_best) if with_time else best
+
+
 def _crossing(x, r, tau, P, ref, limit, dt) -> float | None:
     """First time in (0, dt] at which ref + sum x(t) reaches the limit for a constant P (bisection on the exact
-    trajectory; None when not reached)."""
+    trajectory; None when not reached).  The exact maximum inside the step decides whether and by when it is
+    reached, so a narrow peak between samples is never missed."""
     f = lambda t: ref + float(np.sum(_advance(x, r, tau, P, t))) - limit     # noqa: E731
-    ts = np.linspace(0.0, dt, 17)[1:]
+    mx, t_mx = _phase_max(x, r, tau, P, dt, with_time=True)
+    if ref + mx < limit:
+        return None
+    ts = np.linspace(0.0, max(t_mx, 1e-12 * dt), 17)[1:]
     prev = 0.0
     for t in ts:
         if f(t) >= 0.0:
@@ -285,10 +318,10 @@ def repeated_load(drive, scenario: Scenario, model: ThermalModel, phases: list, 
                         tc = _crossing(xs[i], R[i], tau[i], Ps[i], refs[i], nd.limit_C, dt)
                         if tc is not None:
                             fl = {"t_s": t + tc, "cycle": c + 1, "phase": k, "node": nd.node_id}
+                    peak[i] = max(peak[i], refs[i] + _phase_max(xs[i], R[i], tau[i], Ps[i], dt))
                     xs[i] = _advance(xs[i], R[i], tau[i], Ps[i], dt)
                 t += dt
                 temps = [ref + float(np.sum(xx)) for ref, xx in zip(refs, xs)]
-                peak = [max(a, b) for a, b in zip(peak, temps)]
                 if record:
                     tr_t.append(t)
                     tr_T.append(list(temps))
@@ -337,9 +370,11 @@ def repeated_load(drive, scenario: Scenario, model: ThermalModel, phases: list, 
                         exceeds=any(m < 0 for m in margins.values()))
 
     # closed-form, losses held at the hotter temperature corner (conservative when losses grow with temperature)
-    allowed_out = _allowed(L, model, phases, init, pre, iw, ij, refs_for, x_init=_initial_states(
-        model, init, pre, refs_for(pre if pre is not None else (first["losses"] or {})))) if (allowed and stop is None) \
-        else None
+    # the start state of a trial pulse is referred to that pulse's own fluid reference (a start from node
+    # temperatures means those temperatures at t = 0+, whatever the trial torque)
+    allowed_out = _allowed(L, model, phases, init, pre, iw, ij, refs_for,
+                           x_init_for=lambda refs: _initial_states(model, init, pre, refs)) \
+        if (allowed and stop is None) else None
 
     stated = {"coolant_temp_C": scenario.coolant_temp_C, "Vdc_V": scenario.Vdc_V,
               "switching_frequency_Hz": scenario.switching_frequency_Hz, **model.stated_conditions()}
@@ -384,16 +419,18 @@ def repeated_load(drive, scenario: Scenario, model: ThermalModel, phases: list, 
                       "phase_bounds": bounds},
             "assumptions": ["exact exponential update of every Foster term per step (constant loss within a step, "
                             f"{steps_per_phase} steps per phase; losses re-evaluated per step at the node "
-                            "temperatures, cached on a 0.5 K grid)",
+                            "temperatures, cached on a 0.5 K grid); the peak inside every step and phase is exact "
+                            "(terms moving in opposite directions can peak inside it)",
                             "coolant rise follows each step's losses instantly (loop thermal mass not modelled; "
                             "conservative for pulse peaks)",
                             "allowed duration / torque: closed form with the losses at the hotter temperature corner "
                             "(coolant or node limit) - monotone losses in temperature assumed"]}
 
 
-def _periodic_ends(Rs, taus, Ps, durs) -> list:
+def _periodic_ends(Rs, taus, Ps, durs, peaks: bool = False):
     """Periodic steady state of one node (Foster terms) for piecewise-constant powers: the rise at the end of every
-    phase.  x0 = sum_j R P_j (1 - a_j) prod_{k > j} a_k / (1 - prod a)."""
+    phase (and with ``peaks`` the highest rise inside every phase).
+    x0 = sum_j R P_j (1 - a_j) prod_{k > j} a_k / (1 - prod a)."""
     a = [np.exp(-d / taus) for d in durs]
     A = np.prod(a, axis=0)
     x0 = np.zeros_like(Rs)
@@ -401,14 +438,17 @@ def _periodic_ends(Rs, taus, Ps, durs) -> list:
         tail = np.prod(a[j + 1:], axis=0) if j + 1 < len(durs) else np.ones_like(Rs)
         x0 = x0 + Rs * Ps[j] * (1.0 - a[j]) * tail
     x0 = x0 / (1.0 - A)
-    out, x = [], x0
+    out, mx, x = [], [], x0
     for j in range(len(durs)):
+        if peaks:
+            mx.append(_phase_max(x, Rs, taus, Ps[j], durs[j]))
         x = x * a[j] + Rs * Ps[j] * (1.0 - a[j])
         out.append(float(np.sum(x)))
-    return out
+    return (out, mx) if peaks else out
 
 
-def _allowed(L: _Losses, model: ThermalModel, phases: list, init: InitialState, pre, iw, ij, refs_for, x_init) -> dict:
+def _allowed(L: _Losses, model: ThermalModel, phases: list, init: InitialState, pre, iw, ij, refs_for,
+             x_init_for) -> dict:
     """Allowed pulse duration / torque in the periodic cycle and allowed first-pulse torque, closed form with the
     losses at the hotter temperature corner (coolant or node limit)."""
     ids = [nd.node_id for nd in model.nodes]
@@ -444,20 +484,20 @@ def _allowed(L: _Losses, model: ThermalModel, phases: list, init: InitialState, 
         for i, nd in enumerate(model.nodes):
             Ps = [p0[0][i]] + [b[0][i] for b in base[1:]]
             refs = [p0[1][i]] + [b[1][i] for b in base[1:]]
-            ends = _periodic_ends(np.asarray(nd.network.R_K_per_W), np.asarray(nd.network.tau_s), Ps, durs)
-            worst = min(worst, min(lim[i] - (r + e) for r, e in zip(refs, ends)))
+            _ends, mx = _periodic_ends(np.asarray(nd.network.R_K_per_W), np.asarray(nd.network.tau_s), Ps, durs, True)
+            worst = min(worst, min(lim[i] - (r + m) for r, m in zip(refs, mx)))
         return worst
 
     def first_margin(p0, d0):
-        worst = math.inf
+        worst, x_init = math.inf, x_init_for(p0[1])
         for i, nd in enumerate(model.nodes):
-            rise = float(np.sum(_advance(x_init[i], np.asarray(nd.network.R_K_per_W),
-                                         np.asarray(nd.network.tau_s), p0[0][i], d0)))
+            rise = _phase_max(x_init[i], np.asarray(nd.network.R_K_per_W), np.asarray(nd.network.tau_s), p0[0][i], d0)
             worst = min(worst, lim[i] - (p0[1][i] + rise))
         return worst
 
     ph0 = phases[0]
-    out = {"basis": "closed form, losses at the hotter temperature corner (coolant / node limit)"}
+    out = {"basis": "closed form, losses at the hotter temperature corner (coolant / node limit); the highest "
+                    "temperature inside every phase, not only at its end"}
     # allowed pulse duration in the periodic cycle (the other phases as declared)
     if len(phases) > 1:
         m_at = lambda d: periodic_margin(base[0], d)        # noqa: E731
@@ -519,28 +559,42 @@ def _allowed(L: _Losses, model: ThermalModel, phases: list, init: InitialState, 
         out["pulse_torque_Nm"], out["pulse_torque_note"] = torque_limit(periodic_margin, ph0.duration_s)
     out["first_pulse_torque_Nm"], out["first_pulse_torque_note"] = torque_limit(first_margin, ph0.duration_s)
     if len(phases) > 1:
-        out.update(_rest_needed(model, phases, base, x_init, lim, periodic_margin))
+        out.update(_rest_needed(model, phases, base, x_init_for(base[0][1]), lim, periodic_margin))
     out["nodes"] = ids
     return out
 
 
 def _min_monotone(ok, hi0: float, cap: float = 1e6) -> float:
-    """Smallest t >= 0 with ok(t) for a condition that stays true once true (0 if ok(0), inf if never up to cap)."""
+    """Smallest t >= 0 with ok(t): the first transition on a geometric scan up to ``cap``, then bisection (0 if
+    ok(0), inf if never).  The condition need not stay true afterwards (see the rest window)."""
     if ok(0.0):
         return 0.0
-    hi = hi0
-    while not ok(hi):
-        hi *= 2.0
-        if hi > cap:
-            return math.inf
-    lo = 0.0
+    prev = 0.0
+    for t in np.geomspace(min(hi0, 1.0) * 1e-3, cap, 97):
+        t = float(t)
+        if ok(t):
+            lo, hi = prev, t
+            for _ in range(60):
+                mid = 0.5 * (lo + hi)
+                if ok(mid):
+                    hi = mid
+                else:
+                    lo = mid
+            return hi
+        prev = t
+    return math.inf
+
+
+def _window_end(ok, t_ok: float, t_bad: float) -> float:
+    """The end of an interval where ok holds: ok(t_ok) and not ok(t_bad), bisected."""
+    lo, hi = t_ok, t_bad
     for _ in range(60):
         mid = 0.5 * (lo + hi)
         if ok(mid):
-            hi = mid
-        else:
             lo = mid
-    return hi
+        else:
+            hi = mid
+    return lo
 
 
 def _rest_needed(model, phases, base, x_init, lim, periodic_margin) -> dict:
@@ -548,28 +602,41 @@ def _rest_needed(model, phases, base, x_init, lim, periodic_margin) -> dict:
     without reaching a limit, and the shortest rest that keeps the periodic cycle within the limits."""
     ph0, ph1 = phases[0], phases[1]
     P0, ref0 = base[0]
-    P1 = base[1][0]
+    P1, ref1 = base[1]
 
     def repeat_ok(t_rest):
+        """The rest (its own peak included) and the repeated pulse stay within every limit."""
         for i, nd in enumerate(model.nodes):
             r, tau = np.asarray(nd.network.R_K_per_W), np.asarray(nd.network.tau_s)
             x = _advance(x_init[i], r, tau, P0[i], ph0.duration_s)
-            x = _advance(x, r, tau, P1[i], t_rest) if t_rest > 0 else x
-            x = _advance(x, r, tau, P0[i], ph0.duration_s)
-            if ref0[i] + float(np.sum(x)) > lim[i]:
+            if t_rest > 0:
+                if ref1[i] + _phase_max(x, r, tau, P1[i], t_rest) > lim[i]:
+                    return False
+                x = _advance(x, r, tau, P1[i], t_rest)
+            if ref0[i] + _phase_max(x, r, tau, P0[i], ph0.duration_s) > lim[i]:
                 return False
         return True
 
-    def periodic_ok(d1):
-        if d1 <= 0:
-            return False
+    def periodic_ok(d1):                        # d1 = 0: the pulse repeated back to back
         return periodic_margin(base[0], ph0.duration_s, [d1] + [ph.duration_s for ph in phases[2:]]) >= 0
     first_ok = True
     for i, nd in enumerate(model.nodes):
         r, tau = np.asarray(nd.network.R_K_per_W), np.asarray(nd.network.tau_s)
-        if ref0[i] + float(np.sum(_advance(x_init[i], r, tau, P0[i], ph0.duration_s))) > lim[i]:
+        if ref0[i] + _phase_max(x_init[i], r, tau, P0[i], ph0.duration_s) > lim[i]:
             first_ok = False
-    return {"rest_before_repeat_s": _min_monotone(repeat_ok, max(ph1.duration_s, 1.0)) if first_ok else None,
-            "rest_before_repeat_note": "" if first_ok else "the first pulse itself reaches a limit",
-            "periodic_min_rest_s": _min_monotone(periodic_ok, max(ph1.duration_s, 1.0)),
-            "rest_load": {"torque_Nm": ph1.torque_Nm, "speed_rpm": ph1.speed_rpm}}
+    # a rest this long settles every Foster term (the rest load's steady state): a condition that holds for some
+    # rest but fails here holds only inside a window - the rest load heats the slower nodes again
+    long_rest = 40.0 * max(float(np.max(np.asarray(nd.network.tau_s))) for nd in model.nodes)
+    out = {"rest_load": {"torque_Nm": ph1.torque_Nm, "speed_rpm": ph1.speed_rpm}}
+    for key, ok, active, why_not in (("rest_before_repeat", repeat_ok, first_ok, "the first pulse itself reaches a limit"),
+                                     ("periodic_min_rest", periodic_ok, True, "")):
+        t0 = _min_monotone(ok, max(ph1.duration_s, 1.0)) if active else None
+        note = "" if active else why_not
+        if t0 is not None and math.isfinite(t0) and t0 < long_rest and not ok(long_rest):
+            end = _window_end(ok, t0, long_rest)
+            out[f"{key}_window_end_s"] = end
+            note = (f"allowed only for a rest between {t0:.4g} and {end:.4g} s: a longer rest at this load heats the "
+                    f"slower nodes again")
+        out[f"{key}_s"] = t0
+        out[f"{key}_note"] = note
+    return out

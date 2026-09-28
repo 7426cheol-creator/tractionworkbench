@@ -279,11 +279,11 @@ class ThermalPage(QWidget):
                          f"{inf(al.get('pulse_torque_Nm'))} N·m · {al.get('pulse_torque_note', '')}"))
             rows.append((tr("허용 첫 펄스 토크", "allowed first-pulse torque"),
                          f"{inf(al.get('first_pulse_torque_Nm'))} N·m · {al.get('first_pulse_torque_note', '')}"))
-            rb = al.get("rest_before_repeat_s")
+            rest = lambda k: (f"{inf(al[k + '_s'])} s" + (f" · {al[k + '_note']}" if al.get(k + "_note") else "")  # noqa: E731
+                              if al.get(k + "_s") is not None else al.get(k + "_note", ""))
             rows.append((tr("첫 펄스 후 반복 전 필요 휴지", "rest before repeating after the first pulse"),
-                         f"{inf(rb)} s" if rb is not None else al.get("rest_before_repeat_note", "")))
-            rows.append((tr("주기 유지에 필요한 최소 휴지", "shortest rest for the periodic cycle"),
-                         f"{inf(al.get('periodic_min_rest_s'))} s"))
+                         rest("rest_before_repeat")))
+            rows.append((tr("주기 유지에 필요한 최소 휴지", "shortest rest for the periodic cycle"), rest("periodic_min_rest")))
             rows.append((tr("허용값 근거", "basis of allowed values"), al.get("basis", "")))
         fbk = res["feedback"]
         rows.append((tr("피드백", "feedback"), f"R_s(T): {fbk['rs']} ({fbk['winding_node']}) · T_j: {fbk['module']} "

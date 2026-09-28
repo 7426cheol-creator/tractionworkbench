@@ -11,8 +11,8 @@ import pytest
 from traction_workbench import api
 from traction_workbench.errors import InputValidationError
 from traction_workbench.extensions.thermal import _losses
-from traction_workbench.extensions.thermal_cycle import (Feedback, InitialState, LoadPhase, _periodic_ends,
-                                                         repeated_load)
+from traction_workbench.extensions.thermal_cycle import (Feedback, InitialState, LoadPhase, _crossing,
+                                                         _periodic_ends, _phase_max, _rest_needed, repeated_load)
 from traction_workbench.models.components import TemperatureDependence
 from traction_workbench.scenario import Scenario
 from traction_workbench.solvers.policy import PolicyEvaluator
@@ -157,6 +157,71 @@ def test_the_rest_needed_before_repeating(setup):
                                         feedback=Feedback(False), allowed=False)["first_limit"]
     assert peak(rest * 1.02) is None and peak(rest * 0.9) is not None
     assert r["allowed"]["periodic_min_rest_s"] >= rest
+
+
+def test_a_peak_inside_a_phase_is_found_exactly():
+    """A fast term heating while a slow one cools peaks inside the phase: its ends alone understate it."""
+    x, r, tau = np.array([0.0, 5.0]), np.array([1.0, 1.0]), np.array([1.0, 100.0])
+    P, d = 3.0, 200.0
+    t = np.linspace(0.0, d, 400001)
+    brute = float(np.max(np.sum(r * P + (x - r * P) * np.exp(-t[:, None] / tau), axis=1)))
+    ends = max(float(np.sum(x)), float(np.sum(r * P + (x - r * P) * np.exp(-d / tau))))
+    assert _phase_max(x, r, tau, P, d) == pytest.approx(brute, abs=1e-6) and brute > ends + 1.0
+    heating = np.array([0.0, 1.0])                     # every term moving the same way: the end is the peak
+    assert _phase_max(heating, r, tau, P, d) == pytest.approx(float(np.sum(r * P + (heating - r * P) * np.exp(-d / tau))))
+
+
+def test_the_first_limit_is_never_missed_between_samples():
+    """The peak (7.88 at 5.06 s) lies between the 16 samples of a 200 s step: the exact maximum brackets it."""
+    x, r, tau = np.array([0.0, 5.0]), np.array([1.0, 1.0]), np.array([1.0, 100.0])
+    tc = _crossing(x, r, tau, 3.0, 0.0, 7.8, 200.0)
+    assert tc is not None and 0 < tc < 5.1
+    assert float(np.sum(r * 3.0 + (x - r * 3.0) * np.exp(-tc / tau))) == pytest.approx(7.8, abs=1e-9)
+    assert _crossing(x, r, tau, 3.0, 0.0, 7.9, 200.0) is None
+
+
+def test_a_hot_soak_start_peaks_inside_the_pulse_and_the_allowance_holds(setup):
+    """After a hot soak the inner layers are hotter than the pulse sustains: the junction peaks inside the pulse and
+    cools afterwards.  The first-pulse allowance comes from that inside peak (the pulse end alone overstated it by
+    about 70 N*m) and does not depend on the declared pulse torque (the start is referred to the trial pulse)."""
+    d, sc, _model = setup
+    spec = api.EXAMPLE_THERMAL
+    inv = dict(spec["nodes"][0], network="cauer", R_K_per_W=[0.01, 0.03, 0.08, 0.08], C_J_per_K=[0.2, 1.0, 5.0, 31.0])
+    m2 = api.thermal_model_from_dict({**spec, "nodes": [inv, spec["nodes"][1]]}, 65.0)
+    j = "inverter junction (1 of 6 switches)"
+    init = InitialState("node_temperatures", node_temperatures_C=((j, (100.0, 128.0, 132.0, 118.0)),
+                                                                  ("stator winding (hot spot)", (120.0, 115.0, 100.0))))
+    run = lambda T, allowed=True: repeated_load(d, sc, m2, [LoadPhase(T, 3000.0, 20.0), LoadPhase(50.0, 3000.0, 10.0)],  # noqa: E731
+                                                cycles=1, initial=init, feedback=Feedback(False), allowed=allowed)
+    a = run(200.0)["allowed"]["first_pulse_torque_Nm"]
+    assert a == pytest.approx(run(450.0)["allowed"]["first_pulse_torque_Nm"], rel=1e-9)
+    inside, outside = run(0.999 * a, False), run(1.01 * a, False)
+    assert inside["first_limit"] is None and outside["first_limit"]["node"] == j
+    tr = outside["trace"]
+    k20 = min(range(len(tr["t_s"])), key=lambda k: abs(tr["t_s"][k] - 20.0))
+    assert tr["nodes"][j][k20] < outside["per_cycle"][0]["peak_C"][j] - 1.0         # the peak is inside the pulse
+
+
+def test_a_rest_that_heats_the_slower_nodes_allows_repeating_only_inside_a_window():
+    """Immediately after the pulse the fast term is too hot; a medium rest cools it; a long rest at this (heavy) rest
+    load heats the slow term until the repeat fails again.  The first allowed rest is not the whole answer."""
+    from types import SimpleNamespace as NS
+    model = NS(nodes=[NS(network=NS(R_K_per_W=[1.0, 1.0], tau_s=[1.0, 1000.0]))])
+    phases = [LoadPhase(400.0, 3000.0, 2.0), LoadPhase(300.0, 3000.0, 5.0)]
+    r, tau, P0, P1, lim = np.array([1.0, 1.0]), np.array([1.0, 1000.0]), 10.0, 6.0, 9.7
+    out = _rest_needed(model, phases, [([P0], [0.0]), ([P1], [0.0])], [np.zeros(2)], [lim], lambda *a: 1.0)
+
+    def peak(t_rest):                                   # dense brute force over the rest and the repeated pulse
+        x = r * P0 + (0.0 - r * P0) * np.exp(-2.0 / tau)
+        ts = np.linspace(0.0, t_rest, 20001)[:, None]
+        rest = r * P1 + (x - r * P1) * np.exp(-ts / tau)
+        tp = np.linspace(0.0, 2.0, 20001)[:, None]
+        pulse = r * P0 + (rest[-1] - r * P0) * np.exp(-tp / tau)
+        return max(float(np.max(rest.sum(axis=1))), float(np.max(pulse.sum(axis=1))))
+
+    t0, t1 = out["rest_before_repeat_s"], out["rest_before_repeat_window_end_s"]
+    assert 0 < t0 < 5.0 < 20.0 < t1 < 100.0 and "between" in out["rest_before_repeat_note"]
+    assert peak(0.99 * t0) > lim >= peak(1.01 * t0) and peak(0.99 * t1) <= lim < peak(1.01 * t1)
 
 
 def test_an_unqualified_model_is_a_screening_estimate_a_qualified_one_decides(setup):
