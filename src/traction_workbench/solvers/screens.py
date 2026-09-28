@@ -35,8 +35,7 @@ def shaft_power_vs_discharge(k: DriveKernel, T_shaft: float) -> ScreenResult:
     if cap is None:
         return ScreenResult(name, False, False, "discharge limits not declared", "")
     p = T_shaft * k.omega_m
-    tol = max(k.settings.power_abs_tol_W, k.settings.constraint_rel_tol * abs(cap))
-    violated = p > cap + tol
+    violated = p > k.dc_accept_hi_W        # the gate's acceptance set: every limit with its own tolerance
     return ScreenResult(
         name, True, violated,
         (f"requested shaft power {p:.6g} W exceeds the effective discharge cap {cap:.6g} W even with zero losses"
@@ -60,8 +59,7 @@ def regen_max_loss_vs_charge(k: DriveKernel, T_shaft: float) -> ScreenResult:
     p = T_shaft * k.omega_m
     lmax = k.P_rot + k.i2_dc.a0_W + k.i2_dc.c2_W_per_A2 * k.Imax ** 2
     pmax = p + lmax
-    tol = max(k.settings.power_abs_tol_W, k.settings.constraint_rel_tol * abs(cap))
-    violated = pmax < -cap - tol
+    violated = pmax < k.dc_accept_lo_W     # the gate's acceptance set: every limit with its own tolerance
     return ScreenResult(
         name, True, violated,
         (f"even with the maximum loss at |i| = {k.Imax:g} A the least negative P_dc is {pmax:.6g} W < {-cap:.6g} W"

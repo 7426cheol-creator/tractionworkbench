@@ -351,6 +351,25 @@ class MotorModel:
         if self.psi_temperature is not None and self.reference_magnet_temp_C is None:
             raise InputValidationError("PM flux temperature coefficient needs a reference magnet temperature",
                                        field="psi_temperature")
+        # physical admissibility over the WHOLE declared validity (review R2, C04): a linear law is checked at its
+        # end points; an ideal Rs = 0 fixture stays allowed, a law that turns a real resistance to <= 0 does not
+        if self.rs_temperature is not None:
+            dep, ref = self.rs_temperature, self.reference_winding_temp_C
+            for t in dep.valid_C:
+                r = rs * (1.0 + dep.coeff_per_K * (t - ref))
+                if r < 0 or (rs > 0 and r <= 0):
+                    raise InputValidationError(
+                        f"the Rs temperature law gives Rs = {r:g} ohm at {t:g} degC inside its declared validity "
+                        f"{list(dep.valid_C)} degC: a winding resistance must stay positive (non-passive law)",
+                        field="rs_temperature")
+        if self.psi_temperature is not None and isinstance(self.flux, ConstantFluxModel):
+            dep, ref = self.psi_temperature, self.reference_magnet_temp_C
+            for t in dep.valid_C:
+                psi = self.flux.psi_pm_Wb * (1.0 + dep.coeff_per_K * (t - ref))
+                if psi < 0:
+                    raise InputValidationError(
+                        f"the PM flux temperature law gives {psi:g} Wb at {t:g} degC inside its declared validity "
+                        f"{list(dep.valid_C)} degC: the magnet flux cannot reverse", field="psi_temperature")
 
     def describe(self) -> dict:
         return {

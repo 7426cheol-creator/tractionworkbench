@@ -133,10 +133,30 @@ class DriveKernel:
                     f"inverter loss surrogate validated for Vdc in [{lo:g}, {hi:g}] V, scenario Vdc={self.Vdc:g} V"))
         self.P_dis_eff = self.limits.effective_discharge_W(self.Vdc)
         self.P_chg_eff = self.limits.effective_charge_W(self.Vdc)
+        self.dc_accept_lo_W, self.dc_accept_hi_W = self._dc_acceptance()
         if abs(self.omega_m) <= settings.speed_zero_tol_rad_s:
             self.notes.append(
                 "standstill: dq currents are DC phase currents distributed by the (unknown) electrical angle; "
                 "RMS values are equivalent sinusoidal RMS, not individual phase RMS; stall thermal capability is not inferred")
+
+    def _dc_acceptance(self) -> tuple[float | None, float | None]:
+        """The P_dc interval the witness gate accepts (``solvers.common.dc_ok``), on one axis (review R2, C03).
+
+        Every declared finite limit in its own unit plus its own numerical tolerance, converted to W and
+        intersected.  The DC band, the cell bounds, the Lagrangian certificate and the screens use this one set, so
+        a point the gate accepts is never excluded by another path ('policy FEASIBLE => physical FEASIBLE' holds
+        at the boundary).  None = no finite limit on that side.
+        """
+        s, lim, v = self.settings, self.limits, self.Vdc
+
+        def tol(L, floor):
+            return max(floor, s.constraint_rel_tol * abs(L))
+        fin = lambda x: x is not None and math.isfinite(x)   # noqa: E731
+        hi = [L + tol(L, s.power_abs_tol_W) for L in (lim.discharge_power_max_W,) if fin(L)]
+        hi += [v * (L + tol(L, s.current_abs_tol_A)) for L in (lim.discharge_current_max_A,) if fin(L)]
+        lo = [-(L + tol(L, s.power_abs_tol_W)) for L in (lim.charge_power_max_W,) if fin(L)]
+        lo += [-v * (L + tol(L, s.current_abs_tol_A)) for L in (lim.charge_current_max_A,) if fin(L)]
+        return (max(lo) if lo else None), (min(hi) if hi else None)
 
     # -- temperature resolution -------------------------------------------
 
@@ -163,6 +183,12 @@ class DriveKernel:
                 f"Rs defined at {ref:g} degC; no validated temperature dependence covers {t:g} degC"))
             return motor.Rs_ohm
         rs = motor.Rs_ohm * (1.0 + dep.coeff_per_K * (t - ref))
+        if not math.isfinite(rs) or rs < 0:
+            self.issues.append(ModelIssue(
+                Reason.OUTSIDE_MODEL_DOMAIN,
+                f"the declared Rs temperature law gives Rs = {rs:g} ohm at {t:g} degC: not passive (negative "
+                f"copper loss is never accepted physics)"))
+            return motor.Rs_ohm
         self.notes.append(f"Rs adjusted {motor.Rs_ohm:g} -> {rs:g} ohm for winding {t:g} degC ({dep.basis})")
         return rs
 
@@ -190,6 +216,11 @@ class DriveKernel:
                 f"psi_PM defined at {ref:g} degC; no validated temperature dependence covers {t:g} degC"))
             return psi0
         psi = psi0 * (1.0 + dep.coeff_per_K * (t - ref))
+        if not math.isfinite(psi) or psi < 0:
+            self.issues.append(ModelIssue(
+                Reason.OUTSIDE_MODEL_DOMAIN,
+                f"the declared psi_PM temperature law gives {psi:g} Wb at {t:g} degC: the magnet flux cannot reverse"))
+            return psi0
         self.notes.append(f"psi_PM adjusted {psi0:g} -> {psi:g} Wb for magnet {t:g} degC ({dep.basis})")
         return psi
 

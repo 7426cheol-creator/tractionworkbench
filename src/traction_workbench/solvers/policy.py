@@ -447,8 +447,8 @@ class PolicyEvaluator:
         if point.Pdc_W is None:
             # P_inv in [0, inf): P_dc >= P_ac only (loss model missing or module loss not established here)
             pac = point.Pac_W
-            viol = k.P_dis_eff is not None and pac > k.P_dis_eff
-            chg_ok = k.P_chg_eff is None or pac >= -k.P_chg_eff
+            viol = k.dc_accept_hi_W is not None and pac > k.dc_accept_hi_W
+            chg_ok = k.dc_accept_lo_W is None or pac >= k.dc_accept_lo_W
             if viol:
                 return Claim("dc_source", Status.INFEASIBLE, q, scope, POLICY_NAME,
                              reasons=(Reason.CONSTRAINT_VIOLATION,),
@@ -576,19 +576,26 @@ class PolicyEvaluator:
                          detail="with the datasheet module loss model the I^2-band certificate does not apply; no "
                                 "verified DC-compatible witness at the policy point"), None
         band = dc_band_I2(k, curve.target_Tem_Nm) if k.tau_rot is not None else None
-        if band is None or (k.P_dis_eff is None and k.P_chg_eff is None):
+        if band is None or not k.limits.any_declared:
+            # declared-unlimited limits (math.inf) are declarations: the band is then the whole axis and the gate
+            # decides; only UNDECLARED limits make this UNKNOWN (review R2 C03: 'policy FEASIBLE => physical
+            # FEASIBLE' also with infinite caps)
             return Claim("physical_existence_with_dc", Status.UNKNOWN, q, scope, "any control",
-                         reasons=(Reason.MISSING_INPUT,), detail="loss model or DC limits missing"), None
-        lo, hi = band
+                         reasons=(Reason.MISSING_INPUT,),
+                         detail="loss model missing" if band is None else "no DC source limit declared"), None
+        lo, hi = band                                           # acceptance band: decides exclusion
+        nom = dc_band_I2(k, curve.target_Tem_Nm, nominal=True)  # declared limits: where an edge witness is placed
         cands = []
         for seg in curve.segments:
             if seg.max_point.I2 >= lo and seg.min_point.I2 <= hi:
                 if seg.min_point.I2 >= lo:
                     cands.append(seg.min_point)
                 elif curve.exact:
-                    w = point_on_curve_with_I2(k, T, seg, lo)
-                    if w is not None:
-                        cands.append(w)
+                    for target in dict.fromkeys(((max(lo, nom[0]),) if nom is not None and
+                                                 lo <= nom[0] <= seg.max_point.I2 else ()) + (lo,)):
+                        w = point_on_curve_with_I2(k, T, seg, target)
+                        if w is not None:
+                            cands.append(w)
                 elif seg.max_point.I2 <= hi:
                     cands.append(seg.max_point)
         if not curve.segments:
@@ -630,6 +637,18 @@ class PolicyEvaluator:
                                     "gate: not proven either way"), None
         else:
             notes_rej = None
+        if curve.exact and curve.coverage_limited:
+            # R2 C01: the enumeration covers the model DATA only; allowed controls outside the data are not
+            # excluded by it (an exclusion needs the whole allowed domain, a witness needs only one point)
+            return Claim("physical_existence_with_dc", Status.UNKNOWN, q, scope, "any control",
+                         reasons=tuple(dict.fromkeys((Reason.OUTSIDE_MODEL_DOMAIN,) + tuple(cond_reasons))),
+                         evidence=(Evidence.make(EvidenceKind.EXACT_ENUMERATION,
+                                                 f"no DC-compatible point inside the covered data (I^2 band "
+                                                 f"[{lo:.6g}, {hi:.6g}] A^2 missed by every covered segment)",
+                                                 nearest_uncovered_allowed_A=curve.coverage_distance_A),)
+                         + scr_ev, qualifiers=cond_q,
+                         detail="no DC-compatible control inside the covered model data; allowed controls outside "
+                                "the data are not excluded (supply data there before claiming infeasibility)"), None
         if curve.exact:
             st = Status.UNKNOWN if conditional else Status.INFEASIBLE
             return Claim("physical_existence_with_dc", st, q, scope, "any control",

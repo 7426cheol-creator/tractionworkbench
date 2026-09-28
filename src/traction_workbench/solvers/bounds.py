@@ -138,11 +138,12 @@ class CellBounds:
         if tem_target is not None:
             m &= (ev["tem_lo"] <= tem_target) & (ev["tem_hi"] >= tem_target)
         if include_dc and "pdc_lo" in ev:
-            ptol = s.power_abs_tol_W
-            if k.P_dis_eff is not None:
-                m &= ev["pdc_lo"] <= k.P_dis_eff + max(ptol, s.constraint_rel_tol * abs(k.P_dis_eff))
-            if k.P_chg_eff is not None:
-                m &= ev["pdc_hi"] >= -k.P_chg_eff - max(ptol, s.constraint_rel_tol * abs(k.P_chg_eff))
+            # the witness gate's acceptance set (tolerances included): a cell is pruned only if the gate would
+            # reject every point in it
+            if k.dc_accept_hi_W is not None:
+                m &= ev["pdc_lo"] <= k.dc_accept_hi_W
+            if k.dc_accept_lo_W is not None:
+                m &= ev["pdc_hi"] >= k.dc_accept_lo_W
         return m
 
     @staticmethod

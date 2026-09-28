@@ -146,5 +146,14 @@ def check_witness(k: DriveKernel, id_A: float, iq_A: float, *, T_request: float 
     if not pt.identities_ok:
         reasons.append(Reason.NUMERICAL_UNRESOLVED)
         msgs.append("power identities do not close within tolerance")
+    # physical admissibility is a separate gate from algebraic closure (review R2, C04): negative passive losses or
+    # an efficiency outside [0, 1] close the identities and are still not physics
+    ptol = k.settings.power_zero_tol_W
+    bad = [n for n, v in (("copper loss", pt.Pcu_W), ("inverter loss", pt.Pinv_W), ("rotational loss", pt.Prot_W))
+           if v is not None and v < -ptol]
+    if bad or pt.energy_mode == "ACCOUNTING_INCONSISTENCY":
+        reasons.append(Reason.OUTSIDE_MODEL_DOMAIN)
+        msgs.append("non-passive energy state (" + (", ".join(f"negative {b}" for b in bad) or pt.efficiency_note)
+                    + "): not accepted as physical evidence")
     reasons = list(dict.fromkeys(reasons))
     return WitnessCheck(not reasons, pt, tuple(reasons), tuple(msgs), residual, tol)

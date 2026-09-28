@@ -45,27 +45,35 @@ def _box_distance(d0: float, d1: float, q0: float, q1: float) -> float:
 
 
 def uncovered_distance(rects, allowed: CurrentBox, i_max: float) -> float:
-    """Distance from the origin to the nearest *allowed* point that is not covered.
+    """Infimum distance from the origin to an *allowed* point that is not covered (independent review R2, C02).
 
-    ``rects`` are rectangles (d0, d1, q0, q1, is_open) that together contain every
-    uncovered point.  Open rectangles (the complement outside the map axes) only
-    count when their intersection with the allowed box has positive area; closed
-    rectangles (invalid cells) count even when the intersection is an edge, which
-    is conservative (the returned distance can only be smaller than the true one).
-    Returns +inf when every allowed point with |i| <= i_max is covered.
+    Coverage is SET INCLUSION, not area: an allowed set of zero width (a fixed id or iq, a single point, a control
+    line on or next to the data edge) is intersected like any other set.  ``rects`` (d0, d1, q0, q1, is_open)
+    together contain every uncovered point: open ones are half-planes of the complement of a closed covered box
+    (strict at their finite bounds, unbounded otherwise), closed ones are invalid map cells (edge contact counts -
+    conservative).  The distance is taken to the closure of each intersection (an infimum: never larger than the
+    true distance).  Returns +inf when every allowed point with |i| <= i_max is covered.
     """
     best = _INF
+    A0, A1 = allowed.id_A
+    B0, B1 = allowed.iq_A
     for d0, d1, q0, q1, is_open in rects:
-        a0, a1 = max(d0, allowed.id_A[0]), min(d1, allowed.id_A[1])
-        b0, b1 = max(q0, allowed.iq_A[0]), min(q1, allowed.iq_A[1])
-        if a0 > a1 or b0 > b1:
+        if is_open:
+            hit = d0 < A1 and A0 < d1 and q0 < B1 and B0 < q1          # open set vs closed allowed box
+        else:
+            hit = d0 <= A1 and A0 <= d1 and q0 <= B1 and B0 <= q1      # closed cell vs closed allowed box
+        if not hit:
             continue
-        if is_open and (a0 >= a1 or b0 >= b1):
-            continue
-        dist = _box_distance(a0, a1, b0, b1)
+        dist = _box_distance(max(d0, A0), min(d1, A1), max(q0, B0), min(q1, B1))
         if dist <= i_max:
             best = min(best, dist)
     return best
+
+
+def complement_half_planes(d0: float, d1: float, q0: float, q1: float) -> list:
+    """The complement of the closed box [d0, d1] x [q0, q1] as four open half-planes (overlap is harmless)."""
+    return [(-_INF, d0, -_INF, _INF, True), (d1, _INF, -_INF, _INF, True),
+            (-_INF, _INF, -_INF, q0, True), (-_INF, _INF, q1, _INF, True)]
 
 
 @dataclass(frozen=True)
@@ -115,10 +123,7 @@ class ConstantFluxModel:
     def uncovered_rectangles(self):
         if self.validity is None:
             return []
-        d0, d1 = self.validity.id_A
-        q0, q1 = self.validity.iq_A
-        return [(-_INF, d0, -_INF, _INF, True), (d1, _INF, -_INF, _INF, True),
-                (d0, d1, -_INF, q0, True), (d0, d1, q1, _INF, True)]
+        return complement_half_planes(*self.validity.id_A, *self.validity.iq_A)
 
     def describe(self) -> dict:
         out = {
@@ -251,12 +256,7 @@ class FluxMapPlane:
 
     def uncovered_rectangles(self):
         ax_d, ax_q = self.id_axis_A, self.iq_axis_A
-        rects = [
-            (-_INF, ax_d[0], -_INF, _INF, True),
-            (ax_d[-1], _INF, -_INF, _INF, True),
-            (ax_d[0], ax_d[-1], -_INF, ax_q[0], True),
-            (ax_d[0], ax_d[-1], ax_q[-1], _INF, True),
-        ]
+        rects = complement_half_planes(float(ax_d[0]), float(ax_d[-1]), float(ax_q[0]), float(ax_q[-1]))
         for i, j in np.argwhere(~self.cell_valid):
             rects.append((float(ax_d[i]), float(ax_d[i + 1]), float(ax_q[j]), float(ax_q[j + 1]), False))
         return rects

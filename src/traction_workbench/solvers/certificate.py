@@ -22,7 +22,7 @@ no certificate is claimed then.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 from scipy.optimize import minimize
@@ -72,6 +72,8 @@ def constant_model_quads(k: DriveKernel, include_dc: bool = True) -> tuple[Quad,
         c2, a0 = k.i2_dc.c2_W_per_A2, k.i2_dc.a0_W
         Hp = k.omega_m * kp * dl * J + 2.0 * c2 * np.eye(2)
         gp = np.array([0.0, k.omega_m * kp * psi])
+        # at the DECLARED limits (the physics bound); the gate's numerical acceptance allowance is added separately
+        # by certify_torque (review R2, C03: physical margin and numerical allowance are reported apart)
         if k.P_dis_eff is not None:
             cons.append(Quad("DC_DISCHARGE", Hp, gp, a0 - k.P_dis_eff))
         if k.P_chg_eff is not None:
@@ -89,11 +91,13 @@ class Certificate:
     witness_value: float
     gap: float | None
     note: str
+    numerical_allowance: float = 0.0   # bound increase if every constraint is relaxed to the gate's acceptance set
 
     def to_dict(self) -> dict:
         return {
             "valid": self.valid,
             "upper_bound": self.upper_bound,
+            "numerical_allowance": self.numerical_allowance,
             "multipliers": dict(self.multipliers),
             "lagrangian_hessian_eigenvalues": list(self.hessian_eigenvalues),
             "kkt_stationarity_residual": self.stationarity_residual,
@@ -183,14 +187,39 @@ def certify_max(obj: Quad, cons: list[Quad], x_w, active_tol: float = 1e-7) -> C
     )
 
 
+def acceptance_relaxation(k: DriveKernel) -> dict:
+    """Offset by which each constraint g <= 0 of ``constant_model_quads`` grows when it is relaxed to the witness
+    gate's acceptance set (every limit plus its own numerical tolerance)."""
+    s = k.settings
+    tol = lambda L, floor: max(floor, s.constraint_rel_tol * abs(L))   # noqa: E731
+    tv, ti = tol(k.Vb, s.voltage_abs_tol_V), tol(k.Imax, s.current_abs_tol_A)
+    out = {"VOLTAGE": (k.Vb + tv) ** 2 - k.Vb ** 2, "CURRENT": (k.Imax + ti) ** 2 - k.Imax ** 2,
+           "ID_MIN": tol(k.domain.id_A[0], s.current_abs_tol_A), "ID_MAX": tol(k.domain.id_A[1], s.current_abs_tol_A),
+           "IQ_MIN": tol(k.domain.iq_A[0], s.current_abs_tol_A), "IQ_MAX": tol(k.domain.iq_A[1], s.current_abs_tol_A)}
+    if k.P_dis_eff is not None and k.dc_accept_hi_W is not None:
+        out["DC_DISCHARGE"] = k.dc_accept_hi_W - k.P_dis_eff
+    if k.P_chg_eff is not None and k.dc_accept_lo_W is not None:
+        out["DC_CHARGE"] = -k.dc_accept_lo_W - k.P_chg_eff
+    return out
+
+
 def certify_torque(k: DriveKernel, direction: int, x_w, include_dc: bool = True) -> Certificate:
-    """Certificate for max (direction=+1) or min (direction=-1) shaft torque."""
+    """Certificate for max (direction=+1) or min (direction=-1) shaft torque.
+
+    The bound holds at the declared limits.  For fixed multipliers the Lagrangian bound grows exactly by
+    sum(lambda_i * delta_i) when constraint i is relaxed by delta_i, so ``numerical_allowance`` states how far a
+    point the witness gate accepts (inside its numerical tolerances) can exceed the physics bound."""
     T, cons = constant_model_quads(k, include_dc)
     if direction < 0:
         T = Quad("-T_shaft", -T.H, -T.g, -T.c)
     cert = certify_max(T, cons, x_w)
+    if cert.valid:
+        rel = acceptance_relaxation(k)
+        allowance = float(sum(lam * rel.get(name, 0.0) for name, lam in cert.multipliers))
+        cert = replace(cert, numerical_allowance=allowance)
     if direction < 0 and cert.valid:
         return Certificate(cert.valid, -cert.upper_bound, cert.multipliers, cert.hessian_eigenvalues,
                            cert.stationarity_residual, -cert.witness_value, cert.gap,
-                           cert.note + " (applied to -T_shaft: the bound is a lower bound of the minimum torque)")
+                           cert.note + " (applied to -T_shaft: the bound is a lower bound of the minimum torque)",
+                           cert.numerical_allowance)
     return cert
