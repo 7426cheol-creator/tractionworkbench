@@ -156,8 +156,11 @@ def test_harmonic_copper_loss_needs_covering_rac_data():
     unit = P.HarmonicLossData((0.0, 1e7), (1.0, 1.0), basis="t")
     w_unit = P.harmonic_copper_loss(rip, 0.015, unit)["W"]
     assert w_unit == pytest.approx(3 * 0.015 * rip["ripple_rms_spectrum_A"] ** 2, rel=1e-9)   # 3 R sum I_rms^2
-    assert P.harmonic_copper_loss(rip, 0.015, full)["W"] > w_unit
-    assert P.harmonic_copper_loss(rip, 0.015, None)["W"] is None
+    full_loss = P.harmonic_copper_loss(rip, 0.015, full)
+    assert full_loss["W"] > w_unit
+    assert full_loss["lower_bound_W"] == pytest.approx(w_unit, rel=1e-9)
+    missing = P.harmonic_copper_loss(rip, 0.015, None)
+    assert missing["W"] is None and missing["lower_bound_W"] == pytest.approx(w_unit, rel=1e-9)
 
 
 def test_policy_comparison_never_trades_a_mandatory_constraint():
@@ -169,6 +172,17 @@ def test_policy_comparison_never_trades_a_mandatory_constraint():
     assert light["E_inv_J"] < base["E_inv_J"]
     assert light["versus_baseline"]["total"]["status"] in ("UNDECIDED", "IMPROVED", "WORSE")
     assert r["best_inverter_energy_among_evaluated"] == "light-load 8 kHz"
+    assert r["best_known_policy_sensitive_energy_among_evaluated"] == "light-load 8 kHz"
+    assert "PWM copper" in r["pareto_scope"] and "upper bound" in r["pareto_scope"]
+    assert "steady electrothermal fixed point" in r["thermal_scope"]
+    assert "synchronous regular-sampled carrier" in r["waveform_scope"]
+    assert r["harmonic_data"]["basis"]
+    for x in r["policies"]:
+        assert x["E_magnetic_harm_bound_J"] == x["E_iron_harm_bound_J"]
+        assert x["E_known_policy_sensitive_J"] == pytest.approx(x["E_inv_J"] + x["E_cu_harm_J"])
+        assert x["E_policy_sensitive_upper_J"] == pytest.approx(
+            x["E_known_policy_sensitive_J"] + x["E_magnetic_harm_bound_J"])
+        assert "upper bound" in x["peak_current_metric"]
     assert "thermal fallback 6 kHz" not in r["pareto"]
     assert any(s["fsw_Hz"] == 8e3 for s in light["segments"])
     assert any("protective" in e["reason"] for e in fb["transitions"])
