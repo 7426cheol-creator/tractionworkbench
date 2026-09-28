@@ -1051,6 +1051,66 @@ def point_hf_losses(drive, scenario, pt, fsw_Hz: float, L_hf_H: float, modulatio
                 "" if mag is not None else "Fe+PM HF: no declared bound at this carrier frequency") if x)}
 
 
+def point_pwm_risk(drive, scenario, pt, fsw_Hz: float, L_hf_H: float, modulation: str = "svpwm",
+                   harmonic: HarmonicLossData | None = None, bank=None, source=None, T_ref_C: float | None = None,
+                   peak_limit_A: float | None = None, n_lines: int = 5) -> dict:
+    """PWM consequences at ONE decision operating point (engineering review 6198099, priority 3), with the same
+    modulation and carrier as the losses: the fundamental current limit (a dq-norm limit on the fundamental) kept
+    apart from the conservative instantaneous peak bound I_fund,pk + max|di| (compared only with a DECLARED
+    device / over-current peak limit), the added RMS, the dominant switching lines of the phase current, the
+    DC-link capacitor burden and the motor PWM copper / Fe+PM bound.  No NVH, no exact pulse peak."""
+    from ..physics import DriveKernel
+    vdc = float(scenario.Vdc_V)
+    m = float(pt.v_peak_V) / (0.5 * vdc)
+    fe_true = abs(float(pt.f_e_Hz))
+    fe = max(fe_true, fsw_Hz / 400.0)
+    rip = phase_ripple(vdc, m, 0.0, fe, fsw_Hz, L_hf_H, modulation, n_per_carrier=128)
+    k = DriveKernel(drive, scenario)
+    base = {"fsw_requested_Hz": fsw_Hz, "fsw_waveform_used_Hz": rip["fsw_used_Hz"],
+            "fsw_error_percent": 100.0 * (rip["fsw_used_Hz"] - fsw_Hz) / fsw_Hz, "modulation": modulation,
+            "modulation_index": m, "L_hf_H": L_hf_H, "i_fund_peak_A": pt.i_peak_A,
+            "current_limit_A": k.Imax, "ripple_quasi_static": fe_true < fsw_Hz / 400.0}
+    if rip["overmodulation"]:
+        return {**base, "status": "UNKNOWN",
+                "reason": "modulation beyond the linear range of the declared PWM family (ripple not evaluated)"}
+    I_f = float(pt.i_peak_A)
+    rms_f = I_f / math.sqrt(2.0)
+    rr = float(rip["ripple_rms_A"])
+    bound = I_f + float(rip["ripple_peak_A"])
+    f, I = np.asarray(rip["harmonic_f_Hz"]), np.asarray(rip["harmonic_I_pk_A"])
+    top = np.argsort(I)[::-1][:n_lines]
+    peak = {"bound_A": bound, "meaning": "conservative bound I_fund,pk + max|di| (fundamental and ripple peaks "
+                                         "assumed aligned) - not the exact pulse peak"}
+    if peak_limit_A is None:
+        peak.update(status="UNKNOWN", reason="no device / over-current peak limit declared (the fundamental current "
+                                             "limit is not a peak limit)")
+    else:
+        peak.update(limit_A=float(peak_limit_A), status="WITHIN" if bound <= peak_limit_A else "EXCEEDS_BOUND",
+                    reason="" if bound <= peak_limit_A else "the conservative bound exceeds the declared peak limit "
+                                                            "(the exact peak may still be lower)")
+    out = {**base, "status": "EVALUATED",
+           "fundamental": {"i_peak_A": I_f, "limit_A": k.Imax, "margin_A": k.Imax - I_f,
+                           "meaning": "the policy's current limit: the fundamental dq norm"},
+           "instantaneous_peak": peak,
+           "rms": {"fundamental_A": rms_f, "ripple_A": rr, "total_A": math.sqrt(rms_f ** 2 + rr ** 2),
+                   "added_percent": 100.0 * (math.sqrt(rms_f ** 2 + rr ** 2) / rms_f - 1.0) if rms_f > 0 else None},
+           "lines": [{"f_Hz": float(f[i]), "I_pk_A": float(I[i]), "order": float(f[i] / fe)} for i in top],
+           "motor_pwm_loss": point_hf_losses(drive, scenario, pt, fsw_Hz, L_hf_H, modulation, harmonic)}
+    if bank is not None and fe_true > 0:
+        from .dclink_ripple import ripple_analysis
+        phi = math.atan2(pt.vq_V, pt.vd_V) - math.atan2(pt.iq_A, pt.id_A)
+        cr = ripple_analysis(I_f, m, phi, fe_true, fsw_Hz, vdc, bank, source, modulation, T_ref_C=T_ref_C)
+        out["dc_link"] = {"I_cap_rms_A": cr["I_cap_rms_A"], "P_cap_W": cr["P_cap_W"],
+                          "V_ripple_pp_V": cr["V_ripple_pp_V"], "I_dc_avg_A": cr["I_dc_A"],
+                          "fsw_used_Hz": (cr.get("operating") or {}).get("fsw_used_Hz"),
+                          "assumption": cr.get("assumption")}
+    else:
+        out["dc_link"] = None
+    out["not_evaluated"] = ["NVH / torque ripple orders", "bearing current / common-mode stress",
+                            "exact pulse peak (only the conservative bound)"]
+    return out
+
+
 # --------------------------------------------------------------------------------------------- policy comparison
 
 @dataclass(frozen=True)

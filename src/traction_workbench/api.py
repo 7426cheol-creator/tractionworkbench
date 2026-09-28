@@ -98,7 +98,7 @@ def _limits(body) -> DcSourceLimits:
 def case_from_body(body) -> dict:
     r = body.get("requirement") or {}
     v = r.get("Vdc_V")
-    vq = {"value": v, "unit": "V", "port": "inverter_dc_terminal"}
+    vq = {"value": v, "unit": "V", "port": r.get("Vdc_port") or "inverter_dc_terminal"}
     req = {"id": r.get("id") or "REQ-UI", "text": r.get("text") or "(entered in the UI)",
            "target": {"value": r.get("torque_Nm"), "unit": "N*m", "torque": "shaft"},
            "conditions": {"speed": {"value": r.get("speed_rpm"), "unit": "rpm", "kind": "mechanical"}, "Vdc": vq}}
@@ -114,6 +114,8 @@ def case_from_body(body) -> dict:
         req["band"] = {"value": r.get("band_Nm"), "unit": "N*m"}
     case = {"drive": body.get("drive") or {"builtin": "SYNTH_IPMSM_200KW_REF_V1"}, "requirement": req,
             "analyses": body.get("analyses") or {}}
+    if body.get("source_model"):
+        case["source_model"] = body["source_model"]
     lim = body.get("limits")
     if lim:
         case["scenario"] = {"source_limits": {
@@ -251,6 +253,40 @@ def thermal(body):
     if body.get("torque_Nm") not in (None, ""):
         out["request"] = thermal_duration(d, sc, model, _num(body, "torque_Nm"), _num(body, "duration_s", 10))
     return _jsonable(out)
+
+
+EXAMPLE_THERMAL_CYCLE = {
+    "phases": [{"name": "pulse", "torque_Nm": 450.0, "speed_rpm": 3000.0, "duration_s": 8.0},
+               {"name": "rest", "torque_Nm": 50.0, "speed_rpm": 3000.0, "duration_s": 20.0}],
+    "cycles": 40, "initial": {"kind": "equilibrium_at_coolant"},
+    "feedback": {"enabled": True, "rs_alpha_per_K": 0.00393, "rs_reference_C": 20.0, "rs_valid_C": [-40.0, 250.0],
+                 "rs_basis": "copper resistivity coefficient (declare the measured R_s reference temperature)"},
+    "note": "example duty cycle (declare the target cycle; the thermal model is the project's)",
+}
+
+
+def thermal_cycle(body):
+    """Repeated load (pulse - rest - repeat) from a stated initial thermal state with loss-temperature feedback
+    (review 6198099, priority 1)."""
+    from .extensions.thermal_cycle import Feedback, InitialState, LoadPhase, repeated_load
+    from .models.components import TemperatureDependence
+    b = {**EXAMPLE_THERMAL_CYCLE, **(body or {})}
+    d = _drive(b)
+    sc = Scenario("thermal-cycle", float(b["phases"][0]["speed_rpm"]), _num(b, "Vdc_V", 600.0), _limits(b),
+                  coolant_temp_C=_num(b, "coolant_temp_C", 65.0))
+    model = thermal_model_from_dict(b.get("model"), sc.coolant_temp_C)
+    phases = [LoadPhase(float(p["torque_Nm"]), float(p["speed_rpm"]), float(p["duration_s"]), str(p.get("name", "")))
+              for p in b["phases"]]
+    ini = b.get("initial") or {}
+    init = InitialState(str(ini.get("kind", "equilibrium_at_coolant")), _opt(ini, "torque_Nm"), _opt(ini, "speed_rpm"),
+                        tuple((k, tuple(float(x) for x in v)) for k, v in (ini.get("node_temperatures_C") or {}).items()))
+    fbd = b.get("feedback") or {}
+    law = None
+    if fbd.get("rs_alpha_per_K") not in (None, ""):
+        law = TemperatureDependence(float(fbd["rs_alpha_per_K"]), tuple(fbd.get("rs_valid_C") or (-40.0, 250.0)),
+                                    str(fbd.get("rs_basis") or "declared for this analysis"))
+    fb = Feedback(bool(fbd.get("enabled", True)), law, _opt(fbd, "rs_reference_C"))
+    return _jsonable(repeated_load(d, sc, model, phases, int(b.get("cycles") or 20), init, fb))
 
 
 EXAMPLE_PROTECTION = {
@@ -1240,6 +1276,25 @@ def harmonic_data(hd):
     pairs = lambda key: tuple((float(f), float(w)) for f, w in (hd.get(key) or []))
     return HarmonicLossData(tuple(float(x) for x in hd["f_Hz"]), tuple(float(x) for x in hd["rac_over_rdc"]),
                             pairs("magnetic_hf_loss_bound_W"), str(hd.get("basis", "")), pairs("iron_bound_W"))
+
+
+def pwm_risk_at(drive, scenario, pt, spec: dict | None = None) -> dict:
+    """PWM ripple, lines and DC-link burden at a decision operating point, with the project's controller (fsw,
+    modulation), the declared L_hf / harmonic data / peak limit (the variable-PWM page's example unless given) and
+    the project's DC-link capacitor."""
+    from .extensions.pwm_policy import point_pwm_risk
+    sp = {"L_hf_uH": EXAMPLE_PWM["L_hf_uH"], "fsw_kHz": _CTRL["fsw_kHz"], "modulation": _CTRL["modulation"],
+          "harmonic": EXAMPLE_PWM["harmonic"],
+          "peak_limit_A": (EXAMPLE_PWM.get("pwm_limits") or {}).get("i_peak_incl_ripple_max_A"), **(spec or {})}
+    mod = str(sp.get("modulation", "svpwm"))
+    if mod not in ("svpwm", "spwm"):
+        return {"status": "UNKNOWN", "reason": f"the ripple model supports svpwm / spwm, not {mod}"}
+    bank, source = _ripple_bank(EXAMPLE_RIPPLE)
+    cap = EXAMPLE_RIPPLE["capacitor"]
+    return _jsonable(point_pwm_risk(drive, scenario, pt, float(sp["fsw_kHz"]) * 1e3, float(sp["L_hf_uH"]) * 1e-6, mod,
+                                    harmonic_data(sp.get("harmonic")), bank, source,
+                                    None if cap.get("T_ref_C") in (None, "") else float(cap["T_ref_C"]),
+                                    None if sp.get("peak_limit_A") in (None, "") else float(sp["peak_limit_A"])))
 
 
 def pwm_policies(body):

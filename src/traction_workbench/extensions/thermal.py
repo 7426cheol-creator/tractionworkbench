@@ -15,7 +15,8 @@ Foster (R_i, tau_i) or Cauer (R_i, C_i; converted exactly to Foster), and
 stages may be declared flow-dependent: R_i(Q) = R_i,ref * (Q_ref / Q)^n.
 
 Loss-temperature feedback, changing losses during the transient and
-non-equilibrium initial states are not modelled.  A duration claim is
+non-equilibrium initial states are not modelled here (``thermal_cycle``
+adds repeated loads, hot starts and R_s(T) / T_j feedback on the same nodes).  A duration claim is
 FEASIBLE/INFEASIBLE only when the thermal model is *qualified* for the stated
 question (independent review F07): a ``validated`` flag is not evidence by
 itself - it needs a validation-evidence reference, a declared validity domain
@@ -110,7 +111,8 @@ class CauerNetwork:
         object.__setattr__(self, "R_K_per_W", r)
         object.__setattr__(self, "C_J_per_K", c)
 
-    def to_foster(self) -> FosterNetwork:
+    def modal(self) -> tuple:
+        """(lambda, V, C) of G v = lambda C v with V^T C V = I, columns ordered by increasing tau = 1 / lambda."""
         n = len(self.R_K_per_W)
         G = np.zeros((n, n))
         for i, r in enumerate(self.R_K_per_W):
@@ -122,10 +124,23 @@ class CauerNetwork:
                 G[i + 1, i] -= g
         C = np.diag(self.C_J_per_K)
         lam, V = eigh(G, C)                      # V^T C V = I
-        tau = 1.0 / lam
-        R = V[0, :] ** 2 / lam
-        order = np.argsort(tau)
-        return FosterNetwork(tuple(float(x) for x in R[order]), tuple(float(x) for x in tau[order]))
+        order = np.argsort(1.0 / lam)
+        return lam[order], V[:, order], C
+
+    def to_foster(self) -> FosterNetwork:
+        lam, V, _C = self.modal()
+        return FosterNetwork(tuple(float(x) for x in V[0, :] ** 2 / lam), tuple(float(x) for x in 1.0 / lam))
+
+    def foster_state(self, node_rise_K) -> np.ndarray:
+        """Foster-term states (the to_foster ordering) of PHYSICAL node temperature rises above the fluid: the modal
+        coordinates z = V^T C T, term i = V[0, i] z_i.  A Foster network alone has no physical inner nodes, so a
+        hot start from measured layer temperatures needs this (Cauer) form."""
+        T = np.asarray(node_rise_K, float)
+        if T.shape != (len(self.R_K_per_W),) or not np.all(np.isfinite(T)):
+            raise InputValidationError(f"a Cauer ladder with {len(self.R_K_per_W)} nodes needs that many node "
+                                       f"temperatures (junction first)", field="node_temperatures")
+        lam, V, C = self.modal()
+        return V[0, :] * (V.T @ C @ T)
 
 
 @dataclass(frozen=True)
@@ -135,6 +150,7 @@ class ThermalNode:
     limit_C: float
     loss_share: tuple            # (("inverter", 1/6), ("copper", 0.0), ...)
     station: str | None = None   # coolant-loop station whose fluid temperature is this node's reference
+    cauer: CauerNetwork | None = None   # the declared ladder when entered as Cauer (physical inner nodes)
 
     def __post_init__(self):
         object.__setattr__(self, "limit_C", _finite("limit_C", self.limit_C))

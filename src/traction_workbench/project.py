@@ -892,7 +892,7 @@ TASK_ANALYSIS = {
     "decision": "decision", "requirement_set": "decision", "decision-env": "operating", "explorer": "operating",
     "trajectory": "operating",
     "performance": "operating", "design-sweep": "operating", "design-dom": "operating",
-    "thermal": "thermal_duration", "ftti": "ftti", "safe_state": "safe_state", "discharge": "discharge",
+    "thermal": "thermal_duration", "thermal_cycle": "thermal_duration", "ftti": "ftti", "safe_state": "safe_state", "discharge": "discharge",
     "passive": "discharge", "overvoltage": "discharge", "protection": "protection", "asc": "asc",
     "module": "module_losses", "ripple": "dc_link_ripple", "lifetime": "lifetime",
     "efficiency": "efficiency", "efficiency_map": "efficiency", "efficiency_mission": "efficiency",

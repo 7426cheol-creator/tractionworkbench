@@ -23,8 +23,8 @@ from ...viz import maps as M
 from ...viz import operating as O
 from ...viz import sweeps as SW
 from ..opviews import OperatingViews
-from ..widgets import (ConceptNote, ClaimTree, KeyValueTable, PlotPanel, VerdictBanner, check, error_box, fmt, hint, number,
-                       primary_button)
+from ..widgets import (ConceptNote, ClaimTree, KeyValueTable, PlotPanel, VerdictBanner, check, combo, error_box, fmt, hint,
+                       number, primary_button)
 
 
 def _evaluate_task(progress, case: dict, analyses_curves: list):
@@ -33,6 +33,12 @@ def _evaluate_task(progress, case: dict, analyses_curves: list):
     out = {"record": rec_d, "rec": rec, "case": case_obj, "curves": []}
     progress(0.6, tr("id–iq 지도", "id–iq map"))
     out["views"] = {0: _condition_views(rec, case_obj, 0)}
+    cond = rec.conditions[0]
+    if cond.primary.point is not None:          # PWM consequences at the same operating point (review priority 3)
+        try:
+            out["pwm_risk"] = api.pwm_risk_at(case_obj.drive, cond.scenario, cond.primary.point)
+        except Exception as exc:  # noqa: BLE001 - a screening add-on never hides the decision
+            out["pwm_risk"] = {"status": "ERROR", "reason": str(exc)}
     for i, (param, lo, hi) in enumerate(analyses_curves):
         progress(0.7 + 0.25 * i / max(1, len(analyses_curves)), f"{param}")
         sc = rec.conditions[0].scenario
@@ -41,6 +47,42 @@ def _evaluate_task(progress, case: dict, analyses_curves: list):
                                                         direction=1 if rec.requirement.target_Nm >= 0 else -1))
     progress(1.0, "")
     return out
+
+
+def _pwm_risk_rows(pr: dict) -> list:
+    """PWM consequences at the decision's operating point, fundamental limit and instantaneous peak kept apart."""
+    if pr.get("status") != "EVALUATED":
+        return [(tr("상태", "status"), f"{pr.get('status')}: {pr.get('reason', '')}")]
+    fu, pk, rm = pr["fundamental"], pr["instantaneous_peak"], pr["rms"]
+    rows = [(tr("캐리어", "carrier"), f"{pr['fsw_requested_Hz'] / 1e3:g} kHz " + tr("요청", "requested") + " · "
+             + tr("파형 모델", "waveform") + f" {pr['fsw_waveform_used_Hz'] / 1e3:.4g} kHz ({pr['fsw_error_percent']:+.2g} %) · "
+             f"{pr['modulation']} · m {pr['modulation_index']:.3f} · L_hf {pr['L_hf_H'] * 1e6:g} µH"),
+            (tr("기본파 전류 (정책의 한계)", "fundamental current (the policy's limit)"),
+             f"{fu['i_peak_A']:.4g} A / {fu['limit_A']:.4g} A · {tr('여유', 'margin')} {fu['margin_A']:.4g} A — {fu['meaning']}"),
+            (tr("순간 피크 (보수 상한)", "instantaneous peak (conservative bound)"),
+             f"{pk['bound_A']:.4g} A · " + (f"{tr('선언 피크 한계', 'declared peak limit')} {pk['limit_A']:.4g} A · "
+                                             if pk.get("limit_A") is not None else "")
+             + f"{pk['status']} {pk.get('reason', '')} — {pk['meaning']}"),
+            ("RMS", f"{tr('기본파', 'fundamental')} {rm['fundamental_A']:.4g} A · {tr('리플', 'ripple')} {rm['ripple_A']:.4g} A · "
+                    f"{tr('합', 'total')} {rm['total_A']:.4g} A (+{fmt(rm['added_percent'], 3)} %)"),
+            (tr("주요 선 (상전류)", "dominant lines (phase current)"),
+             " · ".join(f"{ln['f_Hz'] / 1e3:.4g} kHz ({ln['order']:.3g}·f_e) {ln['I_pk_A']:.3g} A" for ln in pr["lines"]))]
+    dl = pr.get("dc_link")
+    if dl:
+        rows.append((tr("DC-link 부담", "DC-link burden"),
+                     f"I_cap {dl['I_cap_rms_A']:.4g} A rms · P_ESR {fmt(dl['P_cap_W'])} W · ΔV {fmt(dl['V_ripple_pp_V'])} V pp · "
+                     f"I_dc {dl['I_dc_avg_A']:.4g} A" + (f" · {dl['assumption']}" if dl.get("assumption") else "")))
+    ml = pr.get("motor_pwm_loss") or {}
+    cu = ml.get("copper") or {}
+    if cu:
+        iv = ml.get("interval_W") or [None, None]
+        rows.append((tr("모터 PWM 손실", "motor PWM loss"),
+                     (f"{tr('동손', 'copper')} {fmt(cu['W'])} W" if cu.get("W") is not None else
+                      f"{tr('동손', 'copper')} ≥ {fmt(cu['lower_bound_W'])} W") + " · Fe+PM "
+                     + (f"≤ {fmt(ml['magnetic_hf_bound_W'])} W" if ml.get("magnetic_hf_bound_W") is not None else "UNKNOWN")
+                     + f" · [{fmt(iv[0])}, {fmt(iv[1]) if iv[1] is not None else '∞'}] W"))
+    rows.append((tr("평가 안 함", "not evaluated"), "; ".join(pr.get("not_evaluated") or [])))
+    return rows
 
 
 def _condition_views(rec, case_obj, idx: int) -> dict:
@@ -99,7 +141,25 @@ class DecisionPage(QWidget):
         self.torque = number(150, -5000, 5000, "N·m", 3, 1.0, tr("축 토크 (+ 구동, − 회생 제동). 요구를 clip하지 않습니다.",
                                                                  "shaft torque (+ motoring, − braking); never clipped"))
         self.speed = number(12000, -30000, 30000, "rpm", 1, 100.0, tr("기계 회전속도", "mechanical speed"))
-        self.vdc = number(600, 1, 2000, "V", 2, 10.0, tr("인버터 DC 단자 전압", "inverter DC terminal voltage"))
+        self.vdc = number(600, 1, 2000, "V", 2, 10.0, tr("인버터 DC 단자 전압 (또는 아래에서 배터리 OCV로 지정)",
+                                                          "inverter DC terminal voltage (or the battery OCV, below)"))
+        self.vdc_kind = combo([(tr("인버터 DC 단자 전압 (보장값 — 강하를 다시 빼지 않음)",
+                                   "inverter DC terminal voltage (guaranteed - no drop subtracted again)"),
+                                "inverter_dc_terminal"),
+                               (tr("배터리 OCV → Thevenin 소스로 단자 전압 계산", "battery OCV → terminal voltage via a "
+                                                                          "Thevenin source"), "battery_ocv")],
+                              "inverter_dc_terminal")
+        self.src_R = number(20.0, 0.0, 10000.0, "mΩ", 2, 1.0, tr("소스 등가 저항 R_eq (SOC·온도에서)",
+                                                                "source equivalent resistance R_eq (at SOC, temperature)"))
+        self.src_basis = QLineEdit(tr("팩 R_eq (SOC·온도·펄스 시간 명시)", "pack R_eq (state SOC, temperature, pulse time)"))
+        self.src_row = QWidget()
+        sr = QHBoxLayout(self.src_row)
+        sr.setContentsMargins(0, 0, 0, 0)
+        sr.addWidget(self.src_R)
+        sr.addWidget(self.src_basis, 1)
+        self.src_row.setVisible(False)
+        self.vdc_kind.currentIndexChanged.connect(
+            lambda *_: self.src_row.setVisible(self.vdc_kind.currentData() == "battery_ocv"))
         self.range_on = check(tr("Vdc 범위 요구", "Vdc range"), False,
                               tr("범위 전체를 요구하면 표본점 통과만으로 PASS가 아닙니다 (SAMPLED_COVERAGE). 단조성 조건(정적 순구동, Vdc "
                                  "무관 손실, 고정 소스 한계)이 성립하면 저전압 끝점으로 범위 전체를 입증합니다.",
@@ -156,6 +216,8 @@ class DecisionPage(QWidget):
         f.addRow(tr("토크", "torque"), self.torque)
         f.addRow(tr("속도", "speed"), self.speed)
         f.addRow("Vdc", self.vdc)
+        f.addRow(tr("Vdc 의미", "Vdc meaning"), self.vdc_kind)
+        f.addRow("R_eq", self.src_row)
         f.addRow("", rr)
         f.addRow(tr("시간", "time"), self.dur_none)
         f.addRow("", dr)
@@ -273,6 +335,11 @@ class DecisionPage(QWidget):
             req["magnet_temp_C"] = self.magnet.value()
         if self.winding_on.isChecked():
             req["winding_temp_C"] = self.winding.value()
+        extra = {}
+        if self.vdc_kind.currentData() == "battery_ocv":
+            req["Vdc_port"] = "battery_ocv"
+            extra["source_model"] = {"kind": "thevenin", "R_eq_mohm": self.src_R.value(),
+                                     "basis": self.src_basis.text().strip()}
         an = {}
         curves = []
         base_v = self.vdc.value()
@@ -292,7 +359,7 @@ class DecisionPage(QWidget):
             an["sizing"] = sizing
         if isinstance(vdc, float) and self.an_size_v.isChecked():
             an["compare_Vdc"] = sorted({base_v, 600.0})
-        body = self.win.state.body(requirement=req, analyses=an)
+        body = self.win.state.body(requirement=req, analyses=an, **extra)
         return api.case_from_body(body), curves
 
     def run(self):
@@ -527,6 +594,11 @@ class DecisionPage(QWidget):
                              fmt(None if s.get("Pdc_W") is None else s["Pdc_W"] / 1e3), fmt(s.get("voltage_margin_V"))))
             t.set_rows(rows)
             self.an_tabs.addTab(t, tr("시나리오 비교", "comparison"))
+        pr = res.get("pwm_risk")
+        if pr:
+            t = KeyValueTable(headers=[tr("항목", "item"), tr("값", "value")])
+            t.set_rows(_pwm_risk_rows(pr))
+            self.an_tabs.addTab(t, tr("PWM 위험 (같은 운전점)", "PWM risk (same point)"))
         if self.an_tabs.count() == 0:
             lab = hint(tr("요청된 추가 분석이 없습니다. 왼쪽 '추가 분석'에서 선택하세요.", "No additional analyses requested."))
             lab.setAlignment(Qt.AlignCenter)

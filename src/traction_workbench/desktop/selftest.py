@@ -67,6 +67,21 @@ def run_self_test(app, out_dir) -> int:
                 check("pdf_report", pdf.is_file() and pdf.stat().st_size > 50_000, f"{pdf.stat().st_size} bytes")
                 page.tabs.setCurrentIndex(0)
 
+        # PWM consequences at the decision point (review priority 3) and a Vdc stated as battery OCV (priority 2)
+        page.presets.setCurrentIndex(0)
+        page.run()
+        pr = (page.result or {}).get("pwm_risk") or {}
+        check("decision:pwm_risk", pr.get("status") == "EVALUATED" and pr["instantaneous_peak"]["bound_A"] >
+              pr["fundamental"]["i_peak_A"] and any("PWM" in page.an_tabs.tabText(i) for i in range(page.an_tabs.count())),
+              pr.get("status"))
+        page.vdc_kind.setCurrentIndex(page.vdc_kind.findData("battery_ocv"))
+        page.src_R.setValue(20.0)
+        page.run()
+        sc_ = ((page.result or {}).get("record") or {}).get("source_coupling") or {}
+        check("decision:battery_ocv", sc_.get("status") == "RESOLVED" and sc_["V_terminal_V"][0] < 600.0
+              and any("battery OCV" in q for q in page.result["record"]["verdict"]["qualifiers"]), sc_.get("status"))
+        page.vdc_kind.setCurrentIndex(page.vdc_kind.findData("inverter_dc_terminal"))
+
         def visit(key, _row, actions, shots):
             win.show_page(key)
             pg = win.pages[key]
@@ -119,10 +134,17 @@ def run_self_test(app, out_dir) -> int:
                      (lambda pg: pg.dc_tabs.setCurrentIndex(2), "15b_safety_overvoltage"),
                      (lambda pg: pg.tabs.setCurrentIndex(2), "16_safety_state")])
         check("safety", all(p._draw is not None for p in (saf.p_ftti, saf.p_dis, saf.p_pas, saf.p_ov, saf.p_safe)))
-        th = visit("thermal", 6, ["run"], [(None, "17_thermal"), (lambda pg: pg.tabs.setCurrentIndex(1), "17b_thermal_network"),
-                                           (lambda pg: pg.tabs.setCurrentIndex(2), "17c_thermal_zth"),
-                                           (lambda pg: pg.tabs.setCurrentIndex(3), "17d_thermal_editor")])
+        th = visit("thermal", 6, ["run"], [(None, "17_thermal"), (lambda pg: pg.tabs.setCurrentIndex(2), "17b_thermal_network"),
+                                           (lambda pg: pg.tabs.setCurrentIndex(3), "17c_thermal_zth"),
+                                           (lambda pg: pg.tabs.setCurrentIndex(4), "17d_thermal_editor")])
         check("thermal", th.plot._draw is not None and "s" in th.headline.text(), th.headline.text())
+        th.run_cycle()                                   # repeated load (review 6198099 priority 1)
+        shot(win, "17e_thermal_repeated_load")
+        cy = th.last_cycle or {}
+        check("thermal:repeated_load", th.p_cyc._draw is not None and (cy.get("periodic") or {}).get("reached")
+              and cy.get("first_limit") is not None and (cy.get("allowed") or {}).get("pulse_duration_s", 0) > 0,
+              (cy.get("claim") or {}).get("status"))
+        th.tabs.setCurrentIndex(0)
         t_ref = th.last["res"]["request"]["time_to_first_limit_s"]
         th.c_flow.setValue(5.0)
         th.run()

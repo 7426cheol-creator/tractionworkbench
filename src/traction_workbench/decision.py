@@ -20,7 +20,7 @@ import numpy as np
 from . import __version__
 from .analysis.rating import RatingEnvelope, duration_claim
 from .identity import content_sha256, implementation
-from .models.components import DriveModel
+from .models.components import DriveModel, RotationalLossModel
 from .models.provenance import FIDELITY_ALLOWED_CLAIMS
 from .requirement import Requirement
 from .scenario import DcSourceLimits, Scenario
@@ -128,10 +128,12 @@ class DecisionRecord:
     analyses: dict = field(default_factory=dict)
     implementation: dict = field(default_factory=dict)
     range_certificates: tuple = ()
+    source_coupling: dict = field(default_factory=dict)
 
     @property
     def layers(self) -> dict:
-        return claim_layers(self.requirement, self.drive, self.conditions, self.verdict, self.range_certificates)
+        return claim_layers(self.requirement, self.drive, self.conditions, self.verdict, self.range_certificates,
+                            self.source_coupling)
 
     def to_dict(self) -> dict:
         return jsonable({
@@ -153,6 +155,7 @@ class DecisionRecord:
             },
             "conditions": [c.to_dict() for c in self.conditions],
             "vdc_range_certificates": list(self.range_certificates),
+            **({"source_coupling": self.source_coupling} if self.source_coupling else {}),
             "limiting_factors": list(self.limiting_factors),
             "next_actions": list(self.next_actions),
             "not_evaluated": list(self.unevaluated),
@@ -202,7 +205,8 @@ def _sub_models(drive: DriveModel) -> list[str]:
     return out
 
 
-def claim_layers(req: Requirement, drive: DriveModel, conditions, verdict: Aggregate, certificates=()) -> dict:
+def claim_layers(req: Requirement, drive: DriveModel, conditions, verdict: Aggregate, certificates=(),
+                 source_coupling: dict | None = None) -> dict:
     """Four separate statements that must not be merged into one boolean.
 
     * mathematical  - the numerical evidence (exact enumeration / certificates / residuals vs sampled search);
@@ -245,6 +249,11 @@ def claim_layers(req: Requirement, drive: DriveModel, conditions, verdict: Aggre
         open_items.append("band requirement: existence of one torque inside the band (not tracking of every torque)")
     if any("/magnet" in cr.scenario.scenario_id for cr in conditions):
         open_items.append("magnet temperature not stated: examined for all flux-map temperatures (for-all)")
+    if source_coupling:
+        src = source_coupling.get("source") or {}
+        open_items.append(f"Vdc stated as battery OCV: judged at the inverter terminal voltage of a declared Thevenin "
+                          f"source (R_eq {1e3 * float(src.get('R_eq_ohm') or 0.0):g} mOhm; {src.get('basis', '')}) - "
+                          f"the source model's own validity (SOC, temperature, current) is part of the answer")
     unconf = sorted({q for cr in conditions if cr.duration is not None for q in cr.duration.qualifiers
                      if q.startswith("applicability to this product")})
     if unconf:
@@ -370,6 +379,10 @@ def vdc_range_certificate(req: Requirement, drive: DriveModel, low: "ConditionRe
         "no inverter loss model" if ls is None else
         f"a0 = {ls.offset_W:g} W, a2 = {ls.ipk2_coeff_W_per_A2:g} W/A^2, valid Vdc "
         f"{'not restricted' if ls.valid_Vdc_V is None else list(ls.valid_Vdc_V)}")
+    rot = drive.motor.rotational_loss
+    chk("speed-only rotational / iron loss (b w + c w|w|; no id/iq-dependent iron loss)",
+        rot is None or isinstance(rot, RotationalLossModel),
+        "an id/iq-dependent iron-loss model would void this argument" if rot is not None else "no rotational loss")
     vb_lo, vb_hi = inv.voltage.command_budget_V(lo), inv.voltage.command_budget_V(hi)
     chk("voltage budget non-decreasing in Vdc", vb_hi >= vb_lo,
         f"{vb_lo:.6g} V at {lo:g} V, {vb_hi:.6g} V at {hi:g} V ((1 - r_v) Vdc / sqrt 3)")
@@ -570,7 +583,10 @@ def _limiting_and_actions(req: Requirement, results: list[ConditionResult], samp
 def evaluate_requirement(req: Requirement, drive: DriveModel, *, scenario: Scenario | None = None,
                          source_limits: DcSourceLimits | None = None, ratings: tuple[RatingEnvelope, ...] = (),
                          settings: NumericalSettings = DEFAULT_SETTINGS, range_samples: int = 5,
-                         with_capability: bool = True) -> DecisionRecord:
+                         with_capability: bool = True, extra_claims: tuple = (),
+                         source_coupling: dict | None = None) -> DecisionRecord:
+    """``extra_claims``: requirement-level claims AND-aggregated with the conditions (e.g. the DC source coupling
+    of an OCV-stated Vdc); ``source_coupling``: the resolution record behind such a claim."""
     vdcs, sampled_v = _condition_points(req, range_samples)
     mags, sampled_t, mag_note = _magnet_points(req, drive, scenario, range_samples)
     sampled = sampled_v or sampled_t
@@ -589,7 +605,7 @@ def evaluate_requirement(req: Requirement, drive: DriveModel, *, scenario: Scena
                   "magnet_temp_C": sc.magnet_temp_C}
         rc, margin, dur, wit_T, wit_sol = _requirement_claim(req, sc, ev, sol, cap, ratings, stated, product)
         results.append(ConditionResult(sc, sol, cap, dur, rc, margin, wit_T, wit_sol))
-    agg = aggregate_and(r.requirement_claim for r in results)
+    agg = aggregate_and([*(r.requirement_claim for r in results), *extra_claims])
     qualifiers = [mag_note] if mag_note else []
     certificates = []
     if sampled_v:                          # a Vdc range: the monotonicity certificate per magnet temperature
@@ -620,6 +636,10 @@ def evaluate_requirement(req: Requirement, drive: DriveModel, *, scenario: Scena
     for r in results:
         for q in r.requirement_claim.qualifiers:
             if q not in qualifiers:
+                qualifiers.append(q)
+    for c in extra_claims:
+        for q in (*c.qualifiers, c.detail):
+            if q and q not in qualifiers:
                 qualifiers.append(q)
     scope = (f"{drive.drive_id} rev {drive.revision} ({drive.fidelity.value}, {drive.provenance.origin.value} data, "
              f"{drive.provenance.validation_status}); minimum-current policy; static fundamental steady state; "
@@ -656,6 +676,10 @@ def evaluate_requirement(req: Requirement, drive: DriveModel, *, scenario: Scena
             "source_limits": None if source_limits is None else content_sha256(source_limits),
             "ratings": [content_sha256(r) for r in ratings], "numerical_settings": content_sha256(settings)},
     }
+    if source_coupling:                    # part of the input identity only when present (other records unchanged)
+        snapshot["source_coupling"] = source_coupling
+    if extra_claims:
+        snapshot["extra_claims"] = [c.to_dict() for c in extra_claims]
     digest = sha256_of(snapshot)
     impl = implementation()
     rid = sha256_of({"input_sha256": digest, "implementation": impl})
@@ -664,7 +688,8 @@ def evaluate_requirement(req: Requirement, drive: DriveModel, *, scenario: Scena
         range_certificates=tuple(certificates),
         verdict=agg, verdict_scope=scope, qualifiers=tuple(qualifiers), limiting_factors=tuple(limiting),
         next_actions=tuple(actions), unevaluated=tuple(unevaluated), assumptions=tuple(assumptions),
-        snapshot=jsonable(snapshot), input_sha256=digest, settings=settings, implementation=dict(impl))
+        snapshot=jsonable(snapshot), input_sha256=digest, settings=settings, implementation=dict(impl),
+        source_coupling=dict(source_coupling or {}))
 
 
 _jsonable = jsonable          # former private name (compatibility)

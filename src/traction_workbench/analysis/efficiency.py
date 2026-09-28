@@ -326,6 +326,30 @@ def inverter_scope(drive) -> dict:
     return {"model": None, "included": [], "excluded": ["inverter loss model missing"]}
 
 
+ROTATIONAL_SCOPE = ("speed-only loss-equivalent torque b*omega + c*omega*|omega| (fundamental iron loss included as "
+                    "declared): it does not follow load, field weakening or PWM harmonics - a separate iron-loss map "
+                    "is never added on top of it (double counting), and an id/iq-dependent iron loss would change "
+                    "the premises of the speed-only torque curve and of the I^2-based DC certificates")
+ROTATIONAL_SCOPE_NO_IRON = ("speed-only loss-equivalent torque b*omega + c*omega*|omega| (mechanical; the iron loss is "
+                            "NOT declared in it and is not evaluated elsewhere at the fundamental)")
+
+
+def loss_sensitivity(boundary: dict, items: list, rel: float = 0.10) -> list:
+    """Efficiency of a DEFINED boundary if each established loss item were ``rel`` larger (same operating point):
+    which loss the efficiency is most sensitive to - an uncertainty indicator, not a correction."""
+    out = []
+    if boundary.get("status") != DEFINED:
+        return out
+    for it in items:
+        if it["W"] is None or it["W"] <= 0:
+            continue
+        iv = hf_eta_interval(boundary, rel * it["W"], rel * it["W"])
+        if iv is not None and iv[0] is not None:
+            out.append({"item": f"{it['boundary']}: {it['item']}", "delta_W": rel * it["W"], "eta": iv[0],
+                        "delta_eta_points": 100.0 * (iv[0] - boundary["eta"])})
+    return sorted(out, key=lambda r: r["delta_eta_points"])
+
+
 def hf_eta_interval(r: dict, lo: float | None, hi: float | None) -> list | None:
     """Efficiency of a DEFINED boundary with an additional internal loss in [lo, hi] (upper None = open) at the same
     operating point: forward p_out / (p_in + x), reverse (|p_in| - x) / |p_out|  ->  [eta_low, eta_high]."""
@@ -358,7 +382,9 @@ def point_ledger(pt, drive, reducer: ReducerModel | None = None, oil_temp_C: flo
     mag = (pwm_hf or {}).get("magnetic_hf_bound_W")
     items = [("inverter", "semiconductor / declared inverter loss", pt.Pinv_W, {}),
              ("motor", "copper (fundamental, 1.5 Rs |i|^2)", pt.Pcu_W, {}),
-             ("motor", "rotational / iron (loss-equivalent torque)", pt.Prot_W, {}),
+             ("motor", "rotational / iron (loss-equivalent torque)", pt.Prot_W,
+              {"scope": ROTATIONAL_SCOPE if getattr(drive.motor, "rotational_loss", None) is None or
+               drive.motor.rotational_loss.includes_iron_loss else ROTATIONAL_SCOPE_NO_IRON}),
              ("motor", "PWM harmonic copper", cu.get("W"),
               {"lower_bound_W": cu.get("lower_bound_W"), "status": cu.get("status", "NOT_EVALUATED"),
                "basis": cu.get("basis", "not evaluated (no declared L_hf / harmonic data)"),
@@ -406,6 +432,9 @@ def point_ledger(pt, drive, reducer: ReducerModel | None = None, oil_temp_C: flo
             "loss_known_subtotal_W": known, "loss_unknown_items": unknown,
             "loss_total_W": known if not unknown else None,
             "loss_interval_W": [lo_total, hi_total],
+            "loss_sensitivity": loss_sensitivity(b["inverter_motor"], [
+                {"boundary": g, "item": n, "W": v} for g, n, v, _e in items
+                if g in ("inverter", "motor") and not n.startswith("PWM")]),
             "pwm_hf": None if pwm_hf is None else {k: pwm_hf.get(k) for k in (
                 "status", "interval_W", "fsw_requested_Hz", "fsw_waveform_used_Hz", "fsw_error_percent", "L_hf_H",
                 "modulation_index", "ripple_rms_A", "magnetic_hf_bound_W", "basis", "reason")},

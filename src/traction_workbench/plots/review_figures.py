@@ -349,3 +349,59 @@ def fig_lifetime(fig, res: dict, title: str | None = None):
     c = d["claim"]
     _note(ax2, f"{c['status']}\n" + c["detail"][:80] + ("…" if len(c["detail"]) > 80 else ""), loc="upper right",
           fontsize=6.8)
+
+
+def fig_thermal_cycle(fig, res: dict, title: str | None = None):
+    """Repeated load: node temperatures over the simulated cycles (pulse phases shaded, limits, first limit) and the
+    peak of every cycle converging to the periodic peak (solved as the fixed point of the cycle map)."""
+    _reset(fig, title)
+    t = S.theme()
+    ax, ax2 = fig.subplots(1, 2, gridspec_kw={"width_ratios": [2.3, 1.0]})
+    tr_ = res["trace"]
+    tt = np.asarray(tr_["t_s"], float)
+    colors = [S.ACCENT, "#bf8700", "#8250df", "#1a7f37", "#cf222e", "#6e7781"]
+    for (t0, t1, k, _c) in tr_["phase_bounds"]:
+        if k == 0:
+            ax.axvspan(t0, t1, color=t["grid"], alpha=0.35, lw=0)
+    per = res.get("periodic") or {}
+    for i, (node, vals) in enumerate(tr_["nodes"].items()):
+        col = colors[i % len(colors)]
+        ax.plot(tt, vals, color=col, lw=1.3, label=node)
+        lim = res["limits_C"][node]
+        ax.axhline(lim, color=col, lw=1.0, ls="--")
+        ax.annotate(tr(f"한계 {lim:g} °C", f"limit {lim:g} °C"), (tt[-1], lim), xytext=(-4, 3),
+                    textcoords="offset points", ha="right", fontsize=7, color=col)
+        pk = (per.get("peak_C") or {}).get(node)
+        if pk is not None:
+            ax.axhline(pk, color=col, lw=0.8, ls=":")
+    fl = res.get("first_limit")
+    if fl:
+        ax.axvline(fl["t_s"], color="#cf222e", lw=1.2)
+        ax.annotate(tr(f"첫 한계 도달 {fl['t_s']:.3g} s ({fl['cycle']}번째 주기)",
+                       f"first limit at {fl['t_s']:.3g} s (cycle {fl['cycle']})"), (fl["t_s"], ax.get_ylim()[0]),
+                    xytext=(4, 8), textcoords="offset points", fontsize=7.5, color="#cf222e")
+    ax.set_xlabel(tr("시간 [s] (음영: 펄스)", "time [s] (shaded: pulse)"))
+    ax.set_ylabel(tr("노드 온도 [°C]", "node temperature [°C]"))
+    ax.grid(True, alpha=0.35)
+    ax.legend(fontsize=7, loc="lower right")
+    ax.set_title(tr(f"반복 부하 {res['cycles_run']}주기 · 시작 {res['initial']['kind']} (점선 = 주기 정상상태 최고온도)",
+                    f"repeated load, {res['cycles_run']} cycles · start {res['initial']['kind']} "
+                    f"(dotted = periodic peak)"), fontsize=9)
+    # per-cycle peaks vs the periodic peak
+    pc = res.get("per_cycle") or []
+    n = np.arange(1, len(pc) + 1)
+    for i, node in enumerate(tr_["nodes"]):
+        col = colors[i % len(colors)]
+        ax2.plot(n, [c["peak_C"][node] for c in pc], marker="o", ms=2.5, lw=1.0, color=col)
+        if (per.get("peak_C") or {}).get(node) is not None:
+            ax2.axhline(per["peak_C"][node], color=col, ls=":", lw=1.0)
+        ax2.axhline(res["limits_C"][node], color=col, ls="--", lw=0.9)
+    ax2.set_xlabel(tr("주기", "cycle"))
+    ax2.set_ylabel(tr("주기 최고온도 [°C]", "cycle peak [°C]"))
+    ax2.grid(True, alpha=0.35)
+    gov = per.get("governing_node")
+    txt = tr("주기 정상상태: ", "periodic cycle: ") + (
+        (f"{gov} · " + tr("여유", "margin") + f" {per['margin_K'][gov]:.3g} K") if gov else tr("없음", "none"))
+    _note(ax2, txt, loc="lower right", fontsize=6.8)
+    ax2.set_title(tr("주기별 최고온도 → 주기 정상상태 (고정점)", "peak per cycle → periodic cycle (fixed point)"), fontsize=9)
+    return fig

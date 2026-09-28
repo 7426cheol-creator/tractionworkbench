@@ -6,17 +6,18 @@ import math
 
 import numpy as np
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import (QFormLayout, QGroupBox, QLabel, QScrollArea, QSplitter, QTabWidget,
+from PySide6.QtWidgets import (QFormLayout, QGroupBox, QLabel, QPlainTextEdit, QScrollArea, QSplitter, QTabWidget,
                                QVBoxLayout, QWidget)
 
 from ... import api
 from ...extensions.coolant import eg_water_properties
 from ...i18n import tr
 from ...plots import figures as F
+from ...plots import review_figures as RF
 from ...plots import schematics as SC
 from ...viz import safety as SF
 from ..thermal_editor import ThermalModelEditor
-from ..widgets import (ConceptNote, KeyValueTable, PlotPanel, check, combo, error_box, fmt, hint, number,
+from ..widgets import (ConceptNote, KeyValueTable, PlotPanel, check, combo, error_box, fmt, hint, integer, number,
                        primary_button)
 
 DURATIONS = [round(float(x), 4) for x in np.geomspace(0.1, 3000, 21)] + ["inf"]
@@ -30,13 +31,18 @@ def note_thermal():
               "기본값은 에틸렌글리콜:물 = 50:50(부피) 일반 물성(근사)이며 공급사 값으로 바꿀 수 있습니다.<br>"
               "<b>Foster</b>는 데이터시트의 r_i, τ_i를 그대로 쓰는 곡선 맞춤(단 사이 절점은 물리 온도 아님), "
               "<b>Cauer</b>는 층별 R_i, C_i(접합부→냉각수)이며 계산 전에 정확히 Foster로 변환합니다.<br>"
-              "검증되지 않은 열모델은 스크리닝 추정이며 지속시간 판정은 UNKNOWN으로 남습니다. 손실–온도 피드백은 없습니다.",
+              "검증되지 않은 열모델은 스크리닝 추정이며 지속시간 판정은 UNKNOWN으로 남습니다. 위 지속시간 계산은 일정 손실·냉간 시작의 "
+              "스텝 응답이고, <b>반복 부하</b>는 펄스–휴지 반복, 고온 시작(예부하 정상상태 또는 Cauer 노드 온도), R_s(T)·모듈 T_j "
+              "손실 피드백을 포함합니다(주기 정상상태는 주기 사상의 고정점으로 정확히 구함).",
               "<b>Thermal screening</b>: operating-point losses heat each node: T(t) = T_coolant,ref + P·Z_th(t), "
               "Z_th(t) = Σ R_i(1 − e<sup>−t/τ_i</sup>).<br><b>Coolant</b>: ṁ = ρ·Q, capacity rate ṁ·c_p [W/K]; the coolant "
               "picks up each station's heat in loop order (ΔT_k = P_k/(ṁ·c_p)) and a node references its station's inlet, "
               "mean or outlet temperature. Defaults are generic 50/50 (vol) ethylene-glycol/water properties (approximate).<br>"
               "<b>Foster</b> uses datasheet r_i, τ_i (inner nodes not physical); <b>Cauer</b> uses layer R_i, C_i and is "
-              "converted exactly to Foster.<br>Unvalidated models give screening estimates; the duration claim stays UNKNOWN.")
+              "converted exactly to Foster.<br>Unvalidated models give screening estimates; the duration claim stays UNKNOWN. "
+              "The duration result above is a constant-loss step response from a cold start; the <b>repeated load</b> "
+              "covers pulse-rest repetition, hot starts (steady state of a preload or Cauer node temperatures) and "
+              "R_s(T) / module T_j loss feedback (the periodic cycle solved exactly as the fixed point of the cycle map).")
 
 
 def _task(progress, body, spec):
@@ -58,6 +64,7 @@ class ThermalPage(QWidget):
         super().__init__()
         self.win = win
         self.last = None
+        self.last_cycle = None
         split = QSplitter(Qt.Horizontal)
         form = QWidget()
         v = QVBoxLayout(form)
@@ -70,8 +77,9 @@ class ThermalPage(QWidget):
         self.dur = number(10, 0.01, 1e6, "s", 2, 1)
         self.init = combo([(tr("냉각수 온도 평형에서 시작 (모델링된 유일한 시작)", "start at equilibrium with the coolant "
                                "(the only modelled start)"), "equilibrium_at_coolant"),
-                           (tr("고온 시작 / 이전 부하 직후 (모델 밖 → UNKNOWN)", "hot start / right after a previous load "
-                               "(outside the model → UNKNOWN)"), "hot_start_after_load"),
+                           (tr("고온 시작 / 이전 부하 직후 (이 계산 밖 → UNKNOWN; 아래 '반복 부하'에서 계산)",
+                               "hot start / right after a previous load (outside this calculation → UNKNOWN; see "
+                               "'repeated load' below)"), "hot_start_after_load"),
                            (tr("미선언 (UNKNOWN)", "not stated (UNKNOWN)"), "")], "equilibrium_at_coolant")
         self.init.setToolTip(tr("지속시간 판정은 초기 열 상태에 의존합니다. 선언하지 않거나 모델이 표현하지 못하는 시작 상태는 "
                                 "냉간 시작으로 가정하지 않고 UNKNOWN입니다.",
@@ -87,6 +95,7 @@ class ThermalPage(QWidget):
         v.addWidget(self.run_btn)
         v.addWidget(hint(tr("열 회로망(노드·단)은 오른쪽 '열 모델 편집' 탭에서 표로 입력합니다.",
                             "Edit the thermal networks (nodes, stages) in the 'thermal model' tab on the right.")))
+        v.addWidget(self._cycle_box())
         v.addWidget(ConceptNote(note_thermal()))
         v.addStretch(1)
         sc = QScrollArea()
@@ -114,6 +123,17 @@ class ThermalPage(QWidget):
         self.editor.reset_source = lambda: self.win.state.example("THERMAL")
         self.editor.load(self.win.state.example("THERMAL"))
         self.tabs.addTab(res, tr("결과", "results"))
+        cyc = QWidget()
+        cv = QVBoxLayout(cyc)
+        cv.setContentsMargins(0, 0, 0, 0)
+        self.p_cyc = PlotPanel()
+        self.t_cyc = KeyValueTable(headers=[tr("항목", "item"), tr("값", "value")])
+        cv.addWidget(self.p_cyc, 3)
+        cv.addWidget(self.t_cyc, 2)
+        self.p_cyc.placeholder(tr("왼쪽 '반복 부하 · 고온 시작'에서 계산하세요.", "Compute from 'repeated load · hot start' on "
+                                                                          "the left."))
+        self.cyc_tab = cyc
+        self.tabs.addTab(cyc, tr("반복 부하", "repeated load"))
         net_scroll = QScrollArea()
         net_scroll.setWidgetResizable(True)
         net_scroll.setWidget(self.p_net)
@@ -133,6 +153,146 @@ class ThermalPage(QWidget):
         self.editor.changed.connect(self._schedule)
         self._apply_coolant_spec(self.editor.coolant_spec)
         self._refresh_diagrams()
+
+    # ------------------------------------------------------------------ repeated load
+    def _cycle_box(self):
+        ex = api.EXAMPLE_THERMAL_CYCLE
+        ph, fb = ex["phases"], ex["feedback"]
+        g = QGroupBox(tr("반복 부하 · 고온 시작", "repeated load · hot start"))
+        f = QFormLayout(g)
+        self.cy_T = number(ph[0]["torque_Nm"], -5000, 5000, "N·m", 1, 5)
+        self.cy_d = number(ph[0]["duration_s"], 0.01, 1e5, "s", 2, 1)
+        self.cy_rT = number(ph[1]["torque_Nm"], -5000, 5000, "N·m", 1, 5)
+        self.cy_rd = number(ph[1]["duration_s"], 0.01, 1e6, "s", 2, 1)
+        self.cy_n = integer(ex["cycles"], 1, 500, tr("주기", "cycles"))
+        self.cy_init = combo([(tr("냉각수 평형 (냉간)", "equilibrium at the coolant (cold)"), "equilibrium_at_coolant"),
+                              (tr("예부하 정상상태 (고온 시작)", "steady state of a preload (hot start)"), "steady_state_at"),
+                              (tr("노드 온도 입력 (Cauer만)", "node temperatures (Cauer only)"), "node_temperatures")],
+                             "equilibrium_at_coolant")
+        self.cy_pre = number(150, -5000, 5000, "N·m", 1, 5)
+        self.cy_nodes = QPlainTextEdit()
+        self.cy_nodes.setPlaceholderText(tr("노드 id: T1, T2, … (접합부부터, Cauer 노드)\n예) stator winding (hot spot): 120, 110, 95",
+                                            "node id: T1, T2, … (junction first, Cauer nodes)\ne.g. stator winding (hot "
+                                            "spot): 120, 110, 95"))
+        self.cy_nodes.setFixedHeight(58)
+        self.cy_fb = check(tr("손실–온도 피드백 (R_s(T), 모듈 T_j)", "loss-temperature feedback (R_s(T), module T_j)"), True)
+        self.cy_rs = check(tr("R_s(T) 법칙 선언 (드라이브에 없을 때)", "declare an R_s(T) law (when the drive has none)"), True,
+                           tr("드라이브에 R_s 온도 법칙이 없으면 이 분석에서만 쓰는 선언입니다. 공급된 R_s의 기준 온도를 적으세요.",
+                              "Used only for this analysis when the drive has no R_s temperature law; state the temperature "
+                              "the supplied R_s refers to."))
+        self.cy_alpha = number(fb["rs_alpha_per_K"], 0.0, 0.02, "/K", 5, 0.0001)
+        self.cy_ref = number(fb["rs_reference_C"], -40, 200, "°C", 1, 1)
+        for lab, w in ((tr("펄스 토크", "pulse torque"), self.cy_T), (tr("펄스 시간", "pulse time"), self.cy_d),
+                       (tr("휴지 토크", "rest torque"), self.cy_rT), (tr("휴지 시간", "rest time"), self.cy_rd),
+                       (tr("반복", "repeat"), self.cy_n), (tr("시작 상태", "initial state"), self.cy_init),
+                       (tr("예부하 토크", "preload torque"), self.cy_pre), (tr("노드 온도", "node temperatures"), self.cy_nodes)):
+            f.addRow(lab, w)
+        f.addRow(self.cy_fb)
+        f.addRow(self.cy_rs)
+        f.addRow(tr("R_s 온도계수", "R_s coefficient"), self.cy_alpha)
+        f.addRow(tr("R_s 기준 온도", "R_s reference"), self.cy_ref)
+        self.cy_btn = primary_button(tr("반복 부하 계산", "compute repeated load"))
+        self.cy_btn.clicked.connect(self.run_cycle)
+        f.addRow(self.cy_btn)
+        f.addRow(hint(tr("속도·Vdc·냉각수는 위 운전 조건을 씁니다. Foster 노드의 내부 상태는 물리 층 온도가 아니므로 노드 온도 "
+                         "시작은 Cauer로 입력한 노드만 가능합니다.",
+                         "Speed, Vdc and coolant come from the operating condition above. A Foster node's inner states are "
+                         "not layer temperatures: a start from node temperatures needs Cauer-entered nodes.")))
+        return g
+
+    def _node_temps(self) -> dict:
+        out = {}
+        for n, line in enumerate(self.cy_nodes.toPlainText().splitlines(), start=1):
+            line = line.strip()
+            if not line:
+                continue
+            if ":" not in line:
+                raise ValueError(tr(f"{n}행: '노드 id: T1, T2, …' 형식", f"line {n}: use 'node id: T1, T2, …'"))
+            name, vals = line.rsplit(":", 1)
+            out[name.strip()] = [float(x) for x in vals.replace(";", ",").split(",") if x.strip()]
+        return out
+
+    def cycle_body(self) -> dict:
+        spec = self.full_spec()
+        kind = self.cy_init.currentData()
+        init = {"kind": kind}
+        if kind == "steady_state_at":
+            init.update(torque_Nm=self.cy_pre.value(), speed_rpm=self.n.value())
+        elif kind == "node_temperatures":
+            init["node_temperatures_C"] = self._node_temps()
+        fb = {"enabled": self.cy_fb.isChecked()}
+        if self.cy_rs.isChecked():
+            fb.update(rs_alpha_per_K=self.cy_alpha.value(), rs_reference_C=self.cy_ref.value(),
+                      rs_valid_C=[-40.0, 250.0], rs_basis="declared on the thermal page for this analysis")
+        return self.win.state.body(
+            Vdc_V=self.vdc.value(), coolant_temp_C=self.c_in.value(), model=spec, cycles=self.cy_n.value(),
+            phases=[{"name": "pulse", "torque_Nm": self.cy_T.value(), "speed_rpm": self.n.value(),
+                     "duration_s": self.cy_d.value()},
+                    {"name": "rest", "torque_Nm": self.cy_rT.value(), "speed_rpm": self.n.value(),
+                     "duration_s": self.cy_rd.value()}],
+            initial=init, feedback=fb)
+
+    def run_cycle(self):
+        try:
+            body = self.cycle_body()
+            api.thermal_model_from_dict(body["model"], self.c_in.value())
+        except Exception as exc:  # noqa: BLE001
+            error_box(self, tr("입력 오류", "input error"), str(exc))
+            return
+        self.cy_btn.setEnabled(False)
+        self.win.runner.run("thermal_cycle", tr("반복 부하", "repeated load"), lambda progress, b: api.thermal_cycle(b),
+                            self._show_cycle, body, on_error=self._cycle_err)
+
+    def _cycle_err(self, msg, tb):
+        self.cy_btn.setEnabled(True)
+        error_box(self, tr("계산 실패", "failed"), msg, tb)
+
+    def _show_cycle(self, res):
+        self.cy_btn.setEnabled(True)
+        self.last_cycle = res
+        self.tabs.setCurrentWidget(self.cyc_tab)
+        self.p_cyc.draw(RF.fig_thermal_cycle, res, name="thermal_repeated_load",
+                        csv=lambda r=res: {"t_s": r["trace"]["t_s"], **{f"T_{k}_C": v for k, v in r["trace"]["nodes"].items()}})
+        c = res["claim"]
+        rows = [(tr("판정", "claim"), f"{c['status']} · {', '.join(c.get('reasons') or [])} · "
+                                     f"{'; '.join(c.get('qualifiers') or [])} {c.get('detail', '')}")]
+        fl = res.get("first_limit")
+        rows.append((tr("첫 한계 도달", "first limit"),
+                     tr(f"{fl['t_s']:.4g} s · {fl['cycle']}번째 주기 · {fl['node']}", f"{fl['t_s']:.4g} s · cycle {fl['cycle']} · "
+                                                                              f"{fl['node']}") if fl else
+                     tr(f"{res['cycles_run']}주기 안에 없음", f"none in {res['cycles_run']} cycles")))
+        if res.get("stopped"):
+            st = res["stopped"]
+            rows.append((tr("중단", "stopped"), f"{st['t_s']:.4g} s: {st['reason']}"))
+        per = res.get("periodic") or {}
+        if per.get("peak_C"):
+            rows.append((tr("주기 정상상태 최고온도", "periodic cycle peak"),
+                         " · ".join(f"{k}: {v:.1f} °C ({tr('여유', 'margin')} {per['margin_K'][k]:+.1f} K)"
+                                    for k, v in per["peak_C"].items())))
+            rows.append((tr("지배 노드", "governing node"), f"{per['governing_node']} · "
+                         + (tr("고정점 수렴", "fixed point reached") if per.get("reached") else per.get("note", ""))))
+        al = res.get("allowed") or {}
+        if al:
+            inf = lambda v: "∞" if v in ("Infinity", math.inf) else fmt(v)      # noqa: E731
+            rows.append((tr("허용 펄스 시간 (주기)", "allowed pulse time (periodic)"), f"{inf(al.get('pulse_duration_s'))} s"))
+            rows.append((tr("허용 펄스 토크 (주기)", "allowed pulse torque (periodic)"),
+                         f"{inf(al.get('pulse_torque_Nm'))} N·m · {al.get('pulse_torque_note', '')}"))
+            rows.append((tr("허용 첫 펄스 토크", "allowed first-pulse torque"),
+                         f"{inf(al.get('first_pulse_torque_Nm'))} N·m · {al.get('first_pulse_torque_note', '')}"))
+            rb = al.get("rest_before_repeat_s")
+            rows.append((tr("첫 펄스 후 반복 전 필요 휴지", "rest before repeating after the first pulse"),
+                         f"{inf(rb)} s" if rb is not None else al.get("rest_before_repeat_note", "")))
+            rows.append((tr("주기 유지에 필요한 최소 휴지", "shortest rest for the periodic cycle"),
+                         f"{inf(al.get('periodic_min_rest_s'))} s"))
+            rows.append((tr("허용값 근거", "basis of allowed values"), al.get("basis", "")))
+        fbk = res["feedback"]
+        rows.append((tr("피드백", "feedback"), f"R_s(T): {fbk['rs']} ({fbk['winding_node']}) · T_j: {fbk['module']} "
+                                               f"({fbk['junction_node']}) · " + "; ".join(fbk["notes"])))
+        rows.append((tr("시작 온도", "initial temperatures"),
+                     " · ".join(f"{k}: {v:.1f} °C" for k, v in res["initial"]["temperatures_C"].items())))
+        for a in res["assumptions"]:
+            rows.append((tr("가정", "assumption"), a))
+        self.t_cyc.set_rows(rows)
 
     # ------------------------------------------------------------------ coolant
     def _coolant_box(self):
@@ -335,5 +495,5 @@ class ThermalPage(QWidget):
         self._apply_coolant_spec(self.editor.coolant_spec)
 
     def redraw(self):
-        for p in (self.plot, self.p_net, self.p_zth):
+        for p in (self.plot, self.p_net, self.p_zth, self.p_cyc):
             p.redraw()

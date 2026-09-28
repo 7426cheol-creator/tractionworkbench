@@ -271,6 +271,13 @@ class EfficiencyPage(QWidget):
                              f" ({tr('파형', 'waveform')} {fmt(hf['fsw_waveform_used_Hz'] / 1e3)} kHz) · m "
                              f"{fmt(hf['modulation_index'], 4)} · {hf['basis']}"))
             rows.append((tr("미상 손실 항", "unknown loss items"), ", ".join(led["loss_unknown_items"]) or tr("없음", "none")))
+            sens = led.get("loss_sensitivity") or []
+            if sens:
+                rows.append((tr("손실 민감도 (각 항 +10%, 인버터+모터 η)", "loss sensitivity (each item +10 %, inverter+motor η)"),
+                             " · ".join(f"{x['item']}: {x['delta_eta_points']:+.3f} %p" for x in sens)))
+            rot = next((i for i in led["loss_items"] if i["item"].startswith("rotational")), None)
+            if rot and rot.get("scope"):
+                rows.append((tr("회전·철손 항의 범위", "scope of the rotational / iron item"), rot["scope"]))
             for k, val in (led.get("aux_metrics") or {}).items():
                 rows.append((k, f"{100 * val:.3f}%"))
             sc = led["inverter_scope"]

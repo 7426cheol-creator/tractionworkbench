@@ -117,6 +117,7 @@ PAGE_INFO = {
 TASK_PAGE = {"decision": "decision", "decision-env": "decision", "requirement_set": "requirement_set",
              "explorer": "explorer", "trajectory": "trajectory",
              "performance": "performance", "design-sweep": "design", "design-dom": "design", "thermal": "thermal",
+             "thermal_cycle": "thermal",
              "protection": "protection", "asc": "protection", "module": "power", "ripple": "power",
              "lifetime": "power", "efficiency": "efficiency", "efficiency_map": "efficiency",
              "efficiency_mission": "efficiency", "module_compare": "efficiency", "pwm_policies": "pwm_driveline",
