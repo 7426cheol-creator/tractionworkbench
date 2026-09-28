@@ -1,6 +1,6 @@
 # Verification Report — Traction Workbench
 
-자동 생성: `python verification/make_report.py` · software 0.3.0 · commit `80b6e7c` · 2026-09-28 · Python 3.11.15, NumPy 2.4.6, SciPy 1.17.1
+자동 생성: `python verification/make_report.py` · software 0.4.0 · commit `b4d8472` · 2026-09-28 · Python 3.11.15, NumPy 2.4.6, SciPy 1.17.1
 
 > 범위: 합성(synthetic) 참조 fixture에 대한 검증(verification)입니다. 하드웨어·공급사 데이터·외부 시뮬레이터에 대한 validation은 수행하지 않았습니다. 수치 자릿수는 회귀 검산용이며 실제 제품 정확도가 아닙니다.
 
@@ -9,10 +9,10 @@
 | 항목 | 결과 |
 |---|---|
 | 참조 패키지 무결성 (manifest SHA-256, 10 files) | OK |
-| 독립 fixture 검산 (production 코드 미사용) | 136/136 pass (29 s) |
+| 독립 fixture 검산 (production 코드 미사용) | 136/136 pass (31 s) |
 | Production vs golden acceptance | 21/21 pass |
-| pytest | 488 passed, 2 warnings in 183.86s (0:03:03) (186 s) |
-| 데스크톱 앱 self-test (headless, `twb selftest`) | 50/50 pass (160 s) |
+| pytest | 628 passed, 2 warnings in 249.19s (0:04:09) (251 s) |
+| 데스크톱 앱 self-test (headless, `twb selftest`) | 54/54 pass (157 s) |
 
 ## 2. 독립 fixture 검산 (`verification/independent_fixture_check.py`)
 
@@ -76,7 +76,7 @@ PASS  inverse:I10_STANDSTILL_TORQUE:golden                             |did|=5.5
 |---|---|---|
 | decision:ts012_600 | PASS | verdict PASS, expected PASS |
 | decision:ts012_450 | PASS | verdict FAIL, expected FAIL |
-| pdf_report | PASS | 129769 bytes |
+| pdf_report | PASS | 132208 bytes |
 | decision:ts012_10s | PASS | verdict UNKNOWN, expected UNKNOWN |
 | decision:regen_80 | PASS | verdict PASS, expected PASS |
 | decision:regen_100 | PASS | verdict FAIL, expected FAIL |
@@ -91,7 +91,7 @@ PASS  inverse:I10_STANDSTILL_TORQUE:golden                             |did|=5.5
 | thermal | PASS | 냉각수 입구 65 °C (유량 10 L/min, EG 50%)에서 450 N·m는 약 <b>4.24 s</b> 유지 가능, 이후 <b>426 N·m</b> (연속)<br><span style='font-size:9p |
 | thermal:coolant_flow | PASS | 10 L/min 4.239895719475726 s, 5 L/min 1.4845071749499539 s |
 | schematics | PASS |  |
-| protection:ov | PASS | UNKNOWN ['PROT-01', 'PROT-04', 'PROT-02', 'PROT-03', 'PROT-05', 'PROT-06', 'PROT-07', 'PROT-08', 'PROT-09'] |
+| protection:ov | PASS | INFEASIBLE ['PROT-01', 'PROT-04', 'PROT-02', 'PROT-03', 'PROT-05', 'PROT-06', 'PROT-07', 'PROT-08', 'PROT-09'] |
 | protection:ot | PASS |  |
 | protection:asc | PASS | screening indicates the requirement(s) ASC-RMS are exceeded - confirm with a qualified nonlinear fault-domain model befo |
 | power:module | PASS |  |
@@ -104,23 +104,27 @@ PASS  inverse:I10_STANDSTILL_TORQUE:golden                             |did|=5.5
 | hev:crank | PASS |  |
 | hev:rejection | PASS |  |
 | hev:planetary | PASS |  |
-| emi:screening | PASS | SCREENING - predicted exceedance up to 68.2 dB in 157 of 160 grid points |
+| emi:screening | PASS | SCREENING - predicted exceedance up to 68.9 dB at 3.819 MHz (exact over the covered band) |
 | emi:oew_cm | PASS |  |
 | efficiency:five_boundaries | PASS | {'inverter': 'DEFINED', 'motor': 'DEFINED', 'inverter_motor': 'DEFINED', 'reducer': 'DEFINED', 'edrive': 'DEFINED'} |
 | efficiency:maps | PASS |  |
 | efficiency:mission | PASS |  |
 | efficiency:module_ab | PASS | ['B_LOWER_LOSS', 'B_LOWER_LOSS', 'B_LOWER_LOSS', 'B_LOWER_LOSS'] |
-| pwm:policies | PASS | {'fixed 10 kHz': [], 'light-load 8 kHz': [], 'thermal fallback 6 kHz': ['current-loop phase margin 44.1 vs limit 45']} |
+| pwm:policies | PASS | {'fixed 10 kHz': [], 'light-load 8 kHz': [], 'thermal fallback 6 kHz': ['current-loop phase margin 36.33 vs limit 45']} |
 | pwm:transition | PASS |  |
 | pwm:ripple | PASS |  |
-| pwm:sampling_transition | PASS | {'declared': 0.0, 'bumpless (volts, Ki*Ts remapped)': 0.0, 'error-sum integrator, Ki*Ts remapped': 82.3696710370678, 'in |
-| antijerk:variants | PASS | {'off': 'INFEASIBLE', 'shaping': 'INFEASIBLE', 'feedback': 'INFEASIBLE', 'combined': 'FEASIBLE'} |
+| pwm:sampling_transition | PASS | {'declared': 0.0, 'bumpless (volts, Ki*Ts remapped)': 0.0, 'error-sum integrator, Ki*Ts remapped': 90.93442529058187, 'i |
+| antijerk:variants | PASS | {'off': 'INFEASIBLE', 'shaping': 'INFEASIBLE', 'feedback': 'INFEASIBLE', 'combined': 'INFEASIBLE'} |
 | antijerk:stability | PASS |  |
 | machine:trade | PASS | {'ref': 'UGO back-EMF', 'N-10%': 'high-speed torque @ min Vdc', 'N+10%': 'UGO back-EMF', 'L+20%': 'UGO back-EMF', 'PM-10 |
 | machine:winding | PASS | 0.9330127018922193 |
 | machine:k_turns_to_trade | PASS |  |
 | machine:sizing | PASS |  |
-| acceptance | PASS | <span style='color:#1a7f37; font-weight:600'>21/21 PASS · manifest OK</span> · 1.24 s · verification against synthetic f |
+| project:identity | PASS | OK |
+| project:usage | PASS | ['asc', 'concept_sizing', 'decision', 'decision-env', 'design-dom', 'design-sweep', 'discharge', 'driveline', 'driveline |
+| project:switch | PASS | <b>stale</b> — 결과 계산 후 프로젝트가 바뀌었습니다 (emi: controller; emi_oew: controller): 다시 계산하세요 |
+| project:restore | PASS |  |
+| acceptance | PASS | <span style='color:#1a7f37; font-weight:600'>21/21 PASS · manifest OK</span> · 1.09 s · verification against synthetic f |
 | exchange:package | PASS |  |
 | decision:flux_map | PASS | UNKNOWN |
 | no_error_dialogs | PASS |  |
