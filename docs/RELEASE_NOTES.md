@@ -145,7 +145,7 @@ placeholder에서 비활성인 그림 버튼, 삼키지 않는 내보내기 오�
 - **가변 PWM**: 캐리어·이벤트율·샘플/갱신율·전기 주파수·펄스 비 분리, 인과적 fsw 스케줄(첫 일치 규칙, 히스테리시스, dwell, 보호 선점,
   fallback), 지연 원장(필터 + 갱신 + 변조기 비율, deadline 미스는 위반), PI 이득 매핑(연속 vs 고정 이산)과 전류 루프 위상 여유, RL 리플(엣지 사이
   정확 적분 = 엣지 합 스펙트럼), 최소 펄스, 카운터 수준 up-down 타이머(shadow vs 즉시 기록)와 gate event 검사, 고조파 동손 3ΣI²R_ac와
-  철손 상한의 구간 비교, Pareto(“평가한 후보 중 최선”).
+  선언된 Fe+PM 고주파 손실 **상한**의 구간 비교. PWM 동손 미확립 시 R_dc 하한은 유지하며, Pareto의 에너지 축은 확립된 inverter+PWM Cu만 사용합니다(“평가한 후보 중 최선”).
 - **Anti-jerk·능동 감쇠**: 기어비로 환산한 2관성 ROM(이벤트 사이 행렬지수 정확 적분), 성형(rate·prefilter·ZV)과 피드백(상대속도·HPF),
   ZOH + 분수 지연(modified z-transform), 연속 지연 교차(Newton 연속), 중재 후 클리핑, 긴급 감소는 comfort 필터 우회, 백래시 통과 → UNKNOWN.
 - **교환 패키지** (`twb exchange`, 검증 페이지): MathWorks 이식·도구 간 parity용 규약(포트 부호, 효율 경계, 손실 소유권, PWM, 드라이브라인 좌표),
