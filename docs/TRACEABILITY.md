@@ -121,7 +121,7 @@
 | §4.4 | 샘플 유효창 (인라인 / 레그 션트 / DC-link 단일 션트: settle·aperture·데드타임·엣지 잡음), 무효 샘플의 유지·예측 나이와 오차 한계, 채널 skew | `SensingConfig`, `sampling_validity` (정지 부근은 무효 각이 지속 → 나이 무한) | 단일 션트 창 = SVPWM 활성 벡터 시간 폐형식 (2e-20 s) | implemented (선언된 타이밍 기반 screening) |
 | §4.4 | 전환 과도: 이득 매핑·적분기 저장(전압 / 오차 합)·리셋·포화, 선언 지연 | `transition_transient`, 정책 비교의 각 fsw 변경 재생 | 점프 = (Ts_to/Ts_from − 1)·v_ss, 리셋 = −v_ss 정확 | implemented (한 축, 일정 운전점) |
 | §4.4 | 임계 채터: 측정 잡음 p-p ≥ 히스테리시스 → 위반, 잡음 미선언 → 미검증 | `chatter_risk` | 채터 테스트 | implemented |
-| §4.5 | 필수 위반은 효율로 상쇄 금지, Pareto, '평가 후보 중 최선'; 요구 미확립 구간은 UNKNOWN (위반과 구분) | `evaluate_policies` (status ADMISSIBLE / VIOLATION / UNKNOWN) | 정책 테스트 (미선언 DC 한계 → UNKNOWN) | implemented |
+| §4.5 | 필수 위반은 효율로 상쇄 금지. Pareto의 에너지 축은 확립된 경우 inverter+PWM Cu이며 Fe+PM 상한은 추정값처럼 목적함수에 넣지 않음; 에너지 축 미확립 시 해당 축 자체를 제외. 요구 미확립 구간은 UNKNOWN | `evaluate_policies` (status ADMISSIBLE / VIOLATION / UNKNOWN) | 정책 테스트 | implemented |
 | — | 저 펄스 비·과변조·six-step | — | — | 미지원 (명시; 선형 SVPWM만) |
 
 ## 7. Anti-jerk·능동 감쇠 (P1-DAMP)
