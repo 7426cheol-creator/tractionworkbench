@@ -54,7 +54,8 @@ class ProjectPage(QWidget):
                           (tr("다른 이름으로 저장…", "save as…"), self.save_project),
                           (tr("새 개정…", "new revision…"), self.new_revision),
                           (tr("파일과 비교…", "compare with file…"), self.diff_with),
-                          (tr("데이터시트 가져오기…", "import datasheet…"), self.import_datasheet),
+                          (tr("데이터시트 값 입력…", "enter datasheet values…"), self.enter_datasheet),
+                          (tr("데이터시트 파일 가져오기…", "import datasheet file…"), self.import_datasheet),
                           (tr("MathWorks 이식 패키지…", "MathWorks package…"), self.mathworks_package),
                           (tr("내장 합성 프로젝트", "built-in synthetic project"), self.reset_builtin)):
             b = QPushButton(label)
@@ -225,6 +226,17 @@ class ProjectPage(QWidget):
         user - the self-test path."""
         from ..datasheet_dialog import DatasheetDialog
         dlg = DatasheetDialog(self.win, path)
+        if apply:
+            dlg.apply()
+        elif not _selftest():
+            dlg.exec()
+        return dlg
+
+    def enter_datasheet(self, kind: str = "motor", spec: dict | None = None, apply: bool = False):
+        """The datasheet value-entry dialog (representative values typed by hand) on ``kind``'s form; with ``spec``
+        (and ``apply``) it fills (and applies) without waiting for the user - the self-test path."""
+        from ..datasheet_entry_dialog import DatasheetEntryDialog
+        dlg = DatasheetEntryDialog(self.win, kind, spec)
         if apply:
             dlg.apply()
         elif not _selftest():

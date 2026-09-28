@@ -48,6 +48,12 @@ class ModelPage(QWidget):
         b.clicked.connect(self._use_builtin)
         gl.addWidget(self.builtin)
         gl.addWidget(b)
+        b = QPushButton(tr("모터 데이터시트 값 입력…", "enter motor datasheet values…"))
+        b.setToolTip(tr("극수·Ke·R·Ld·Lq·무부하 손실을 데이터시트에서 입력 → 상수 dq(D1) 드라이브 (인버터·운전 영역은 유지)",
+                        "poles, Ke, R, Ld, Lq, no-load loss from the datasheet -> a constant-dq (D1) drive (inverter "
+                        "and domain kept)"))
+        b.clicked.connect(lambda: self.win.pages["project"].enter_datasheet("motor"))
+        gl.addWidget(b)
         b = QPushButton(tr("드라이브 JSON 불러오기… (단위 선언 형식)", "load drive JSON… (declared units)"))
         b.clicked.connect(self._load_drive)
         gl.addWidget(b)

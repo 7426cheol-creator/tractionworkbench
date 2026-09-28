@@ -399,7 +399,9 @@ class PowerPage(QWidget):
         for text, fn in ((tr("JSON 불러오기", "load JSON"), self.load_module_file),
                          (tr("JSON 저장", "save JSON"), self.save_module_file),
                          (tr("프로젝트 값으로 초기화", "reset to the project"),
-                          lambda: self.load_module(self.win.state.example("MODULE")))):
+                          lambda: self.load_module(self.win.state.example("MODULE"))),
+                         (tr("데이터시트 값 입력…", "datasheet values…"),
+                          lambda: self.win.pages["project"].enter_datasheet("module"))):
             b = QPushButton(text)
             b.clicked.connect(fn)
             row.addWidget(b)
@@ -654,6 +656,9 @@ class PowerPage(QWidget):
         self.r_life_basis = QLineEdit(cap.get("life_basis", ""))
         f.addRow(tr("수명 정격 전압", "life rated voltage"), self.r_life_v)
         f.addRow(tr("수명 근거", "life basis"), self.r_life_basis)
+        b = QPushButton(tr("커패시터 데이터시트 값 입력…", "enter capacitor datasheet values…"))
+        b.clicked.connect(lambda: self.win.pages["project"].enter_datasheet("capacitor"))
+        f.addRow(b)
         v.addWidget(g)
         src = ex["source"]
         g = QGroupBox(tr("소스 임피던스 (배터리+하네스)", "source impedance (battery + harness)"))

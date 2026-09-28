@@ -68,9 +68,9 @@ NAV_GROUPS = (
     (lambda: tr("검증", "Verification"), ("verification",)),
 )
 PAGE_INFO = {
-    "project": lambda: tr("한 제품의 제품 데이터(섹션·출처·개정), 일관성 검사, 데이터시트 가져오기, MathWorks 이식 패키지",
-                          "one product's data (sections, provenance, revisions), consistency, datasheet import, "
-                          "MathWorks package"),
+    "project": lambda: tr("한 제품의 제품 데이터(섹션·출처·개정), 일관성 검사, 데이터시트 값 입력·파일 가져오기, MathWorks 이식 "
+                          "패키지", "one product's data (sections, provenance, revisions), consistency, datasheet value "
+                                   "entry and file import, MathWorks package"),
     "model": lambda: tr("드라이브 모델과 DC 소스 한계 선택, 데이터 감사(이 데이터로 할 수 있는 것/없는 것)",
                         "drive model and DC source limits, data audit (what this data can and cannot support)"),
     "decision": lambda: tr("요구(토크·속도·전압·지속시간)를 PASS/FAIL/UNKNOWN으로 판정하고 근거·병목·다음 조치를 보여줍니다",
@@ -306,7 +306,10 @@ class MainWindow(QMainWindow):
         a = QAction(tr("프로젝트 저장…", "Save project…"), self)
         a.triggered.connect(lambda: self.save_project())
         m.addAction(a)
-        a = QAction(tr("데이터시트 가져오기…", "Import datasheet…"), self)
+        a = QAction(tr("데이터시트 값 입력…", "Enter datasheet values…"), self)
+        a.triggered.connect(lambda: self.pages["project"].enter_datasheet())
+        m.addAction(a)
+        a = QAction(tr("데이터시트 파일 가져오기…", "Import datasheet file…"), self)
         a.triggered.connect(lambda: self.pages["project"].import_datasheet())
         m.addAction(a)
         a = QAction(tr("MathWorks 이식 패키지…", "MathWorks transfer package…"), self)
@@ -458,15 +461,16 @@ class MainWindow(QMainWindow):
 
     def page_guide_html(self) -> str:
         labels = {key: label for key, label, _cls in PAGES}
-        parts = [tr("<h3>작업 흐름</h3><ol><li><b>제품 데이터</b>: 프로젝트(한 제품의 데이터)를 확인하고, 필요하면 데이터시트를 "
-                    "가져오거나 새 개정을 만듭니다.</li><li><b>요구 판정</b>: 핵심 요구를 PASS/FAIL/UNKNOWN으로 판정하고 병목을 "
+        parts = [tr("<h3>작업 흐름</h3><ol><li><b>제품 데이터</b>: 프로젝트(한 제품의 데이터)를 확인하고, 필요하면 데이터시트 "
+                    "대표값을 직접 입력하거나(모터·모듈·커패시터·dv/dt) 파일을 가져오고, 새 개정을 만듭니다.</li><li><b>요구 판정</b>: 핵심 요구를 PASS/FAIL/UNKNOWN으로 판정하고 병목을 "
                     "확인합니다.</li><li><b>상세 분석</b>: 전력·열·제어·안전 페이지에서 같은 제품 데이터로 세부 질문을 봅니다. "
                     "결과가 어떤 제품 데이터로 계산됐는지는 페이지 위 배너에 표시되고, 데이터가 바뀌면 stale로 표시됩니다.</li>"
                     "<li><b>이식·검증</b>: 프로젝트 페이지에서 MathWorks 이식 패키지를 만들고, 검증 페이지에서 golden 대비 "
                     "acceptance를 확인합니다.</li></ol><p>UNKNOWN은 실패가 아니라 '증명·근거가 부족함'입니다. 판정을 확정하려면 "
                     "다음 조치에 적힌 데이터나 선언을 보완하세요.</p>",
-                    "<h3>Workflow</h3><ol><li><b>Product data</b>: check the project (one product's data); import a "
-                    "datasheet or make a new revision when needed.</li><li><b>Requirement decision</b>: judge the key "
+                    "<h3>Workflow</h3><ol><li><b>Product data</b>: check the project (one product's data); type representative "
+                    "datasheet values (motor, module, capacitor, dv/dt) or import a datasheet file, and make a new "
+                    "revision when needed.</li><li><b>Requirement decision</b>: judge the key "
                     "requirements PASS/FAIL/UNKNOWN and look at the bottlenecks.</li><li><b>Detailed analyses</b>: the "
                     "power, heat, control and safety pages use the same product data; the banner above each page names "
                     "it and marks results stale when it changes.</li><li><b>Port and verify</b>: build the MathWorks "

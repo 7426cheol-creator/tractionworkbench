@@ -290,6 +290,34 @@ def run_self_test(app, out_dir) -> int:
         else:
             check("datasheet:module", False, "examples/datasheets not found")
         win.state.set_project(builtin_project())
+        # datasheet VALUE ENTRY (representative values typed by hand): each form, filled with its example, builds the
+        # same section as the example spec file; the motor then replaces the project's drive
+        if exd is not None and (exd / "datasheets" / "motor_example.json").is_file():
+            from .. import datasheet as DS
+            from .datasheet_entry_dialog import EXAMPLES
+            ent = pj.enter_datasheet("module")
+            ent.resize(1320, 860)
+            ent.show()
+            same = {}
+            for kind, name in EXAMPLES.items():
+                ent.fill_example(kind)
+                spec, base_dir = DS.load_spec(exd / "datasheets" / name)
+                ref, rres = DS.apply(win.state.project, spec, base_dir)
+                same[kind] = (ent.new_project is not None and ent.new_project.sections[ent.result["section"]].digest
+                              == ref.sections[rres["section"]].digest)
+                if kind in ("module", "motor"):
+                    app.processEvents()
+                    ent.grab().save(str(out / f"18f_datasheet_entry_{kind}.png"))
+            check("datasheet:entry_forms", all(same.values()), same)
+            ent.set_kind("motor")
+            ok = ent.apply()
+            prov = win.state.project.sections["drive"].provenance
+            mdl = visit("model", 7, [], [])
+            check("datasheet:entry_motor", ok and prov["origin"] == "supplier" and win.state.drive.drive_id == "EXMOT-200"
+                  and "EXMOT-200" in mdl.title.text(), win.state.drive.drive_id)
+            win.state.set_project(builtin_project())
+        else:
+            check("datasheet:entry_forms", False, "examples/datasheets not found")
         # MathWorks transfer package: export of the active project; nothing has run on a target yet
         mw_dir = out / "mathworks_package"
         if mw_dir.exists():

@@ -1,0 +1,38 @@
+{
+ "kind": "capacitor",
+ "note": "FORMAT EXAMPLE: characteristic values of a fictitious capacitor typed by hand - not a product; replace with your datasheet",
+ "part": {
+  "manufacturer": "Example Capacitors (fictitious)",
+  "part_number": "EXC-500-900",
+  "revision": "0.1"
+ },
+ "C_uF": 500.0,
+ "ESL_nH": 14.0,
+ "ESR_representative": {
+  "ESR_mohm": 1.7,
+  "f_Hz": 10000.0,
+  "band_Hz": [
+   100.0,
+   1000000.0
+  ],
+  "basis": "synthetic example: ESR taken flat from 100 Hz to 1 MHz - check a real part against its ESR(f) / tan delta figure"
+ },
+ "ESR_table_T_C": 25.0,
+ "rated_voltage_V": 900.0,
+ "T_valid_C": [
+  -40.0,
+  105.0
+ ],
+ "life_hours_table": [
+  [
+   70.0,
+   200000.0
+  ],
+  [
+   85.0,
+   100000.0
+  ]
+ ],
+ "life_voltage_V": 900.0,
+ "life_basis": "datasheet useful life at rated voltage (synthetic example)"
+}

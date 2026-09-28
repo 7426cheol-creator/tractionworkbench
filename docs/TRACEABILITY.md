@@ -265,6 +265,7 @@ EMI·PWM 예시의 데드타임 불일치(1.0 µs vs 손실 1.5 µs — 프로�
 | UX | 그룹 탐색, 화면 안내, 잘리지 않는 입력 패널, 특수값 표시, 오류 표시 | `main_window.py`, `widgets.tidy_inputs` | self-test `guide`, 폭 측정(잘림 0) | implemented |
 | P1-DAMP | 정상 토크 결손 폐형식, 2차 washout, 확장 상태의 샘플 루프 | `extensions/driveline.py` | `test_speed_highpass_steady_deficit_…`, `test_washout_sampled_stability_…` | implemented |
 | P1-A/B | 데이터시트 가져오기 (모듈 곡선·ESR·dv/dt, 외삽 없음, 공급사 provenance) | `datasheet.py`, `desktop/datasheet_dialog.py`, `cli datasheet` | `test_datasheet.py` 8건, self-test `datasheet:module` | implemented (측정 데이터 단계는 missing) |
+| P1-A/B | 데이터시트 대표값 직접 입력 (모터·모듈·커패시터·dv/dt): 선언된 구성 규칙, 규칙마다 기록, 규약 선택 강제, 미입력 거부, 파일 spec과 같은 결과 | `datasheet.representative_curves`·`motor_section`·`ESR_representative`, `desktop/datasheet_entry_dialog.py`, `plots/datasheet_figures.fig_datasheet_motor` | `test_datasheet.py` (기준 기계 재현, 곡선 = 선언 모델, I_max 위 UNKNOWN, ESR 대역 밖 UNKNOWN, 거부 사례), self-test `datasheet:entry_forms`·`datasheet:entry_motor` | implemented |
 | 엔진 | plane을 고를 수 없는 map 시나리오에서 capability가 죽음 | `physics.torque_scale`, `solvers/capability.py` | `test_scenario_that_selects_no_plane_…` | implemented |
 
 ## 13. 비목표 (handoff §15, 추가 명세 비목표)

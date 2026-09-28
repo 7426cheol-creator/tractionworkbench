@@ -14,7 +14,7 @@ from .. import datasheet as DS
 from ..i18n import tr
 from ..plots import datasheet_figures as DF
 from ..project import short
-from .pages.model import examples_dir
+from ..examples import examples_dir
 from .widgets import KeyValueTable, PlotPanel, error_box
 
 
@@ -24,12 +24,13 @@ class DatasheetDialog(QDialog):
         self.win = win
         self.result = None
         self.new_project = None
-        self.setWindowTitle(tr("데이터시트 가져오기", "Import datasheet"))
+        self.setWindowTitle(tr("데이터시트 파일 가져오기", "Import datasheet file"))
         self.resize(1100, 720)
         lay = QVBoxLayout(self)
         row = QHBoxLayout()
-        self.path_label = QLabel(tr("데이터시트 spec(JSON)을 선택하세요 — 모듈 곡선·커패시터·dv/dt",
-                                    "choose a datasheet spec (JSON) - module curves, capacitor, dv/dt"))
+        self.path_label = QLabel(tr("데이터시트 spec(JSON)을 선택하세요 — 모듈 곡선·대표값, 커패시터, dv/dt, 모터",
+                                    "choose a datasheet spec (JSON) - module curves or values, capacitor, dv/dt, "
+                                    "motor"))
         self.path_label.setWordWrap(True)
         row.addWidget(self.path_label, 1)
         for text, fn in ((tr("spec 열기…", "open spec…"), self.choose),
@@ -95,7 +96,15 @@ class DatasheetDialog(QDialog):
         if sec == "module":
             self.plot.draw(DF.fig_datasheet_module, res["data"], name="datasheet_module")
         elif sec == "dc_link":
-            self.plot.draw(DF.fig_datasheet_capacitor, res["data"], name="datasheet_capacitor")
+            er = spec.get("ESR_representative")
+            self.plot.draw(DF.fig_datasheet_capacitor, res["data"], name="datasheet_capacitor",
+                           point=(er["f_Hz"], er["ESR_mohm"]) if er else None)
+        elif sec == "drive":
+            from ..io import drive_from_dict
+            from .datasheet_entry_dialog import motor_preview
+            info, _rows = motor_preview(drive_from_dict(res["data"]),
+                                        float(self.win.state.project.data("dc_source")["Vdc_nominal_V"]))
+            self.plot.draw(DF.fig_datasheet_motor, info, name="datasheet_motor")
         else:
             g = res["data"].get("gate") or {}
             self.plot.placeholder(tr(f"게이트 에지: 상승 {g.get('t_rise_ns', 0):.4g} ns · 하강 {g.get('t_fall_ns', 0):.4g} ns\n{g.get('basis', '')}",

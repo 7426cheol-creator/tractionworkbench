@@ -6,7 +6,15 @@ tabulated datasheet values become PROJECT SECTIONS with units, provenance and fi
 * ``module_section``    - switching energies and on-state curves of a power module, its test conditions and (when
   the datasheet gives it) the junction-to-fluid Foster network of a direct-cooled module;
 * ``capacitor_section`` - the DC-link capacitor: C, ESL, ESR(f), thermal resistance, useful-life table;
-* ``gate_edges``        - the switch-node VOLTAGE edges of the EMI source from the datasheet dv/dt.
+* ``gate_edges``        - the switch-node VOLTAGE edges of the EMI source from the datasheet dv/dt;
+* ``motor_section``     - a constant-parameter (D1) machine from the motor datasheet (pole pairs, Ke / psi_PM, R,
+  Ld, Lq, reference temperatures), in the declared-units form whose parser converts and records every unit.
+
+Values can come as digitized curves or as REPRESENTATIVE values typed from the characteristic tables (V_CE(sat),
+V_F, R_DS(on), E_on / E_off / E_rr at the test current, ESR at one frequency).  A representative value fixes a
+point, not a curve: the curve is built by a DECLARED model (threshold + slope, two points, R_DS(on); E(I) = E_ref
+(I / I_ref)^k) on a declared current range, and each such model is a finding - a single on-state voltage without a
+threshold or a second point is refused rather than completed by a guess.
 
 Rules (the same discipline as the analyses):
 
@@ -188,6 +196,195 @@ def resample_curve(name: str, by_T: dict, unit: str, anchor_zero: bool = False, 
     return curve, findings
 
 
+# -- representative values (characteristic tables typed by hand) ----------------------------------------------
+
+CONDUCTION_MODELS = ("threshold_slope", "two_points", "resistance")
+
+
+def _num(name: str, v, positive: bool = False) -> float:
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        raise InputValidationError(f"{name}: not a number ({v!r})", field=name) from None
+    if not math.isfinite(x) or x < 0 or (positive and x == 0):
+        raise InputValidationError(f"{name}: must be {'> 0' if positive else '>= 0'} and finite", field=name)
+    return x
+
+
+def _per_T(name: str, vals, n: int, positive: bool = False) -> list:
+    """One value per junction temperature (a scalar is accepted for a single temperature)."""
+    if not isinstance(vals, (list, tuple)):
+        vals = [vals]
+    if len(vals) != n:
+        raise InputValidationError(f"{name}: give one value per junction temperature ({n})", field=name)
+    return [_num(name, v, positive) for v in vals]
+
+
+def _fmt(vals, k: float = 1.0) -> str:
+    return " / ".join(f"{x * k:.4g}" for x in vals)
+
+
+def _conduction(name: str, spec: dict | None, temps: list, i_nom: float, i_max: float, source: str) -> tuple:
+    """A conduction curve from characteristic values by the DECLARED model, on [0, i_max].  The models are lines, so
+    two nodes represent them exactly under the engine's linear interpolation."""
+    spec = spec or {}
+    model = spec.get("model")
+    n = len(temps)
+    where = f"representative.{name}"
+    if model == "resistance":
+        r = [x * 1e-3 for x in _per_T(f"{where}.R_mohm", spec.get("R_mohm"), n, positive=True)]
+        v0 = [0.0] * n
+        text = f"v = R i, R = {_fmt(r, 1e3)} mOhm"
+    elif model == "threshold_slope":
+        if spec.get("V0_V") is None:
+            raise InputValidationError(f"{name}: the threshold-slope model needs the threshold V0 (datasheet V_(T0) / "
+                                       "V_CE0 / V_F0) - one on-state voltage alone fixes a point, not the curve",
+                                       field=f"{where}.V0_V")
+        v0 = _per_T(f"{where}.V0_V", spec["V0_V"], n)
+        if spec.get("r_mohm") is not None:
+            r = [x * 1e-3 for x in _per_T(f"{where}.r_mohm", spec["r_mohm"], n, positive=True)]
+            text = f"v = V0 + r i, V0 = {_fmt(v0)} V, r = {_fmt(r, 1e3)} mOhm"
+        elif spec.get("V_nom_V") is not None:
+            vn = _per_T(f"{where}.V_nom_V", spec["V_nom_V"], n, positive=True)
+            r = [(a - b) / i_nom for a, b in zip(vn, v0)]
+            if any(x <= 0 for x in r):
+                raise InputValidationError(f"{name}: the on-state voltage at I_nom must exceed the threshold V0",
+                                           field=f"{where}.V_nom_V")
+            text = (f"v = V0 + r i through V0 = {_fmt(v0)} V and {_fmt(vn)} V at {i_nom:g} A "
+                    f"(r = {_fmt(r, 1e3)} mOhm)")
+        else:
+            raise InputValidationError(f"{name}: with the threshold V0 give the slope r_mohm or the voltage at I_nom "
+                                       "(V_nom_V)", field=f"{where}.r_mohm")
+    elif model == "two_points":
+        cur = spec.get("I_A") or []
+        vv = spec.get("V_V") or []
+        if len(cur) != 2 or len(vv) != 2:
+            raise InputValidationError(f"{name}: two points need I_A [I1, I2] and V_V [[V at I1 per T], [V at I2 per "
+                                       "T]]", field=f"{where}.I_A")
+        i1, i2 = _num(f"{where}.I_A", cur[0]), _num(f"{where}.I_A", cur[1], positive=True)
+        if not i1 < i2:
+            raise InputValidationError(f"{name}: the two currents must differ and increase", field=f"{where}.I_A")
+        va = _per_T(f"{where}.V_V[0]", vv[0], n, positive=True)
+        vb = _per_T(f"{where}.V_V[1]", vv[1], n, positive=True)
+        r = [(b - a) / (i2 - i1) for a, b in zip(va, vb)]
+        v0 = [a - ri * i1 for a, ri in zip(va, r)]
+        if any(x <= 0 for x in r):
+            raise InputValidationError(f"{name}: the voltage must rise between the two points", field=f"{where}.V_V")
+        if any(x < 0 for x in v0):
+            raise InputValidationError(f"{name}: the line through the two points reaches 0 V above 0 A - not an "
+                                       "on-state characteristic (check the points)", field=f"{where}.V_V")
+        text = f"line through ({i1:g} A, {_fmt(va)} V) and ({i2:g} A, {_fmt(vb)} V), V0 = {_fmt(v0)} V"
+    elif model is None and spec.get("V_nom_V") is not None:
+        raise InputValidationError(f"{name}: one on-state voltage fixes one point, not the curve - give the threshold "
+                                   "(V0), two points of the output characteristic or R_DS(on)", field=f"{where}.model")
+    else:
+        raise InputValidationError(f"{name}: conduction model must be one of {CONDUCTION_MODELS}",
+                                   field=f"{where}.model")
+    curve = {"temps_C": list(temps), "currents_A": [0.0, float(i_max)],
+             "values": [[a, a + ri * i_max] for a, ri in zip(v0, r)], "unit": "V", "source": f"{source}: {text}"}
+    return curve, [Finding("NOTE", name, f"declared conduction model {text} on 0..{i_max:g} A - built from "
+                                         "characteristic values, not the datasheet output characteristic")]
+
+
+def _energy(name: str, vals, i_ref: float, k, temps: list, i_max: float, source: str, basis: str = "") -> tuple:
+    """E(I) = E(I_ref) (I / I_ref)^k at each temperature on [0, i_max] - the declared current scaling."""
+    e = _per_T(f"representative.energies.{name}_mJ", vals, len(temps), positive=True)
+    k = _num(f"representative.energies.k_{name[2:]}", k, positive=True)
+    if k > 3:
+        raise InputValidationError(f"{name}: current exponent {k:g} is outside 0 < k <= 3",
+                                   field=f"representative.energies.k_{name[2:]}")
+    if k == 1.0:                        # a line: two nodes are exact under the engine's linear interpolation
+        grid = [0.0, float(i_max)]
+        law, sampling = f"E({i_ref:g} A) I / {i_ref:g} A", "a line: two exact nodes"
+    else:
+        # a power law bends most at small currents: geometric nodes (ratio q) from I_max / 1000, plus I_ref.  Between
+        # nodes a < b the chord deviates from x^k by at most |k (k - 1)| / 8 (q - 1)^2 max(1, q^(k - 2)) of a^k
+        n_geo = 48
+        q = 1000.0 ** (1.0 / n_geo)
+        grid = sorted({0.0, float(i_ref), *(float(x) for x in i_max * np.logspace(-3.0, 0.0, n_geo + 1))})
+        bound = abs(k * (k - 1.0)) / 8.0 * (q - 1.0) ** 2 * max(1.0, q ** (k - 2.0)) * 100.0
+        step = 10.0 ** (math.floor(math.log10(bound)) - 1)           # stated rounded UP to two digits: still a bound
+        law = f"E({i_ref:g} A) (I / {i_ref:g} A)^{k:g}"
+        sampling = (f"{len(grid)} currents, linear between them: within {math.ceil(bound / step) * step:.2g} % of "
+                    f"the law above {grid[1]:.3g} A")
+    curve = {"temps_C": list(temps), "currents_A": grid,
+             "values": [[ei * (g / i_ref) ** k for g in grid] for ei in e], "unit": "mJ",
+             "source": f"{source}: E = {_fmt(e)} mJ at {i_ref:g} A, E ~ I^{k:g}"}
+    return curve, [Finding("NOTE", name, f"E(I) = {law} on 0..{i_max:g} A, E(0) = 0: a declared current scaling of the "
+                                         f"characteristic value, not the datasheet E(I) curve ({sampling})"
+                                         + (f"; exponent basis: {basis}" if basis else ""))]
+
+
+def representative_curves(rep: dict, tech: str, source: str) -> tuple:
+    """Characteristic-table values -> the engine's curves, each by its declared model, plus the findings."""
+    raw = rep.get("temps_C")
+    try:
+        temps = [float(t) for t in (raw if isinstance(raw, (list, tuple)) else [raw] if raw is not None else [])]
+    except (TypeError, ValueError):
+        raise InputValidationError("representative.temps_C: junction temperatures in degC", field="representative."
+                                                                                                  "temps_C") from None
+    if not temps or any(not math.isfinite(t) for t in temps) or any(b <= a for a, b in zip(temps, temps[1:])):
+        raise InputValidationError("representative.temps_C: junction temperatures, strictly increasing",
+                                   field="representative.temps_C")
+    i_nom = _num("representative.I_nom_A", rep.get("I_nom_A"), positive=True)
+    i_max = _num("representative.I_max_A", rep.get("I_max_A"), positive=True)
+    if i_max < i_nom:
+        raise InputValidationError("representative.I_max_A (the current range of the curves) must be >= I_nom_A",
+                                   field="representative.I_max_A")
+    curves, findings = {}, []
+    for key, name in (("switch", "v_on"), ("reverse", "v_rev")):
+        if not rep.get(key):
+            raise InputValidationError(f"representative.{key} ({'switch' if key == 'switch' else 'diode / body diode'}"
+                                       " conduction) is required", field=f"representative.{key}")
+        curves[name], f = _conduction(name, rep[key], temps, i_nom, i_max, source)
+        findings += f
+    if rep["reverse"].get("model") == "resistance":
+        findings.append(Finding("WARNING", "v_rev", "a diode modelled as a pure resistance has no threshold voltage: "
+                                                    "check the datasheet V_F"))
+    if tech == "SiC_MOSFET":
+        if rep.get("channel_reverse"):
+            curves["v_channel_rev"], f = _conduction("v_channel_rev", rep["channel_reverse"], temps, i_nom, i_max,
+                                                     source)
+            findings += f
+        else:
+            findings.append(Finding("NOTE", "v_channel_rev", "synchronous-rectification channel taken as the forward "
+                                                             "channel (symmetric R_DS(on)): a declaration"))
+    en = rep.get("energies") or {}
+    i_ref = _num("representative.energies.I_A", en.get("I_A", i_nom), positive=True)
+    if i_ref > i_max:
+        raise InputValidationError("representative.energies.I_A lies above the curve range I_max_A",
+                                   field="representative.energies.I_A")
+    basis = str(en.get("basis") or "").strip()
+    for name, key in (("e_on", "E_on_mJ"), ("e_off", "E_off_mJ"), ("e_rr", "E_rr_mJ")):
+        if en.get(key) is None:
+            if name != "e_rr":
+                raise InputValidationError(f"representative.energies.{key} is required", field=f"representative."
+                                                                                              f"energies.{key}")
+            continue
+        kk = f"k_{name[2:]}"
+        vals = en[key] if isinstance(en[key], (list, tuple)) else [en[key]]
+        if name == "e_rr" and all(_num(f"representative.energies.{key}", v) == 0.0 for v in vals):
+            _per_T(f"representative.energies.{key}", vals, len(temps))
+            curves[name] = {"temps_C": list(temps), "currents_A": [0.0, float(i_max)],
+                            "values": [[0.0, 0.0] for _ in temps], "unit": "mJ", "source": f"{source}: E_rr declared 0"}
+            findings.append(Finding("NOTE", name, "E_rr declared 0 (the supplier states the reverse recovery is "
+                                                  "negligible): a declaration, not a datasheet curve"))
+            continue
+        curves[name], f = _energy(name, en[key], i_ref, en.get(kk, 1.0), temps, i_max, source, basis)
+        findings += f
+        if en.get(kk) is None:
+            findings.append(Finding("NOTE", name, f"no current exponent {kk} given: E proportional to I (k = 1)"))
+        elif float(en[kk]) != 1.0 and not basis:
+            findings.append(Finding("WARNING", name, f"exponent {kk} = {float(en[kk]):g} without a basis: say where it "
+                                                     "comes from (e.g. the shape of the datasheet E(I) figure)"))
+    findings.append(Finding("NOTE", "current range", f"the curves end at I_max = {i_max:g} A (declared, e.g. the "
+                                                     "repetitive peak current): above it the losses are not established"))
+    if len(temps) == 1:
+        findings.append(Finding("WARNING", "temperature", f"values at one junction temperature ({temps[0]:g} degC): the "
+                                                          "curves are valid at that temperature only"))
+    return curves, findings
+
+
 # -- specs ----------------------------------------------------------------------------------------------------
 
 def _points_of(spec: dict, name: str, base_dir: Path | None) -> dict:
@@ -252,6 +449,11 @@ def module_section(spec: dict, base: dict | None = None, base_dir: Path | None =
     findings = []
     curves = {}
     method = str(spec.get("digitization") or "digitized from the datasheet figures")
+    if spec.get("representative") is not None:
+        if spec.get("curves"):
+            raise InputValidationError("give digitized curves or representative values, not both", field="curves")
+        curves, findings = representative_curves(spec["representative"], tech, _document(part))
+        method = "characteristic values typed from the datasheet; curves built by the declared models (findings)"
     for name, cs in (spec.get("curves") or {}).items():
         unit = cs.get("unit") or ("mJ" if CURVES.get(name) == "J" else "V")
         cv, f = resample_curve(name, _points_of(cs, name, base_dir), unit,
@@ -291,7 +493,19 @@ def module_section(spec: dict, base: dict | None = None, base_dir: Path | None =
             data[key] = default
             findings.append(Finding("NOTE", key, f"default {default!r}: not datasheet data - declare it"))
     zth = spec.get("zth_foster")
-    if zth:
+    tp = spec.get("thermal_path")
+    if tp and zth:
+        raise InputValidationError("give zth_foster or thermal_path, not both", field="thermal_path")
+    if tp:
+        rth = _num("thermal_path.Rth_K_per_W", tp.get("Rth_K_per_W"), positive=True)
+        basis = str(tp.get("basis") or "").strip()
+        if not basis:
+            raise InputValidationError("thermal_path.basis is required (e.g. R_th(j-f) at the stated coolant flow, "
+                                       "or R_th(j-c) + R_th(c-h) + heat sink)", field="thermal_path.basis")
+        data["thermal_path"] = {"Rth_K_per_W": rth, "T_ref_C": float(tp.get("T_ref_C", 65.0)), "basis": basis}
+        findings.append(Finding("NOTE", "thermal_path", f"junction-to-coolant Rth {rth:g} K/W entered ({basis}); no "
+                                                        "transient network (steady Rth only)"))
+    elif zth:
         r = [float(x) for x in zth["R_K_per_W"]]
         tau = [float(x) for x in zth["tau_s"]]
         extra = float(zth.get("extra_Rth_K_per_W") or 0.0)
@@ -329,9 +543,35 @@ def capacitor_section(spec: dict, base: dict | None = None, base_dir: Path | Non
     base = copy.deepcopy(base or {})
     part = spec.get("part") or {}
     findings = []
-    for k in ("C_uF", "ESR_table"):
-        if k not in spec:
-            raise InputValidationError(f"{k} is required", field=k)
+    if "C_uF" not in spec:
+        raise InputValidationError("C_uF is required", field="C_uF")
+    rep_esr = None
+    if spec.get("ESR_representative"):
+        if "ESR_table" in spec:
+            raise InputValidationError("give ESR_table or ESR_representative, not both", field="ESR_representative")
+        er = spec["ESR_representative"]
+        v = _num("ESR_representative.ESR_mohm", er.get("ESR_mohm"), positive=True)
+        f0 = _num("ESR_representative.f_Hz", er.get("f_Hz"), positive=True)
+        band = er.get("band_Hz") or []
+        if len(band) != 2:
+            raise InputValidationError("ESR_representative.band_Hz [low, high]: the frequency band over which the "
+                                       "one datasheet ESR is declared valid", field="ESR_representative.band_Hz")
+        lo, hi = (_num("ESR_representative.band_Hz", x, positive=True) for x in band)
+        if not lo < hi or not lo <= f0 <= hi:
+            raise InputValidationError("ESR_representative: band low < high and the datasheet frequency inside it",
+                                       field="ESR_representative.band_Hz")
+        basis = str(er.get("basis") or "").strip()
+        spec = {**spec, "ESR_table": [[lo, v], [hi, v]], "ESR_unit": "mohm"}
+        rep_esr = (v, f0)
+        findings.append(Finding("NOTE", "ESR_table", f"ESR {v:g} mOhm (datasheet, at {f0:g} Hz) declared constant over "
+                                                     f"{lo:g}..{hi:g} Hz" + (f" ({basis})" if basis else "")
+                                                     + ": harmonics outside the band are not covered (UNKNOWN), "
+                                                       "inside it the frequency dependence is not modelled"))
+        if not basis:
+            findings.append(Finding("WARNING", "ESR_table", "no basis for the declared band: say why the one ESR value "
+                                                            "holds over it (datasheet ESR(f) / tan delta figure)"))
+    if "ESR_table" not in spec:
+        raise InputValidationError("ESR_table (or ESR_representative) is required", field="ESR_table")
     esr = spec["ESR_table"]
     if isinstance(esr, dict):                       # {"csv": ...} / {"file": ...}: columns f_Hz, ESR
         text = esr.get("csv")
@@ -364,12 +604,21 @@ def capacitor_section(spec: dict, base: dict | None = None, base_dir: Path | Non
         findings.append(Finding("WARNING", "ESL_nH", "not given: the EMI network and the ripple resonance need it"))
     if not data.get("life_hours_table"):
         findings.append(Finding("NOTE", "life_hours_table", "no useful-life table: the capacitor life stays UNKNOWN"))
+    elif len(data["life_hours_table"]) == 1:
+        findings.append(Finding("NOTE", "life_hours_table", "one life point: the life is established only at that "
+                                                            "hotspot temperature (no temperature law is assumed)"))
     if spec.get("rated_voltage_V"):
         data["rated_voltage_V"] = float(spec["rated_voltage_V"])
     if "ESR_hf_mohm" not in data:
         data["ESR_hf_mohm"] = float(esr[-1][1]) * (1e3 if data["ESR_unit"] == "ohm" else 1.0)
-        findings.append(Finding("NOTE", "ESR_hf_mohm", f"EMI constant ESR taken as the highest-frequency datasheet "
-                                                       f"value ({data['ESR_hf_mohm']:g} mOhm at {esr[-1][0]:g} Hz)"))
+        if rep_esr is not None:
+            findings.append(Finding("NOTE", "ESR_hf_mohm", f"EMI constant ESR taken as the representative ESR "
+                                                           f"({rep_esr[0]:g} mOhm, datasheet value at {rep_esr[1]:g} "
+                                                           "Hz): not a datasheet value at EMI frequencies - declare "
+                                                           "ESR_hf_mohm when the datasheet gives one"))
+        else:
+            findings.append(Finding("NOTE", "ESR_hf_mohm", f"EMI constant ESR taken as the highest-frequency datasheet "
+                                                           f"value ({data['ESR_hf_mohm']:g} mOhm at {esr[-1][0]:g} Hz)"))
     try:
         SECTIONS["dc_link"].validate(data)
     except InputValidationError as exc:
@@ -426,9 +675,103 @@ def gate_edges(spec: dict, controller: dict, Vdc_V: float) -> dict:
             "findings": findings}
 
 
+def motor_section(spec: dict, base: dict | None = None) -> dict:
+    """Motor datasheet values -> {"data": drive section, "provenance", "findings", "conversions"}.
+
+    The motor block is written in the declared-units form (Ke with its voltage basis and reference speed, R with
+    line-to-line / per-phase reference, pole PAIRS, L in H / mH, reference temperatures); the drive parser converts
+    it and records every conversion, which become findings.  The constant-parameter model is D1: no saturation, no
+    cross-coupling.  The inverter and the operating domain are design data, not motor data: they are kept from the
+    project's drive unless the spec gives them."""
+    from .io import domain_to_dict, drive_from_dict, inverter_to_dict
+    from .project import SECTIONS
+    from .units import Conversions
+    part = spec.get("part") or {}
+    prov = _provenance(part, spec.get("value_kind", "typical"), "characteristic values typed from the motor "
+                                                                  "datasheet; constant-parameter dq model (D1)")
+    findings = []
+    m = copy.deepcopy(spec.get("motor") or {})
+    if not m:
+        raise InputValidationError("the motor block is required", field="motor")
+    if "poles" in m:
+        if "pole_pairs" in m:
+            raise InputValidationError("give pole_pairs or poles, not both", field="motor.poles")
+        poles = m.pop("poles")
+        if isinstance(poles, bool) or not isinstance(poles, int) or poles < 2 or poles % 2:
+            raise InputValidationError("poles must be an even integer >= 2 (the model uses pole PAIRS)",
+                                       field="motor.poles")
+        m["pole_pairs"] = poles // 2
+        findings.append(Finding("NOTE", "pole_pairs", f"{poles} poles -> {poles // 2} pole pairs"))
+    m.setdefault("model", "constant_dq")
+    m.setdefault("connection", "wye")
+    nl = (m.get("rotational_loss") or {}).get("no_load_loss")
+    if nl is not None:                  # a datasheet no-load loss at one speed -> the declared viscous model
+        p0 = _num("motor.rotational_loss.no_load_loss.P_W", nl.get("P_W"), positive=True)
+        n0 = _num("motor.rotational_loss.no_load_loss.speed_rpm", nl.get("speed_rpm"), positive=True)
+        w0 = 2.0 * math.pi * n0 / 60.0
+        b = p0 / (w0 * w0)
+        rl = {k: v for k, v in m["rotational_loss"].items() if k != "no_load_loss"}
+        rl["viscous"] = {"value": b, "unit": "N*m/(rad/s)"}
+        rl.setdefault("description", f"datasheet no-load loss {p0:g} W at {n0:g} rpm, viscous model")
+        rl.setdefault("basis", "no-load loss at one speed, loss ~ omega^2 (viscous) declared")
+        m["rotational_loss"] = rl
+        findings.append(Finding("NOTE", "rotational_loss", f"no-load loss {p0:g} W at {n0:g} rpm -> viscous b = P0 / "
+                                                           f"omega0^2 = {b:.6g} N*m*s/rad: the loss ~ omega^2 shape is "
+                                                           "a declaration (one datasheet point)"))
+    if m["model"] != "constant_dq":
+        raise InputValidationError("datasheet values give a constant-parameter model (constant_dq); a flux map is "
+                                   "imported as a drive file", field="motor.model")
+    base_drive = drive_from_dict(copy.deepcopy(base)) if base else None
+    inv = copy.deepcopy(spec.get("inverter")) if spec.get("inverter") else None
+    dom = copy.deepcopy(spec.get("domain")) if spec.get("domain") else None
+    if inv is None or dom is None:
+        if base_drive is None:
+            raise InputValidationError("give the inverter and domain, or apply the motor to a project whose drive "
+                                       "has them", field="inverter")
+        if inv is None:
+            inv = inverter_to_dict(base_drive.inverter)
+            findings.append(Finding("NOTE", "inverter", "current limit, voltage reserve and loss surrogate kept from the "
+                                                        f"project drive ({base_drive.drive_id}): design data, not motor "
+                                                        "datasheet data"))
+            if base_drive.inverter.module_loss is not None:
+                findings.append(Finding("NOTE", "inverter", "the datasheet module loss model stays in the project's "
+                                                            "module section"))
+        if dom is None:
+            dom = domain_to_dict(base_drive.domain)
+            findings.append(Finding("NOTE", "domain", f"allowed operating domain kept from the project drive "
+                                                      f"({base_drive.drive_id})"))
+    pn = str(part.get("part_number") or "").strip()
+    drive = {"drive_id": str(spec.get("drive_id") or re.sub(r"[^A-Za-z0-9_.-]+", "_", pn) or "MOTOR"),
+             "revision": str(part.get("revision")),
+             "provenance": {"origin": "supplier", "source": _document(part), "revision": str(part.get("revision")),
+                            "validation_status": f"{spec.get('value_kind', 'typical')} motor datasheet values; "
+                                                 "constant-parameter dq model (D1) - not validated on this product"},
+             "notes": [f"motor from {_document(part)} (characteristic values typed by hand)"]
+                      + [str(x) for x in spec.get("notes") or []],
+             "motor": {**m, "motor_id": str(m.get("motor_id") or pn or "MOTOR")},
+             "inverter": inv, "domain": dom}
+    conv = Conversions()
+    model = drive_from_dict(copy.deepcopy(drive), conv)          # every unit converted and recorded, or refused
+    for rec in conv.records:
+        findings.append(Finding("NOTE", rec["field"], f"{rec['rule']}: {json.dumps(rec['given'], ensure_ascii=False)}"
+                                                      f" -> {rec['converted']!r}"))
+    mo = model.motor
+    if mo.rotational_loss is None:
+        findings.append(Finding("WARNING", "rotational_loss", "not declared: shaft torque and power are undefined, so "
+                                                              "requirement decisions stay UNKNOWN (declare a viscous "
+                                                              "coefficient or a no-load loss)"))
+    if mo.reference_winding_temp_C is None:
+        findings.append(Finding("WARNING", "Rs", "reference temperature of R not declared: a scenario winding "
+                                                 "temperature cannot be used (MISSING_INPUT)"))
+    findings.append(Finding("NOTE", "Ld / Lq", "constant inductances (D1): no saturation or cross-coupling - a flux "
+                                               "map (D2) is needed for claims in the saturated region"))
+    SECTIONS["drive"].validate(drive)
+    return {"data": drive, "provenance": prov, "findings": findings, "conversions": conv.records}
+
+
 # -- one entry point for the CLI and the desktop ----------------------------------------------------------------
 
-KINDS = {"module": "module", "capacitor": "dc_link", "gate_edges": "controller"}
+KINDS = {"module": "module", "capacitor": "dc_link", "gate_edges": "controller", "motor": "drive"}
 
 
 def load_spec(path) -> tuple[dict, Path]:
@@ -440,7 +783,7 @@ def load_spec(path) -> tuple[dict, Path]:
 
 
 def apply(project, spec: dict, base_dir: Path | None = None):
-    """Import ``spec`` (``kind``: module | capacitor | gate_edges) into ``project`` -> (working copy, result).
+    """Import ``spec`` (``kind``: module | capacitor | gate_edges | motor) into ``project`` -> (working copy, result).
 
     The result is {"section", "data", "provenance", "findings"}; the project comes back MODIFIED (a new revision is
     the user's decision), with the section's provenance naming the datasheet."""
@@ -452,6 +795,8 @@ def apply(project, spec: dict, base_dir: Path | None = None):
         res = module_section(spec, project.data("module") if project.has("module") else None, base_dir)
     elif kind == "capacitor":
         res = capacitor_section(spec, project.data("dc_link") if project.has("dc_link") else None, base_dir)
+    elif kind == "motor":
+        res = motor_section(spec, project.data("drive"))
     else:
         res = gate_edges(spec, project.data("controller"), float(project.data("dc_source")["Vdc_nominal_V"]))
     new = project.with_section(section, res["data"], res["provenance"])

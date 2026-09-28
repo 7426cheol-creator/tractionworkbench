@@ -226,6 +226,36 @@ def drive_from_dict(d: dict, conv: Conversions | None = None) -> DriveModel:
                       prov, tuple(d.get("notes", ())))
 
 
+def inverter_to_dict(inv: InverterModel) -> dict:
+    """An inverter model in the declared-units file form (SI values, fundamental phase-peak currents): what
+    ``drive_from_dict`` reads back to the same model.  A datasheet module loss model is not part of this form (it
+    lives in the project's module section) - the caller says so."""
+    v = inv.voltage
+    out = {"inverter_id": inv.inverter_id, "topology": "single_vsi",
+           "current_limit": {"value": inv.current_limit_A_peak, "unit": "A", "basis": "fundamental_peak"},
+           "voltage_reserve_fraction": v.reserve_fraction, "voltage_error": v.voltage_error,
+           "resistive_drop_ohm": v.resistive_drop_ohm, "voltage_mapping_note": v.mapping_note}
+    if inv.loss is not None:
+        ls = inv.loss
+        out["loss"] = {"offset": {"value": ls.offset_W, "unit": "W"},
+                       "coeff": {"value": ls.ipk2_coeff_W_per_A2, "unit": "W/A^2"},
+                       "current_basis": "fundamental_peak", "symmetric_motoring_regen": ls.symmetric_motoring_regen,
+                       "kind": ls.kind, "description": ls.description}
+        if ls.valid_Vdc_V is not None:
+            out["loss"]["valid_Vdc_V"] = list(ls.valid_Vdc_V)
+    if inv.switching_frequency_context_Hz is not None:
+        out["switching_frequency"] = {"value": inv.switching_frequency_context_Hz, "unit": "Hz"}
+    return out
+
+
+def domain_to_dict(dom: OperatingDomain) -> dict:
+    """An operating domain in the declared-units file form (phase-peak currents, mechanical rpm)."""
+    return {"id": {"value": list(dom.id_A), "unit": "A", "basis": "fundamental_peak"},
+            "iq": {"value": list(dom.iq_A), "unit": "A", "basis": "fundamental_peak"},
+            "speed": {"value": list(dom.speed_rpm), "unit": "rpm", "kind": "mechanical"},
+            "kind": dom.kind, "interpretation": dom.interpretation}
+
+
 def limits_from_dict(d: dict | None, conv: Conversions) -> DcSourceLimits:
     if not d:
         return DcSourceLimits()

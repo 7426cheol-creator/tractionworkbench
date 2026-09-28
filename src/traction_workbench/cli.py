@@ -241,8 +241,9 @@ def cmd_project(args):
 
 
 def cmd_datasheet(args):
-    """Import a datasheet spec (module curves, capacitor, gate dv/dt) into a project: findings, the new section's
-    digest and - with --out - the modified project file (a new revision stays the user's decision)."""
+    """Import a datasheet spec (module curves or representative values, capacitor, gate dv/dt, motor) into a project:
+    findings, the new section's digest and - with --out - the modified project file (a new revision stays the user's
+    decision).  The desktop value-entry dialog saves the same specs."""
     from . import datasheet as DS
     from .project import save_project, short
     spec, base_dir = DS.load_spec(args.spec)
@@ -382,8 +383,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("files", nargs="*", help="project file(s); none = the built-in synthetic project")
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_project)
-    p = sub.add_parser("datasheet", help="import a datasheet spec (module curves, capacitor, dv/dt) into a project")
-    p.add_argument("spec", help="datasheet spec JSON (kind: module | capacitor | gate_edges); CSV paths relative to it")
+    p = sub.add_parser("datasheet", help="import a datasheet spec (module curves or values, capacitor, dv/dt, motor) "
+                                         "into a project")
+    p.add_argument("spec", help="datasheet spec JSON (kind: module | capacitor | gate_edges | motor); CSV paths "
+                                "relative to it")
     p.add_argument("--project", help="project file to import into (default: the built-in synthetic project)")
     p.add_argument("--out", help="write the modified project here")
     p.add_argument("--revision", help="make the result a new revision with this name (needs --out)")
