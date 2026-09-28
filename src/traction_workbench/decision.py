@@ -239,6 +239,11 @@ def claim_layers(req: Requirement, drive: DriveModel, conditions, verdict: Aggre
                           "denser analysis")
     if req.operator == "band":
         open_items.append("band requirement: existence of one torque inside the band (not tracking of every torque)")
+    unconf = sorted({q for cr in conditions if cr.duration is not None for q in cr.duration.qualifiers
+                     if q.startswith("applicability to this product")})
+    if unconf:
+        open_items.append("rating evidence " + unconf[0][0].lower() + unconf[0][1:]
+                          + " - bind the envelope (applies_to) and address its required conditions")
     prov = drive.provenance
     origin = prov.origin.value
     if origin in ("synthetic", "estimated"):
@@ -295,7 +300,7 @@ BAND_SAMPLES = 9
 
 
 def _requirement_claim(req: Requirement, sc: Scenario, ev: PolicyEvaluator, sol: PolicySolution,
-                       cap: CapabilityResult | None, ratings, stated: dict):
+                       cap: CapabilityResult | None, ratings, stated: dict, product: dict | None = None):
     """Requirement claim at one condition -> (claim, margin, duration claim, witness torque, witness solution).
 
     ``achieve``: AND of the policy claim and the duration claim, both at the requested torque.
@@ -307,9 +312,9 @@ def _requirement_claim(req: Requirement, sc: Scenario, ev: PolicyEvaluator, sol:
     if cap is not None and cap.accepted and cap.value_Nm is not None:
         margin = (cap.value_Nm - req.target_Nm) if req.direction > 0 else (req.target_Nm - cap.value_Nm)
     if req.operator == "band":
-        return _band_claim(req, sc, ev, sol, cap, ratings, stated, margin)
+        return _band_claim(req, sc, ev, sol, cap, ratings, stated, margin, product)
     policy = sol.policy_claim
-    dur = duration_claim(ratings, req.duration_s, req.speed_rpm, req.target_Nm, stated)
+    dur = duration_claim(ratings, req.duration_s, req.speed_rpm, req.target_Nm, stated, product)
     parts = [policy] + ([dur] if dur is not None else [])
     agg = aggregate_and(parts)
     quals = tuple(q for p in parts for q in p.qualifiers)
@@ -325,7 +330,7 @@ def _requirement_claim(req: Requirement, sc: Scenario, ev: PolicyEvaluator, sol:
     return claim, margin, dur, wit_T, sol
 
 
-def _band_claim(req, sc, ev, sol_c, cap, ratings, stated, margin):
+def _band_claim(req, sc, ev, sol_c, cap, ratings, stated, margin, product=None):
     lo, hi = req.target_Nm - req.band_Nm, req.target_Nm + req.band_Nm
     q = (f"{req.req_id}: some shaft torque in [{lo:g}, {hi:g}] N*m at {req.speed_rpm:g} rpm, Vdc = {sc.Vdc_V:g} V "
          f"(band existence, one witness for every part)")
@@ -336,7 +341,7 @@ def _band_claim(req, sc, ev, sol_c, cap, ratings, stated, margin):
     tried = []
     for T in order:
         s_T = sol_c if T == req.target_Nm else ev.solve(T)
-        d_T = duration_claim(ratings, req.duration_s, req.speed_rpm, T, stated)
+        d_T = duration_claim(ratings, req.duration_s, req.speed_rpm, T, stated, product)
         parts = [s_T.policy_claim] + ([d_T] if d_T is not None else [])
         agg = aggregate_and(parts)
         tried.append((T, agg.status.value))
@@ -359,12 +364,12 @@ def _band_claim(req, sc, ev, sol_c, cap, ratings, stated, margin):
             evid.extend(phys.evidence)
     if req.duration_s is not None:
         t_small = 0.0 if lo <= 0.0 <= hi else (lo if abs(lo) < abs(hi) else hi)
-        d_small = duration_claim(ratings, req.duration_s, req.speed_rpm, t_small, stated)
+        d_small = duration_claim(ratings, req.duration_s, req.speed_rpm, t_small, stated, product)
         if d_small is not None and d_small.status is Status.INFEASIBLE:
             proofs.append(f"even the smallest |T| in the band ({t_small:g} N*m) is not rated for {req.duration_text()}")
             evid.extend(d_small.evidence)
     sol_T = sol_c
-    d_c = duration_claim(ratings, req.duration_s, req.speed_rpm, req.target_Nm, stated)
+    d_c = duration_claim(ratings, req.duration_s, req.speed_rpm, req.target_Nm, stated, product)
     if proofs:
         claim = Claim("requirement_at_condition", Status.INFEASIBLE, q, sol_c.policy_claim.scope,
                       sol_c.policy_claim.policy, d_c.time_horizon if d_c else "static steady-state (no duration)",
@@ -475,6 +480,8 @@ def evaluate_requirement(req: Requirement, drive: DriveModel, *, scenario: Scena
                          with_capability: bool = True) -> DecisionRecord:
     vdcs, sampled = _condition_points(req, range_samples)
     results: list[ConditionResult] = []
+    product = ({"drive_id": drive.drive_id, "drive_revision": drive.revision,
+                "drive_content_sha256": content_sha256(drive)} if ratings else None)
     for vdc in vdcs:
         sc = _scenario_for(req, scenario, source_limits, vdc)
         ev = PolicyEvaluator(drive, sc, settings)
@@ -485,7 +492,7 @@ def evaluate_requirement(req: Requirement, drive: DriveModel, *, scenario: Scena
         stated = {"coolant_temp_C": sc.coolant_temp_C, "initial_state": sc.initial_state, "Vdc_V": sc.Vdc_V,
                   "switching_frequency_Hz": sc.switching_frequency_Hz, "winding_temp_C": sc.winding_temp_C,
                   "magnet_temp_C": sc.magnet_temp_C}
-        rc, margin, dur, wit_T, wit_sol = _requirement_claim(req, sc, ev, sol, cap, ratings, stated)
+        rc, margin, dur, wit_T, wit_sol = _requirement_claim(req, sc, ev, sol, cap, ratings, stated, product)
         results.append(ConditionResult(sc, sol, cap, dur, rc, margin, wit_T, wit_sol))
     agg = aggregate_and(r.requirement_claim for r in results)
     qualifiers = []

@@ -323,7 +323,10 @@ def rating_from_dict(d: dict, conv: Conversions):
         interpolation=d.get("interpolation", "conservative"), evidence_kind=d.get("evidence_kind", "supplier_rated"),
         approval=None if not d.get("approval") else RatingApproval(**{
             k: v for k, v in d["approval"].items()
-            if k in ("state", "evidence_id", "evidence_revision", "intended_use", "approved_by")}))
+            if k in ("state", "evidence_id", "evidence_revision", "intended_use", "approved_by")}),
+        priority=int(d.get("priority", 0)), limit_semantics=d.get("limit_semantics", "rated_limit"),
+        applies_to=tuple((d.get("applies_to") or {}).items()), control_policy=str(d.get("control_policy") or ""),
+        irrelevant_conditions=tuple(d.get("irrelevant_conditions") or ()))
 
 
 @dataclass

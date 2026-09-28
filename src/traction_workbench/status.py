@@ -55,6 +55,7 @@ class Reason(str, Enum):
     REQUIREMENT_INCOMPLETE = "REQUIREMENT_INCOMPLETE"  # the requirement lacks a definition needed to decide
     COUPLED_MODEL_REQUIRED = "COUPLED_MODEL_REQUIRED"  # the answer depends on a source/load coupling not modelled
     SCREENING_ONLY = "SCREENING_ONLY"                  # unvalidated screening model: margins / needs, never a pass
+    APPLICABILITY_UNCONFIRMED = "APPLICABILITY_UNCONFIRMED"   # evidence not bound to this product / its conditions
 
 
 class EvidenceKind(str, Enum):

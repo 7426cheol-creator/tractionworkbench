@@ -362,11 +362,13 @@ def torque_availability(drive: DriveModel, scenario: Scenario, model: ThermalMod
         return {**base, "static_capability_Nm": None, "static_segments_Nm": [], "rows": [],
                 "note": "no static policy-feasible torque"}
     span = sum(b - a for a, b in cap.segments) or 1.0
-    grid = set()
+    # one grid PER static segment (engineering review 6198099, F3): thermally feasible samples of two different static
+    # segments are never joined - the torque between them was not statically feasible and was not examined
+    seg_grids = []
     for a, b in cap.segments:
         n = max(3, int(math.ceil(samples * (b - a) / span)) + 1)
-        grid.update(float(x) for x in np.linspace(a, b, n))
-    grid = sorted(grid)
+        seg_grids.append(sorted({float(x) for x in np.linspace(a, b, n)}))
+    grid = sorted({T for g in seg_grids for T in g})
     cache: dict[float, dict | None] = {}
 
     def losses_at(T):
@@ -390,7 +392,7 @@ def torque_availability(drive: DriveModel, scenario: Scenario, model: ThermalMod
         return True, None
 
     def refine(a, b, t):
-        """a thermally feasible, b not (both statically feasible): bisect the thermal boundary."""
+        """a thermally feasible, b not (both statically feasible, same static segment): bisect the boundary."""
         for _ in range(40):
             if abs(b - a) <= 1e-6 * max(1.0, abs(a)):
                 break
@@ -404,30 +406,42 @@ def torque_availability(drive: DriveModel, scenario: Scenario, model: ThermalMod
     cap_ext = max((x for seg in cap.segments for x in seg), key=lambda x: direction * x)
     rows = []
     for t in durations_s:
-        flags = [ok_for(T, t) for T in grid]
-        segs, cur, limiting = [], None, None
-        for i, (T, (g, node)) in enumerate(zip(grid, flags)):
-            if g is False and node:
-                limiting = limiting or node
-            if g:
-                if cur is None:
-                    lo_T = T
-                    if i > 0 and flags[i - 1][0] is False:
-                        lo_T = refine(T, grid[i - 1], t)
-                    cur = [lo_T, T]
-                else:
-                    cur[1] = T
-            else:
-                if cur is not None:
-                    if g is False:
-                        cur[1] = refine(grid[i - 1], T, t)
-                    segs.append(tuple(cur))
-                    cur = None
-        if cur is not None:
-            segs.append(tuple(cur))
-        zero = next((f for T, f in zip(grid, flags) if abs(T) <= 1e-9), (None, None))[0]
+        segs, owners, limiting, zero = [], [], None, None
+        for k, (sg_grid, (s_lo, s_hi)) in enumerate(zip(seg_grids, cap.segments)):
+            flags = [ok_for(T, t) for T in sg_grid]
+            cur = None
+            for i, (T, (g, node)) in enumerate(zip(sg_grid, flags)):
+                if abs(T) <= 1e-9 and zero is None:
+                    zero = g
+                if g is False and node:
+                    limiting = limiting or node
+                if g:
+                    if cur is None:
+                        lo_T = T
+                        if i > 0 and flags[i - 1][0] is False:
+                            lo_T = refine(T, sg_grid[i - 1], t)
+                        cur = [lo_T, T]
+                    else:
+                        cur[1] = T
+                else:                              # False ends a segment at its bisected edge, None (UNKNOWN) at
+                    if cur is not None:            # the last established sample - an UNKNOWN is never bridged
+                        if g is False:
+                            cur[1] = refine(sg_grid[i - 1], T, t)
+                        segs.append(tuple(cur))
+                        owners.append(k)
+                        cur = None
+            if cur is not None:
+                segs.append(tuple(cur))
+                owners.append(k)
+        # invariant: thermal_feasible_set within static_feasible_set (each piece inside its own static segment)
+        for (lo, hi), k in zip(segs, owners):
+            a, b = cap.segments[k]
+            tol = 1e-9 * max(1.0, abs(a), abs(b))
+            if not (a - tol <= min(lo, hi) and max(lo, hi) <= b + tol):
+                raise AssertionError(f"thermal segment [{lo}, {hi}] leaves static segment [{a}, {b}]")
         if not segs:
             rows.append({"duration_s": t, "torque_Nm": None, "feasible_segments_Nm": [],
+                         "feasible_segment_static_index": [],
                          "limited_by": f"thermal node {limiting} at every examined torque" if limiting else
                                        "no statically feasible torque examined",
                          "zero_torque_feasible": zero})
@@ -435,6 +449,7 @@ def torque_availability(drive: DriveModel, scenario: Scenario, model: ThermalMod
         ext = max((x for seg in segs for x in seg), key=lambda x: direction * x)
         at_cap = abs(ext - cap_ext) <= 1e-6 * max(1.0, abs(cap_ext))
         rows.append({"duration_s": t, "torque_Nm": ext, "feasible_segments_Nm": [list(sg) for sg in segs],
+                     "feasible_segment_static_index": owners,
                      "limited_by": "static capability" if at_cap else f"thermal node {limiting}",
                      "zero_torque_feasible": zero,
                      "disconnected": len(segs) > 1})
@@ -443,7 +458,8 @@ def torque_availability(drive: DriveModel, scenario: Scenario, model: ThermalMod
         "static_capability_Nm": cap_ext,
         "static_segments_Nm": [list(sg) for sg in cap.segments],
         "rows": rows,
-        "method": f"sampled scan of {len(grid)} torques over the static policy set + bisection of thermal boundaries",
+        "method": (f"sampled scan of {len(grid)} torques, per static policy segment (never joined across segments or "
+                   f"UNKNOWN samples) + bisection of thermal boundaries inside a segment"),
         "assumptions": ["start from equilibrium at the coolant", "constant losses at the minimum-current point",
                         "no loss-temperature feedback", "declared loss shares per node",
                         ("coolant rise along the declared loop (m_dot*c_p)" if model.coolant is not None

@@ -268,7 +268,20 @@ EMI·PWM 예시의 데드타임 불일치(1.0 µs vs 손실 1.5 µs — 프로�
 | P1-A/B | 데이터시트 대표값 직접 입력 (모터·모듈·커패시터·dv/dt): 선언된 구성 규칙, 규칙마다 기록, 규약 선택 강제, 미입력 거부, 파일 spec과 같은 결과 | `datasheet.representative_curves`·`motor_section`·`ESR_representative`, `desktop/datasheet_entry_dialog.py`, `plots/datasheet_figures.fig_datasheet_motor` | `test_datasheet.py` (기준 기계 재현, 곡선 = 선언 모델, I_max 위 UNKNOWN, ESR 대역 밖 UNKNOWN, 거부 사례), self-test `datasheet:entry_forms`·`datasheet:entry_motor` | implemented |
 | 엔진 | plane을 고를 수 없는 map 시나리오에서 capability가 죽음 | `physics.torque_scale`, `solvers/capability.py` | `test_scenario_that_selects_no_plane_…` | implemented |
 
-## 13. 비목표 (handoff §15, 추가 명세 비목표)
+## 13. 공학 리뷰 (기준 6198099)
+
+동료 공학 리뷰(`ENGINEERING_REVIEW.md`, 반례 스크립트, 회귀 테스트 초안)의 지적을 실제 저장소에서 재현한 뒤 고쳤습니다.
+리뷰어의 회귀 테스트 7건은 수정 전 5건 실패 → 수정 후 7건 통과이며 그대로 `tests/test_review_6198099.py`에 들어 있습니다.
+
+| 항목 | 지적 | 구현 | 확인 | 상태 |
+|---|---|---|---|---|
+| F1 | 긴 정격(30 s·연속)의 초과를 짧은 요구의 실패로 전이, 양립하는 짧은·긴 정격이 CONFLICTING | `rating.applicability` → 증거 방향(`both` / `positive`), `duration_claim`: 긍정 전용 근거의 초과는 결론 없음(UNKNOWN), 충돌 판정은 결론을 내는 근거끼리만 | `test_longer_rating_cannot_exclude_…`, `test_compatible_short_and_long_…`, `test_a_same_duration_rating_still_…` | implemented |
+| F1b | 같은 지속시간이라도 '완전한 상한'과 '입증 영역'을 구분 | `RatingEnvelope.limit_semantics` (`rated_limit` / `demonstrated_region`) | `test_a_demonstrated_region_is_not_a_limit` | implemented |
+| F2 | `linear_declared` 표의 보간 한계 초과가 UNKNOWN | `_evaluate_envelope`: 선언된 선형 한계와 직접 비교 (RATING_NOT_MET), `conservative`는 괄호 의미 유지 | `test_declared_linear_rating_fails_…`, `test_conservative_interpolation_keeps_…` | implemented |
+| F3 | 열 가용 토크 집합이 정적 가능 구간 사이의 공백을 연결 | `thermal.torque_availability`: 정적 segment마다 따로 scan·bisection, segment 번호 보존, `thermal ⊆ static` 불변식 검사, UNKNOWN 표본은 잇지 않음 | `test_thermal_set_cannot_bridge_…`, `test_thermal_set_is_not_joined_across_an_unknown_sample` | implemented |
+| G1 | 정격 증거가 적용 제품·조건과 결속되지 않음 | `RatingEnvelope.applies_to` (drive_id·revision·content SHA-256), `control_policy`, `irrelevant_conditions`; `binding()`: 선언된 결속 불일치 → 적용 안 함, 결속 없음·필수 조건(냉각수·Vdc, 유한 정격은 초기 상태) 미처리 → 사용은 하되 모든 claim에 APPLICABILITY_UNCONFIRMED, 요구 층의 미결 항목; 판정 엔진이 평가 드라이브의 식별자를 넘김; case 파일 파서 | `test_rating_bound_to_another_product_…`, `test_bound_and_complete_rating_…`, `test_required_conditions_…`, `test_case_file_rating_fields_…` | implemented |
+
+## 14. 비목표 (handoff §15, 추가 명세 비목표)
 
 generic motor CAD/FEA 복제, 정적 ASC로 demag/SOA 승인, 일반 IGBT 식으로 SiC 수명 보증, 드라이버 typical delay로 ASIL 승인,
 class 번호로 EMC 합격률, 평균 dq로 NVH/베어링/MHz 임피던스, 생산 anti-jerk 제어기 자동 납품, 보편 안정성 인증서,
