@@ -31,7 +31,7 @@ def test_declared_units_drive_matches_builtin_results():
 @pytest.mark.parametrize("name, verdict", [
     ("req_ts_012_600V.json", "PASS"), ("req_ts_012_450V_sizing.json", "FAIL"),
     ("req_ts_012_10s_without_rating.json", "UNKNOWN"), ("req_ts_012_10s_with_example_rating.json", "UNKNOWN"),
-    ("regen_100Nm_12000rpm.json", "FAIL"), ("vdc_range_550_650.json", "UNKNOWN"),
+    ("regen_100Nm_12000rpm.json", "FAIL"), ("vdc_range_550_650.json", "PASS"),   # certified from the low end
 ])
 def test_example_cases(name, verdict):
     rec = S.evaluate_case(json.loads((EX / "cases" / name).read_text(encoding="utf-8")))

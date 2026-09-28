@@ -504,6 +504,44 @@ class Project:
         return self.data("safety").get("safe_state_rules") or []
 
 
+# -- page edits back into the project ---------------------------------------------------------------------------
+
+CONTROLLER_KEYS_IN_MODULE_SPEC = ("fsw_kHz", "modulation", "deadtime_us")
+
+
+def module_section_from_spec(spec: dict, base: dict | None, controller: dict | None = None) -> tuple:
+    """An engine-form module (a page's module: device data + the controller's fsw / modulation / dead time + Rth)
+    -> (module section data, notes).  The controller settings are not module data: they are left out and a note
+    names any that differ from the project's controller.  The thermal path keeps its Foster network while Rth is
+    unchanged; a changed Rth drops it (a network for another Rth would be two thermal paths of one module)."""
+    base = copy.deepcopy(base or {})
+    data = {k: copy.deepcopy(v) for k, v in spec.items()
+            if k not in CONTROLLER_KEYS_IN_MODULE_SPEC + ("Rth_K_per_W", "T_ref_C")}
+    notes = []
+    c = controller or {}
+    for k in CONTROLLER_KEYS_IN_MODULE_SPEC:
+        want = c.get(k)
+        if k in spec and want is not None and spec[k] != want:
+            notes.append(f"{k} {spec[k]!r} is a controller setting (project controller: {want!r}) - not applied")
+    tp = copy.deepcopy(base.get("thermal_path") or {})
+    rth = spec.get("Rth_K_per_W")
+    if rth not in (None, ""):
+        if tp.get("Rth_K_per_W") is not None and abs(float(tp["Rth_K_per_W"]) - float(rth)) > 1e-12 * max(1.0, float(rth)):
+            if tp.get("foster"):
+                notes.append(f"Rth {tp['Rth_K_per_W']:g} -> {float(rth):g} K/W: the Foster network of the old path is "
+                             "removed (declare the network of the new path for transient analyses)")
+                tp.pop("foster", None)
+        tp["Rth_K_per_W"] = float(rth)
+    if spec.get("T_ref_C") is not None:
+        tp["T_ref_C"] = spec["T_ref_C"]
+    if not tp:
+        raise InputValidationError("the module needs its junction-to-coolant Rth to enter the project",
+                                   field="Rth_K_per_W")
+    data["thermal_path"] = tp
+    SECTIONS["module"].validate(data)
+    return data, notes
+
+
 # -- files ----------------------------------------------------------------------------------------------------
 
 
@@ -851,9 +889,10 @@ def diff_projects(a: Project, b: Project) -> dict:
 
 # desktop task keys / CLI names -> analysis
 TASK_ANALYSIS = {
-    "decision": "decision", "decision-env": "operating", "explorer": "operating", "trajectory": "operating",
+    "decision": "decision", "requirement_set": "decision", "decision-env": "operating", "explorer": "operating",
+    "trajectory": "operating",
     "performance": "operating", "design-sweep": "operating", "design-dom": "operating",
-    "thermal": "thermal_duration", "ftti": "ftti", "safe_state": "safe_state", "discharge": "discharge",
+    "thermal": "thermal_duration", "thermal_cycle": "thermal_duration", "ftti": "ftti", "safe_state": "safe_state", "discharge": "discharge",
     "passive": "discharge", "overvoltage": "discharge", "protection": "protection", "asc": "asc",
     "module": "module_losses", "ripple": "dc_link_ripple", "lifetime": "lifetime",
     "efficiency": "efficiency", "efficiency_map": "efficiency", "efficiency_mission": "efficiency",

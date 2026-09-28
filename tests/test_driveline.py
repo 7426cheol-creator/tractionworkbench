@@ -6,6 +6,7 @@ closed loop, the analytic clipping integral, and a residual check of the delay r
 """
 
 import cmath
+import copy
 import math
 
 import numpy as np
@@ -140,18 +141,67 @@ def test_api_example_compares_the_four_variants_on_the_same_maneuver():
     assert set(v) == {"off", "shaping", "feedback", "combined"}
     assert v["off"]["metrics"]["peak_vehicle_jerk_m_s3"] > v["shaping"]["metrics"]["peak_vehicle_jerk_m_s3"]
     assert v["shaping"]["metrics"]["t_to_90_s"] > v["off"]["metrics"]["t_to_90_s"]      # the cost of shaping
-    # measured on the REQUESTED target (review R2 CT-03): the speed feedback leaves a steady torque deficit, so it
-    # does not settle on the request - a lower delivered response is never credited as a jerk improvement
-    assert v["feedback"]["metrics"]["achieved_fraction"] < 0.95 and v["feedback"]["metrics"]["t_settle_s"] is None
-    assert any("settling time" in x for x in v["feedback"]["reasons"])
+    # the example speed feedback runs through a second-order washout: no steady deficit, it settles on the REQUESTED
+    # target; alone it cannot remove the first jerk peak of the step, shaping + feedback meets every target
+    assert v["feedback"]["metrics"]["achieved_fraction"] == pytest.approx(1.0, abs=5e-3)
+    assert v["feedback"]["metrics"]["t_settle_s"] is not None
+    assert v["feedback"]["status"] == "INFEASIBLE" and any("jerk" in x for x in v["feedback"]["reasons"])
+    assert v["combined"]["status"] == "FEASIBLE", v["combined"]["reasons"]
     assert v["off"]["metrics"]["achieved_fraction"] == pytest.approx(1.0, abs=5e-3)
     assert v["feedback"]["stability"]["stable"]
+    # a first-order high-pass keeps a steady deficit: measured on the REQUESTED target (review R2 CT-03) it never
+    # settles, and a lower delivered response is never credited as a jerk improvement
+    b1 = copy.deepcopy(api.EXAMPLE_DRIVELINE)
+    b1["variants"]["feedback"]["damping"]["hpf_order"] = 1
+    f1 = api.driveline(b1)["variants"]["feedback"]
+    assert f1["metrics"]["achieved_fraction"] < 0.95 and f1["metrics"]["t_settle_s"] is None
+    assert any("settling time" in x for x in f1["reasons"]) and any("closed form" in n for n in f1["notes"])
+    b1["variants"]["feedback"]["damping"]["hpf_order"] = 3
+    with pytest.raises(InputValidationError):
+        api.driveline(b1)
     assert "not an efficiency gain" in v["shaping"]["loss_note"]
     assert r["window"]["source"].startswith("policy capability")
     s = api.driveline_stability({})
     assert any(not x["stable"] for row in s["grid"] for x in row) and any(x["stable"] for row in s["grid"] for x in row)
     with pytest.raises(InputValidationError):
         D.Driveline(0.2, 2.0, 3000.0, 2.0, 1.0, basis="")
+
+
+def test_speed_highpass_steady_deficit_matches_the_closed_form_and_the_washout_removes_it():
+    """Independent oracle (computed here, not by the code under test): a speed ramp through one backward-Euler
+    high-pass settles at a / omega_c; with the correction fed back a = (T - Kd a / omega_c) / J, so the steady torque
+    deficit is Kd T / (omega_c J + Kd).  The second-order washout returns to the request."""
+    dl = api.driveline_from_dict(api.EXAMPLE_DRIVELINE["driveline"])
+    r = dl.referred()
+    J = r["Jm"] + r["Jl"]
+    Kd, fc, T1 = 1.5, 2.0, 150.0
+    wc = 2 * math.pi * fc
+    expected = -Kd * T1 / (wc * J + Kd)
+    man = D.Maneuver(20.0, T1, 0.05, 2.0, 2000.0, window_Nm=(-500.0, 500.0))
+    for order, want in ((1, expected), (2, 0.0)):
+        ctl = D.Controller(1e-3, 2e-3, 1.5e-3, damping=D.Damping("motor_speed_hpf", Kd, fc, hpf_order=order))
+        sim = D.simulate(dl, ctl, man)
+        assert sim["T_act"][-1] - T1 == pytest.approx(want, abs=2e-3)
+        assert D.steady_hpf_correction(dl, ctl.damping, T1)["correction_Nm"] == pytest.approx(want, abs=1e-12)
+    assert D.steady_hpf_correction(dl, D.Damping("relative_speed", Kd), T1)["correction_Nm"] == 0.0
+    with pytest.raises(InputValidationError):
+        D.Damping("motor_speed_hpf", Kd, fc, hpf_order=3)
+
+
+def test_washout_sampled_stability_verdict_agrees_with_the_simulated_oscillation():
+    """The eigenvalue verdict of the sampled loop with the two-stage high-pass (extra filter state) against the
+    simulated twist oscillation: it grows when the verdict is unstable and decays when stable."""
+    dl = api.driveline_from_dict(api.EXAMPLE_DRIVELINE["driveline"])
+    man = D.Maneuver(20.0, 150.0, 0.05, 1.0, 2000.0, window_Nm=None)
+    for Kd, delay_ms, stable in ((1.5, 2.0, True), (8.0, 12.0, False)):
+        ctl = D.Controller(1e-3, delay_ms * 1e-3, 1.5e-3,
+                           damping=D.Damping("motor_speed_hpf", Kd, 2.0, hpf_order=2))
+        assert D.sampled_eigenvalues(dl, ctl)["stable"] is stable
+        sim = D.simulate(dl, ctl, man)
+        t, twist = sim["t_s"], sim["omega_m"] - sim["omega_l"]
+        early = np.ptp(twist[(t > 0.3) & (t < 0.5)])
+        late = np.ptp(twist[(t > 0.8) & (t < 1.0)])
+        assert bool(late < early) == stable
 
 
 # ------------------------------------------------------------------ addendum 7.2 mandatory failure cases (damping side)

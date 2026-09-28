@@ -16,11 +16,11 @@ from pathlib import Path
 from .. import __version__, api
 
 EXPECTED = {"ts012_600": "PASS", "ts012_450": "FAIL", "ts012_10s": "UNKNOWN", "regen_80": "PASS",
-            "regen_100": "FAIL", "dis_350": "FAIL", "range": "UNKNOWN", "stall": "PASS"}
+            "regen_100": "FAIL", "dis_350": "FAIL", "range": "PASS", "stall": "PASS"}      # range: monotonicity certificate
 
 
 def run_self_test(app, out_dir) -> int:
-    from .main_window import MainWindow
+    from .main_window import PAGE_INFO, MainWindow
     from .worker import TaskRunner
 
     out = Path(out_dir)
@@ -67,11 +67,23 @@ def run_self_test(app, out_dir) -> int:
                 check("pdf_report", pdf.is_file() and pdf.stat().st_size > 50_000, f"{pdf.stat().st_size} bytes")
                 page.tabs.setCurrentIndex(0)
 
-        from .main_window import PAGES
-        rows = {k: i for i, (k, *_rest) in enumerate(PAGES)}
+        # PWM consequences at the decision point (review priority 3) and a Vdc stated as battery OCV (priority 2)
+        page.presets.setCurrentIndex(0)
+        page.run()
+        pr = (page.result or {}).get("pwm_risk") or {}
+        check("decision:pwm_risk", pr.get("status") == "EVALUATED" and pr["instantaneous_peak"]["bound_A"] >
+              pr["fundamental"]["i_peak_A"] and any("PWM" in page.an_tabs.tabText(i) for i in range(page.an_tabs.count())),
+              pr.get("status"))
+        page.vdc_kind.setCurrentIndex(page.vdc_kind.findData("battery_ocv"))
+        page.src_R.setValue(20.0)
+        page.run()
+        sc_ = ((page.result or {}).get("record") or {}).get("source_coupling") or {}
+        check("decision:battery_ocv", sc_.get("status") == "RESOLVED" and sc_["V_terminal_V"][0] < 600.0
+              and any("battery OCV" in q for q in page.result["record"]["verdict"]["qualifiers"]), sc_.get("status"))
+        page.vdc_kind.setCurrentIndex(page.vdc_kind.findData("inverter_dc_terminal"))
 
         def visit(key, _row, actions, shots):
-            win.nav.setCurrentRow(rows[key])            # rows follow PAGES (pages can be inserted)
+            win.show_page(key)
             pg = win.pages[key]
             for a in actions:
                 getattr(pg, a)() if isinstance(a, str) else a(pg)
@@ -95,16 +107,44 @@ def run_self_test(app, out_dir) -> int:
         check("performance", perf.res is not None and perf.res["map"]["status"].size > 0)
         des = visit("design", 4, ["run1", "run2"], [(None, "12_design_sizing"), (lambda pg: pg.tabs.setCurrentIndex(1), "13_design_dominance")])
         check("design", des.p_curve._draw is not None and des.p_dom._draw is not None)
+        # requirement set (review 6198099 user features): the template judged on the project, then candidates
+        rs = visit("requirement_set", 4, ["check_reading", "run"],
+                   [(None, "12a_requirement_set"), (lambda pg: pg.tabs.setCurrentIndex(1), "12b_requirement_priorities")])
+        sm = rs.result["set"]["summary"] if rs.result else {}
+        check("requirement_set", (sm.get("total"), sm.get("PASS"), sm.get("FAIL"), sm.get("UNKNOWN")) == (5, 3, 1, 1)
+              and rs.detail.toPlainText().startswith("1. ") and "REQ-A" in rs.detail.toPlainText(), sm)
+        rs.cands.setPlainText("charge 150 kW: charge_power_max_W=150000, charge_current_max_A=400\n"
+                              "current 250 A: I_peak_max_A=250")
+        rs.run()
+        cs = {c["name"]: c for c in ((rs.result or {}).get("candidates") or {}).get("candidates", [])}
+        check("requirement_set:candidates", cs.get("charge 150 kW", {}).get("improves") == ["REQ-B"]
+              and set(cs.get("current 250 A", {}).get("worsens", [])) == {"REQ-A", "REQ-C", "REQ-D", "REQ-E"},
+              {k: (c["improves"], c["worsens"]) for k, c in cs.items()})
+        rs.tabs.setCurrentIndex(2)
+        shot(win, "12c_requirement_candidates")
+        rs.tabs.setCurrentIndex(0)
+        rs.res_table.selectRow(1)
+        rs.open_in_decision()
+        got = page.result["record"] if page.result else {}
+        check("requirement_set:open", got.get("requirement", {}).get("req_id") == "REQ-B"
+              and got.get("verdict", {}).get("verdict") == "FAIL", got.get("requirement", {}).get("req_id"))
         saf = visit("safety", 5, ["run_ftti", "run_discharge", "run_passive", "run_overvoltage", "run_safe"],
                     [(None, "14_safety_ftti"), (lambda pg: pg.tabs.setCurrentIndex(1), "15_safety_dclink"),
                      (lambda pg: pg.dc_tabs.setCurrentIndex(1), "15a_safety_passive"),
                      (lambda pg: pg.dc_tabs.setCurrentIndex(2), "15b_safety_overvoltage"),
                      (lambda pg: pg.tabs.setCurrentIndex(2), "16_safety_state")])
         check("safety", all(p._draw is not None for p in (saf.p_ftti, saf.p_dis, saf.p_pas, saf.p_ov, saf.p_safe)))
-        th = visit("thermal", 6, ["run"], [(None, "17_thermal"), (lambda pg: pg.tabs.setCurrentIndex(1), "17b_thermal_network"),
-                                           (lambda pg: pg.tabs.setCurrentIndex(2), "17c_thermal_zth"),
-                                           (lambda pg: pg.tabs.setCurrentIndex(3), "17d_thermal_editor")])
+        th = visit("thermal", 6, ["run"], [(None, "17_thermal"), (lambda pg: pg.tabs.setCurrentIndex(2), "17b_thermal_network"),
+                                           (lambda pg: pg.tabs.setCurrentIndex(3), "17c_thermal_zth"),
+                                           (lambda pg: pg.tabs.setCurrentIndex(4), "17d_thermal_editor")])
         check("thermal", th.plot._draw is not None and "s" in th.headline.text(), th.headline.text())
+        th.run_cycle()                                   # repeated load (review 6198099 priority 1)
+        shot(win, "17e_thermal_repeated_load")
+        cy = th.last_cycle or {}
+        check("thermal:repeated_load", th.p_cyc._draw is not None and (cy.get("periodic") or {}).get("reached")
+              and cy.get("first_limit") is not None and (cy.get("allowed") or {}).get("pulse_duration_s", 0) > 0,
+              (cy.get("claim") or {}).get("status"))
+        th.tabs.setCurrentIndex(0)
         t_ref = th.last["res"]["request"]["time_to_first_limit_s"]
         th.c_flow.setValue(5.0)
         th.run()
@@ -227,7 +267,8 @@ def run_self_test(app, out_dir) -> int:
         shot(win, "49_antijerk_variants")
         dv = (pw_.last_dl or {}).get("variants", {})
         check("antijerk:variants", set(dv) == {"off", "shaping", "feedback", "combined"}
-              and dv["off"]["metrics"]["peak_vehicle_jerk_m_s3"] > dv["combined"]["metrics"]["peak_vehicle_jerk_m_s3"],
+              and dv["off"]["metrics"]["peak_vehicle_jerk_m_s3"] > dv["combined"]["metrics"]["peak_vehicle_jerk_m_s3"]
+              and dv["combined"]["status"] == "FEASIBLE",           # shaping + washout feedback meets the targets
               str({k: v["status"] for k, v in dv.items()}))
         pw_.run_stability()
         shot(win, "50_antijerk_stability")
@@ -274,6 +315,68 @@ def run_self_test(app, out_dir) -> int:
               and win.banners["protection"].property("state") != "stale", win.banners["emi"].text())
         win.state.set_project(builtin_project())
         check("project:restore", win.banners["emi"].property("state") != "stale" and emi_pg.e_td.value() == 1.5)
+        # datasheet import (the example spec: WebPlotDigitizer + long-format CSV) -> the project's module section
+        from .pages.model import examples_dir
+        exd = examples_dir()
+        ds_path = exd / "datasheets" / "module_example.json" if exd else None
+        if ds_path is not None and ds_path.is_file():
+            dlg = pj.import_datasheet(str(ds_path))
+            dlg.resize(1100, 720)
+            dlg.show()
+            app.processEvents()
+            dlg.grab().save(str(out / "18d_datasheet_import.png"))
+            dlg.apply()
+            prov = win.state.project.sections["module"].provenance
+            pw_pg = visit("power", 0, [], [])
+            check("datasheet:module", win.state.project.modified and prov["origin"] == "supplier"
+                  and "EXM-750-820" in pw_pg.m_src.text() and not prov["qualified"], prov.get("source"))
+        else:
+            check("datasheet:module", False, "examples/datasheets not found")
+        win.state.set_project(builtin_project())
+        # datasheet VALUE ENTRY (representative values typed by hand): each form, filled with its example, builds the
+        # same section as the example spec file; the motor then replaces the project's drive
+        if exd is not None and (exd / "datasheets" / "motor_example.json").is_file():
+            from .. import datasheet as DS
+            from .datasheet_entry_dialog import EXAMPLES
+            ent = pj.enter_datasheet("module")
+            ent.resize(1320, 860)
+            ent.show()
+            same = {}
+            for kind, name in EXAMPLES.items():
+                ent.fill_example(kind)
+                spec, base_dir = DS.load_spec(exd / "datasheets" / name)
+                ref, rres = DS.apply(win.state.project, spec, base_dir)
+                same[kind] = (ent.new_project is not None and ent.new_project.sections[ent.result["section"]].digest
+                              == ref.sections[rres["section"]].digest)
+                if kind in ("module", "motor"):
+                    app.processEvents()
+                    ent.grab().save(str(out / f"18f_datasheet_entry_{kind}.png"))
+            check("datasheet:entry_forms", all(same.values()), same)
+            ent.set_kind("motor")
+            ok = ent.apply()
+            prov = win.state.project.sections["drive"].provenance
+            mdl = visit("model", 7, [], [])
+            check("datasheet:entry_motor", ok and prov["origin"] == "supplier" and win.state.drive.drive_id == "EXMOT-200"
+                  and "EXMOT-200" in mdl.title.text(), win.state.drive.drive_id)
+            win.state.set_project(builtin_project())
+        else:
+            check("datasheet:entry_forms", False, "examples/datasheets not found")
+        # MathWorks transfer package: export of the active project; nothing has run on a target yet
+        mw_dir = out / "mathworks_package"
+        if mw_dir.exists():
+            import shutil
+            shutil.rmtree(mw_dir)
+        mw = pj.mathworks_package(str(mw_dir))
+        mw.show()
+        app.processEvents()
+        mw.grab().save(str(out / "18e_mathworks_package.png"))
+        v = mw.verification or {}
+        check("mathworks:package", v.get("package_check") == "PASS" and v.get("parity") == "NOT_RUN"
+              and v.get("model_generation") == "NOT_RUN" and not v.get("linked_as_current_evidence")
+              and (mw_dir / "matlab" / "+twb" / "runAll.m").is_file(), v.get("problems"))
+        mw.close()
+        html = win.page_guide_html()
+        check("guide", all(PAGE_INFO[k]() in html for k in PAGE_INFO) and win.current_page() in PAGE_INFO)
         vv = visit("verification", 8, ["run"], [(None, "19_verification")])
         check("acceptance", "PASS" in vv.summary.text() and "MISMATCH" not in vv.summary.text(), vv.summary.text())
         xp = vv.export_exchange(str(out / "twb_exchange.json"))
@@ -281,7 +384,7 @@ def run_self_test(app, out_dir) -> int:
         check("exchange:package", xj.get("schema") == "twb-exchange/1" and len(xj.get("fixtures", {})) >= 12)
         # flux-map drive: model switch + a decision on the D2 test drive
         win.state.set_drive({"builtin": "MANUFACTURED_FLUX_MAP_TEST_DRIVE"}, "flux map", "builtin")
-        win.nav.setCurrentRow(0)
+        win.show_page("decision")
         page.req_id.setText("FM-20")
         page.torque.setValue(20.0)
         page.speed.setValue(3000.0)
@@ -295,7 +398,7 @@ def run_self_test(app, out_dir) -> int:
         check("decision:flux_map", got in ("PASS", "FAIL", "UNKNOWN") and page.result["record"]["model"]["fidelity"] == "D2", got)
         page.tabs.setCurrentIndex(1)
         shot(win, "20_flux_map_decision")
-        win.set_theme("dark")
+        win.set_theme("dark", persist=False)
         shot(win, "21_dark_theme")
         errs = app.property("twb_errors") or []
         check("no_error_dialogs", not errs, "; ".join(errs))

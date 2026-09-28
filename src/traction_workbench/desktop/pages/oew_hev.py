@@ -152,8 +152,9 @@ class OewHevPage(QWidget):
         f = QFormLayout(g)
         self.o_n = number(ex["speed_rpm"], 0, 30000, "rpm", 0, 500)
         self.o_T = number(ex["torque_Nm"], -5000, 5000, "N·m", 2, 10)
-        self.o_mod = check(tr("브리지별 데이터시트 모듈 손실 (예시 모듈 + 예시 E∝V 스케일링)",
-                              "per-bridge datasheet module losses (example module + example E~V scaling)"), True)
+        self.o_mod = check(tr("브리지별 데이터시트 모듈 손실", "per-bridge datasheet module losses"), True,
+                           tr("프로젝트 모듈 + 예시 E∝V 스케일링으로 브리지마다 손실을 계산합니다.",
+                              "each bridge's losses from the project module with the example E~V scaling"))
         self.o_fsw = number(ex["fsw_kHz"], 0.5, 200, "kHz", 2, 1)
         self.o_shift = number(0.0, 0, 1, "", 2, 0.25, tip=tr("브리지 B 캐리어 위상 (주기 비율)", "bridge B carrier phase (fraction)"))
         for lab, w in ((tr("속도", "speed"), self.o_n), (tr("축 토크", "shaft torque"), self.o_T), ("", self.o_mod),
@@ -286,7 +287,7 @@ class OewHevPage(QWidget):
                      (tr("상 peak / RMS", "phase peak / RMS"),
                       f"{fmt(w['currents']['phase_peak_A'])} A / {fmt(w['currents']['phase_rms_A'][0])} A "
                       f"({tr('브리지당 한도', 'per-bridge limit')} {fmt(w['currents']['bridge_limit_A'])} A)"),
-                     (tr("영상분", "zero sequence"), str({k: (fmt(v) if isinstance(v, float) else v) for k, v in w["zero_sequence"].items()})),
+                     (tr("영상분", "zero sequence"), w["zero_sequence"]),
                      (tr("토크 T_em / T_shaft / <T0>", "torque T_em / T_shaft / <T0>"),
                       f"{fmt(op['Tem_Nm'])} / {fmt(op['Tshaft_Nm'])} / {fmt(op['T0_mean_Nm'])} N·m"),
                      (tr("동손 dq / 영상분", "copper dq / zero sequence"), f"{fmt(op['Pcu_dq_W'])} W / {fmt(op['Pcu_zero_seq_W'])} W")]
@@ -298,7 +299,7 @@ class OewHevPage(QWidget):
                              f"({lo.get('model')}; {'established' if lo.get('established') else 'NOT established: ' + '; '.join(lo.get('problems', []))}),"
                              f" P_dc {fmt(bb['P_dc_W'])} W, duty {fmt(bb['duty_min'], 3)}–{fmt(bb['duty_max'], 3)}"))
             rows.append((tr("순환 전력", "circulating power"), f"{fmt(w['circulating_power_W'])} W"))
-            rows.append((tr("항등식 잔차", "identity residuals"), str({k: f"{v:.2e}" for k, v in w["identities"].items()})))
+            rows.append((tr("항등식 잔차", "identity residuals"), {k: f"{v:.2e}" for k, v in w["identities"].items()}))
             for c in w["claims"]:
                 rows.append((c["name"], f"{c['status']} — {c.get('detail', '')}"))
             rows.append((tr("모델 밖", "not modelled"), ", ".join(w["not_modelled"])))
@@ -573,7 +574,7 @@ class OewHevPage(QWidget):
                              (tr("모델 영역 끝", "model domain end"),
                               "—" if res.get("domain_end_s") is None else f"{fmt(res['domain_end_s'])} s " +
                               tr("(정전력 싱크가 커패시터를 비움)", "(the constant-power sink empties the capacitor)")),
-                             (tr("장부", "ledger"), str(res["ledger"]))])
+                             (tr("장부", "ledger"), res["ledger"])])
 
     def _show_pl(self, res):
         self.pl_btn.setEnabled(True)
@@ -582,9 +583,9 @@ class OewHevPage(QWidget):
         self.h_tabs.setCurrentWidget(self.p_pl)
         ch = res["check"]
         self.t_hev.set_rows([(tr("판정", "check"), f"{ch['status']} — {ch['detail']}"),
-                             (tr("속도 [rpm]", "speeds [rpm]"), str({k: round(v, 1) for k, v in res["speeds_rpm"].items()})),
-                             (tr("토크 [N·m]", "torques [N·m]"), str({k: round(v, 2) for k, v in res["torques_Nm"].items()})),
-                             (tr("전력 [W]", "powers [W]"), str({k: round(v, 1) for k, v in res["powers_W"].items()})),
+                             (tr("속도 [rpm]", "speeds [rpm]"), res["speeds_rpm"]),
+                             (tr("토크 [N·m]", "torques [N·m]"), res["torques_Nm"]),
+                             (tr("전력 [W]", "powers [W]"), res["powers_W"]),
                              (tr("규약", "convention"), res["convention"])])
 
     def redraw(self):

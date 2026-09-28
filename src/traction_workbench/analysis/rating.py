@@ -16,11 +16,31 @@ Typed duration semantics (independent review F04):
   state is allowed for any D <= D_r from that state) or by a continuous rating
   when the requirement declares a start that is not hotter than that
   equilibrium (cold / equilibrium at the coolant);
-* the result does not depend on the order of the envelopes: every applicable
+* evidence has a DIRECTION (engineering review 6198099, F1): a rating of the
+  same duration answers both ways, a longer (or continuous) rating is POSITIVE
+  evidence only - a torque inside it is allowed for the shorter time, a torque
+  above it says nothing about the shorter time (a 30 s / 100 N*m rating does
+  not exclude 150 N*m for 10 s), so its exceedance is no conclusion, never
+  RATING_NOT_MET and never a conflict with a shorter rating;
+* ``limit_semantics``: a ``rated_limit`` table is the complete rated limit at
+  its own duration (above it: RATING_NOT_MET), a ``demonstrated_region`` only
+  shows where the torque holds (above it: no conclusion);
+* ``linear_declared`` compares with the declared linear limit between the
+  speed points (review F2: 1000 rpm / 200, 2000 rpm / 100 N*m -> 150 N*m at
+  1500 rpm, so 175 N*m is not rated); ``conservative`` keeps the bracket
+  (FEASIBLE below the smaller, RATING_NOT_MET above the larger value);
+* the result does not depend on the order of the envelopes: every conclusive
   envelope of the highest declared priority is evaluated; equally
   authoritative envelopes that disagree give UNKNOWN (CONFLICTING_EVIDENCE);
 * outside a validated envelope the requirement is not *rated*
   (RATING_NOT_MET); that is not a proof of physical impossibility;
+* binding to the product (review G1): ``applies_to`` names the drive (id,
+  revision, content SHA-256) the rating is for; a declared binding that does
+  not match the evaluated drive makes the envelope inapplicable; an envelope
+  without a binding, or one that leaves a required condition (coolant,
+  Vdc, and for a finite rating the initial state) neither stated nor declared
+  irrelevant, is still usable for an early review but every claim it supports
+  says APPLICABILITY_UNCONFIRMED - it is never promoted to product evidence;
 * approval is an explicit TYPED state (second review R2, D-R2-01), default not
   approved, tied to an evidence identity (document id and revision) and a
   declared intended use.  A synthetic / estimated origin, a missing, rejected,
@@ -45,6 +65,11 @@ from ..errors import InputValidationError
 from ..validation import finite as _finite
 from ..models.provenance import DataOrigin, Provenance
 from ..status import Claim, Evidence, EvidenceKind, Reason, Status
+
+
+LIMIT_SEMANTICS = ("rated_limit", "demonstrated_region")
+BINDING_KEYS = ("drive_id", "drive_revision", "drive_content_sha256")
+REQUIRED_CONDITIONS = ("coolant_temp_C", "Vdc_V")          # + initial_state for a finite rating
 
 
 class ApprovalState(str, Enum):
@@ -98,10 +123,24 @@ class RatingEnvelope:
     evidence_kind: str = "supplier_rated"
     priority: int = 0                  # authority when several envelopes apply (higher wins); ties must agree
     approval: RatingApproval | None = None   # typed approval; None = not approved (a model experiment)
+    limit_semantics: str = "rated_limit"     # rated_limit | demonstrated_region (see the module notes)
+    applies_to: tuple = ()             # (("drive_id", ...), ("drive_revision", ...), ("drive_content_sha256", ...))
+    control_policy: str = ""           # the control the rating was determined with (e.g. "minimum_current", "MTPA")
+    irrelevant_conditions: tuple = ()  # required condition keys the rating declares irrelevant (with its own basis)
 
     def __post_init__(self):
         if self.approval is not None and not isinstance(self.approval, RatingApproval):
             raise InputValidationError("approval must be a RatingApproval", field="approval")
+        if self.limit_semantics not in LIMIT_SEMANTICS:
+            raise InputValidationError(f"limit_semantics must be one of {LIMIT_SEMANTICS}", field="limit_semantics")
+        bind = dict(self.applies_to)
+        unknown = sorted(set(bind) - set(BINDING_KEYS))
+        if unknown:
+            raise InputValidationError(f"applies_to keys must be among {BINDING_KEYS} (got {unknown})",
+                                       field="applies_to")
+        object.__setattr__(self, "applies_to", tuple((k, str(v).strip()) for k, v in self.applies_to
+                                                     if str(v).strip()))
+        object.__setattr__(self, "irrelevant_conditions", tuple(str(k) for k in self.irrelevant_conditions))
         for key, want in self.conditions:
             vals = want if isinstance(want, tuple) else (want,)
             for v in vals:
@@ -152,6 +191,10 @@ class RatingEnvelope:
             "evidence_kind": self.evidence_kind,
             "priority": self.priority,
             "approval": None if self.approval is None else self.approval.to_dict(),
+            "limit_semantics": self.limit_semantics,
+            "applies_to": dict(self.applies_to),
+            "control_policy": self.control_policy,
+            "irrelevant_conditions": list(self.irrelevant_conditions),
         }
 
 
@@ -205,27 +248,58 @@ def approval(env: RatingEnvelope) -> tuple[bool, str]:
                   f"'{a.intended_use}'")
 
 
-def applicability(env: RatingEnvelope, duration_s: float, stated_conditions: dict) -> tuple[bool, str]:
-    """Can this envelope answer a requirement of this duration (typed finite / continuous semantics)?"""
+def applicability(env: RatingEnvelope, duration_s: float, stated_conditions: dict) -> tuple[bool, str, str]:
+    """Can this envelope answer a requirement of this duration, and in which direction?
+
+    -> (applicable, why, direction): ``"both"`` for a rating of the requirement's own duration, ``"positive"`` for a
+    longer or continuous rating (a torque inside it is allowed for the shorter time; a torque above it is not
+    excluded - review F1)."""
     req_inf = math.isinf(duration_s)
     env_inf = math.isinf(env.duration_s)
     if req_inf:
         return (env_inf, "continuous rating for a continuous requirement" if env_inf else
-                f"a finite {env.duration_text} rating cannot establish a continuous requirement")
+                f"a finite {env.duration_text} rating cannot establish a continuous requirement", "both")
     if env_inf:
         start = str(stated_conditions.get("initial_state") or "").strip().lower()
         if start in COLD_STARTS:
             return True, (f"continuous rating covers {duration_s:g} s from a declared '{start}' start "
-                          f"(not hotter than the rated equilibrium)")
+                          f"(not hotter than the rated equilibrium; positive evidence only)"), "positive"
         return False, ("a continuous rating covers a finite duration only from a declared start that is not hotter "
-                       "than the rated equilibrium (state initial_state: cold / equilibrium_at_coolant)")
+                       "than the rated equilibrium (state initial_state: cold / equilibrium_at_coolant)"), "positive"
     tol = 1e-9 * max(1.0, duration_s)
     if abs(env.duration_s - duration_s) <= tol:
-        return True, f"{env.duration_text} rating for a {duration_s:g} s requirement"
+        return True, f"{env.duration_text} rating for a {duration_s:g} s requirement", "both"
     if env.duration_s > duration_s:
         return True, (f"{env.duration_text} rating covers {duration_s:g} s (duration monotonicity from the same "
-                      f"declared initial state)")
-    return False, f"a {env.duration_text} rating is shorter than the required {duration_s:g} s"
+                      f"declared initial state; positive evidence only)"), "positive"
+    return False, f"a {env.duration_text} rating is shorter than the required {duration_s:g} s", "both"
+
+
+def binding(env: RatingEnvelope, product: dict | None) -> tuple[str, list[str]]:
+    """Is this envelope bound to the evaluated product and its conditions (review G1)?
+
+    -> ("confirmed" | "mismatch" | "unconfirmed", messages).  A declared binding that differs from the product is a
+    mismatch (the envelope does not apply); a missing binding or an unaddressed required condition leaves the
+    applicability unconfirmed (usable for an early review, said on every claim)."""
+    msgs = []
+    bind = dict(env.applies_to)
+    prod = {"drive_id": None, "drive_revision": None, "drive_content_sha256": None, **(product or {})}
+    bad = [f"{k} {bind[k]!r} != this product's {prod[k]!r}" for k in BINDING_KEYS
+           if k in bind and prod.get(k) is not None and str(prod[k]) != bind[k]]
+    if bad:
+        return "mismatch", [f"{env.envelope_id}: rating for another product / revision ({'; '.join(bad)})"]
+    if not bind:
+        msgs.append(f"{env.envelope_id}: names no product (applies_to: drive_id / drive_revision / "
+                    "drive_content_sha256)")
+    elif product is None or not any(k in bind and prod.get(k) is not None for k in BINDING_KEYS):
+        msgs.append(f"{env.envelope_id}: its product binding could not be checked against the evaluated drive")
+    need = REQUIRED_CONDITIONS + (() if math.isinf(env.duration_s) else ("initial_state",))
+    have = {k for k, _v in env.conditions} | set(env.irrelevant_conditions)
+    open_ = [k for k in need if k not in have]
+    if open_:
+        msgs.append(f"{env.envelope_id}: required condition(s) neither stated nor declared irrelevant: "
+                    + ", ".join(open_))
+    return ("unconfirmed" if msgs else "confirmed"), msgs
 
 
 def _evaluate_envelope(env: RatingEnvelope, speed_rpm: float, torque_Nm: float, stated: dict):
@@ -267,27 +341,32 @@ def _evaluate_envelope(env: RatingEnvelope, speed_rpm: float, torque_Nm: float, 
                                               "linear between the declared points (the supplier declares linearity)"))
     if mag <= lim:
         return (Status.FEASIBLE, ev), None
-    if mag > opt:
+    if env.interpolation == "linear_declared" or mag > opt:     # the declared line is the limit (review F2)
         return (Status.INFEASIBLE, ev), None
     return (Status.UNKNOWN, ev), None
 
 
 def duration_claim(envelopes, duration_s: float | None, speed_rpm: float, torque_Nm: float,
-                   stated_conditions: dict) -> Claim | None:
+                   stated_conditions: dict, product: dict | None = None) -> Claim | None:
     """Duration claim for a shaft-torque request; None when no duration was requested.
 
-    ``torque_Nm`` must be the torque of the *same witness* as the static claim it is combined with.
+    ``torque_Nm`` must be the torque of the *same witness* as the static claim it is combined with.  ``product``
+    ({"drive_id", "drive_revision", "drive_content_sha256"}) is the evaluated drive the envelopes must be bound to.
     """
     if duration_s is None:
         return None
     dtext = "continuous" if math.isinf(duration_s) else f"{duration_s:g} s"
     q = f"{torque_Nm:g} N*m at {speed_rpm:g} rpm sustained for {dtext}"
     scope = "external rating envelope lookup under matching conditions only"
-    notes, results, experiments = [], [], []
+    notes, results, experiments, undecided, unconfirmed = [], [], [], [], []
     for env in envelopes:
-        app, why = applicability(env, duration_s, stated_conditions)
+        app, why, direction = applicability(env, duration_s, stated_conditions)
         if not app:
             notes.append(f"{env.envelope_id}: {why}")
+            continue
+        bstate, bmsgs = binding(env, product)
+        if bstate == "mismatch":
+            notes.extend(bmsgs)
             continue
         res, note = _evaluate_envelope(env, speed_rpm, torque_Nm, stated_conditions)
         if res is None:
@@ -298,8 +377,33 @@ def duration_claim(envelopes, duration_s: float | None, speed_rpm: float, torque
             experiments.append(f"{env.envelope_id}: {awhy}; as a model experiment it reads {res[0].value} "
                                f"({res[1].summary})")
             continue
-        results.append((env, res[0], res[1], why))
+        status, ev = res
+        if status is not Status.FEASIBLE:
+            # evidence direction (review F1): a longer / continuous rating only establishes torques inside it; a
+            # demonstrated region only shows where the torque holds - above either, nothing is concluded
+            if direction == "positive":
+                undecided.append((env, ev, f"{env.envelope_id}: the request is above this {env.duration_text} rating "
+                                           f"({ev.summary}); a longer rating is positive evidence for {dtext} only - "
+                                           f"it does not bound the {dtext} capability"))
+                continue
+            if env.limit_semantics == "demonstrated_region":
+                undecided.append((env, ev, f"{env.envelope_id}: outside the demonstrated region ({ev.summary}); a "
+                                           "demonstrated region is not a limit - nothing is concluded above it"))
+                continue
+        if bstate == "unconfirmed":
+            unconfirmed.extend(bmsgs)
+        results.append((env, status, ev, why))
+    ucq = (("applicability to this product / its conditions not confirmed (APPLICABILITY_UNCONFIRMED): "
+            + "; ".join(dict.fromkeys(unconfirmed)),) if unconfirmed else ())
     if not results:
+        if undecided:
+            return Claim("duration", Status.UNKNOWN, q, scope, None, time_horizon=dtext,
+                         reasons=(Reason.UNVALIDATED_DURATION,),
+                         evidence=tuple(ev for _e, ev, _n in undecided),
+                         qualifiers=("positive-only evidence: exceeding it is no conclusion",),
+                         detail=("no applicable rating decides the request: " + "; ".join(n for *_x, n in undecided)
+                                 + " - a rating of the requirement's own duration (or a thermal model qualified for "
+                                   "this question) is needed" + (f" ({'; '.join(notes)})" if notes else "")))
         detail = (f"no validated rating envelope applies to a {dtext} requirement; the fixed-temperature electrical "
                   f"result is not renamed a {dtext} rating")
         reasons = (Reason.UNVALIDATED_DURATION,) + ((Reason.MISSING_INPUT,) if notes else ())
@@ -312,23 +416,27 @@ def duration_claim(envelopes, duration_s: float | None, speed_rpm: float, torque
     group = [r for r in results if r[0].priority == top]
     feas = [r for r in group if r[1] is Status.FEASIBLE]
     bad = [r for r in group if r[1] is Status.INFEASIBLE]
-    evid = tuple(r[2] for r in group)
+    evid = tuple(r[2] for r in group) + tuple(ev for _e, ev, _n in undecided)
     ignored = [r[0].envelope_id for r in results if r[0].priority < top]
     quals = tuple(dict.fromkeys(r[3] for r in group)) + (
-        (f"lower-priority envelope(s) not used: {', '.join(ignored)}",) if ignored else ())
+        (f"lower-priority envelope(s) not used: {', '.join(ignored)}",) if ignored else ()) + tuple(
+        n for *_x, n in undecided) + ucq
     if feas and bad:
         return Claim("duration", Status.UNKNOWN, q, scope, None, time_horizon=dtext,
-                     reasons=(Reason.CONFLICTING_EVIDENCE,), evidence=evid, qualifiers=quals,
+                     reasons=(Reason.CONFLICTING_EVIDENCE,) + ((Reason.APPLICABILITY_UNCONFIRMED,) if ucq else ()),
+                     evidence=evid, qualifiers=quals,
                      detail="equally authoritative rating envelopes disagree (" +
                             ", ".join(f"{r[0].envelope_id}={r[1].value}" for r in group) +
                             "); declare the authoritative one (priority) - the order of the list does not decide")
     if feas:
         return Claim("duration", Status.FEASIBLE, q, scope, None, time_horizon=dtext, evidence=evid,
                      qualifiers=quals + tuple(f"envelope {r[0].envelope_id}" for r in feas),
-                     detail="inside a validated rating envelope at matching conditions")
+                     detail="inside a validated rating envelope at matching conditions"
+                            + (" (applicability to this product not confirmed)" if ucq else ""))
     if bad:
         return Claim("duration", Status.INFEASIBLE, q, scope, None, time_horizon=dtext,
-                     reasons=(Reason.RATING_NOT_MET,), evidence=evid, qualifiers=quals,
+                     reasons=(Reason.RATING_NOT_MET,) + ((Reason.APPLICABILITY_UNCONFIRMED,) if ucq else ()),
+                     evidence=evid, qualifiers=quals,
                      detail="above the validated rating envelope at matching conditions: the request is not rated "
                             "(no evidence that it is sustained); this is not a proof of physical impossibility")
     return Claim("duration", Status.UNKNOWN, q, scope, None, time_horizon=dtext,

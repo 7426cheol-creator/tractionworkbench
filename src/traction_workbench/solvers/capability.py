@@ -304,7 +304,8 @@ def physical_capability(ev: PolicyEvaluator, direction: int, include_dc: bool = 
         why = ("speed outside the declared domain" if not ev.speed_in_domain else
                "model not evaluable at this scenario" if not k.evaluable else "rotational loss model missing")
         return CapabilityResult(kind, direction, k.speed_rpm, k.Vdc, include_dc, None, None, False, tol, None,
-                                scope=scope, notes=(why,))
+                                scope=scope, notes=(why,),
+                                gate_messages=tuple(f"model validity: {i.message}" for i in k.issues))
     if k.kind == "constant_dq":
         wit, how = _physical_constant(k, direction, include_dc)
     else:
@@ -385,8 +386,11 @@ def policy_capability(ev: PolicyEvaluator, direction: int, samples: int | None =
     scope = scope_text(k)
     n = samples or s.capability_scan_samples
     if not ev.speed_in_domain or not k.evaluable or k.tau_rot is None:
+        why = ("speed outside the declared domain" if not ev.speed_in_domain else
+               "model not evaluable at this scenario" if not k.evaluable else "rotational loss model missing")
         return CapabilityResult("policy", direction, k.speed_rpm, k.Vdc, True, None, None, False, tol, None,
-                                scope=scope, notes=("scenario outside the declared domain or model incomplete",))
+                                scope=scope, notes=(why,),
+                                gate_messages=tuple(f"model validity: {i.message}" for i in k.issues))
     if k.issues:
         msgs = tuple(f"model validity: {i.message}" for i in k.issues)
         return CapabilityResult("policy", direction, k.speed_rpm, k.Vdc, True, None, None, False, tol, None,

@@ -15,7 +15,8 @@ Foster (R_i, tau_i) or Cauer (R_i, C_i; converted exactly to Foster), and
 stages may be declared flow-dependent: R_i(Q) = R_i,ref * (Q_ref / Q)^n.
 
 Loss-temperature feedback, changing losses during the transient and
-non-equilibrium initial states are not modelled.  A duration claim is
+non-equilibrium initial states are not modelled here (``thermal_cycle``
+adds repeated loads, hot starts and R_s(T) / T_j feedback on the same nodes).  A duration claim is
 FEASIBLE/INFEASIBLE only when the thermal model is *qualified* for the stated
 question (independent review F07): a ``validated`` flag is not evidence by
 itself - it needs a validation-evidence reference, a declared validity domain
@@ -110,7 +111,8 @@ class CauerNetwork:
         object.__setattr__(self, "R_K_per_W", r)
         object.__setattr__(self, "C_J_per_K", c)
 
-    def to_foster(self) -> FosterNetwork:
+    def modal(self) -> tuple:
+        """(lambda, V, C) of G v = lambda C v with V^T C V = I, columns ordered by increasing tau = 1 / lambda."""
         n = len(self.R_K_per_W)
         G = np.zeros((n, n))
         for i, r in enumerate(self.R_K_per_W):
@@ -122,10 +124,23 @@ class CauerNetwork:
                 G[i + 1, i] -= g
         C = np.diag(self.C_J_per_K)
         lam, V = eigh(G, C)                      # V^T C V = I
-        tau = 1.0 / lam
-        R = V[0, :] ** 2 / lam
-        order = np.argsort(tau)
-        return FosterNetwork(tuple(float(x) for x in R[order]), tuple(float(x) for x in tau[order]))
+        order = np.argsort(1.0 / lam)
+        return lam[order], V[:, order], C
+
+    def to_foster(self) -> FosterNetwork:
+        lam, V, _C = self.modal()
+        return FosterNetwork(tuple(float(x) for x in V[0, :] ** 2 / lam), tuple(float(x) for x in 1.0 / lam))
+
+    def foster_state(self, node_rise_K) -> np.ndarray:
+        """Foster-term states (the to_foster ordering) of PHYSICAL node temperature rises above the fluid: the modal
+        coordinates z = V^T C T, term i = V[0, i] z_i.  A Foster network alone has no physical inner nodes, so a
+        hot start from measured layer temperatures needs this (Cauer) form."""
+        T = np.asarray(node_rise_K, float)
+        if T.shape != (len(self.R_K_per_W),) or not np.all(np.isfinite(T)):
+            raise InputValidationError(f"a Cauer ladder with {len(self.R_K_per_W)} nodes needs that many node "
+                                       f"temperatures (junction first)", field="node_temperatures")
+        lam, V, C = self.modal()
+        return V[0, :] * (V.T @ C @ T)
 
 
 @dataclass(frozen=True)
@@ -135,6 +150,7 @@ class ThermalNode:
     limit_C: float
     loss_share: tuple            # (("inverter", 1/6), ("copper", 0.0), ...)
     station: str | None = None   # coolant-loop station whose fluid temperature is this node's reference
+    cauer: CauerNetwork | None = None   # the declared ladder when entered as Cauer (physical inner nodes)
 
     def __post_init__(self):
         object.__setattr__(self, "limit_C", _finite("limit_C", self.limit_C))
@@ -362,11 +378,13 @@ def torque_availability(drive: DriveModel, scenario: Scenario, model: ThermalMod
         return {**base, "static_capability_Nm": None, "static_segments_Nm": [], "rows": [],
                 "note": "no static policy-feasible torque"}
     span = sum(b - a for a, b in cap.segments) or 1.0
-    grid = set()
+    # one grid PER static segment (engineering review 6198099, F3): thermally feasible samples of two different static
+    # segments are never joined - the torque between them was not statically feasible and was not examined
+    seg_grids = []
     for a, b in cap.segments:
         n = max(3, int(math.ceil(samples * (b - a) / span)) + 1)
-        grid.update(float(x) for x in np.linspace(a, b, n))
-    grid = sorted(grid)
+        seg_grids.append(sorted({float(x) for x in np.linspace(a, b, n)}))
+    grid = sorted({T for g in seg_grids for T in g})
     cache: dict[float, dict | None] = {}
 
     def losses_at(T):
@@ -390,7 +408,7 @@ def torque_availability(drive: DriveModel, scenario: Scenario, model: ThermalMod
         return True, None
 
     def refine(a, b, t):
-        """a thermally feasible, b not (both statically feasible): bisect the thermal boundary."""
+        """a thermally feasible, b not (both statically feasible, same static segment): bisect the boundary."""
         for _ in range(40):
             if abs(b - a) <= 1e-6 * max(1.0, abs(a)):
                 break
@@ -404,30 +422,42 @@ def torque_availability(drive: DriveModel, scenario: Scenario, model: ThermalMod
     cap_ext = max((x for seg in cap.segments for x in seg), key=lambda x: direction * x)
     rows = []
     for t in durations_s:
-        flags = [ok_for(T, t) for T in grid]
-        segs, cur, limiting = [], None, None
-        for i, (T, (g, node)) in enumerate(zip(grid, flags)):
-            if g is False and node:
-                limiting = limiting or node
-            if g:
-                if cur is None:
-                    lo_T = T
-                    if i > 0 and flags[i - 1][0] is False:
-                        lo_T = refine(T, grid[i - 1], t)
-                    cur = [lo_T, T]
-                else:
-                    cur[1] = T
-            else:
-                if cur is not None:
-                    if g is False:
-                        cur[1] = refine(grid[i - 1], T, t)
-                    segs.append(tuple(cur))
-                    cur = None
-        if cur is not None:
-            segs.append(tuple(cur))
-        zero = next((f for T, f in zip(grid, flags) if abs(T) <= 1e-9), (None, None))[0]
+        segs, owners, limiting, zero = [], [], None, None
+        for k, (sg_grid, (s_lo, s_hi)) in enumerate(zip(seg_grids, cap.segments)):
+            flags = [ok_for(T, t) for T in sg_grid]
+            cur = None
+            for i, (T, (g, node)) in enumerate(zip(sg_grid, flags)):
+                if abs(T) <= 1e-9 and zero is None:
+                    zero = g
+                if g is False and node:
+                    limiting = limiting or node
+                if g:
+                    if cur is None:
+                        lo_T = T
+                        if i > 0 and flags[i - 1][0] is False:
+                            lo_T = refine(T, sg_grid[i - 1], t)
+                        cur = [lo_T, T]
+                    else:
+                        cur[1] = T
+                else:                              # False ends a segment at its bisected edge, None (UNKNOWN) at
+                    if cur is not None:            # the last established sample - an UNKNOWN is never bridged
+                        if g is False:
+                            cur[1] = refine(sg_grid[i - 1], T, t)
+                        segs.append(tuple(cur))
+                        owners.append(k)
+                        cur = None
+            if cur is not None:
+                segs.append(tuple(cur))
+                owners.append(k)
+        # invariant: thermal_feasible_set within static_feasible_set (each piece inside its own static segment)
+        for (lo, hi), k in zip(segs, owners):
+            a, b = cap.segments[k]
+            tol = 1e-9 * max(1.0, abs(a), abs(b))
+            if not (a - tol <= min(lo, hi) and max(lo, hi) <= b + tol):
+                raise AssertionError(f"thermal segment [{lo}, {hi}] leaves static segment [{a}, {b}]")
         if not segs:
             rows.append({"duration_s": t, "torque_Nm": None, "feasible_segments_Nm": [],
+                         "feasible_segment_static_index": [],
                          "limited_by": f"thermal node {limiting} at every examined torque" if limiting else
                                        "no statically feasible torque examined",
                          "zero_torque_feasible": zero})
@@ -435,6 +465,7 @@ def torque_availability(drive: DriveModel, scenario: Scenario, model: ThermalMod
         ext = max((x for seg in segs for x in seg), key=lambda x: direction * x)
         at_cap = abs(ext - cap_ext) <= 1e-6 * max(1.0, abs(cap_ext))
         rows.append({"duration_s": t, "torque_Nm": ext, "feasible_segments_Nm": [list(sg) for sg in segs],
+                     "feasible_segment_static_index": owners,
                      "limited_by": "static capability" if at_cap else f"thermal node {limiting}",
                      "zero_torque_feasible": zero,
                      "disconnected": len(segs) > 1})
@@ -443,7 +474,8 @@ def torque_availability(drive: DriveModel, scenario: Scenario, model: ThermalMod
         "static_capability_Nm": cap_ext,
         "static_segments_Nm": [list(sg) for sg in cap.segments],
         "rows": rows,
-        "method": f"sampled scan of {len(grid)} torques over the static policy set + bisection of thermal boundaries",
+        "method": (f"sampled scan of {len(grid)} torques, per static policy segment (never joined across segments or "
+                   f"UNKNOWN samples) + bisection of thermal boundaries inside a segment"),
         "assumptions": ["start from equilibrium at the coolant", "constant losses at the minimum-current point",
                         "no loss-temperature feedback", "declared loss shares per node",
                         ("coolant rise along the declared loop (m_dot*c_p)" if model.coolant is not None

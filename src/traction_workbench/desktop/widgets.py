@@ -11,9 +11,10 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolb
 from matplotlib.figure import Figure
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QFont
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFrame,
-                               QHBoxLayout, QHeaderView, QLabel, QMessageBox, QPushButton, QSizePolicy, QSpinBox,
-                               QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
+                               QFrame, QHBoxLayout, QHeaderView, QLabel, QMessageBox, QPushButton, QScrollArea,
+                               QSizePolicy, QSpinBox, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem,
+                               QVBoxLayout, QWidget)
 
 from ..i18n import tr
 from ..plots import style as S
@@ -38,6 +39,9 @@ def fmt(v, digits: int = 6) -> str:
         return f"{v:.{digits}g}"
     if isinstance(v, (list, tuple)):
         return ", ".join(fmt(x, digits) for x in v)
+    if isinstance(v, dict):                           # "k: v · k: v" (a nested mapping in parentheses), never a repr
+        return " · ".join(f"{k}: " + (f"({fmt(x, digits)})" if isinstance(x, dict) else fmt(x, digits))
+                          for k, x in v.items())
     return str(v)
 
 
@@ -65,6 +69,7 @@ class PlotPanel(QWidget):
         top.setContentsMargins(0, 0, 0, 0)
         top.addWidget(self.toolbar)
         top.addStretch(1)
+        self.fig_buttons = []
         for label, fn in (("PNG", lambda: self.export("png")), ("SVG", lambda: self.export("svg")),
                           ("PDF", lambda: self.export("pdf")), ("CSV", self.export_csv)):
             b = QPushButton(label)
@@ -74,6 +79,8 @@ class PlotPanel(QWidget):
             top.addWidget(b)
             if label == "CSV":
                 self.csv_button = b
+            else:
+                self.fig_buttons.append(b)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 4, 4, 4)
         lay.setSpacing(2)
@@ -99,6 +106,8 @@ class PlotPanel(QWidget):
         self.figure.text(0.5, 0.5, text, ha="center", va="center", color=t["muted"], fontsize=10, wrap=True)
         self.canvas.draw_idle()
         self.csv_button.setEnabled(False)
+        for b in self.fig_buttons:                      # nothing to export yet
+            b.setEnabled(False)
 
     def draw(self, fn, *args, name: str = "figure", csv=None, hover=None, **kwargs):
         self._draw = (fn, args, kwargs)
@@ -119,6 +128,8 @@ class PlotPanel(QWidget):
             self.figure.text(0.5, 0.5, f"plot error: {exc}", ha="center", va="center", color="#cf222e")
         self.canvas.draw_idle()
         self.csv_button.setEnabled(self._csv is not None)
+        for b in self.fig_buttons:
+            b.setEnabled(True)
 
     # -- interaction -----------------------------------------------------------
     def _on_move(self, ev):
@@ -142,7 +153,10 @@ class PlotPanel(QWidget):
         path, _ = QFileDialog.getSaveFileName(self, tr("그림 저장", "Save figure"), f"{self.name}.{kind}",
                                               f"{kind.upper()} (*.{kind})")
         if path:
-            self.figure.savefig(path, dpi=200 if kind == "png" else None)
+            try:
+                self.figure.savefig(path, dpi=200 if kind == "png" else None)
+            except Exception as exc:  # noqa: BLE001 - e.g. a locked file or a folder without write access
+                error_box(self, tr("그림 저장 실패", "could not save the figure"), str(exc))
 
     def export_csv(self):
         if self._csv is None:
@@ -150,7 +164,10 @@ class PlotPanel(QWidget):
         path, _ = QFileDialog.getSaveFileName(self, tr("데이터 저장 (CSV)", "Save data (CSV)"), f"{self.name}.csv",
                                               "CSV (*.csv)")
         if path:
-            write_csv(path, self._csv())
+            try:
+                write_csv(path, self._csv())
+            except Exception as exc:  # noqa: BLE001
+                error_box(self, tr("데이터 저장 실패", "could not save the data"), str(exc))
 
 
 def write_csv(path, data: dict) -> Path:
@@ -258,7 +275,8 @@ class KeyValueTable(QTableWidget):
         self.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.setAlternatingRowColors(True)
-        self.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        for i in range(len(headers) - 1):              # every column but the last fits its content (no cut headers)
+            self.horizontalHeader().setSectionResizeMode(i, QHeaderView.ResizeToContents)
         self.horizontalHeader().setStretchLastSection(True)
 
     def set_rows(self, rows: list, colors: dict | None = None):
@@ -407,8 +425,11 @@ def table_with_buttons(table: NumTable, note: str = "") -> QWidget:
 # ---------------------------------------------------------------------------
 
 def number(value: float, lo: float, hi: float, suffix: str = "", decimals: int = 2, step: float | None = None,
-           tip: str = "") -> QDoubleSpinBox:
+           tip: str = "", special: str | None = None) -> QDoubleSpinBox:
+    """``special``: the text shown at the minimum when the minimum means "not declared" / "none" (never "0 V")."""
     w = QDoubleSpinBox()
+    if special:
+        w.setSpecialValueText(special)
     w.setRange(lo, hi)
     w.setDecimals(decimals)
     w.setValue(value)
@@ -446,6 +467,41 @@ def combo(items: list[tuple[str, object]], current=None) -> QComboBox:
     return w
 
 
+def tidy_inputs(root: QWidget) -> None:
+    """Let every combo box shrink with its form column (a long item used to force the whole input panel wider than
+    its column, so fields were cut off behind a horizontal scroll bar); the popup still shows full items and the
+    tooltip the full current text."""
+    for cb in root.findChildren(QComboBox):
+        cb.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        cb.setMinimumContentsLength(8)
+        view = cb.view()
+        view.setTextElideMode(Qt.ElideNone)
+        view.setMinimumWidth(view.sizeHintForColumn(0) + 28)
+        if not cb.toolTip():
+            cb.setToolTip(cb.currentText())
+            cb.currentTextChanged.connect(cb.setToolTip)
+    # a check box added as addRow("", box) sat in the field column next to the widest label: give it the full row
+    for form in root.findChildren(QFormLayout):
+        for row in range(form.rowCount() - 1, -1, -1):
+            li = form.itemAt(row, QFormLayout.LabelRole)
+            fi = form.itemAt(row, QFormLayout.FieldRole)
+            lab = li.widget() if li is not None else None
+            box = fi.widget() if fi is not None else None
+            if isinstance(box, QCheckBox) and (lab is None or (isinstance(lab, QLabel) and not lab.text().strip())):
+                form.takeRow(row)
+                if lab is not None:
+                    lab.deleteLater()
+                form.insertRow(row, box)
+    # an input panel is never squeezed below its content (the splitter takes the width from the results side)
+    for sc in root.findChildren(QScrollArea):
+        w = sc.widget()
+        if w is None or not sc.widgetResizable():
+            continue
+        need = w.minimumSizeHint().width() + sc.verticalScrollBar().sizeHint().width() + 2 * sc.frameWidth() + 2
+        if need > sc.minimumWidth():
+            sc.setMinimumWidth(need)
+
+
 def check(label: str, value: bool = False, tip: str = "") -> QCheckBox:
     w = QCheckBox(label)
     w.setChecked(value)
@@ -466,6 +522,68 @@ def hint(text: str) -> QLabel:
     lab.setObjectName("Hint")
     lab.setWordWrap(True)
     return lab
+
+
+class MagnetTempInput(QWidget):
+    """Optional magnet temperature of ONE operating condition (unchecked = not stated).
+
+    A flux map with several temperature planes has no single operating point without it: ``sync(drive)`` pre-sets
+    the first plane temperature whenever the drive's plane set changes (visible and editable, like the default speed
+    and Vdc) and ``note`` lists the planes; leaving such a model resets it to "not stated"; otherwise it stays as the
+    user set it."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        h = QHBoxLayout(self)
+        h.setContentsMargins(0, 0, 0, 0)
+        self.on = QCheckBox()
+        self.on.setToolTip(tr("체크하면 이 자석 온도에서 계산합니다 (체크 해제 = 미지정)",
+                              "checked: computed at this magnet temperature (unchecked = not stated)"))
+        self.value = number(20.0, -60.0, 250.0, "°C", 1, 5)
+        self.value.setEnabled(False)
+        self.on.toggled.connect(self.value.setEnabled)
+        h.addWidget(self.on)
+        h.addWidget(self.value, 1)
+        self.note = hint("")
+        self.note.hide()
+        self.planes: list = []
+        self._synced = None
+
+    def get(self) -> float | None:
+        return float(self.value.value()) if self.on.isChecked() else None
+
+    def sync(self, drive) -> None:
+        from ..viz.sweeps import plane_temperatures
+        planes = plane_temperatures(drive)
+        if planes == self._synced:
+            return
+        prev, self._synced, self.planes = self._synced, planes, planes
+        if not planes and prev:
+            self.on.setChecked(False)          # a temperature picked for another model's planes is not carried over
+        if planes:
+            self.on.setChecked(True)
+            self.value.setValue(planes[0])
+            txt = ", ".join(f"{t:g}" for t in planes)
+            self.note.setText(tr(f"이 flux map의 자석 온도 plane: {txt} °C — 한 운전점은 한 온도에서 계산합니다(판정 페이지는 "
+                                 f"온도를 말하지 않은 요구를 모든 plane에서, 성능 곡선은 plane마다 봅니다)",
+                                 f"magnet-temperature planes of this flux map: {txt} degC - one operating point is "
+                                 f"computed at one temperature (the decision page judges an unstated temperature at "
+                                 f"every plane, the envelope page draws one curve per plane)"))
+            self.note.show()
+        else:
+            self.note.hide()
+
+    def missing(self, parent) -> bool:
+        """True (and says why) when the model needs a magnet temperature for one operating point and none is set."""
+        if self.planes and self.get() is None:
+            txt = ", ".join(f"{t:g}" for t in self.planes)
+            error_box(parent, tr("자석 온도 필요", "magnet temperature needed"),
+                      tr(f"이 flux map은 자석 온도 plane이 여러 개입니다 ({txt} °C). 한 운전점은 한 온도에서만 정의되므로 자석 "
+                         f"온도를 지정하세요.", f"this flux map has several magnet-temperature planes ({txt} degC); one "
+                                              f"operating point is defined at one temperature - state the magnet "
+                                              f"temperature."))
+            return True
+        return False
 
 
 class ConceptNote(QWidget):

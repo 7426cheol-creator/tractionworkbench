@@ -12,8 +12,9 @@ import csv
 import json
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QApplication, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-                               QPushButton, QScrollArea, QSplitter, QTabWidget, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QInputDialog, QLabel,
+                               QLineEdit, QMessageBox, QPushButton, QScrollArea, QSplitter, QTabWidget, QVBoxLayout,
+                               QWidget)
 
 from ... import api
 from ...extensions.dclink_ripple import LOCATIONS, QUANTITIES
@@ -398,11 +399,21 @@ class PowerPage(QWidget):
         for text, fn in ((tr("JSON 불러오기", "load JSON"), self.load_module_file),
                          (tr("JSON 저장", "save JSON"), self.save_module_file),
                          (tr("프로젝트 값으로 초기화", "reset to the project"),
-                          lambda: self.load_module(self.win.state.example("MODULE")))):
+                          lambda: self.load_module(self.win.state.example("MODULE"))),
+                         (tr("데이터시트 값 입력…", "datasheet values…"),
+                          lambda: self.win.pages["project"].enter_datasheet("module"))):
             b = QPushButton(text)
             b.clicked.connect(fn)
             row.addWidget(b)
         v.addLayout(row)
+        self.m_to_project = QPushButton(tr("이 모듈을 프로젝트에 반영…", "apply this module to the project…"))
+        self.m_to_project.setToolTip(tr("곡선·시험 조건·Tj·Rth를 프로젝트의 module 섹션으로 (수정된 작업 사본). "
+                                        "스위칭 주파수·변조·데드타임은 제어기 섹션의 값이라 반영하지 않습니다.",
+                                        "curves, test conditions, Tj and Rth become the project's module section (a "
+                                        "modified working copy); fsw, modulation and dead time are controller data "
+                                        "and are not applied"))
+        self.m_to_project.clicked.connect(lambda: self.module_to_project())
+        v.addWidget(self.m_to_project)
         self.m_btn = primary_button(tr("모듈 손실 계산", "compute module losses"))
         self.m_btn.clicked.connect(self.run_module)
         v.addWidget(self.m_btn)
@@ -450,6 +461,36 @@ class PowerPage(QWidget):
         self.m_tref.setValue(float(m.get("T_ref_C", 65.0)))
         self._test_conditions = dict(m.get("test_conditions") or {})
         self.grid.load(m.get("curves") or {})
+
+    def module_to_project(self, origin: str | None = None, source: str | None = None):
+        """The page's module (datasheet curves pasted or loaded here) becomes the project's module section."""
+        from ...project import module_section_from_spec
+        st = self.win.state
+        prj = st.project
+        try:
+            data, notes = module_section_from_spec(self.module_spec(), prj.data("module") if prj.has("module") else None,
+                                                   prj.data("controller") if prj.has("controller") else None)
+        except Exception as exc:  # noqa: BLE001 - shown with the reason; the project is unchanged
+            error_box(self, tr("반영할 수 없음", "cannot apply"), str(exc))
+            return None
+        title = tr("모듈을 프로젝트에 반영", "apply the module to the project")
+        if origin is None:
+            origins = ["supplier", "measured", "estimated", "synthetic"]
+            origin, ok = QInputDialog.getItem(self, title, tr("이 곡선의 출처", "origin of these curves"), origins, 0, False)
+            if not ok:
+                return None
+        if source is None:
+            source, ok = QInputDialog.getText(self, title, tr("근거 (데이터시트 이름·개정, 측정 보고서 등)",
+                                                              "basis (datasheet and revision, test report, ...)"))
+            if not ok:
+                return None
+            if notes and QMessageBox.question(self, title, tr("반영하지 않는 항목:\n", "not applied:\n") + "\n".join(notes)
+                                              + tr("\n\n계속할까요?", "\n\nContinue?")) != QMessageBox.Yes:
+                return None
+        prov = {"origin": origin, "source": source or tr("전력변환 페이지 편집", "power page edit"),
+                "revision": "", "qualified": False, "evidence": ""}
+        st.set_project(prj.with_section("module", data, prov))
+        return notes
 
     def module_spec(self) -> dict:
         m = {"name": self.m_name.text().strip(), "technology": self.m_tech.currentData(),
@@ -610,10 +651,14 @@ class PowerPage(QWidget):
                                cap.get("life_hours_table") or [], min_height=90)
         f.addRow(QLabel(tr("공급사 수명 표 (없으면 수명 UNKNOWN)", "supplier life table (life UNKNOWN without)")))
         f.addRow(table_with_buttons(self.r_life))
-        self.r_life_v = number(0, 0, 3000, "V", 1, 10, tip=tr("0 = 미선언", "0 = not declared"))
+        self.r_life_v = number(0, 0, 3000, "V", 1, 10, tip=tr("0 = 미선언", "0 = not declared"),
+                               special=tr("미선언", "not declared"))
         self.r_life_basis = QLineEdit(cap.get("life_basis", ""))
         f.addRow(tr("수명 정격 전압", "life rated voltage"), self.r_life_v)
         f.addRow(tr("수명 근거", "life basis"), self.r_life_basis)
+        b = QPushButton(tr("커패시터 데이터시트 값 입력…", "enter capacitor datasheet values…"))
+        b.clicked.connect(lambda: self.win.pages["project"].enter_datasheet("capacitor"))
+        f.addRow(b)
         v.addWidget(g)
         src = ex["source"]
         g = QGroupBox(tr("소스 임피던스 (배터리+하네스)", "source impedance (battery + harness)"))
@@ -703,7 +748,7 @@ class PowerPage(QWidget):
                 (tr("커패시터 RMS 전류", "capacitor RMS current"), val("I_cap_rms_A", "A", "I_cap_rms_bounds_A")),
                 (tr("인버터 AC 성분", "inverter AC"), f"{fmt(res['I_inv_ac_rms_A'])} A"),
                 (tr("소스 AC", "source AC"), val("I_source_ac_rms_A", "A", "I_source_ac_rms_bounds_A")),
-                (tr("평균 모델 (캐리어 모멘트)", "average model (carrier moments)"), str(res.get("average_model"))),
+                (tr("평균 모델 (캐리어 모멘트)", "average model (carrier moments)"), res.get("average_model")),
                 (tr("전압 리플 p-p", "voltage ripple p-p"), val("V_ripple_pp_V", "V", "V_ripple_pp_bounds_V")),
                 (tr("전압 리플 RMS", "voltage ripple RMS"), val("V_ripple_ac_rms_V", "V", "V_ripple_ac_rms_bounds_V")),
                 (tr("ESR 손실", "ESR loss"), "—" if res["P_cap_W"] is None else f"{fmt(res['P_cap_W'])} W"),
@@ -732,7 +777,7 @@ class PowerPage(QWidget):
                           f"{'exists' if an['equilibrium_exists'] else 'none'}")
             rows.append((tr("핫스팟", "hotspot"), txt))
         if res.get("assumption"):
-            rows.append((tr("가정", "assumption"), str(res["assumption"])))
+            rows.append((tr("가정", "assumption"), res["assumption"]))
         rows.append((tr("모델 밖", "not modelled"), ", ".join(res.get("not_modelled", []))))
         self.t_rip.set_rows(rows)
 

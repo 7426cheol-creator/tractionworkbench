@@ -15,6 +15,7 @@ import json
 import os
 import platform
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -53,6 +54,17 @@ def main() -> int:
         st = json.loads((st_dir / "selftest.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         st = {"checks": [], "passed": 0, "total": 0, "ok": False}
+    # MathWorks transfer package: export, then the native MATLAB code on a local runtime when one exists
+    from traction_workbench import mathworks as MW
+    mw_dir = ROOT / "build" / "report_mathworks"
+    if mw_dir.exists():
+        shutil.rmtree(mw_dir)
+    t0 = time.perf_counter()
+    mw_man = MW.export_package(mw_dir)
+    mw_rt = MW.find_runtimes()
+    mw_run = MW.run_local(mw_dir) if mw_rt else None
+    mw_ver = mw_run["verification"] if mw_run else MW.verify_report(mw_dir)
+    t_mw = time.perf_counter() - t0
     demo = []
     for p in PRESETS:
         r = p["req"]
@@ -87,6 +99,11 @@ def main() -> int:
     L.append(f"| Production vs golden acceptance | {sum(r['pass'] for r in acc['rows'])}/{len(acc['rows'])} pass |")
     L.append(f"| pytest | {py_line.strip()} ({t_py:.0f} s) |")
     L.append(f"| 데스크톱 앱 self-test (headless, `twb selftest`) | {st['passed']}/{st['total']} pass ({t_st:.0f} s) |")
+    mw_c = mw_ver.get("cases") or {}
+    L.append(f"| MathWorks 이식 패키지 (`twb mathworks`) | parity {mw_ver['parity']}"
+             + (f" — {mw_c.get('PASS', 0)} PASS · {mw_c.get('FAIL', 0)} FAIL · {mw_c.get('ERROR', 0)} ERROR · "
+                f"{mw_c.get('NOT_SUPPORTED', 0)} NOT_SUPPORTED" if mw_c else "")
+             + f"; {mw_ver['target_environment']} ({t_mw:.0f} s) |")
     L.append("")
     L.append("## 2. 독립 fixture 검산 (`verification/independent_fixture_check.py`)")
     L.append("")
@@ -134,7 +151,24 @@ def main() -> int:
     for c in st["checks"]:
         L.append(f"| {c['check']} | {'PASS' if c['ok'] else 'FAIL'} | {c['detail'][:120].replace('|', '/')} |")
     L.append("")
-    L.append("## 6. 재현 방법")
+    L.append("## 6. MathWorks 이식 패키지 (`twb mathworks`)")
+    L.append("")
+    L.append("Python reference(층 2)의 값과 수용된 원천(층 1: golden·계약 수식·map 정의)의 oracle 값을 가진 case를, 패키지에 든 native "
+             "MATLAB 코드가 다시 계산해 둘 모두와 비교합니다. 대상 보고서는 Python이 원시 값에서 다시 판정합니다. GNU Octave 실행은 "
+             "MATLAB 언어 호환 proxy이며 MATLAB 본체·Simulink·System Composer 단계는 NOT_RUN입니다.")
+    L.append("")
+    L.append("| 단계 | 결과 |")
+    L.append("|---|---|")
+    L.append(f"| 패키지 | fingerprint `{mw_man['semantic_fingerprint'][:16]}` · case {mw_man['case_counts']} · "
+             f"층 2 ↔ 층 1 불일치 {len(mw_man['oracle_disagreements'])} |")
+    L.append(f"| 패키지 검사 | {mw_ver['package_check']} |")
+    L.append(f"| 대상 환경 | {mw_ver['target_environment']} |")
+    for k, v in (mw_ver.get("stages") or {}).items():
+        L.append(f"| stage `{k}` | {v} |")
+    L.append(f"| parity (재계산) | {mw_ver['parity']} {mw_c} |")
+    L.append(f"| 물리 검증 | {mw_ver['physical_validation']} |")
+    L.append("")
+    L.append("## 7. 재현 방법")
     L.append("")
     L.append("```bash")
     L.append("pip install -e '.[gui,test]'")
@@ -142,6 +176,7 @@ def main() -> int:
     L.append("twb acceptance                                      # production vs golden")
     L.append("QT_QPA_PLATFORM=offscreen python -m pytest -q      # 전체 테스트")
     L.append("twb selftest out/selftest                           # 데스크톱 앱 자체 검사")
+    L.append("twb mathworks export out/mw && twb mathworks run out/mw   # 이식 패키지 + 로컬 MATLAB/Octave 실행")
     L.append("python verification/make_report.py                  # 이 문서 재생성")
     L.append("```")
     L.append("")
@@ -149,7 +184,8 @@ def main() -> int:
     (ROOT / "docs" / "VERIFICATION_REPORT.md").write_text("\n".join(L), encoding="utf-8")
     print(f"independent {ind_pass}/{ind_total}; acceptance {sum(r['pass'] for r in acc['rows'])}/{len(acc['rows'])}; "
           f"pytest: {py_line.strip()}; selftest {st['passed']}/{st['total']}")
-    return 0 if (rc_ind == 0 and rc_py == 0 and rc_st == 0 and acc["all_pass"] and acc["manifest_ok"]) else 1
+    mw_ok = mw_ver["parity"] == "PASS" or (mw_run is None and mw_ver["package_check"] == "PASS")
+    return 0 if (rc_ind == 0 and rc_py == 0 and rc_st == 0 and acc["all_pass"] and acc["manifest_ok"] and mw_ok) else 1
 
 
 if __name__ == "__main__":

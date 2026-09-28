@@ -142,8 +142,14 @@ class Damping:
     dropout_signal: str = "load"      # which signal drops out: "load" (e.g. wheel speed message) | "motor" (resolver)
     stale_limit_s: float | None = None  # declared fallback: beyond this age the feedback fades out (None: not declared)
     fade_s: float = 0.0               # fade-out / fade-in ramp of the damping torque
+    hpf_order: int = 1                # motor_speed_hpf: 1 = first-order high-pass; 2 = two cascaded stages (washout).
+    # Under a sustained acceleration a the motor speed is a ramp: a first-order high-pass settles at a / omega_c, so the
+    # feedback keeps a constant correction -Kd a / omega_c (a steady torque deficit while the vehicle accelerates);
+    # the second-order washout returns to zero on a ramp (steady_hpf_correction gives both in closed form).
 
     def __post_init__(self):
+        if self.hpf_order not in (1, 2):
+            raise InputValidationError("hpf_order must be 1 or 2", field="hpf_order")
         if self.kind not in ("none", "relative_speed", "motor_speed_hpf"):
             raise InputValidationError("damping kind must be none, relative_speed or motor_speed_hpf", field="kind")
         if _finite("Kd", self.Kd_Nms_per_rad) < 0:
@@ -222,7 +228,7 @@ def simulate(dl: Driveline, ctl: Controller, man: Maneuver) -> dict:
     pending = []                        # (t_apply, T_cmd, record)
     u_cmd = man.T0_Nm
     shaper_state = {"y": man.T0_Nm, "hist": []}
-    hpf = {"y": 0.0, "prev": None}
+    hpf = {"y": 0.0, "prev": None, "y2": 0.0}
     t = 0.0
     xs = np.zeros((t_out.size, n))
     ucur = np.zeros(t_out.size)
@@ -336,9 +342,12 @@ def simulate(dl: Driveline, ctl: Controller, man: Maneuver) -> dict:
             ah = 1.0 / (1.0 + TWO_PI * dp.hpf_Hz * Tsamp)
             if hpf["prev"] is None:
                 hpf["prev"] = wm
-            hpf["y"] = ah * (hpf["y"] + wm - hpf["prev"])
+            y1 = ah * (hpf["y"] + wm - hpf["prev"])       # backward-Euler high-pass stage
+            if dp.hpf_order == 2:                          # second identical stage on the first stage's output
+                hpf["y2"] = ah * (hpf["y2"] + y1 - hpf["y"])
+            hpf["y"] = y1
             hpf["prev"] = wm
-            Tad = -dp.Kd_Nms_per_rad * hpf["y"]
+            Tad = -dp.Kd_Nms_per_rad * (hpf["y2"] if dp.hpf_order == 2 else y1)
             meas_err = wm - float(x[0])
         else:
             Tad = 0.0
@@ -387,6 +396,32 @@ def simulate(dl: Driveline, ctl: Controller, man: Maneuver) -> dict:
             "applied": applied, "actuator_tau_s": ctl.actuator_tau_s, "T0_Nm": man.T0_Nm,
             "jerk_definition": "exact d/dt of the load angular acceleration from the plant state (motor coordinates); "
                                "no numerical differentiation, no filter"}
+
+
+def steady_hpf_correction(dl: Driveline, damping: Damping, T_Nm: float, TL_out_Nm: float = 0.0) -> dict:
+    """Closed-form steady state of motor-speed high-pass damping while the driveline accelerates under a constant
+    command T (rigid body, J = J_m + J_l in motor coordinates).  The speed is a ramp of slope a; one backward-Euler
+    high-pass stage settles exactly at a / omega_c, a second stage at 0.  With the correction fed back,
+        a = (T - T_L - Kd a / omega_c) / J   ->   correction = -Kd (T - T_L) / (omega_c J + Kd)   (first order)
+    and 0 for the second-order washout (and for relative-speed feedback: the twist rate is 0 at constant a).
+    An independent check of the simulated steady deficit (not derived from the simulation)."""
+    if damping.kind != "motor_speed_hpf":
+        return {"correction_Nm": 0.0, "acceleration_rad_s2": None, "order": None,
+                "meaning": "no speed high-pass in the loop" if damping.kind == "none" else
+                           "relative-speed feedback: the twist rate is zero at a constant acceleration"}
+    r = dl.referred()
+    J = r["Jm"] + r["Jl"]
+    TL = TL_out_Nm / r["g"]
+    wc = TWO_PI * damping.hpf_Hz
+    Kd = damping.Kd_Nms_per_rad
+    if damping.hpf_order == 1:
+        corr = -Kd * (T_Nm - TL) / (wc * J + Kd)
+        a = (T_Nm - TL + corr) / J
+    else:
+        corr, a = 0.0, (T_Nm - TL) / J
+    return {"correction_Nm": corr, "acceleration_rad_s2": a, "order": damping.hpf_order, "omega_c_rad_s": wc,
+            "meaning": "steady torque correction while accelerating: first-order high-pass -Kd a / omega_c "
+                       "(a deficit on the requested torque); second-order washout 0"}
 
 
 def energy_residual(sim: dict) -> float:
@@ -507,9 +542,10 @@ def sampled_eigenvalues(dl: Driveline, ctl: Controller) -> dict:
     dp = ctl.damping
     # controller output u[k] = -Kd * y[k]; y from x[k] (relative speed) or the HPF state
     hp = dp.kind == "motor_speed_hpf"
+    hp2 = hp and dp.hpf_order == 2
     ah = 1.0 / (1.0 + TWO_PI * dp.hpf_Hz * Ts) if hp else 0.0
     m_hist = d + 1                                          # stored past commands u[k-1] .. u[k-d-1]
-    N = n + m_hist + (2 if hp else 0)
+    N = n + m_hist + ((3 if hp2 else 2) if hp else 0)
     M = np.zeros((N, N))
     # plant: x[k+1] = Phi x + G0 u[k-d] + G1 u[k-d-1]; u[k-j] for j >= 1 are history states
     M[:n, :n] = Phi
@@ -522,7 +558,14 @@ def sampled_eigenvalues(dl: Driveline, ctl: Controller) -> dict:
         # y[k] = ah (y[k-1] + w[k] - w[k-1]);  u[k] = -Kd y[k]
         Cy = np.zeros(N)
         Cy[iy], Cy[0], Cy[ip] = ah, ah, -ah
-        Cu = -dp.Kd_Nms_per_rad * Cy
+        if hp2:                                             # second stage: y2[k] = ah (y2[k-1] + y[k] - y[k-1])
+            iy2 = n + m_hist + 2
+            Cy2 = ah * Cy
+            Cy2[iy2] += ah
+            Cy2[iy] -= ah
+            Cu = -dp.Kd_Nms_per_rad * Cy2
+        else:
+            Cu = -dp.Kd_Nms_per_rad * Cy
     hist0 = n                                               # index of u[k-1]
     def u_lag(j):
         """row vector giving u[k-j] (j = 0 is the current command)."""
@@ -539,6 +582,8 @@ def sampled_eigenvalues(dl: Driveline, ctl: Controller) -> dict:
     if hp:
         M[iy, :] = Cy
         M[ip, 0] = 1.0
+        if hp2:
+            M[iy2, :] = Cy2
     ev = np.linalg.eigvals(M)
     mags = np.abs(ev)
     rigid = np.argmin(np.abs(ev - 1.0))
@@ -753,6 +798,14 @@ def evaluate_variants(dl: Driveline, variants: dict, man: Maneuver, requirement:
                 notes.append(f"load-speed skew {1e3 * dp.load_speed_skew_s:.4g} ms: false relative speed up to "
                              f"{sens['max_meas_error_rad_s']:.4g} rad/s ({sens['max_spurious_torque_Nm']:.4g} N m of "
                              "spurious correction), included in the response")
+        if dp.kind == "motor_speed_hpf":
+            sc = steady_hpf_correction(dl, dp, man.T1_Nm, man.TL_out_Nm)
+            res["steady_correction"] = sc
+            if abs(sc["correction_Nm"]) > 1e-3 * max(1.0, abs(man.T1_Nm)):
+                notes.append(f"first-order motor-speed high-pass: while the driveline accelerates it keeps a steady "
+                             f"correction of {sc['correction_Nm']:.4g} N m (closed form -Kd (T - T_L) / (omega_c J + Kd))"
+                             " - a torque deficit on the request; a second-order washout (hpf_order 2) or relative-"
+                             "speed feedback returns to zero")
         side = rec["clip_side"] if rec["t_s"].size else np.array([])
         res["clipping"] = {"upper_s": float((side > 0).sum() * Ts), "lower_s": float((side < 0).sum() * Ts)}
         if res["clipping"]["lower_s"] > 0:

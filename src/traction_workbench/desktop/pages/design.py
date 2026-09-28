@@ -9,15 +9,17 @@ from PySide6.QtWidgets import QFormLayout, QGroupBox, QScrollArea, QSplitter, QT
 from ...analysis.dominance import capability_dominance, requirement_relaxation
 from ...analysis.sizing import size_parameter
 from ...analysis.variation import PARAMETERS, get_value
+from ...plots.labels import change_kind_label, param_label
 from ...i18n import tr
 from ...plots import figures as F
 from ...scenario import Scenario
 from ...viz import design as DS
-from ..widgets import ConceptNote, KeyValueTable, PlotPanel, combo, error_box, fmt, hint, integer, number, primary_button
+from ..widgets import (ConceptNote, KeyValueTable, MagnetTempInput, PlotPanel, combo, error_box, fmt, hint, integer,
+                       number, primary_button)
 
 
-def _sweep_task(progress, drive, limits, n, vdc, T, param, lo, hi, samples):
-    sc = Scenario("design", n, vdc, limits)
+def _sweep_task(progress, drive, limits, n, vdc, T, param, lo, hi, samples, magnet_temp_C=None):
+    sc = Scenario("design", n, vdc, limits, magnet_temp_C=magnet_temp_C)
     cv = DS.capability_vs_parameter(drive, sc, param, np.linspace(lo, hi, samples), T_request=T,
                                     direction=1 if T >= 0 else -1, progress=lambda f, m: progress(0.7 * f, m))
     progress(0.75, tr("역설계 bisection", "sizing bisection"))
@@ -25,8 +27,8 @@ def _sweep_task(progress, drive, limits, n, vdc, T, param, lo, hi, samples):
     return {"curve": cv, "sizing": sz}
 
 
-def _dominance_task(progress, drive, limits, n, vdc, T):
-    sc = Scenario("design", n, vdc, limits)
+def _dominance_task(progress, drive, limits, n, vdc, T, magnet_temp_C=None):
+    sc = Scenario("design", n, vdc, limits, magnet_temp_C=magnet_temp_C)
     progress(0.1, tr("제약 1% 완화 재계산", "1% relaxation"))
     dom = capability_dominance(drive, sc, 1 if T >= 0 else -1).to_dict()
     progress(0.6, tr("요구 완화 탐색", "requirement relaxation"))
@@ -50,10 +52,16 @@ class DesignPage(QWidget):
         f.addRow(tr("속도", "speed"), self.n)
         f.addRow("Vdc", self.vdc)
         f.addRow(tr("요구 토크", "requested torque"), self.T)
+        self.magnet = MagnetTempInput()
+        f.addRow(tr("자석 온도", "magnet temp."), self.magnet)
+        f.addRow(self.magnet.note)
+        self.magnet.sync(win.state.drive)
+        win.state.drive_changed.connect(lambda: self.magnet.sync(self.win.state.drive))
         v.addWidget(g)
         g = QGroupBox(tr("1-파라미터 역설계", "one-parameter sizing"))
         f = QFormLayout(g)
-        self.param = combo([(f"{k}  ({v[0]}, {v[1]})", k) for k, v in PARAMETERS.items()], "Vdc_V")
+        self.param = combo([(f"{param_label(k)} [{v[1]}] · {change_kind_label(v[0])}", k) for k, v in PARAMETERS.items()],
+                           "Vdc_V")
         self.param.currentIndexChanged.connect(self._param_changed)
         self.lo = number(400, -1e9, 1e9, "", 6, 10)
         self.hi = number(800, -1e9, 1e9, "", 6, 10)
@@ -118,10 +126,11 @@ class DesignPage(QWidget):
     def _param_changed(self, *_):
         key = self.param.currentData()
         kind, unit, text = PARAMETERS[key]
-        self.kind_hint.setText(f"{kind} · {unit} · {text}")
+        self.kind_hint.setText(f"{change_kind_label(kind)} · {unit} · {text}")
         s = self.win.state
         try:
-            base = get_value(s.drive, Scenario("p", self.n.value(), self.vdc.value(), s.limits), key)
+            base = get_value(s.drive, Scenario("p", self.n.value(), self.vdc.value(), s.limits,
+                                               magnet_temp_C=self.magnet.get()), key)
         except Exception:  # noqa: BLE001
             base = None
         if key == "Vdc_V":
@@ -136,16 +145,20 @@ class DesignPage(QWidget):
 
     def run1(self):
         s = self.win.state
+        if self.magnet.missing(self):
+            return
         self.run_sweep.setEnabled(False)
         self.win.runner.run("design-sweep", tr("파라미터 역설계", "sizing"), _sweep_task, self._show1, s.drive, s.limits,
                             self.n.value(), self.vdc.value(), self.T.value(), self.param.currentData(), self.lo.value(),
-                            self.hi.value(), self.samples.value(), on_error=self._err)
+                            self.hi.value(), self.samples.value(), self.magnet.get(), on_error=self._err)
 
     def run2(self):
         s = self.win.state
+        if self.magnet.missing(self):
+            return
         self.run_dom.setEnabled(False)
         self.win.runner.run("design-dom", tr("병목 분석", "bottleneck"), _dominance_task, self._show2, s.drive, s.limits,
-                            self.n.value(), self.vdc.value(), self.T.value(), on_error=self._err)
+                            self.n.value(), self.vdc.value(), self.T.value(), self.magnet.get(), on_error=self._err)
 
     def _err(self, msg, tb):
         self.run_sweep.setEnabled(True)

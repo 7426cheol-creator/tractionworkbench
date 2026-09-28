@@ -1,0 +1,50 @@
+{
+ "kind": "module",
+ "note": "FORMAT EXAMPLE with synthetic values of a fictitious part - not a product; replace with your datasheet",
+ "part": {
+  "manufacturer": "Example Semiconductor (fictitious)",
+  "part_number": "EXM-750-820",
+  "revision": "0.1",
+  "document": "synthetic format example"
+ },
+ "technology": "IGBT",
+ "value_kind": "typical",
+ "energy_basis": "per_device",
+ "v_test_V": 600.0,
+ "test_conditions": {
+  "Rg_on_ohm": 1.8,
+  "Rg_off_ohm": 1.8,
+  "Vge_V": 15.0,
+  "deadtime_test_us": 1.5,
+  "stray_L_nH": 20.0
+ },
+ "digitization": "WebPlotDigitizer 4.x, axis calibration checked on two grid points per figure",
+ "anchor_zero_energy": true,
+ "curves": {
+  "v_on": {
+   "file": "module_example_curves.csv",
+   "unit": "V",
+   "figure": "Fig. 1 output characteristic"
+  },
+  "v_rev": {
+   "file": "module_example_curves.csv",
+   "unit": "V",
+   "figure": "Fig. 3 diode forward"
+  },
+  "e_on": {
+   "file": "module_example_e_on_wpd.csv",
+   "unit": "mJ",
+   "figure": "Fig. 5 E_on vs I_C"
+  },
+  "e_off": {
+   "file": "module_example_curves.csv",
+   "unit": "mJ",
+   "figure": "Fig. 5 E_off vs I_C"
+  },
+  "e_rr": {
+   "file": "module_example_curves.csv",
+   "unit": "mJ",
+   "figure": "Fig. 7 E_rec vs I_F"
+  }
+ }
+}

@@ -16,6 +16,7 @@ from matplotlib.ticker import MaxNLocator
 
 from ..i18n import tr
 from . import style as S
+from .labels import change_kind_label, param_label
 
 PH = ("a", "b", "c")
 
@@ -735,7 +736,7 @@ def fig_capability_vs_parameter(fig, cv: dict, sizing: dict | None = None, title
         else:
             lab = tr(f"찾은 최소 가능값 {mv:.6g} {unit} (최소 증명 아님)", f"smallest witnessed {mv:.6g} {unit} (not a proven minimum)")
         ax.axvline(mv, color=S.VERDICT["PASS"], lw=1.6, label=lab)
-    ax.set_xlabel(f"{p['parameter']} [{unit}] · {p['change_kind']}")
+    ax.set_xlabel(f"{param_label(p['parameter'])} [{unit}] · {change_kind_label(p['change_kind'])}")
     ax.set_ylabel(tr("정책 capability [N·m]", "policy capability [N·m]"))
     ax.legend(loc="best", fontsize=7.5)
     _note(ax, p["meaning"] + "\n" + tr(f"n = {cv['speed_rpm']:.0f} rpm, 기준 Vdc = {cv['Vdc_V']:.0f} V",
@@ -753,9 +754,12 @@ def fig_dominance(fig, dom: dict, relax: dict | None = None, title: str | None =
     y = np.arange(len(rows))
     cols = [S.CONSTRAINT.get(r["constraint"], t["muted"]) if r["classification"] == "limiting" else t["grid"] for r in rows]
     ax1.barh(y, [r["gain_Nm"] for r in rows], color=cols, height=0.6)
+    base0 = dom.get("base_policy_capability_Nm")
+    tiny = 1e-6 * max(1.0, abs(base0 or 0.0))           # solver noise around zero is "0", not "+-5e-11"
     for yi, r in zip(y, rows):
-        ax1.text(r["gain_Nm"], yi, f"  +{r['gain_Nm']:.3g} N·m" + ("  ★" if r["active_at_base"] else ""), va="center",
-                 fontsize=7.5, color=t["fg"])
+        g = r["gain_Nm"]
+        ax1.text(max(g, 0.0), yi, ("  0 N·m" if abs(g) < tiny else f"  {g:+.3g} N·m") + ("  ★" if r["active_at_base"] else ""),
+                 va="center", fontsize=7.5, color=t["fg"])
     ax1.set_yticks(y)
     ax1.set_yticklabels([r["constraint"] for r in rows], fontsize=7.5)
     ax1.set_xlabel(tr("한계 +1% 완화 시 capability 증가 [N·m]", "capability gain for +1% relaxation [N·m]"))

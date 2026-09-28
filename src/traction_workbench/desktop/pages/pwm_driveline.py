@@ -229,7 +229,7 @@ class PwmDrivelinePage(QWidget):
         g = QGroupBox(tr("필수 제약 (미선언 = 검증 안 됨, 통과 아님)", "mandatory constraints (undeclared = unverified, not a pass)"))
         f = QFormLayout(g)
         self.lim = {}
-        for key, lab, unit, lo, hi in (("Tj_max_C", "Tj max", "°C", 0, 250), ("i_peak_incl_ripple_max_A", tr("피크 전류 (리플 포함)", "peak current incl. ripple"), "A", 1, 1e5),
+        for key, lab, unit, lo, hi in (("Tj_max_C", "Tj max", "°C", 0, 250), ("i_peak_incl_ripple_max_A", tr("피크 전류 상한 (I_fund,pk + max|Δi|)", "peak-current bound (I_fund,pk + max|Δi|)"), "A", 1, 1e5),
                                        ("cap_rms_max_A", tr("커패시터 RMS", "capacitor RMS"), "A", 1, 1e5),
                                        ("phase_margin_min_deg", tr("위상 여유 min", "phase margin min"), "°", 0, 90),
                                        ("pulse_ratio_min", tr("펄스 비 min", "pulse ratio min"), "", 1, 1e3),
@@ -446,7 +446,11 @@ class PwmDrivelinePage(QWidget):
                          csv=lambda r=res: {"policy": [p["policy"]["name"] for p in r["policies"]],
                                             "admissible": [p["admissible"] for p in r["policies"]],
                                             "E_inv_J": [p["E_inv_J"] for p in r["policies"]],
-                                            "E_cu_harm_J": [p["E_cu_harm_J"] for p in r["policies"]],
+                                            "E_cu_pwm_J": [p["E_cu_pwm_J"] for p in r["policies"]],
+                                            "E_cu_pwm_lower_bound_J": [p["E_cu_pwm_lower_bound_J"] for p in r["policies"]],
+                                            "E_mag_hf_bound_J": [p["E_mag_hf_bound_J"] for p in r["policies"]],
+                                            "energy_lower_J": [p["energy"]["lower_J"] for p in r["policies"]],
+                                            "energy_upper_J": [p["energy"]["upper_J"] for p in r["policies"]],
                                             "Tj_max_C": [p["Tj_max_C"] for p in r["policies"]],
                                             "phase_margin_min_deg": [p["phase_margin_min_deg"] for p in r["policies"]]})
         self.p_tabs.setCurrentWidget(self.pl_pol)
@@ -455,14 +459,28 @@ class PwmDrivelinePage(QWidget):
             nm = p["policy"]["name"]
             rows.append((nm, (tr("허용", "admissible") if p["admissible"] else tr("허용 안 됨: ", "not admissible: ") +
                               "; ".join(p["violations"]))))
+            kj = lambda v: fmt(v and v / 1e3, 4)
+            cu = (f"{kj(p['E_cu_pwm_J'])} kJ" if p["E_cu_pwm_J"] is not None else
+                  f"≥ {kj(p['E_cu_pwm_lower_bound_J'])} kJ ({tr('R_dc 하한만', 'R_dc lower bound only')})")
+            mag = (f"≤ {kj(p['E_mag_hf_bound_J'])} kJ" if p["E_mag_hf_bound_J"] is not None else
+                   tr("상한 없음 (UNKNOWN)", "no bound (UNKNOWN)"))
+            e = p["energy"]
             rows.append(("   " + tr("에너지", "energy"),
-                         f"inverter {fmt(p['E_inv_J'] and p['E_inv_J'] / 1e3, 5)} kJ · harmonic Cu "
-                         f"{fmt(p['E_cu_harm_J'] and p['E_cu_harm_J'] / 1e3, 4)} kJ · iron bound "
-                         f"{fmt(p['E_iron_harm_bound_J'] and p['E_iron_harm_bound_J'] / 1e3, 4)} kJ"))
+                         f"{tr('인버터', 'inverter')} {kj(p['E_inv_J'])} kJ · {tr('모터 PWM 동손', 'motor PWM copper')} "
+                         f"{cu} · Fe+PM HF {mag} · {tr('비교 구간', 'comparison interval')} "
+                         f"[{kj(e['lower_J'])}, {kj(e['upper_J']) if e['upper_J'] is not None else '∞'}] kJ"
+                         + (f" · C_dc ESR {kj(p['E_cap_J'])} kJ ({tr('별도', 'separate')})" if p.get("E_cap_J") else "")))
             rows.append(("   " + tr("여유", "margins"),
-                         f"Tj {fmt(p['Tj_max_C'], 4)} °C · î+ripple {fmt(p['i_peak_incl_ripple_max_A'], 4)} A · I_cap "
+                         f"Tj {fmt(p['Tj_max_C'], 4)} °C · {tr('피크 전류 상한', 'peak-current bound')} "
+                         f"{fmt(p['i_peak_bound_max_A'], 4)} A · I_cap "
                          f"{fmt(p['I_cap_rms_max_A'], 4)} A · PM {fmt(p['phase_margin_min_deg'], 3)}° · Np min "
                          f"{fmt(p['pulse_ratio_min'], 3)}"))
+            if (p.get("fsw_waveform_error_max_percent") or 0.0) > 0.5:
+                rows.append(("   " + tr("fsw 요청 vs 파형", "fsw requested vs waveform"),
+                             tr(f"파형 모델(리플·샘플링·커패시터)은 동기 캐리어 사용 — 최대 오차 "
+                                f"{p['fsw_waveform_error_max_percent']:.3g} %",
+                                f"the waveform models (ripple, sampling, capacitor) use a synchronous carrier - max "
+                                f"error {p['fsw_waveform_error_max_percent']:.3g} %")))
             smp = [sg["sampling"] for sg in p["segments"] if sg.get("sampling")]
             if smp:
                 rows.append(("   " + tr("전류 샘플링", "current sampling"),
@@ -491,6 +509,15 @@ class PwmDrivelinePage(QWidget):
         rows.append((tr("Pareto (허용 후보)", "Pareto (admissible)"), ", ".join(res["pareto"]) or tr("없음", "none")))
         rows.append((tr("평가 후보 중 인버터 에너지 최선", "best inverter energy among evaluated"),
                      res["best_inverter_energy_among_evaluated"] or tr("없음", "none")))
+        be = res["best_policy_energy_among_evaluated"]
+        rows.append((tr("정책 에너지 최선 (구간 비교)", "best policy energy (interval comparison)"),
+                     f"{be['policy'] or '—'} · {be['status']}: {be['reason']}"))
+        cv = res["energy_control_volume"]
+        rows.append((tr("에너지 제어 체적", "energy control volume"),
+                     cv["name"] + " — " + tr("제외: ", "excluded: ") + "; ".join(cv["excluded"])))
+        rows.append((tr("피크 전류 의미", "peak current meaning"), res["peak_current_meaning"]))
+        rows.append((tr("열 범위", "thermal scope"), res["thermal_scope"]))
+        rows.append((tr("평가 안 함", "not evaluated"), "; ".join(res["not_evaluated"])))
         rows.append((tr("의미", "meaning"), res["meaning"]))
         self.k_pwm.set_rows(rows)
 
@@ -594,12 +621,21 @@ class PwmDrivelinePage(QWidget):
                           fb["damping"]["kind"])
         self.c_kd = number(fb["damping"]["Kd_Nms_per_rad"], 0, 1e4, "N·m·s/rad", 3, 0.1)
         self.c_hpf = number(fb["damping"]["hpf_Hz"], 0.01, 1000, "Hz", 2, 0.5)
+        self.c_hpf_order = combo([(tr("2차 washout (가속 중 정상 편차 없음)", "2nd-order washout (no steady offset)"), 2),
+                                  (tr("1차 HPF (가속 중 −Kd·a/ω_c 편차)", "1st-order HPF (−Kd·a/ω_c offset)"), 1)],
+                                 int(fb["damping"].get("hpf_order", 1)))
+        self.c_hpf_order.setToolTip(tr("차량이 가속하는 동안 모터 속도는 램프입니다. 1차 고역통과는 램프에서 a/ω_c로 수렴해 토크를 "
+                                       "계속 빼앗고(요구 토크 미달), 2차 washout은 0으로 돌아갑니다.",
+                                       "While the vehicle accelerates the motor speed is a ramp: a first-order high-pass "
+                                       "settles at a/ω_c and keeps taking torque (a deficit on the request); the "
+                                       "second-order washout returns to zero."))
         self.c_slew = check(tr("전압 여유로 토크 slew 확인 (FW)", "check the torque slew against the voltage headroom (FW)"),
                             bool(ex.get("check_slew", True)))
         for lab, w in ((tr("샘플 주기", "sample period"), self.c_ts), (tr("샘플→인가 지연", "sample→applied delay"), self.c_dl),
                        (tr("토크 응답 τ (ROM)", "torque response τ (ROM)"), self.c_act), (tr("성형", "shaping"), self.c_sh),
                        ("rate", self.c_rate), ("τ prefilter", self.c_tau), (tr("감쇠", "damping"), self.c_dp),
-                       ("Kd", self.c_kd), ("HPF", self.c_hpf), ("", self.c_slew)):
+                       ("Kd", self.c_kd), ("HPF", self.c_hpf), (tr("HPF 차수", "HPF order"), self.c_hpf_order),
+                       ("", self.c_slew)):
             f.addRow(lab, w)
         v.addWidget(g)
         sg = ex["sensing"]
@@ -683,7 +719,8 @@ class PwmDrivelinePage(QWidget):
         if kind == "zv":
             md = api.driveline_from_dict(b["driveline"]).modal()
             sh.update({"zv_f_Hz": md["f_n_Hz"], "zv_zeta": md["zeta"]})
-        dp = {"kind": self.c_dp.currentData(), "Kd_Nms_per_rad": self.c_kd.value(), "hpf_Hz": self.c_hpf.value()}
+        dp = {"kind": self.c_dp.currentData(), "Kd_Nms_per_rad": self.c_kd.value(), "hpf_Hz": self.c_hpf.value(),
+              "hpf_order": int(self.c_hpf_order.currentData())}
         b["variants"] = {"off": {}, "shaping": {"shaper": sh}, "feedback": {"damping": dp},
                          "combined": {"shaper": sh, "damping": dp}}
         b["requirement"] = {"t_to_90_max_s": self.q_t90.value(), "peak_vehicle_jerk_max_m_s3": self.q_j.value(),

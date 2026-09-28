@@ -1,0 +1,22 @@
+{
+ "kind": "motor",
+ "note": "FORMAT EXAMPLE: the synthetic reference machine stated as a supplier datasheet would state it - not a product",
+ "part": {
+  "manufacturer": "Example Motors (fictitious)",
+  "part_number": "EXMOT-200",
+  "revision": "0.1",
+  "document": "synthetic format example"
+ },
+ "value_kind": "typical",
+ "motor": {
+  "poles": 8,
+  "Ke": {"value": 51.30, "unit": "V", "basis": "line_line_rms",
+         "per_speed": {"value": 1000, "unit": "rpm", "kind": "mechanical"}},
+  "Rs": {"value": 30, "unit": "mohm", "reference": "line_to_line"},
+  "Ld": {"value": 0.2, "unit": "mH"},
+  "Lq": {"value": 0.4, "unit": "mH"},
+  "reference_temperatures": {"winding_C": 20.0, "magnet_C": 20.0},
+  "rotational_loss": {"no_load_loss": {"P_W": 789.57, "speed_rpm": 6000},
+                      "includes_iron_loss": false}
+ }
+}

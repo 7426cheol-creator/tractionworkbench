@@ -9,6 +9,7 @@ module A/B comparison with the declared error budget.
 from __future__ import annotations
 
 import math
+import textwrap
 
 import numpy as np
 from matplotlib.lines import Line2D
@@ -55,22 +56,33 @@ def fig_efficiency_point(fig, res: dict, title: str | None = None):
     for i, (k, lab) in enumerate(ports):
         v = p[k]
         col = S.ACCENT if v is not None else ST_COL["UNKNOWN"]
-        axf.text(i + 0.5, 0.62, f"{k}\n{'?' if v is None else f'{v / 1e3:+.3f} kW'}", ha="center", va="center",
-                 fontsize=8.5, color=t["fg"], bbox=dict(boxstyle="round,pad=0.4", fc=t["panel"], ec=col, lw=1.6))
+        axf.text(i + 0.5, 0.62, f"{k}\n{'?' if v is None else f'{v / 1e3:+.2f} kW'}", ha="center", va="center",
+                 fontsize=8, color=t["fg"], bbox=dict(boxstyle="round,pad=0.4", fc=t["panel"], ec=col, lw=1.6))
         axf.text(i + 0.5, 0.14, lab, ha="center", va="center", fontsize=7, color=t["muted"])
         if i < 3:
             axf.annotate("", xy=(i + 1.18, 0.62), xytext=(i + 0.82, 0.62),
                          arrowprops=dict(arrowstyle="-|>", color=t["muted"], lw=1.2))
-    axf.set_title(tr(f"포트 전력 (전기→기계 +) · 코어 에너지 모드 {led['energy_mode_core']} · T_em·ω = "
-                     f"{p['P_em'] / 1e3:.3f} kW (축 전력 아님)",
-                     f"port powers (electrical→mechanical +) · core energy mode {led['energy_mode_core']} · T_em·ω = "
-                     f"{p['P_em'] / 1e3:.3f} kW (not shaft power)"), fontsize=8.5)
+    axf.set_title(tr(f"포트 전력 (전기→기계 +) · 코어 에너지 모드 {led['energy_mode_core']}\n"
+                     f"T_em·ω = {p['P_em'] / 1e3:.3f} kW (축 전력 아님)",
+                     f"port powers (electrical→mechanical +) · core energy mode {led['energy_mode_core']}\n"
+                     f"T_em·ω = {p['P_em'] / 1e3:.3f} kW (not shaft power)"), fontsize=8.5)
     # loss breakdown (W), unknown items explicit
     colors = {"inverter": "#6e7781", "motor": S.ACCENT, "reducer": "#8250df"}
     items = led["loss_items"]
     y = np.arange(len(items))[::-1]
     for yy, it in zip(y, items):
-        if it["W"] is None:
+        if it["W"] is None and it.get("lower_bound_W") is not None:
+            ax.barh(yy, it["lower_bound_W"], color="none", ec=colors.get(it["boundary"], t["muted"]), hatch="..",
+                    lw=1.0)
+            ax.text(it["lower_bound_W"], yy, tr(f"  ≥ {it['lower_bound_W']:.1f} W (R_dc 하한, 정확값 없음)",
+                                                f"  ≥ {it['lower_bound_W']:.1f} W (R_dc lower bound, no exact value)"),
+                    va="center", fontsize=7.5, color=ST_COL["UNKNOWN"])
+        elif it["W"] is None and it.get("upper_bound_W") is not None:
+            ax.barh(yy, it["upper_bound_W"], color="none", ec="#8250df", ls="--", lw=1.0)
+            ax.text(it["upper_bound_W"], yy, tr(f"  ≤ {it['upper_bound_W']:.1f} W (선언 상한, 값 아님)",
+                                                f"  ≤ {it['upper_bound_W']:.1f} W (declared bound, not a value)"),
+                    va="center", fontsize=7.5, color="#8250df")
+        elif it["W"] is None:
             ax.barh(yy, 1.0, color="none", ec=ST_COL["UNKNOWN"], hatch="//", lw=1.0)
             ax.text(1.0, yy, tr("  미상 (0으로 두지 않음)", "  unknown (not set to zero)"), va="center", fontsize=7.5,
                     color=ST_COL["UNKNOWN"])
@@ -80,45 +92,52 @@ def fig_efficiency_point(fig, res: dict, title: str | None = None):
     ax.set_yticks(y)
     ax.set_yticklabels([f"{it['boundary']}: {it['item']}" for it in items], fontsize=7)
     ax.set_xlabel(tr("손실 [W]", "loss [W]"))
-    known = [it["W"] for it in items if it["W"] is not None]
-    ax.set_xlim(0, (max(known) if known else 1.0) * 1.45)
+    known = [v for it in items for v in (it["W"], it.get("upper_bound_W"), it.get("lower_bound_W")) if v is not None]
+    ax.set_xlim(0, (max(known) if known else 1.0) * 1.6)
     tot = led["loss_total_W"]
     ax.set_title(tr(f"손실 원장: 알려진 소계 {led['loss_known_subtotal_W']:.1f} W" +
                     (" = 총 손실" if tot is not None else f" + 미상 {len(led['loss_unknown_items'])}항 (총 손실 미확정)"),
                     f"loss ledger: known subtotal {led['loss_known_subtotal_W']:.1f} W" +
                     (" = total" if tot is not None else f" + {len(led['loss_unknown_items'])} unknown (total not established)")),
                  fontsize=8.5)
-    # boundary table
+    # boundary table, written top-down with wrapped lines (a long definition never runs into the next column)
     ax2.set_axis_off()
     b = led["boundaries"]
-    y = 0.95
-    ax2.text(0.0, y, tr("경계", "boundary"), fontsize=8, fontweight="bold", color=t["fg"], transform=ax2.transAxes)
-    ax2.text(0.46, y, "η", fontsize=8, fontweight="bold", color=t["fg"], transform=ax2.transAxes)
-    ax2.text(0.62, y, tr("정의 / 사유", "definition / reason"), fontsize=8, fontweight="bold", color=t["fg"],
-             transform=ax2.transAxes)
+    pos = {"y": 0.98}
+
+    def put(text, x=0.0, size=7.6, color=None, weight="normal", width=None, dy=0.046, ha="left", keep=False):
+        for ln in (textwrap.wrap(text, width) if width else [text]) or [""]:
+            ax2.text(x, pos["y"], ln, fontsize=size, color=color or t["fg"], fontweight=weight, ha=ha, va="top",
+                     transform=ax2.transAxes)
+            if not keep:
+                pos["y"] -= dy
+
+    put(tr("경계", "boundary"), size=8, weight="bold", keep=True)
+    put("η", x=0.98, size=8, weight="bold", ha="right")
     for key, lab in BND:
         r = b[key]
-        y -= 0.12
         col = ST_COL.get(r["status"], t["fg"])
-        ax2.text(0.0, y, lab(), fontsize=7.8, color=t["fg"], transform=ax2.transAxes)
-        ax2.text(0.46, y, f"{100 * r['eta']:.3f}%" if r["eta"] is not None and r["status"] == "DEFINED" else r["status"],
-                 fontsize=8, color=col, fontweight="bold", transform=ax2.transAxes)
+        put(lab(), size=7.8, keep=True)
+        put(f"{100 * r['eta']:.3f}%" if r["eta"] is not None and r["status"] == "DEFINED" else r["status"], x=0.98,
+            size=8, color=col, weight="bold", ha="right", dy=0.04)
         txt = r["definition"] if r["status"] == "DEFINED" else r.get("reason", "")
-        ax2.text(0.62, y, (txt or "")[:46], fontsize=6.6, color=t["muted"], transform=ax2.transAxes)
+        iv = r.get("eta_interval_incl_pwm_hf")
+        if iv:                                        # the PWM harmonic loss as an interval, never a single value
+            txt = (txt or "") + tr("  ·  PWM 고조파 포함 η ∈ ", "  ·  incl. PWM harmonic η ∈ ") + \
+                f"[{'—' if iv[0] is None else f'{100 * iv[0]:.3f}'}, {100 * iv[1]:.3f}] %"
+        put(txt or "—", x=0.04, size=6.6, color=t["muted"], width=62, dy=0.036)
+        pos["y"] -= 0.012
     res_t = b.get("telescoping_residuals") or {}
-    y -= 0.14
-    ax2.text(0.0, y, tr("망원 항등식 잔차: ", "telescoping residuals: ") +
-             (", ".join(f"{k} {v:.1e}" for k, v in res_t.items()) or tr("적용 안 됨", "not applicable")),
-             fontsize=7, color=t["muted"], transform=ax2.transAxes)
-    am = led.get("aux_metrics") or {}
-    if am:
-        y -= 0.1
-        ax2.text(0.0, y, "\n".join(f"{k}: {100 * v:.2f}%" for k, v in am.items()), fontsize=7, color=t["fg"],
-                 transform=ax2.transAxes, va="top")
+    put(tr("망원 항등식 잔차: ", "telescoping residuals: ") +
+        (", ".join(f"{k} {v:.1e}" for k, v in res_t.items()) or tr("적용 안 됨", "not applicable")),
+        size=7, color=t["muted"], width=70, dy=0.036)
+    for k, v in (led.get("aux_metrics") or {}).items():
+        put(f"{k}: {100 * v:.2f}%", size=7, width=70, dy=0.036)
     sc = led.get("inverter_scope") or {}
-    ax2.text(0.0, 0.02, tr("인버터 경계: ", "inverter boundary: ") + str(sc.get("model")) + "\n" +
-             tr("제외: ", "excluded: ") + ", ".join(sc.get("excluded", []))[:150], fontsize=6.3, color=t["muted"],
-             transform=ax2.transAxes, va="bottom", wrap=True)
+    put(tr("인버터 경계: ", "inverter boundary: ") + str(sc.get("model")), size=6.3, color=t["muted"], width=64,
+        dy=0.032)
+    put(tr("제외: ", "excluded: ") + ", ".join(sc.get("excluded", [])), size=6.3, color=t["muted"], width=64,
+        dy=0.032)
     ax2.set_title(tr("다섯 경계의 효율 (각 경계의 두 포트로 판정)", "five boundary efficiencies (each on its own ports)"),
                   fontsize=9)
     return fig

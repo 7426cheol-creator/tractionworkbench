@@ -335,10 +335,10 @@ class MachinePage(QWidget):
                                    f"(y/τ = {w['y_over_pole_pitch']:.3f})"),
                 (tr("상순", "phase sequence"), w["phase_sequence"]),
                 (tr("상 축 [전기°]", "phase axes [el. deg]"), ", ".join(f"{k} {v:.1f}" for k, v in w["phase_axes_deg"].items())),
-                (tr("코일변 수", "coil sides"), str(w["coil_sides"])),
+                (tr("코일변 수", "coil sides"), w["coil_sides"]),
                 (tr("서브하모닉", "sub-harmonics"), ", ".join(f"ν_m {h['order_mech']}: {h['kw']:.3f}" for h in w["subharmonics"])
                  or tr("없음", "none")),
-                (tr("코깅 지표 LCM(Q, 2p)", "cogging indicator LCM(Q, 2p)"), str(w["cogging_lcm_Q_2p"]))]
+                (tr("코깅 지표 LCM(Q, 2p)", "cogging indicator LCM(Q, 2p)"), w["cogging_lcm_Q_2p"])]
         for c in w.get("consistency", []):
             rows.append((c["item"], f"{ok(c['ok'])} — {c['detail']}"))
         if "N_series" in w:

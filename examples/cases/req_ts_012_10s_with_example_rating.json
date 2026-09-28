@@ -74,6 +74,12 @@
       },
       "interpolation": "conservative",
       "evidence_kind": "supplier_rated",
+      "limit_semantics": "rated_limit",
+      "applies_to": {
+        "drive_id": "SYNTH_IPMSM_200KW_REF_V1",
+        "drive_revision": "1.0"
+      },
+      "control_policy": "minimum_current",
       "provenance": {
         "origin": "synthetic",
         "source": "EXAMPLE ONLY - illustrates the lookup; not supplier data",

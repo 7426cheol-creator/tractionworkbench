@@ -1,0 +1,36 @@
+{
+ "kind": "module",
+ "note": "FORMAT EXAMPLE: characteristic-table values of a fictitious part typed by hand - not a product; replace with your datasheet",
+ "part": {
+  "manufacturer": "Example Semiconductor (fictitious)",
+  "part_number": "EXM-750-820",
+  "revision": "0.1",
+  "document": "synthetic format example, table 'characteristic values'"
+ },
+ "technology": "IGBT",
+ "value_kind": "typical",
+ "energy_basis": "per_device",
+ "v_test_V": 600.0,
+ "test_conditions": {
+  "Rg_on_ohm": 1.8,
+  "Rg_off_ohm": 1.8,
+  "Vge_V": 15.0
+ },
+ "representative": {
+  "temps_C": [25.0, 150.0],
+  "I_nom_A": 820.0,
+  "I_max_A": 1640.0,
+  "switch": {"model": "threshold_slope", "V0_V": [0.62, 0.55], "V_nom_V": [1.44, 1.62]},
+  "reverse": {"model": "threshold_slope", "V0_V": [0.78, 0.66], "V_nom_V": [1.54, 1.54]},
+  "energies": {
+   "I_A": 820.0,
+   "E_on_mJ": [18.6, 29.0],
+   "E_off_mJ": [25.3, 35.4],
+   "E_rr_mJ": [13.8, 24.9],
+   "k_on": 1.3,
+   "k_off": 1.0,
+   "k_rr": 0.5,
+   "basis": "read off the shape of the datasheet E(I) figures between I_nom / 2 and I_nom"
+  }
+ }
+}

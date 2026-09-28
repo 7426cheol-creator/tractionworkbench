@@ -6,8 +6,9 @@ from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, QUrl
 from PySide6.QtGui import QAction, QDesktopServices, QKeySequence
-from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel, QListWidget, QMainWindow, QMessageBox,
-                               QProgressBar, QPushButton, QStackedWidget, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QLabel, QListWidget,
+                               QListWidgetItem, QMainWindow, QMessageBox, QProgressBar, QPushButton, QStackedWidget,
+                               QTextBrowser, QVBoxLayout, QWidget)
 
 from .. import __version__
 from ..i18n import language, tr
@@ -26,17 +27,19 @@ from .pages.performance import PerformancePage
 from .pages.power import PowerPage
 from .pages.project import ProjectPage
 from .pages.protection import ProtectionPage
+from .pages.requirement_set import RequirementSetPage
 from .pages.pwm_driveline import PwmDrivelinePage
 from .pages.safety import SafetyPage
 from .pages.thermal import ThermalPage
 from .pages.trajectory import TrajectoryPage
 from .pages.verification import VerificationPage
 from .state import AppState
-from .widgets import error_box
+from .widgets import error_box, tidy_inputs
 from .worker import TaskRunner
 
 PAGES = (
     ("decision", lambda: tr("요구 판정", "Decision"), DecisionPage),
+    ("requirement_set", lambda: tr("요구 묶음·후보", "Requirement set"), RequirementSetPage),
     ("explorer", lambda: tr("운전점 탐색", "Operating point"), ExplorerPage),
     ("trajectory", lambda: tr("궤적", "Trajectories"), TrajectoryPage),
     ("performance", lambda: tr("성능 곡선·맵", "Envelope & maps"), PerformancePage),
@@ -56,9 +59,65 @@ PAGES = (
 )
 
 
+# navigation: pages grouped by the engineering question they answer (the stack keeps the PAGES order)
+NAV_GROUPS = (
+    (lambda: tr("제품 데이터", "Product data"), ("project", "model")),
+    (lambda: tr("요구·구동 성능", "Requirement & drive"), ("decision", "requirement_set", "explorer", "trajectory",
+                                                                   "performance", "design")),
+    (lambda: tr("전력·열·효율", "Power, heat & efficiency"), ("thermal", "power", "efficiency")),
+    (lambda: tr("제어·EMC", "Control & EMC"), ("pwm_driveline", "emi")),
+    (lambda: tr("안전·보호", "Safety & protection"), ("safety", "protection")),
+    (lambda: tr("시스템·설계", "Systems & design"), ("oew_hev", "machine")),
+    (lambda: tr("검증", "Verification"), ("verification",)),
+)
+PAGE_INFO = {
+    "project": lambda: tr("한 제품의 제품 데이터(섹션·출처·개정), 일관성 검사, 데이터시트 값 입력·파일 가져오기, MathWorks 이식 "
+                          "패키지", "one product's data (sections, provenance, revisions), consistency, datasheet value "
+                                   "entry and file import, MathWorks package"),
+    "model": lambda: tr("드라이브 모델과 DC 소스 한계 선택, 데이터 감사(이 데이터로 할 수 있는 것/없는 것)",
+                        "drive model and DC source limits, data audit (what this data can and cannot support)"),
+    "decision": lambda: tr("요구(토크·속도·전압·지속시간)를 PASS/FAIL/UNKNOWN으로 판정하고 근거·병목·다음 조치를 보여줍니다",
+                           "judges a requirement (torque, speed, voltage, duration) PASS/FAIL/UNKNOWN with evidence, "
+                           "bottlenecks and next actions"),
+    "requirement_set": lambda: tr("요구 여러 건을 같은 제품·조건·근거로 한 번에 판정(CSV), UNKNOWN 원인 분류와 다음 자료, "
+                                  "설계 후보를 모든 요구에 대해 재판정",
+                                  "many requirements judged at once on one product, conditions and evidence (CSV), the "
+                                  "class of each open answer and the next data, candidates re-judged against every "
+                                  "requirement"),
+    "explorer": lambda: tr("한 운전점(토크 요구 또는 id·iq 직접)의 전압·전류·전력·손실·제약",
+                           "one operating point (torque request or id/iq): voltages, currents, powers, losses, constraints"),
+    "trajectory": lambda: tr("속도·토크 스윕을 따라 정책 운전점과 한계 전환(약계자·DC 한계)",
+                             "policy points along a speed or torque sweep and the limit transitions"),
+    "performance": lambda: tr("T–n 성능 곡선과 효율·손실·변조지수 맵", "T–n envelope and efficiency / loss / modulation maps"),
+    "design": lambda: tr("파라미터 민감도·역설계와 병목(제약 1% 완화·요구 완화)",
+                         "parameter sensitivity / inverse design and bottleneck analysis"),
+    "thermal": lambda: tr("냉각수·열 회로망으로 지속시간별 가용 토크 스크리닝",
+                          "coolant loop and thermal networks: torque available per duration (screening)"),
+    "power": lambda: tr("데이터시트 모듈 손실, DC-link 리플·커패시터, 열 사이클 수명",
+                        "datasheet module losses, DC-link ripple and capacitor, thermal-cycle lifetime"),
+    "efficiency": lambda: tr("다섯 경계별 효율, 효율 맵·미션 에너지, 모듈 A/B 비교",
+                             "efficiency per boundary, maps, mission energy, module A/B comparison"),
+    "pwm_driveline": lambda: tr("가변 PWM 정책·타이밍·전환과 anti-jerk(능동 감쇠)",
+                                "variable PWM policies, timing, transitions and anti-jerk active damping"),
+    "emi": lambda: tr("HV 포트 전도성 EMI 스크리닝(소스 → 경로 → 수신기)",
+                      "conducted EMI on the HV port (source → path → receiver), screening"),
+    "safety": lambda: tr("FTTI 체인, DC-link 방전·과전압, 안전 상태(ASC/Freewheel) 스크리닝",
+                         "FTTI chain, DC-link discharge / overvoltage, safe state (ASC / freewheel) screening"),
+    "protection": lambda: tr("임계값·디레이팅·고장 반응 검토와 ASC 과도",
+                             "thresholds, derating and fault reaction review; ASC transient"),
+    "oew_hev": lambda: tr("OEW 듀얼 인버터와 HEV 두 기기 공통 bus", "open-end winding dual inverter and HEV two-machine bus"),
+    "machine": lambda: tr("모터 스케일링 트레이드, 권선 계산, 개념 사이징",
+                          "machine scaling trade study, winding calculator, concept sizing"),
+    "verification": lambda: tr("golden fixture 대비 acceptance와 참조 패키지 무결성",
+                               "acceptance against golden fixtures and reference package integrity"),
+}
+
+
 # runner task -> page that shows it (safety-page analyses run inline and report through ``note_result``)
-TASK_PAGE = {"decision": "decision", "decision-env": "decision", "explorer": "explorer", "trajectory": "trajectory",
+TASK_PAGE = {"decision": "decision", "decision-env": "decision", "requirement_set": "requirement_set",
+             "explorer": "explorer", "trajectory": "trajectory",
              "performance": "performance", "design-sweep": "design", "design-dom": "design", "thermal": "thermal",
+             "thermal_cycle": "thermal",
              "protection": "protection", "asc": "protection", "module": "power", "ripple": "power",
              "lifetime": "power", "efficiency": "efficiency", "efficiency_map": "efficiency",
              "efficiency_mission": "efficiency", "module_compare": "efficiency", "pwm_policies": "pwm_driveline",
@@ -69,7 +128,8 @@ TASK_PAGE = {"decision": "decision", "decision-env": "decision", "explorer": "ex
              "winding": "machine", "concept_sizing": "machine", "ftti": "safety", "passive": "safety",
              "discharge": "safety", "overvoltage": "safety", "safe_state": "safety"}
 # tasks whose argument is not a request body: they run on the state's drive and limits
-STATE_TASKS = ("decision-env", "explorer", "trajectory", "performance", "design-sweep", "design-dom")
+STATE_TASKS = ("decision-env", "requirement_set", "explorer", "trajectory", "performance", "design-sweep",
+               "design-dom")
 LIMIT_PAIRS = (("discharge_power_max_W", "discharge_power_max"), ("charge_power_max_W", "charge_power_max"),
                ("discharge_current_max_A", "discharge_current_max"), ("charge_current_max_A", "charge_current_max"))
 
@@ -121,8 +181,10 @@ class MainWindow(QMainWindow):
             hv.addWidget(ban)
             hv.addWidget(page, 1)
             self.stack.addWidget(holder)
-            self.nav.addItem(label())
-        self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
+        self._page_index = {key: i for i, (key, *_r) in enumerate(PAGES)}
+        self._build_nav()
+        self.nav.currentRowChanged.connect(self._nav_changed)
+        tidy_inputs(self.stack)
         body.addWidget(self.nav)
         body.addWidget(self.stack, 1)
         outer.addLayout(body, 1)
@@ -132,7 +194,42 @@ class MainWindow(QMainWindow):
         self.state.drive_changed.connect(self._update_badges)
         self.state.project_changed.connect(self._project_changed)
         self._update_badges()
-        self.nav.setCurrentRow(0)
+        self.show_page("decision")
+
+    # ------------------------------------------------------------------ navigation
+    def _build_nav(self):
+        labels = {key: label for key, label, _cls in PAGES}
+        placed = [k for _g, keys in NAV_GROUPS for k in keys]
+        assert sorted(placed) == sorted(labels), "every page belongs to exactly one navigation group"
+        self._nav_rows = {}
+        for group, keys in NAV_GROUPS:
+            head = QListWidgetItem(group())
+            head.setFlags(Qt.NoItemFlags)                    # a group title: not selectable, skipped by the keyboard
+            f = head.font()
+            f.setPointSizeF(f.pointSizeF() * 0.85 if f.pointSizeF() > 0 else 8.0)
+            f.setBold(True)
+            head.setFont(f)
+            self.nav.addItem(head)
+            for key in keys:
+                it = QListWidgetItem("  " + labels[key]())
+                it.setData(Qt.UserRole, key)
+                it.setToolTip(PAGE_INFO[key]())
+                self.nav.addItem(it)
+                self._nav_rows[key] = self.nav.row(it)
+
+    def _nav_changed(self, row: int):
+        it = self.nav.item(row)
+        key = it.data(Qt.UserRole) if it is not None else None
+        if key in self._page_index:
+            self.stack.setCurrentIndex(self._page_index[key])
+
+    def show_page(self, key: str):
+        """Show page ``key`` (the navigation and the page stack stay in step)."""
+        self.nav.setCurrentRow(self._nav_rows[key])
+
+    def current_page(self) -> str:
+        it = self.nav.currentItem()
+        return it.data(Qt.UserRole) if it is not None else ""
 
     # ------------------------------------------------------------------ chrome
     def _header(self):
@@ -220,6 +317,15 @@ class MainWindow(QMainWindow):
         a = QAction(tr("프로젝트 저장…", "Save project…"), self)
         a.triggered.connect(lambda: self.save_project())
         m.addAction(a)
+        a = QAction(tr("데이터시트 값 입력…", "Enter datasheet values…"), self)
+        a.triggered.connect(lambda: self.pages["project"].enter_datasheet())
+        m.addAction(a)
+        a = QAction(tr("데이터시트 파일 가져오기…", "Import datasheet file…"), self)
+        a.triggered.connect(lambda: self.pages["project"].import_datasheet())
+        m.addAction(a)
+        a = QAction(tr("MathWorks 이식 패키지…", "MathWorks transfer package…"), self)
+        a.triggered.connect(lambda: self.pages["project"].mathworks_package())
+        m.addAction(a)
         a = QAction(tr("예시 폴더 열기", "Open examples folder"), self)
         a.triggered.connect(self._open_examples)
         m.addAction(a)
@@ -242,6 +348,10 @@ class MainWindow(QMainWindow):
             a.triggered.connect(lambda _=False, c=code: self._set_language(c))
             lang.addAction(a)
         m = mb.addMenu(tr("도움말", "Help"))
+        a = QAction(tr("화면 안내", "Page guide"), self)
+        a.setShortcut(QKeySequence.HelpContents)
+        a.triggered.connect(self.page_guide)
+        m.addAction(a)
         a = QAction(tr("정보", "About"), self)
         a.triggered.connect(self._about)
         m.addAction(a)
@@ -324,9 +434,13 @@ class MainWindow(QMainWindow):
         self.pages["project"].save_project(path)
 
     # ----------------------------------------------------------------- actions
-    def set_theme(self, name: str):
+    def set_theme(self, name: str, persist: bool = True):
         theme.apply(QApplication.instance(), name)
-        self.settings.setValue("theme", name)
+        if persist:                                   # the self-test switches themes without touching user settings
+            self.settings.setValue("theme", name)
+        self.redraw_all()
+
+    def redraw_all(self):
         for page in self.pages.values():
             page.redraw()
 
@@ -351,10 +465,49 @@ class MainWindow(QMainWindow):
             error_box(self, tr("case 파일 오류", "case file error"), str(exc))
             return
         page: DecisionPage = self.pages["decision"]
-        self.nav.setCurrentRow(0)
+        self.show_page("decision")
         page.banner.set("NONE", tr(f"{Path(path).name} 평가 중…", f"evaluating {Path(path).name}…"))
         from .pages.decision import _evaluate_task
         self.runner.run("decision", Path(path).name, _evaluate_task, page._show, case, [], on_error=page._failed)
+
+    def page_guide_html(self) -> str:
+        labels = {key: label for key, label, _cls in PAGES}
+        parts = [tr("<h3>작업 흐름</h3><ol><li><b>제품 데이터</b>: 프로젝트(한 제품의 데이터)를 확인하고, 필요하면 데이터시트 "
+                    "대표값을 직접 입력하거나(모터·모듈·커패시터·dv/dt) 파일을 가져오고, 새 개정을 만듭니다.</li><li><b>요구 판정</b>: 핵심 요구를 PASS/FAIL/UNKNOWN으로 판정하고 병목을 "
+                    "확인합니다.</li><li><b>상세 분석</b>: 전력·열·제어·안전 페이지에서 같은 제품 데이터로 세부 질문을 봅니다. "
+                    "결과가 어떤 제품 데이터로 계산됐는지는 페이지 위 배너에 표시되고, 데이터가 바뀌면 stale로 표시됩니다.</li>"
+                    "<li><b>이식·검증</b>: 프로젝트 페이지에서 MathWorks 이식 패키지를 만들고, 검증 페이지에서 golden 대비 "
+                    "acceptance를 확인합니다.</li></ol><p>UNKNOWN은 실패가 아니라 '증명·근거가 부족함'입니다. 판정을 확정하려면 "
+                    "다음 조치에 적힌 데이터나 선언을 보완하세요.</p>",
+                    "<h3>Workflow</h3><ol><li><b>Product data</b>: check the project (one product's data); type representative "
+                    "datasheet values (motor, module, capacitor, dv/dt) or import a datasheet file, and make a new "
+                    "revision when needed.</li><li><b>Requirement decision</b>: judge the key "
+                    "requirements PASS/FAIL/UNKNOWN and look at the bottlenecks.</li><li><b>Detailed analyses</b>: the "
+                    "power, heat, control and safety pages use the same product data; the banner above each page names "
+                    "it and marks results stale when it changes.</li><li><b>Port and verify</b>: build the MathWorks "
+                    "package on the project page; check acceptance against the golden fixtures on the verification "
+                    "page.</li></ol><p>UNKNOWN is not a failure: it means proof or evidence is missing. Supply the data "
+                    "or declaration named under next actions to settle it.</p>")]
+        for group, keys in NAV_GROUPS:
+            parts.append(f"<h3>{group()}</h3><ul>")
+            parts.extend(f"<li><b>{labels[k]()}</b> — {PAGE_INFO[k]()}</li>" for k in keys)
+            parts.append("</ul>")
+        return "".join(parts)
+
+    def page_guide(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle(tr("화면 안내", "Page guide"))
+        dlg.resize(760, 640)
+        lay = QVBoxLayout(dlg)
+        view = QTextBrowser()
+        view.setHtml(self.page_guide_html())
+        lay.addWidget(view)
+        bb = QDialogButtonBox(QDialogButtonBox.Close)
+        bb.rejected.connect(dlg.reject)
+        lay.addWidget(bb)
+        if not QApplication.instance().property("twb_selftest"):
+            dlg.exec()
+        return dlg
 
     def _about(self):
         QMessageBox.about(self, "Traction Workbench", tr(

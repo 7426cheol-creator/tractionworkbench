@@ -122,13 +122,23 @@ def thermal_network_from_dict(n: dict, coolant: CoolantLoop | None) -> FosterNet
     return FosterNetwork(tuple(r), tuple(n["tau_s"]))
 
 
+def _cauer_of(n: dict, coolant: CoolantLoop | None):
+    """The declared Cauer ladder (flow-scaled like the Foster equivalent), kept for physical node states."""
+    if str(n.get("network", "foster")).lower() != "cauer":
+        return None
+    r = flow_scaled(n["R_K_per_W"], n.get("flow_dependent"), n.get("flow_ref_L_per_min"),
+                    None if coolant is None else coolant.flow_L_per_min, n.get("flow_exponent", 0.8))
+    return CauerNetwork(tuple(r), tuple(n["C_J_per_K"]))
+
+
 def thermal_model_from_dict(spec, inlet_C: float | None = None) -> ThermalModel:
     if not spec:
         raise InputValidationError("a thermal model needs its nodes", field="thermal")
     coolant = coolant_from_dict(spec.get("coolant"), inlet_C)
     nodes = tuple(ThermalNode(str(n["id"]), thermal_network_from_dict(n, coolant), float(n["limit_C"]),
                               tuple((k, float(v)) for k, v in n["loss_share"].items()),
-                              n.get("station") if coolant is not None else None) for n in spec["nodes"])
+                              n.get("station") if coolant is not None else None, _cauer_of(n, coolant))
+                  for n in spec["nodes"])
     # the data origin is declared, never derived from the 'validated' flag (a flag is not supplier evidence)
     try:
         origin = DataOrigin(str(spec.get("origin", "estimated")))

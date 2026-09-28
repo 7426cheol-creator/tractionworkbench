@@ -9,6 +9,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QPushButton, QScrollArea,
                                QSplitter, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
+from ...examples import examples_dir  # noqa: F401 (the pages import it from here)
 from ...i18n import tr
 from ...io import load_json_file
 from ..state import BUILTIN_DRIVES
@@ -31,19 +32,6 @@ def _fill(parent, key, value):
     return it
 
 
-def examples_dir() -> Path | None:
-    import sys
-    cands = []
-    frozen = getattr(sys, "_MEIPASS", None)
-    if frozen:
-        cands.append(Path(frozen) / "examples")
-    cands.append(Path(__file__).resolve().parents[4] / "examples")
-    for c in cands:
-        if c.is_dir():
-            return c
-    return None
-
-
 class ModelPage(QWidget):
     def __init__(self, win):
         super().__init__()
@@ -59,6 +47,12 @@ class ModelPage(QWidget):
         b = QPushButton(tr("내장 모델 적용", "use built-in model"))
         b.clicked.connect(self._use_builtin)
         gl.addWidget(self.builtin)
+        gl.addWidget(b)
+        b = QPushButton(tr("모터 데이터시트 값 입력…", "enter motor datasheet values…"))
+        b.setToolTip(tr("극수·Ke·R·Ld·Lq·무부하 손실을 데이터시트에서 입력 → 상수 dq(D1) 드라이브 (인버터·운전 영역은 유지)",
+                        "poles, Ke, R, Ld, Lq, no-load loss from the datasheet -> a constant-dq (D1) drive (inverter "
+                        "and domain kept)"))
+        b.clicked.connect(lambda: self.win.pages["project"].enter_datasheet("motor"))
         gl.addWidget(b)
         b = QPushButton(tr("드라이브 JSON 불러오기… (단위 선언 형식)", "load drive JSON… (declared units)"))
         b.clicked.connect(self._load_drive)

@@ -69,7 +69,8 @@ PRESETS = [
      "hint": {"ko": "축 출력만으로 방전 한계 초과", "en": "Shaft power alone exceeds the discharge cap"},
      "req": {"id": "REQ-PK-350", "text": "6,000 rpm에서 350 N·m", "torque_Nm": 350, "speed_rpm": 6000, "Vdc_V": 600}},
     {"key": "range", "title": {"ko": "Vdc 550–650 V 전 구간", "en": "Vdc 550–650 V range"},
-     "hint": {"ko": "표본점 통과만으로 전 구간 PASS 아님", "en": "Sampled points do not prove the whole range"},
+     "hint": {"ko": "저전압 끝점 + 단조성 조건으로 전 구간 입증 (표본만으로는 PASS 아님)",
+              "en": "Proven for the whole range from the low end by monotonicity (samples alone would not)"},
      "req": {"id": "REQ-RANGE", "text": "550~650 V 전 구간에서 12,000 rpm 100 N·m", "torque_Nm": 100, "speed_rpm": 12000,
              "Vdc_V": [550, 650]}},
     {"key": "stall", "title": {"ko": "정지 300 N·m", "en": "Standstill 300 N·m"},
@@ -97,7 +98,7 @@ def _limits(body) -> DcSourceLimits:
 def case_from_body(body) -> dict:
     r = body.get("requirement") or {}
     v = r.get("Vdc_V")
-    vq = {"value": v, "unit": "V", "port": "inverter_dc_terminal"}
+    vq = {"value": v, "unit": "V", "port": r.get("Vdc_port") or "inverter_dc_terminal"}
     req = {"id": r.get("id") or "REQ-UI", "text": r.get("text") or "(entered in the UI)",
            "target": {"value": r.get("torque_Nm"), "unit": "N*m", "torque": "shaft"},
            "conditions": {"speed": {"value": r.get("speed_rpm"), "unit": "rpm", "kind": "mechanical"}, "Vdc": vq}}
@@ -105,11 +106,16 @@ def case_from_body(body) -> dict:
         req["duration"] = "continuous" if r["duration_s"] == "continuous" else {"value": r["duration_s"], "unit": "s"}
     if r.get("coolant_temp_C") not in (None, ""):
         req["conditions"]["coolant_temp"] = {"value": r["coolant_temp_C"], "unit": "degC"}
+    for key, cond in (("magnet_temp_C", "magnet_temp"), ("winding_temp_C", "winding_temp")):
+        if r.get(key) not in (None, ""):
+            req["conditions"][cond] = {"value": r[key], "unit": "degC"}
     if r.get("operator") == "band":
         req["operator"] = "band"
         req["band"] = {"value": r.get("band_Nm"), "unit": "N*m"}
     case = {"drive": body.get("drive") or {"builtin": "SYNTH_IPMSM_200KW_REF_V1"}, "requirement": req,
             "analyses": body.get("analyses") or {}}
+    if body.get("source_model"):
+        case["source_model"] = body["source_model"]
     lim = body.get("limits")
     if lim:
         case["scenario"] = {"source_limits": {
@@ -247,6 +253,40 @@ def thermal(body):
     if body.get("torque_Nm") not in (None, ""):
         out["request"] = thermal_duration(d, sc, model, _num(body, "torque_Nm"), _num(body, "duration_s", 10))
     return _jsonable(out)
+
+
+EXAMPLE_THERMAL_CYCLE = {
+    "phases": [{"name": "pulse", "torque_Nm": 450.0, "speed_rpm": 3000.0, "duration_s": 8.0},
+               {"name": "rest", "torque_Nm": 50.0, "speed_rpm": 3000.0, "duration_s": 20.0}],
+    "cycles": 40, "initial": {"kind": "equilibrium_at_coolant"},
+    "feedback": {"enabled": True, "rs_alpha_per_K": 0.00393, "rs_reference_C": 20.0, "rs_valid_C": [-40.0, 250.0],
+                 "rs_basis": "copper resistivity coefficient (declare the measured R_s reference temperature)"},
+    "note": "example duty cycle (declare the target cycle; the thermal model is the project's)",
+}
+
+
+def thermal_cycle(body):
+    """Repeated load (pulse - rest - repeat) from a stated initial thermal state with loss-temperature feedback
+    (review 6198099, priority 1)."""
+    from .extensions.thermal_cycle import Feedback, InitialState, LoadPhase, repeated_load
+    from .models.components import TemperatureDependence
+    b = {**EXAMPLE_THERMAL_CYCLE, **(body or {})}
+    d = _drive(b)
+    sc = Scenario("thermal-cycle", float(b["phases"][0]["speed_rpm"]), _num(b, "Vdc_V", 600.0), _limits(b),
+                  coolant_temp_C=_num(b, "coolant_temp_C", 65.0))
+    model = thermal_model_from_dict(b.get("model"), sc.coolant_temp_C)
+    phases = [LoadPhase(float(p["torque_Nm"]), float(p["speed_rpm"]), float(p["duration_s"]), str(p.get("name", "")))
+              for p in b["phases"]]
+    ini = b.get("initial") or {}
+    init = InitialState(str(ini.get("kind", "equilibrium_at_coolant")), _opt(ini, "torque_Nm"), _opt(ini, "speed_rpm"),
+                        tuple((k, tuple(float(x) for x in v)) for k, v in (ini.get("node_temperatures_C") or {}).items()))
+    fbd = b.get("feedback") or {}
+    law = None
+    if fbd.get("rs_alpha_per_K") not in (None, ""):
+        law = TemperatureDependence(float(fbd["rs_alpha_per_K"]), tuple(fbd.get("rs_valid_C") or (-40.0, 250.0)),
+                                    str(fbd.get("rs_basis") or "declared for this analysis"))
+    fb = Feedback(bool(fbd.get("enabled", True)), law, _opt(fbd, "rs_reference_C"))
+    return _jsonable(repeated_load(d, sc, model, phases, int(b.get("cycles") or 20), init, fb))
 
 
 EXAMPLE_PROTECTION = {
@@ -1021,6 +1061,26 @@ def _eff_drive(b):
     return d
 
 
+def _pwm_hf(b: dict, drive, sc, pt):
+    """Motor PWM harmonic losses at the point from the declared HF data (``pwm_hf``: L_hf_uH, fsw_kHz, modulation,
+    harmonic); default = the variable-PWM page's example data (synthetic, labelled).  ``pwm_hf: null`` = not
+    evaluated."""
+    from .extensions.pwm_policy import point_hf_losses
+    spec = b["pwm_hf"] if "pwm_hf" in b else {"L_hf_uH": EXAMPLE_PWM["L_hf_uH"], "fsw_kHz": _CTRL["fsw_kHz"],
+                                              "modulation": _CTRL["modulation"], "harmonic": EXAMPLE_PWM["harmonic"]}
+    if not spec:
+        return None
+    L = float(spec["L_hf_uH"]) * 1e-6
+    if not (math.isfinite(L) and L > 0):
+        raise InputValidationError("L_hf must be > 0", field="pwm_hf.L_hf_uH")
+    mod = str(spec.get("modulation", "svpwm"))
+    if mod not in ("svpwm", "spwm"):
+        return {"status": "UNKNOWN", "interval_W": [None, None], "copper": None, "magnetic_hf_bound_W": None,
+                "reason": f"ripple model supports svpwm / spwm, not {mod}", "basis": ""}
+    return point_hf_losses(drive, sc, pt, float(spec.get("fsw_kHz") or _CTRL["fsw_kHz"]) * 1e3, L, mod,
+                           harmonic_data(spec.get("harmonic")))
+
+
 def efficiency(body):
     """Five boundary efficiencies, loss ledger and flow table at one policy point (module-efficiency addendum)."""
     from .analysis.efficiency import point_ledger
@@ -1034,7 +1094,8 @@ def efficiency(body):
         out["ledger"] = None
         out["reason"] = sol.policy_claim.detail
         return _jsonable(out)
-    out["ledger"] = point_ledger(sol.point, d, _reducer(b.get("reducer")), _opt(b, "oil_temp_C"), _aux(b))
+    hf = _pwm_hf(b, d, Scenario("eff", n, vdc, _limits(b)), sol.point)
+    out["ledger"] = point_ledger(sol.point, d, _reducer(b.get("reducer")), _opt(b, "oil_temp_C"), _aux(b), pwm_hf=hf)
     out["point"] = {"id_A": sol.point.id_A, "iq_A": sol.point.iq_A, "i_peak_A": sol.point.i_peak_A,
                     "energy_mode": sol.point.energy_mode, "Tshaft_Nm": sol.point.Tshaft_Nm,
                     "Te_Nm": sol.point.Te_Nm, "module_detail": sol.point.inverter_loss_detail}
@@ -1166,8 +1227,8 @@ EXAMPLE_PWM = {
                           "basis": "example peak-to-peak noise of the schedule inputs (declare the measured values)"},
     "harmonic": {"f_Hz": [0.0, 1e3, 5e3, 10e3, 20e3, 50e3, 1e5, 3e5, 1e6, 3e6],
                  "rac_over_rdc": [1.0, 1.02, 1.3, 1.8, 2.8, 5.0, 8.0, 14.0, 25.0, 45.0],
-                 "iron_bound_W": [[6e3, 420.0], [8e3, 350.0], [10e3, 300.0], [16e3, 220.0]],
-                 "basis": "synthetic example (declare FEA / measured R_ac(f) and the harmonic iron-loss bound)"},
+                 "magnetic_hf_loss_bound_W": [[6e3, 420.0], [8e3, 350.0], [10e3, 300.0], [16e3, 220.0]],
+                 "basis": "synthetic example (declare FEA / measured R_ac(f) and the Fe+PM HF magnetic-loss bound)"},
     "pwm_limits": {"Tj_max_C": 150.0, "i_peak_incl_ripple_max_A": 700.0, "cap_rms_max_A": 250.0,
                    "phase_margin_min_deg": 45.0, "pulse_ratio_min": 10.0, "transition_excursion_max_A": 50.0,
                    "not_applicable": []},
@@ -1206,20 +1267,52 @@ def _plant_point(b: dict, default_speed: float = 6000.0, default_torque: float =
     return sol.point, differential_inductances(d, sc, sol.point.id_A, sol.point.iq_A), (n, T, vdc)
 
 
+def harmonic_data(hd):
+    """Declared motor PWM harmonic data: R_ac/R_dc(f) table and the Fe+PM HF magnetic-loss bound
+    (``magnetic_hf_loss_bound_W``; ``iron_bound_W`` is accepted as its alias)."""
+    from .extensions.pwm_policy import HarmonicLossData
+    if not hd:
+        return None
+    pairs = lambda key: tuple((float(f), float(w)) for f, w in (hd.get(key) or []))
+    return HarmonicLossData(tuple(float(x) for x in hd["f_Hz"]), tuple(float(x) for x in hd["rac_over_rdc"]),
+                            pairs("magnetic_hf_loss_bound_W"), str(hd.get("basis", "")), pairs("iron_bound_W"))
+
+
+def pwm_risk_at(drive, scenario, pt, spec: dict | None = None) -> dict:
+    """PWM ripple, lines and DC-link burden at a decision operating point, with the project's controller (fsw,
+    modulation), the declared L_hf / harmonic data / peak limit (the variable-PWM page's example unless given) and
+    the project's DC-link capacitor."""
+    from .extensions.pwm_policy import point_pwm_risk
+    sp = {"L_hf_uH": EXAMPLE_PWM["L_hf_uH"], "fsw_kHz": _CTRL["fsw_kHz"], "modulation": _CTRL["modulation"],
+          "harmonic": EXAMPLE_PWM["harmonic"],
+          "peak_limit_A": (EXAMPLE_PWM.get("pwm_limits") or {}).get("i_peak_incl_ripple_max_A"), **(spec or {})}
+    mod = str(sp.get("modulation", "svpwm"))
+    if mod not in ("svpwm", "spwm"):
+        return {"status": "UNKNOWN", "reason": f"the ripple model supports svpwm / spwm, not {mod}"}
+    bank, source = _ripple_bank(EXAMPLE_RIPPLE)
+    cap = EXAMPLE_RIPPLE["capacitor"]
+    return _jsonable(point_pwm_risk(drive, scenario, pt, float(sp["fsw_kHz"]) * 1e3, float(sp["L_hf_uH"]) * 1e-6, mod,
+                                    harmonic_data(sp.get("harmonic")), bank, source,
+                                    None if cap.get("T_ref_C") in (None, "") else float(cap["T_ref_C"]),
+                                    None if sp.get("peak_limit_A") in (None, "") else float(sp["peak_limit_A"])))
+
+
 def pwm_policies(body):
     """Fixed-frequency baseline vs a declared schedule on the same trajectory (P1-PWM)."""
     from .analysis.efficiency import ModuleCandidate
-    from .extensions.pwm_policy import HarmonicLossData, PwmLimits, evaluate_policies, fixed_schedule
+    from .extensions.pwm_policy import PwmLimits, evaluate_policies, fixed_schedule
     b = {**EXAMPLE_PWM, **(body or {})}
     model = module_model_from_dict(b.get("module") or EXAMPLE_MODULE)
     cand = ModuleCandidate(str((b.get("module") or {}).get("name", "module")), model, float(b["Rth_K_per_W"]))
-    hd = b.get("harmonic")
-    harm = None if not hd else HarmonicLossData(tuple(float(x) for x in hd["f_Hz"]),
-                                                tuple(float(x) for x in hd["rac_over_rdc"]),
-                                                tuple((float(f), float(w)) for f, w in (hd.get("iron_bound_W") or [])),
-                                                str(hd.get("basis", "")))
+    harm = harmonic_data(b.get("harmonic"))
     bank, source = _ripple_bank(EXAMPLE_RIPPLE) if b.get("use_capacitor") else (None, None)
     pl = dict(b.get("pwm_limits") or {})
+    if "i_peak_bound_max_A" in pl:                   # the canonical name of the limit on the conservative peak bound
+        v = pl.pop("i_peak_bound_max_A")
+        if pl.get("i_peak_incl_ripple_max_A") not in (None, "", v):
+            raise InputValidationError("i_peak_bound_max_A and its alias i_peak_incl_ripple_max_A disagree",
+                                       field="pwm_limits")
+        pl["i_peak_incl_ripple_max_A"] = v
     na = tuple(pl.pop("not_applicable", None) or ())
     lim = PwmLimits(**{k: (None if v in (None, "") else float(v)) for k, v in pl.items()}, not_applicable=na)
     pols = [fixed_schedule(float(b["baseline_fsw_kHz"]) * 1e3)] + [_schedule(sd, b) for sd in b.get("schedules") or []]
@@ -1368,9 +1461,13 @@ EXAMPLE_DRIVELINE = {
     "controller": PROJECT.torque_path(),
     "variants": {"off": {},
                  "shaping": {"shaper": {"kind": "rate", "rate_Nm_per_s": 1500.0}},
-                 "feedback": {"damping": {"kind": "motor_speed_hpf", "Kd_Nms_per_rad": 1.5, "hpf_Hz": 2.0}},
+                 # motor-speed feedback through a second-order washout: no steady correction while the vehicle
+                 # accelerates (a first-order high-pass keeps -Kd a / omega_c: hpf_order 1 shows that deficit)
+                 "feedback": {"damping": {"kind": "motor_speed_hpf", "Kd_Nms_per_rad": 1.5, "hpf_Hz": 2.0,
+                                          "hpf_order": 2}},
                  "combined": {"shaper": {"kind": "rate", "rate_Nm_per_s": 1500.0},
-                              "damping": {"kind": "motor_speed_hpf", "Kd_Nms_per_rad": 1.5, "hpf_Hz": 2.0}}},
+                              "damping": {"kind": "motor_speed_hpf", "Kd_Nms_per_rad": 1.5, "hpf_Hz": 2.0,
+                                          "hpf_order": 2}}},
     "requirement": {"t_to_90_max_s": 0.25, "peak_vehicle_jerk_max_m_s3": 35.0, "settle_max_s": 0.6,
                     "safety_reaction_max_s": 0.02, "safety_band_Nm": 2.0,
                     "basis": "example comfort / response targets (declare the program's definitions)"},
@@ -1397,7 +1494,14 @@ def _controller(c: dict, v: dict, sensing: dict | None = None):
                               float(sn.get("load_speed_skew_ms") or 0.0) * 1e-3,
                               tuple((float(a) * 1e-3, float(b) * 1e-3) for a, b in (sn.get("dropouts_ms") or [])),
                               str(sn.get("dropout_signal") or "load"), _opt(sn, "stale_limit_ms", 1e-3),
-                              float(sn.get("fade_ms") or 0.0) * 1e-3))
+                              float(sn.get("fade_ms") or 0.0) * 1e-3, _hpf_order(dp)))
+
+
+def _hpf_order(dp: dict) -> int:
+    v = dp.get("hpf_order", 1)
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or float(v) not in (1.0, 2.0):
+        raise InputValidationError("damping.hpf_order must be 1 or 2", field="damping.hpf_order")
+    return int(v)
 
 
 def _torque_window(d, n, vdc, lim):
@@ -1485,14 +1589,16 @@ def driveline_stability(body):
     dl = driveline_from_dict(b["driveline"])
     c = b["controller"]
     st = b["stability"]
-    kind = (b["variants"].get("feedback") or {}).get("damping", {}).get("kind", "relative_speed")
-    hpf = (b["variants"].get("feedback") or {}).get("damping", {}).get("hpf_Hz")
+    fbd = (b["variants"].get("feedback") or {}).get("damping", {})
+    kind = fbd.get("kind", "relative_speed")
+    hpf = fbd.get("hpf_Hz")
+    order = _hpf_order(fbd)
     base = Controller(float(c["sample_ms"]) * 1e-3, 0.0, float(c.get("actuator_tau_ms") or 0.0) * 1e-3)
     grid = []
     for Kd in st["Kd_list"]:
         row = []
         for dms in st["delay_ms_list"]:
-            ctl = _rep(base, delay_s=float(dms) * 1e-3, damping=Damping(kind, float(Kd), hpf))
+            ctl = _rep(base, delay_s=float(dms) * 1e-3, damping=Damping(kind, float(Kd), hpf, hpf_order=order))
             e = sampled_eigenvalues(dl, ctl)
             row.append({"Kd": Kd, "delay_ms": dms, "stable": e["stable"], "rho": e["spectral_radius_excl_rigid"],
                         "zeta": e["dominant_zeta"]})

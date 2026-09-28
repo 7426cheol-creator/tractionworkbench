@@ -23,21 +23,22 @@
 
 | 페이지 | 내용 |
 |---|---|
-| **요구 판정** | 요구 원문·토크·속도·Vdc(단일/범위)·지속시간 입력 → PASS/FAIL/UNKNOWN 배너(사유·범위), **판정 층 표**(수학 · 모델 · 요구 · qualification — 서로 다른 진술을 하나로 합치지 않음), 조건별 claim 트리와 근거, 요구 witness(정적·DC·지속시간이 같은 점), 핵심 수치, 제한 요인·다음 조치, 운전점 그래프(**시스템 개요도**: 배터리–릴레이–DC 링크–인버터–모터에 운전점 값 표시), T–n 상의 위치, 역설계·병목 분석, 의사결정 기록(Markdown) · JSON/MD/**PDF 보고서** 저장 |
-| **운전점 탐색** | 토크 → 최소전류 정책점, 또는 id/iq 직접 입력(정방향 평가). 결과는 **ACCEPTED / DIAGNOSTIC ONLY / UNKNOWN**으로 구분하고 위반·미평가 제약과 gate 사유를 표시(진단값은 가능한 해가 아님). **id–iq 지도를 클릭**하면 그 전류 벡터를 그대로 평가, 마우스를 올리면 토크·전압·DC 전력 판독 |
+| **요구 판정** | 요구 원문·토크·속도·Vdc(단일/범위)·지속시간 입력 → PASS/FAIL/UNKNOWN 배너(사유·범위), **판정 층 표**(수학 · 모델 · 요구 · qualification — 서로 다른 진술을 하나로 합치지 않음), 조건별 claim 트리와 근거, 요구 witness(정적·DC·지속시간이 같은 점), 핵심 수치, 제한 요인·다음 조치, 운전점 그래프(**시스템 개요도**: 배터리–릴레이–DC 링크–인버터–모터에 운전점 값 표시), T–n 상의 위치, 역설계·병목 분석, 의사결정 기록(Markdown) · JSON/MD/**PDF 보고서** 저장. UNKNOWN/FAIL 배너에 **원인 분류**와 그 분류를 닫는 작업. **Vdc 범위 요구**는 조건(정적 순구동, Vdc 무관 a0 + a2·I² 손실이 범위 전체에서 유효, 고정 소스 한계)이 성립하면 저전압 끝점으로 범위 전체를 입증(단조성 인증서 — 회생·지속시간 부분은 제외), **자석 온도 plane이 여러 개인 flux map**에서 자석 온도를 말하지 않은 요구는 모든 plane에서 for-all로 판정(반례 온도 표시). Vdc를 **배터리 OCV**로 지정하면 선언된 Thevenin R_eq로 단자 전압을 풀어 판정(회생은 상승, 공급 불가면 증명된 FAIL). 추가 분석에 **PWM 위험 (같은 운전점)**: 기본파 전류 한계 vs 보수 순간 피크, 추가 RMS, 주요 선, DC-link 부담 |
+| **요구 묶음·후보** | 요구 여러 건(표 입력·스프레드시트 붙여넣기·**CSV 가져오기**/템플릿)을 **같은 제품 데이터·조건·근거**로 한 번에 판정. 계산 전 **해석 확인**(축 토크·기계/전기 속도·인버터 DC 단자·Vdc for-all·연산 의미·지속시간)과 모터 모델 없이 고객 수치만으로 되는 **사양 필요조건**(같은 운전점의 T·ω vs DC 한계 — 위반이면 어떤 드라이브로도 불가능, 모델이 말하지 못한 요구도 결정), 요구별 판정·여유·제한 원인·**UNKNOWN 원인 분류**(입력 결측 / 적용성 미확인 / 연속 범위 미입증 / 모델 범위 밖 / 수치 / 근거 충돌 / 정책 한계)·바꿀 수 있는 항목·다음 자료, 묶음 전체의 **다음 자료 우선순위**(작업 종류 × 확정되는 요구 수), **후보 × 요구** 표(후보마다 모든 요구를 다시 판정, 개선 ▲/악화 ▼, 가중 점수·비용 최적 없음), 결과 CSV, 선택한 요구를 판정 페이지에서 열기 |
+| **운전점 탐색** | 토크 → 최소전류 정책점, 또는 id/iq 직접 입력(정방향 평가). 결과는 **ACCEPTED / DIAGNOSTIC ONLY / UNKNOWN**으로 구분하고 위반·미평가 제약과 gate 사유를 표시(진단값은 가능한 해가 아님). **id–iq 지도를 클릭**하면 그 전류 벡터를 그대로 평가, 마우스를 올리면 토크·전압·DC 전력 판독. 자석 온도 plane이 여러 개인 flux map이면 **자석 온도** 입력(첫 plane 온도로 미리 설정, 궤적·설계 페이지도 같음) |
 | **궤적** | 토크 스윕 @ 속도(MTPA → 약계자 → 한계), 속도 스윕 @ 토크(기저속도·약계자 진입). dq 전류 궤적 + 여러 속도의 전압 타원, 변수 추이, 표 |
-| **성능 곡선·맵** | 정책(DC 포함) vs 전기적 T–n 곡선(활성 제약별 색), 비교 Vdc, 효율·손실·전류·변조율·역률·id·iq·P_dc 맵(효율은 방향별 정의로 표기, 미상 손실 칸은 빗금 — 총 손실은 모든 항이 확정될 때만), 기저속도 곡선, 최대 토크 곡선을 따라가는 운전점 |
+| **성능 곡선·맵** | 정책(DC 포함) vs 전기적 T–n 곡선(활성 제약별 색), 비교 Vdc, 효율·손실·전류·변조율·역률·id·iq·P_dc 맵(효율은 방향별 정의로 표기, 미상 손실 칸은 빗금 — 총 손실은 모든 항이 확정될 때만), 기저속도 곡선, 최대 토크 곡선을 따라가는 운전점. 자석 온도 plane이 여러 개인 flux map은 온도를 지정하지 않으면 **plane마다 한 곡선** |
 | **설계·병목** | capability vs 파라미터(Vdc, 전류 정격, 예약분, DC 한계, …)와 bisection 역설계, 제약 1% 완화 병목 기여도, 요구 달성 최소 완화·공동 병목 |
 | **안전 스크리닝** | FTTI 체인 Gantt(중복 예산 자동 검출, 모든 연속 경로 중 보장 상한 경로, **안전 종점·종점 종류**(명령 발행은 물리적 안전 상태가 아님 → UNKNOWN)·최댓값 동시 발생 선언, FDTI/FRTI 최악값), **회로 개요도** + 능동 방전 V(t), **패시브 방전**(블리더 R_p 설계 창), 방전 결과 표(**정류 위험**, 역기전력 근거, 목표 이하 최고 속도, 정류 링크 전압 스크리닝 추정), 회생 중 배터리 차단 과전압, ASC/Freewheel 회로 비교와 속도별 곡선, 프로젝트 규칙 표(물리와 분리된 계층) |
 | **보호·고장** | 임계값·디레이팅·고장 반응을 하나의 인과 궤적에서 검증(이벤트 타임라인, 임계값 창·PROT 표, 검출 루프 개요도), ASC 고장 과도와 고객의 두 전류-시간 요구 |
-| **열·지속시간** | **냉각수**(입구 온도, 유량, 에틸렌글리콜:물 물성, 순환 순서, 기준 유체 온도) → 부품별 냉각수 온도 상승 ΔT = P/(ṁ·c_p). **열 회로망 표 편집**(Foster/Cauer, 4단 템플릿, 데이터시트 붙여넣기, 유량 의존 단), RC 회로도·냉각수 순환도·Z_th(t), 지속시간별 가용 토크와 노드 온도. **초기 열 상태**(미선언·고온 시작은 UNKNOWN)와 열 모델의 **검증 근거**(없으면 “검증”은 증거 없는 선언)를 입력 |
+| **열·지속시간** | **냉각수**(입구 온도, 유량, 에틸렌글리콜:물 물성, 순환 순서, 기준 유체 온도) → 부품별 냉각수 온도 상승 ΔT = P/(ṁ·c_p). **열 회로망 표 편집**(Foster/Cauer, 4단 템플릿, 데이터시트 붙여넣기, 유량 의존 단), RC 회로도·냉각수 순환도·Z_th(t), 지속시간별 가용 토크와 노드 온도. **초기 열 상태**(미선언·고온 시작은 UNKNOWN)와 열 모델의 **검증 근거**(없으면 “검증”은 증거 없는 선언)를 입력. **반복 부하**: 펄스–휴지 반복, 고온 시작(예부하 정상상태 / Cauer 노드 온도), R_s(T)·모듈 T_j 손실 피드백, 주기 정상상태(고정점), 허용 펄스 시간·토크, 반복 전 필요 휴지 |
 | **전력변환·수명** | 데이터시트 모듈 손실(소자별 도통·스위칭, 온도×전류 표, 외삽 금지) → P_dc·열·claim, DC-link 리플·커패시터 전류·ESR 손실·수명 게이트, 모듈 열 사이클 rainflow·조건부 손상 |
-| **효율·모듈 비교** | 다섯 제어 체적(인버터 · 모터 · 인버터+모터 · 감속기 · eDrive)의 포트 기준 효율(구동/회생 방향별 정의, N/A · UNKNOWN · INCONSISTENT 구분, clamp 없음), 손실 원장(확정 소계와 미상 항목), 경계별 지도, 미션 E±, 모듈 A/B(IGBT vs SiC: 고정 정책 vs 설계별 정책, Tj는 결과, 선언된 오차 예산을 넘을 때만 우열) |
-| **가변 PWM·Anti-jerk** | 고정 fsw 기준안과 인과적 fsw 스케줄(히스테리시스·dwell·보호 선점·fallback)을 같은 궤적에서 비교 — 모듈 손실(결합 Tj), RL 리플, DC-link 전류, 지연 원장·전류 루프 위상 여유, 최소 펄스, 카운터 수준 reload 검사, Pareto; 2관성 드라이브라인에서 off/성형/피드백/결합 비교(ZOH+분수 지연, 지연 교차, 중재 후 클리핑, 백래시 통과 → UNKNOWN) |
+| **효율·모듈 비교** | 다섯 제어 체적(인버터 · 모터 · 인버터+모터 · 감속기 · eDrive)의 포트 기준 효율(구동/회생 방향별 정의, N/A · UNKNOWN · INCONSISTENT 구분, clamp 없음), 손실 원장(확정 소계와 미상 항목), 경계별 지도, 미션 E±, 모듈 A/B(IGBT vs SiC: 고정 정책 vs 설계별 정책, Tj는 결과, 선언된 오차 예산을 넘을 때만 우열). 원장에 모터 PWM 동손(정확값 또는 R_dc 하한)과 Fe+PM HF 상한(값 아님), PWM 고조파를 포함한 효율 구간 |
+| **가변 PWM·Anti-jerk** | 고정 fsw 기준안과 인과적 fsw 스케줄(히스테리시스·dwell·보호 선점·fallback)을 같은 궤적에서 비교 — 모듈 손실(결합 Tj), RL 리플, DC-link 전류, 지연 원장·전류 루프 위상 여유, 최소 펄스, 카운터 수준 reload 검사, Pareto(에너지는 [확정, 확정 + PWM 동손·Fe+PM 상한] 구간 — 겹치면 UNDECIDED, 요청 fsw ≠ 파형 fsw 표시, 피크 전류는 보수 상한); 2관성 드라이브라인에서 off/성형/피드백/결합 비교(ZOH+분수 지연, 지연 교차, 중재 후 클리핑, 백래시 통과 → UNKNOWN) |
 | **OEW·HEV** | OEW 듀얼 인버터(토폴로지·영상분·전력 분배·포트 한도, 최소전류 witness, 두 브리지 손실·포트 회계, 스위칭 상태 기하, 쌍 안전 상태, i0 리플), HEV(두 기계의 결합 토크 집합, 가지 전력 vs 순전력, 크랭킹 replay, 부하 차단 에너지, 유성기어 검사) |
 | **EMI (전도성)** | 요구 프로파일(방법·RBW 구간·승인된 공백) + 한도 곡선, 스위칭 순서 소스(데드타임 턴온 지연·다이오드 클램프·최소 펄스, 요청/평가 fsw), 선언된 CM/DM 경로·인공 회로망, RBW 선 합 추정 — **연속 대역의 정확 열거**(표시 격자와 무관), 대역별 여유·필요 감쇠(스크리닝은 PASS가 아님), **보정 기록**(완전성·구성 결속·매 실행 적용성 재검사)이 있을 때만 FEASIBLE / 하한 증인이 있을 때만 INFEASIBLE, 측정 trace는 **trace 자체의 취득 조건**(표현·검출기·RBW·IF 형상·dwell·보정·set-up)과 읽음값 사이 손실까지 판정, OEW 권선 영상분 vs 섀시 공통모드 |
 | **모터 설계** | 검증된 기준 모델 주변의 일관 스케일링(턴·병렬 회로·적층·자석, 계보와 무효화되는 데이터 목록) → 같은 결합 요구 여유로 후보 비교, 권선 star of slots(권선계수·평형·병렬 회로; k_N 인계는 두 배치 모두 유효하고 극쌍수가 같을 때만, 선언된 권선이면 계보 결속·아니면 '일반 k_N 사고 실험'), 개념 사이징(T = 2σV_r). 모터 CAD/FEA가 아님 |
-| **프로젝트** | 한 제품의 제품 데이터(드라이브·DC 전원·모듈·DC-link·제어기·감속기·열망·안전·EMI set-up)를 ID·개정·섹션 digest와 함께 한 번만 보관 — 모든 페이지가 활성 프로젝트에서 제품 데이터를 가져오고, 모든 결과가 사용한 섹션과 **로컬 변경**을 기록, 프로젝트가 바뀌면 영향받은 결과를 **stale**로 표시. 섹션·provenance, 일관성 검사(INCONSISTENT/WARNING/NOTE), 개정 이력, 파일과의 개정 비교(변경 경로·영향받는 분석), 열기·저장·새 개정 |
+| **프로젝트** | 한 제품의 제품 데이터(드라이브·DC 전원·모듈·DC-link·제어기·감속기·열망·안전·EMI set-up)를 ID·개정·섹션 digest와 함께 한 번만 보관 — 모든 페이지가 활성 프로젝트에서 제품 데이터를 가져오고, 모든 결과가 사용한 섹션과 **로컬 변경**을 기록, 프로젝트가 바뀌면 영향받은 결과를 **stale**로 표시. 섹션·provenance(선택한 섹션의 내용 트리), 일관성 검사(INCONSISTENT/WARNING/NOTE), 개정 이력, 파일과의 개정 비교(변경 경로·영향받는 분석), 열기·저장·새 개정. **데이터시트 값 입력**(모터·모듈·커패시터·dv/dt 대표값을 직접 입력 → 선언된 구성 규칙으로 모델, 규칙·가정·단위 변환 기록, 실시간 미리보기) · **데이터시트 파일 가져오기**(디지타이즈 곡선·ESR 표·dv/dt → 공급사 provenance 섹션, 외삽 없음), **MathWorks 이식 패키지**(아래) |
 | **모델·데이터** | 내장 드라이브(상수 dq D1 / flux map D2) 선택, 단위가 선언된 드라이브 JSON·case 파일 불러오기, DC 소스 한계(**값 / 미선언(UNKNOWN) / 선언된 무제한(∞)** 구분) — 활성 프로젝트의 drive·dc_source 섹션을 편집(수정된 작업 사본), provenance, **data audit**(용도별 사용 가능 여부와 qualification 공백) |
 | **검증 (V&V)** | production vs golden acceptance(오차/허용오차 그래프), 참조 패키지 SHA-256, 알려진 한계, **교환 패키지** 저장(MathWorks 이식·도구 간 parity용 규약·fixture) |
 
@@ -70,7 +71,7 @@
 - **INFEASIBLE은 증명이 있을 때만.** 상수 모델은 제약 다항식 근 전수 열거(exact enumeration), flux map은 셀 구간 경계(branch & bound), 공통으로 해석적 필요조건(예: 축 출력 > 방전 한계, 최대 손실로도 충전 한계 미달, d축 전압 하한 > 예산)을 사용합니다. Solver가 해를 못 찾은 것은 UNKNOWN(NUMERICAL_UNRESOLVED)입니다.
 - **Capability는 달성값과 증명된 반대쪽 상한을 분리합니다.** 구동 capability는 Lagrangian 오목 상한(상수 모델) 또는 셀 경계(flux map)로 certified, 회생 경계는 최소전류(에너지 회수) 정책 경계로 표본 증거와 함께 보고하며 의도적 손실 증가 운전은 채택하지 않습니다.
 - **입력을 조용히 채우지 않습니다.** 단위·정의(peak/RMS, 상/선간, 기계/전기 속도, per-phase/line-to-line, Ke/Kt convention)가 모호하면 계산 전에 INVALID_INPUT, 누락된 손실/온도/지속시간 근거는 UNKNOWN으로 남깁니다. 모든 변환은 기록됩니다.
-- **요구를 바꾸지 않습니다.** 원문 보존, 토크 clip 없음, Vdc 범위 요구는 표본점 통과만으로 PASS가 아니며(SAMPLED_COVERAGE), 지속시간이 없으면 정적 항목으로만 해석합니다.
+- **요구를 바꾸지 않습니다.** 원문 보존, 토크 clip 없음, Vdc 범위 요구는 표본점 통과만으로 PASS가 아니며(SAMPLED_COVERAGE — 단조성 인증서의 조건이 성립할 때만 범위 전체 입증), 지속시간이 없으면 정적 항목으로만 해석합니다.
 - **결측은 무제한이 아닙니다.** 선언되지 않은 DC 한계·손실·열 증거·초기 상태는 UNKNOWN이고, 무제한은 명시적으로 선언해야 합니다(∞). 스크리닝(EMI, 안전 상태, 합성 데이터)은 PASS로 승격되지 않습니다.
 - **모든 witness는 같은 gate를 통과합니다.** 수치 residual·진단값·표본점은 원 요청으로 재검증된 witness가 아니면 증거가 아닙니다. 수학 · 모델 · 요구 · qualification 층은 따로 보고합니다.
 - **효율은 경계와 방향을 밝힙니다.** η는 선언된 포트 사이에서만 정의되며, 혼합 흐름은 N/A, 미상 손실은 UNKNOWN, η > 1은 clamp 없이 INCONSISTENT로 남깁니다. 감속기 데이터가 없으면 eDrive η는 100%가 아니라 UNKNOWN입니다.
@@ -102,17 +103,48 @@ twb exchange out/exchange.json        # MathWorks 이식용 교환 패키지: �
 twb project show|check [P.json]       # 프로젝트 데이터 패키지: 식별(섹션 digest·provenance) / 섹션 간 일관성 (기본: 내장 합성 프로젝트)
 twb project diff A.json B.json        # 개정 비교: 바뀐 섹션·경로와 영향받는 분석
 twb project export out/project.json   # 내장 합성 프로젝트를 편집용 파일로
+twb reqset --template reqs.csv        # 요구 묶음 CSV 템플릿
+twb reqset reqs.csv --candidates c.txt --out res.csv [--project P.json] [--exit-code]   # 요구 묶음 판정 + 후보 × 요구
+twb datasheet examples/datasheets/module_example.json --out out/p.json --revision B   # 데이터시트 → 프로젝트 섹션
+twb datasheet examples/datasheets/motor_example.json --json   # 대표값 사양 (모터·module_representative·capacitor_representative)
+twb mathworks export out/mw [--project P.json]   # MathWorks 이식 패키지 (twb-mathworks/1)
+twb mathworks run out/mw [--runtime octave]      # 로컬 MATLAB(-batch) / GNU Octave에서 twb.runAll → 보고서 재수입
+twb mathworks verify out/mw --project P.json     # 대상 보고서 재수입: 이 패키지·이 설계 개정에만 연결, case 재계산
 
 python verification/independent_fixture_check.py      # production 코드를 쓰지 않는 독립 검산
 QT_QPA_PLATFORM=offscreen python -m pytest -q
+python verification/local_ci.py --parallel 3          # CI workflow의 세 job을 로컬에서 (커밋의 깨끗한 clone, job별 새 Python 3.12 환경)
 
 # 실행 파일 (Windows: packaging\build_windows.bat)
 pip install -e '.[gui,build]'
 python packaging/build.py             # dist/TractionWorkbench/ + zip; 동결 앱에서 acceptance와 self-test 실행
 ```
 
-CI(`.github/workflows/build.yml`): Linux에서 독립 검산 + 전체 테스트, Windows에서 PyInstaller 빌드 → **동결된 exe로 acceptance·self-test** →
+CI(`.github/workflows/build.yml`): Linux에서 독립 검산 + 전체 테스트, **MathWorks 이식 패키지를 GNU Octave로 실행**(MATLAB 코드의 parity·
+심은 결함 검출·guard — MATLAB/Simulink 단계는 NOT_RUN으로 남음), Windows에서 PyInstaller 빌드 → **동결된 exe로 acceptance·self-test** →
 zip 아티팩트 업로드(`v*` 태그면 GitHub Release에 첨부).
+
+## MathWorks 이식 (`twb-mathworks/1`)
+
+Python Workbench를 **실행 가능한 reference 구현**으로 보고, 그 모델·파라미터·시나리오·계산 의미·결과를 MATLAB / Simulink /
+System Composer에서 같은 의미로 재현하게 하는 패키지입니다(프로젝트 페이지 → *MathWorks 이식 패키지…*, 또는 `twb mathworks`).
+세 층을 분리합니다: **(1) 요구·수용된 원천**(참조 패키지 golden, 계약 수식, map 정의) · **(2) Python reference** · **(3) MathWorks**.
+각 비교 case는 (2)의 값과 (1)의 oracle 값을 함께 가지며, 대상은 둘 모두와 비교됩니다 — Python을 절대 기준으로 보지 않습니다.
+
+![MathWorks 이식 패키지 — GNU Octave로 실행한 뒤의 단계별 상태](docs/screenshots/mathworks_package.jpg)
+
+- **옮기는 것**: 프로젝트(twb-project/1)와 교환 패키지(twb-exchange/1)를 그대로, 모델 데이터(단위가 키에 있는 파라미터, 온도 법칙, flux
+  plane·mask·축, 손실 closure와 **손실 소유권**, 모델 content SHA-256·provenance), 규약(검사 가능한 열거값), 물리량 사전·tolerance class·
+  상태 어휘, 비교 case(forward 48 · flux lookup 21 · 요구 witness 11: ±속도·구동/회생·정지·전압/전류/DC/도메인 경계 ±0.5/±2 tol·
+  map 구멍·모서리·축 밖·온도 plane·q-odd), gap report, System Composer/SLDD 후보(stable ID), 사람용 이식 안내와 agent 작업표.
+- **MathWorks에서 재현되는 것**: native MATLAB `+twb` — 정상상태 dq forward 평가(상수 dq·flux map, 제약 상태, 에너지 모드, 항등식,
+  evidence gate), plane 선택·온도 보간, 요구 witness 재검사(FEASIBLE claim), `twb.runAll`(preflight → 패키지 검사 → parity → guard →
+  Simulink가 있으면 정적 평가 harness). 최적화기·인증서·열·PWM 등은 데이터·근거 수준으로만 전달(gap report).
+- **같은 의미인지 확인하는 방법**: `|q_t − q_r| ≤ atol + rtol·max(|q_t|,|q_r|)`(물리량 class별) + 상태의 완전 일치, 대상 결과를 Python이
+  **다시 계산**해서 판정(보고서의 자기 판정을 믿지 않음), 심은 결함(토크 계수·모서리 규칙·clip·결측=무제한·ACTIVE=위반)이 잡히는지 CI가 확인.
+- **연결 유지**: semantic fingerprint와 소비 파일 SHA-256으로 보고서를 그 패키지에만, project digest로 그 설계 개정에만 연결(다른 개정은
+  stale). 생성 파일을 편집하면 재생성이 멈추고, 회사 소유물(profile·architecture·dictionary·상세 모델)은 패키지 밖에 둡니다.
+  자세한 내용: 패키지의 `README.md`, [`docs/RELEASE_NOTES.md`](docs/RELEASE_NOTES.md) 0.5.0, [`docs/TRACEABILITY.md`](docs/TRACEABILITY.md) 11절.
 
 ## 저장소 구조
 
@@ -126,7 +158,10 @@ src/traction_workbench/
     analysis/              역설계·병목·불확실성·정격, efficiency.py(다섯 경계·감속기·미션·모듈 A/B), machine_design.py
     extensions/            timing·dclink·safe_state·thermal·coolant (스크리닝), dclink_ripple·lifetime (P1-A),
                            protection·asc_transient (P1-B), emi (P1-C), oew·hev, pwm_policy (가변 PWM), driveline (anti-jerk)
-  exchange.py    MathWorks 이식용 교환 패키지 (규약·fixture)
+  exchange.py    교환 패키지 twb-exchange/1 (규약·fixture) — 이식 패키지가 그대로 포함
+  mathworks/     MathWorks 이식 패키지 twb-mathworks/1: contract(규약·물리량 사전), oracle(엔진 비의존 층-1 값), cases, architecture
+                 (System Composer/SLDD 후보), package(export·check·run·verify), matlab/+twb (native MATLAB 코드)
+  datasheet.py   데이터시트 가져오기 (디지타이즈 곡선·대표값·ESR·dv/dt·모터 특성값 → 프로젝트 섹션, 구성 규칙은 기록으로)
   project.py     프로젝트 데이터 패키지 (twb-project/1): 섹션 검증·digest·일관성 규칙·개정 비교·결과의 사용 기록
   examples.py    내장 합성 프로젝트 — 모든 페이지 예시의 제품 데이터 출처 (api.example(name, project)로 합성)
   modulation.py  변조 법칙 하나 (SVPWM·SPWM·DPWM1 듀티·영상분) — 손실·EMI·리플·샘플링·그림이 공유
@@ -137,22 +172,26 @@ src/traction_workbench/
   report_pdf.py  PDF 엔지니어링 보고서
   api.py service.py cli.py
 packaging/       PyInstaller spec, launcher(TractionWorkbench.exe + twb.exe), build.py, 아이콘
-verification/    independent_fixture_check.py (production 비의존), make_report.py, make_module_anchor.py (모듈 모델 코어 경로 회귀 기준)
+verification/    independent_fixture_check.py (production 비의존), make_report.py, make_module_anchor.py (모듈 모델 코어 경로 회귀 기준),
+                 local_ci.py (GitHub Actions를 쓸 수 없을 때 같은 job을 로컬에서)
 tests/           골든·의미론·검증·리뷰 재현(P0-A/B)·확장·P1·OEW/HEV·EMI·효율·PWM·드라이브라인·모터 설계·교환·보고서·데스크톱,
                  아키텍처(층 base < models < kernel < engines < services < presentation, 지연 import 포함·비공개 결합·순환)
-examples/        case 파일, 단위가 선언된 drive 정의
+examples/        case 파일, 단위가 선언된 drive 정의, datasheets/ (곡선·대표값·모터 spec 예시 — 가상 부품)
 docs/            RELEASE_NOTES.md (모델 계약·한계), TRACEABILITY.md (리뷰·추가 명세 추적표), VERIFICATION_REPORT.md, screenshots/
 ```
 
 ## 검증 상태
 
-- 참조 패키지 10개 파일 SHA-256 일치, 독립 검산 136/136, production vs golden 21/21, pytest 628 통과, 데스크톱 self-test 54/54,
+- 참조 패키지 10개 파일 SHA-256 일치, 독립 검산 136/136, production vs golden 21/21, pytest 662 통과, 데스크톱 self-test 57/57,
   Windows CI에서 동결된 exe로 acceptance·self-test 통과 — 상세: [`docs/VERIFICATION_REPORT.md`](docs/VERIFICATION_REPORT.md)
+- MathWorks 이식 패키지: 패키지의 MATLAB 코드를 **GNU Octave 8.4**(MATLAB 언어 호환 proxy)로 실행해 79 PASS · 0 FAIL · 0 ERROR ·
+  1 NOT_SUPPORTED, guard 6/6, 심은 결함 9종 모두 검출. **MATLAB 본체·Simulink·System Composer는 실행하지 않았습니다**(NOT_RUN).
 - **합성 fixture에 대한 verification입니다.** 하드웨어·공급사 데이터·외부 시뮬레이터 validation은 수행하지 않았습니다(V4–V5 미수행).
 
 ## 문서
 
+- [`docs/STATUS.md`](docs/STATUS.md) — **현재 상태와 이어서 할 일**: 완료된 것, 남은 것(코드·자료·CI), 이어서 시작하는 법
 - [`docs/RELEASE_NOTES.md`](docs/RELEASE_NOTES.md) — 변경 사항, 실행 방법, model contract, 제약 목록, 판정 의미론, 수치 방법, 알려진 한계, 미구현 항목, data provenance, 재현 조건, 스펙 조항 ↔ 구현 ↔ 테스트 추적표
-- [`docs/TRACEABILITY.md`](docs/TRACEABILITY.md) — 독립 리뷰(F01–F13, P0-B/C, P1, §10–§14)·감사 재현·추가 명세(OEW/HEV, 모듈 효율, 가변 PWM·anti-jerk) 항목별 구현·확인·상태(implemented / partial / missing / evidence_missing)
+- [`docs/TRACEABILITY.md`](docs/TRACEABILITY.md) — 독립 리뷰(F01–F13, P0-B/C, P1, §10–§14)·감사 재현·추가 명세(OEW/HEV, 모듈 효율, 가변 PWM·anti-jerk)·공학 리뷰 6198099(§13)·PWM 인계 P0(§14) 항목별 구현·확인·상태(implemented / partial / missing / evidence_missing)
 - [`docs/SYSTEM_REVIEW.md`](docs/SYSTEM_REVIEW.md) — 기능 간 의존성·변경 영향·성숙도(V0–V6)·전체 맥락 검토, 교차 모듈 일관성 규칙, 남은 위험과 권고
 - [`docs/VERIFICATION_REPORT.md`](docs/VERIFICATION_REPORT.md) — 자동 생성 검증 보고서

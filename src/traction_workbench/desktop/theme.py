@@ -89,7 +89,8 @@ def stylesheet() -> str:
     QLabel#AppSubtitle {{ color: {c['muted']}; }}
     QListWidget#Nav {{ background: {c['nav']}; border: none; border-right: 1px solid {c['border']};
                        font-size: 10pt; outline: 0; }}
-    QListWidget#Nav::item {{ padding: 9px 12px; border-left: 3px solid transparent; color: {c['fg']}; }}
+    QListWidget#Nav::item {{ padding: 7px 12px; border-left: 3px solid transparent; color: {c['fg']}; }}
+    QListWidget#Nav::item:disabled {{ padding: 11px 10px 2px 10px; color: {c['muted']}; }}
     QListWidget#Nav::item:selected {{ background: {c['accent_bg']}; border-left: 3px solid {c['accent']};
                                       color: {c['fg']}; font-weight: 600; }}
     QListWidget#Nav::item:hover:!selected {{ background: {c['panel']}; }}

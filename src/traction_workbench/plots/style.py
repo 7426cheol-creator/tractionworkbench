@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
 
 import matplotlib as mpl
 
@@ -54,6 +55,19 @@ def theme() -> dict:
 
 def theme_name() -> str:
     return _CURRENT["theme"]
+
+
+@contextmanager
+def using(theme_name_: str):
+    """Build figures in ``theme_name_`` and give the previous theme and rcParams back afterwards (a light report
+    must not restyle the application's plots)."""
+    prev = _CURRENT["theme"]
+    with mpl.rc_context():
+        apply(theme_name_)
+        try:
+            yield
+        finally:
+            _CURRENT["theme"] = prev
 
 
 def apply(theme_name_: str = "light", base_size: float = 9.0) -> None:

@@ -1,7 +1,145 @@
-# Traction Workbench v0.4.0 — Release / Handback Notes
+# Traction Workbench v0.5.0 — Release / Handback Notes
 
 기준선: `reference/traction_workbench_spec_v1` (Blueprint, Implementation Handoff, Reference Cases, golden JSON; manifest SHA-256 일치 확인).
 이 문서는 Handoff H12가 요구한 실행 방법, model contract, 제약 목록, 알려진 한계, 검증 실행 결과, 실패/미구현 항목, data provenance, 재현 조건을 담습니다.
+
+## 0.5.0 변경 사항 (v0.4.0 대비)
+
+**MathWorks 이식 패키지 `twb-mathworks/1`** — Python Workbench를 실행 가능한 reference 구현으로 보고, 그 요구·모델·파라미터·
+시나리오·계산 의미·결과를 MATLAB / Simulink / System Composer로 재현 가능하게 옮깁니다. 새 verification framework가 아니라
+기존 구조(twb-project/1, twb-exchange/1, 결정 기록의 claim·evidence, provenance·content hash)를 그대로 싣고 이식에 필요한 것만
+더했습니다. 세 층을 분리합니다: (1) 요구·수용된 원천, (2) Python reference, (3) MathWorks — 대상은 (2)와 (1) 모두와 비교됩니다.
+
+1. **무엇을 옮기는가** — `manifest.json`(schema, 구현 SHA·dirty·의미 소스 파일 hash, project digest, 파일별 SHA-256, semantic
+   fingerprint: canonical ASCII JSON이라 byte 동일 ⇔ 의미 동일), `contract.json`(검사 가능한 규약 열거값, 물리량 사전의 단위·tolerance
+   class, 제약·에너지 모드·사유·claim 어휘, 수치 설정, map·손실 규칙, 세 층), `models/*.json`(제품 드라이브 + 참조·검증 fixture:
+   파라미터·온도 법칙·flux plane(행 = id)·mask·대칭·온도 보간·손실 closure·**손실 소유권**·content SHA-256·provenance·자기 qualification),
+   `cases/*.json`(forward 48, flux lookup 21, 요구 witness 11 — 각 case에 Python 값과 oracle 값·tolerance), `architecture/`
+   (System Composer/SLDD 후보와 회사 profile 양식), `source/`(프로젝트, 교환 패키지, 참조 패키지 manifest), `gap_report.json`,
+   `matlab/+twb/`, 사람용 이식 안내(`README.md`)와 agent 작업표(`AGENT_TASKS.md`).
+2. **MathWorks에서 무엇이 재현되는가** — native MATLAB: 상수 dq(D1)와 flux map(D2)의 정상상태 forward 평가(전압·토크·전력·손실·
+   전압 예산·제약 상태·에너지 모드·항등식·evidence gate), plane 선택·선언된 온도 보간, 요구 witness 재검사(FEASIBLE claim의 재현;
+   INFEASIBLE/UNKNOWN은 층-2 근거로 전달), 패키지 guard(전치 거부, 이중 온도 보정 거부, 규약 불일치 거부, 손실 이중 계산 검출,
+   사전 충돌 상태). Simulink 정적 평가 harness(`twb.buildEvaluationHarness`/`twb.runHarness` — MATLAB Function block이 같은
+   `twb.staticPoint`를 호출, 동적 plant 아님), System Composer 후보 모델(`twb.buildArchitectureCandidate`), SLDD 충돌 검사
+   (`twb.checkDictionary`, 읽기 전용)는 문서화된 API로 작성했고 해당 제품이 있는 환경에서 실행될 때까지 **NOT_RUN**입니다.
+   최적화기(MTPA/약계자)·capability 인증서·데이터시트 모듈 손실·열·PWM·anti-jerk·보호·EMI·OEW/HEV는 데이터·계약·근거 수준으로만
+   전달합니다(`gap_report.json`).
+3. **같은 의미인지 어떻게 확인하는가** — 물리량 class별 `|q_t − q_r| ≤ atol + rtol·max(|q_t|,|q_r|)`(IEEE double, 같은 연산 순서:
+   V·A·N·m 1e-9/1e-12, W 1e-6/1e-12, Wb 1e-15/1e-12)와 상태(evaluable·사유·gate 사유·제약 상태·에너지 모드·위반 그룹·claim)의
+   완전 일치. Oracle은 엔진을 import하지 않는 모듈이 참조 패키지(golden_forward, manufactured potential — manifest SHA-256 확인)와
+   계약 수식, map의 집합 정의로 계산합니다. 내보낼 때 (2)↔(1) 불일치는 보고되고 숨겨지지 않습니다(현재 0건). 대상 보고서는 Python이
+   **원시 값에서 다시 계산**해 판정합니다. 비교에 이빨이 있는지 CI가 확인합니다: MATLAB 코드에 심은 결함 — 토크 계수, 모서리 규칙
+   제거, UNKNOWN 대신 clip, 결측 DC 한계 = 무제한, ACTIVE = 위반, map 전치, power-invariant Park, 온도 보간 제거, Rs 법칙 무시 — 이
+   모두 그 결함을 겨냥한 case에서 FAIL/ERROR가 됩니다. 이 환경과 CI에서 GNU Octave 8.4(MATLAB 언어 호환 proxy)로 **79 PASS · 0 FAIL ·
+   0 ERROR · 1 NOT_SUPPORTED**(witness가 없는 INFEASIBLE 요구), guard 6/6. MATLAB 자체·Simulink·System Composer는 실행하지 않았습니다.
+4. **작업이 System Composer → Simulink → Simscape로 발전해도 연결을 어떻게 유지하는가** — 보고서는 semantic fingerprint와 소비한 모든
+   파일의 SHA-256을 기록하고, 재수입은 그 패키지에만(다른 패키지 → FOREIGN_REPORT), 그 설계 개정에만(project digest가 다르면 현재
+   근거가 아님) 연결합니다. stable ID(부품·연결·signal·데이터 항목·요구·case)와 회사 profile의 명시적 `id_map`으로 이름이 바뀌어도
+   추적하며, 이름만 같은 항목은 같은 것으로 보지 않습니다(NAME_MATCH_ONLY). 생성 파일을 편집하면 재생성이 멈추고(편집 목록 보고),
+   생성기는 새 폴더에만 쓰며 사라진 ID를 삭제 명령으로 해석하지 않습니다. 같은 case 집합이 상세 모델의 회귀 기준이 되며, 상세 모델의
+   차이는 fidelity 비교(같은 입력·초기조건·손실 경계, 설명된 discrepancy)로 기록합니다.
+
+사용: 프로젝트 페이지 → *MathWorks 이식 패키지…*(만들기 · 로컬 실행(MATLAB `-batch` 또는 Octave) · 보고서 가져오기 — 패키지 검사 /
+대상 환경 / 모델 생성 / parity / guard / 물리 검증 / 현재 근거를 따로 표시), CLI `twb mathworks export|check|run|verify`, 회사 PC에서는
+`addpath(fullfile(pkg,'matlab')); twb.runAll(pkg)` — AI·네트워크 불필요. Agentic Toolkit은 같은 결정적 entry point를 호출하는 선택적
+orchestration입니다(`AGENT_TASKS.md`: 단위·map·초기상태·tolerance를 지어내거나 기대값을 고쳐 통과시키는 것 금지).
+
+이식 fixture가 찾은 엔진 결함: 여러 온도 plane을 가진 flux map에서 자석 온도를 주지 않거나 plane 밖 온도를 주면(plane 선택 불가)
+policy·physical capability와 T–n 곡선이 torque scale을 없는 plane에서 계산하다 `AttributeError`로 죽었습니다. 이제 모델의 plane들로
+scale을 잡고, 결과는 사유(자석 온도 필요)를 밝힌 비증거(UNKNOWN)입니다 —
+`test_scenario_that_selects_no_plane_is_unknown_not_a_crash`.
+
+**앱 전체 검토·UX** — 63개 화면을 검토해 고친 것: PDF 보고서가 밝은 plot theme을 데스크톱에 남기던 것(`style.using`으로 호출자의
+theme 복원 + 회귀 테스트), self-test가 사용자 theme 설정을 저장하던 것, 요구 판정 페이지의 요약 열이 결과 위젯을 지우던 것, dict의
+Python repr 표시, 0이 아닌 '미선언/없음/미지정' 표시, 쓰지 않는 보호 plant 행 숨김, 잘린 라벨·범례·표. 탐색을 공학 질문별 그룹으로
+나누고, *도움말 → 화면 안내*, 입력 패널이 잘리지 않는 콤보·체크박스·스크롤 영역(1600×1000 · 1280×760 · 1100×700에서 잘림 0),
+placeholder에서 비활성인 그림 버튼, 삼키지 않는 내보내기 오류, 파라미터 표시 이름.
+
+**Anti-jerk** — 속도 high-pass 피드백은 요청 토크의 정상 성분 일부를 지웠습니다(폐형식 −Kd(T−T_L)/(ω_c J + Kd), 이제 결과에 표시).
+2차 washout(`hpf_order: 2`)이 정상 결손을 없애며 예시가 이를 씁니다. 샘플링 루프 고유값 분석이 추가 상태를 포함하고, 안정성 판정이
+시뮬레이션 진동과 일치하는지 테스트합니다.
+
+**데이터시트 가져오기 (로드맵 P1-A/B의 데이터시트 단계)** — 디지타이즈된 모듈 곡선(long CSV 또는 WebPlotDigitizer), 커패시터 ESR 표,
+게이트 dv/dt → 공급사 provenance(qualified 아님)의 프로젝트 섹션. 모든 온도가 덮는 전류 구간에서만 재표본(외삽 없음, 0 A 기준점은
+선언 시에만), 데이터시트 tr/tf(전류 천이)는 전압 에지로 거부, 발견 사항(findings) 기록. CLI `twb datasheet`, 미리보기 대화상자,
+전력변환 페이지의 모듈 편집을 프로젝트에 반영. 측정 데이터 단계(DPT 에지 family, 부품 임피던스, FEA dq 정규화)는 로드맵에 남습니다.
+
+**공학 리뷰 반영 (기준 6198099)** — 리뷰가 제시한 반례를 실제 코드에서 재현(회귀 테스트 7건 중 5건 실패)한 뒤 고쳤습니다.
+(F1) 지속시간 정격은 증거의 **방향**을 가집니다: 같은 지속시간의 정격은 양방향으로 답하지만, 더 긴(또는 연속) 정격은 긍정 증거일
+뿐이라 그 안의 토크는 짧은 시간에도 허용되고, 그 위의 토크는 짧은 시간의 한계를 말해 주지 않습니다(30 s/100 N·m 정격이 10 s/150 N·m를
+배제하지 않음 — 결론 없음, UNKNOWN). 양립하는 10 s/160 N·m와 30 s/100 N·m 정격은 더 이상 충돌로 처리되지 않습니다. 같은
+지속시간에서도 표가 완전한 정격 한계(`rated_limit`: 초과 = RATING_NOT_MET)인지 입증 영역(`demonstrated_region`: 초과 = 결론
+없음)인지 선언합니다. (F2) `linear_declared` 표는 선언된 선형 한계와 직접 비교합니다(1000 rpm 200 N·m, 2000 rpm 100 N·m → 1500 rpm
+에서 150 N·m, 175 N·m는 정격 밖). (F3) 열 가용 토크 집합은 정적 segment마다 따로 만들어 서로 다른 정적 구간이나 UNKNOWN 표본을
+잇지 않으며 `열 가능 집합 ⊆ 정적 가능 집합`을 검사합니다. (G1) 정격은 적용 제품(`applies_to`: drive id·개정·content SHA-256),
+제어 방식, 무관하다고 선언한 조건을 가질 수 있습니다: 선언된 결속이 평가 드라이브와 다르면 적용하지 않고, 결속이 없거나 필수 조건(냉각수·
+Vdc, 유한 정격은 초기 상태)을 다루지 않으면 초기 검토에는 쓰되 모든 claim과 요구 층에 APPLICABILITY_UNCONFIRMED로 표시합니다 —
+자동으로 제품 근거로 승격되지 않습니다.
+
+**요구 묶음·후보 (공학 리뷰 사용자 기능 1–5)** — 새 페이지 *요구 묶음·후보*: 요구 여러 건(CSV 가져오기·템플릿·붙여넣기)을 같은
+제품 데이터·조건·근거로 한 번에 판정하고, 요구마다 판정·여유·제한 원인·UNKNOWN 원인 분류(입력 결측 / 적용성 미확인 / 연속 범위
+미입증 / 모델 범위 밖 / 수치 / 근거 충돌 / 정책 한계)·바꿀 수 있는 항목·다음 자료를 보여 줍니다. 묶음 전체의 다음 자료 우선순위는
+작업 종류(선언 < 문서 < 해석 < 새 자료)와 확정되는 요구 수로 정렬합니다. 계산 전 *해석 확인*으로 축 토크·기계/전기 속도·인버터 DC
+단자·Vdc for-all·연산 의미(band는 존재성이지 제어 정확도가 아님)를 확인하고, 모터 모델 없이 고객 수치만으로 되는 필요조건(같은
+운전점의 T·ω vs DC 방전 한계 — 위반이면 어떤 드라이브로도 불가능)을 봅니다. 모델이 UNKNOWN으로 남긴 요구도 이 조건이 위반이면
+FAIL로 결정합니다. 후보(설계 변경안)는 모든 요구에 대해 다시 판정하며 개선과 악화를 그대로 나열합니다 — 가중 점수·비용 최적 없음.
+판정 페이지 배너에도 UNKNOWN/FAIL의 원인 분류와 그 분류를 닫는 작업이 나옵니다.
+
+**반복 부하·고온 시작 (리뷰 우선순위 1)** — 열 페이지의 *반복 부하*: 펄스–휴지 사이클을 냉각수 평형, 예부하 정상상태, 또는
+측정한 노드 온도(Cauer 노드만 — Foster의 내부 상태는 물리 온도가 아님)에서 시작해 반복합니다. 손실은 노드 온도에서 다시 계산되고
+(권선 → R_s(T), 접합 → 모듈 손실 T_j; 모듈 표 밖은 외삽하지 않고 멈춤), 주기 정상상태는 주기 사상의 고정점으로 정확히 구합니다(시간
+상수가 긴 노드도 폐형식과 일치). 결과: 첫 한계 시각, 주기 정상상태 최고온도와 지배 노드, 허용 펄스 시간·토크, 첫 펄스 허용 토크,
+같은 펄스를 반복하기 전 필요한 휴지와 주기를 유지하는 최소 휴지. 허용값은 각 구간의 끝이 아니라 **구간 안의 최고온도**로 판단합니다
+— 빠른 항이 오르고 느린 항이 식을 때(고온 침지 후, 측정 노드 온도 시작) 최고점이 펄스 중간에 생기고, 끝만 보면 허용 토크가
+과대평가됩니다(예: 약 70 N·m). 시작 노드 온도는 시험하는 펄스 자신의 기준 온도로 환산하며, 휴지 부하가 느린 노드를 다시
+데우면 반복이 허용되는 휴지 **구간**(시작·끝)을 표시합니다.
+
+**전원 임피던스 선택 결합 (우선순위 2)** — 판정 페이지에서 Vdc를 *배터리 OCV*로 지정하고 Thevenin R_eq를 선언하면, 단자 전압
+V_inv = V_oc − R_eq·P_dc/V_inv를 운전점과 함께 풀어 그 전압에서 판정합니다(회생은 OCV보다 높아짐). 축 출력만으로 V_oc²/4R_eq를
+넘으면 어떤 드라이브로도 불가능(증명), 소스 모델의 유효 범위 밖이나 고정점이 없으면 UNKNOWN입니다. 인버터 단자 전압으로 준 요구는
+그대로(강하를 다시 빼지 않음).
+
+**같은 운전점의 PWM 위험 (우선순위 3)** — 판정의 운전점에서 같은 변조·캐리어로 기본파 전류(정책의 한계)와 보수 순간 피크 상한(선언된
+피크 한계와만 비교), 추가 RMS, 주요 선, DC-link 커패시터 부담, 모터 PWM 손실 구간을 한 표로 보여 줍니다.
+
+**철손 범위와 손실 민감도 (우선순위 5)** — 회전·철손 항은 속도만의 등가 손실 토크임을 원장에 적고(부하·약계자·고조파를 따르지 않음,
+별도 철손 맵을 겹쳐 더하지 않음), 각 확정 손실이 10 % 클 때의 효율 변화를 보여 줍니다. Vdc 인증서는 이 전제를 조건으로 명시합니다.
+
+**PWM 고조파 손실의 의미 (PWM 인계 P0)** — 모터 PWM 동손은 R_ac 자료가 없어도 R_dc 하한(3·R_s(T)·ΣI², 평가한 선 스펙트럼)으로
+보이고, R_ac/R_dc(f) 표가 유의 고조파를 모두 덮을 때만 정확값이 됩니다(커버리지 표시, 외삽 없음). 선언된 Fe+PM HF 자기 손실은
+상한(`magnetic_hf_loss_bound_W`, 예전 `iron_bound_W`)으로만 쓰여 합산되지 않고 비교 구간의 끝이 됩니다. 정책 비교의 에너지는
+[확정, 확정 + 열린 부분] 구간이며 겹치면 UNDECIDED, 한쪽이 열려 있으면 UNKNOWN — Pareto의 에너지 축도 구간이 분리될 때만 결정합니다.
+'리플 포함 피크'는 보수 상한(I_fund,pk + max|Δi|)으로 이름을 바꿨고, 파형 모델이 쓰는 동기 캐리어 fsw와 요청 fsw의 차이를 구간마다
+표시합니다. 결과에 에너지 제어 체적(커패시터 ESR·LV 전력은 별도), 열 범위(공급된 NTC 궤적 — 폐루프 아님), EMI/NVH 미평가를
+적습니다. 효율 페이지의 손실 원장에도 PWM 동손(정확값 또는 하한)과 Fe+PM 상한이 나오고, 모터 측 경계에 PWM 고조파를 포함한
+효율 구간이 붙습니다(기본파 η는 그대로).
+
+**Vdc 범위 단조성 인증서 (리뷰 우선순위 4)** — 정적 순구동, 최소전류 정책, Vdc에 무관한 비음수 계수 `a0 + a2 I²` 손실(유효
+범위가 요구 전압 범위 전체), 고정 소스 한계가 성립하면 전압이 오를수록 가능 집합이 줄지 않으므로 저전압 끝점의 FEASIBLE이 범위
+전체의 정적 판정을 입증합니다(수학 층 CERTIFIED). 회생·Vdc 의존 손실·지속시간에는 일반화하지 않습니다(회생 반례를 테스트로 보임).
+
+**온도 plane이 여러 개인 flux map** — 자석 온도를 말하지 않은 요구는 모델의 모든 plane 온도에서 for-all로 판정합니다(선언된 보간이
+있으면 plane 사이는 표본 검사, 반례가 있으면 그 온도를 표시). T–n 곡선은 온도를 지정하지 않으면 plane마다 하나씩 그리고, 한 운전점
+페이지(탐색·궤적·설계)는 자석 온도 입력을 가집니다(첫 plane 온도로 미리 설정). 이전에는 'magnet temperature required' UNKNOWN이거나
+id–iq 지도에서 오류였습니다.
+
+**데이터시트 대표값 직접 입력** — 곡선을 디지타이즈하지 않고 특성표의 대표값을 사람이 입력합니다(*데이터시트 값 입력…*: 프로젝트
+페이지·파일 메뉴·모델 페이지·전력변환 페이지). 모터·파워 모듈·DC-link 커패시터·게이트 dv/dt 네 양식이 파일 가져오기와 **같은 spec**을
+만들고(`twb datasheet`로 같은 결과, 사양 저장·불러오기), 입력하는 동안 프로젝트에 들어갈 모델·기록·단위 변환을 바로 보여줍니다.
+값 하나는 점 하나이므로 곡선·모델은 **선언된 구성 규칙**으로 만들고 규칙마다 기록을 남깁니다:
+도통 = 임계 V0 + I_nom 전압 / V0 + 기울기 / 두 점 / R_DS(on)의 직선을 [0, I_max]에(한 개의 V_CE(sat)만으로는 거부),
+스위칭 에너지 = E_ref (I/I_ref)^k (k = 1은 직선, 그 밖은 기하 간격 절점과 명시된 선형 보간 오차 상한, E_rr = 0은 '무시 가능' 명시),
+I_max 위는 손실 미확립(UNKNOWN); 커패시터 ESR 한 값 = 선언한 대역에서만 성립(대역 밖 고조파가 있으면 ESR 손실 UNKNOWN), EMI용
+ESR은 대표값임을 표시; 모터 = 극수 → 극쌍, Ke(전압 정의·기준 속도)·Kt(id = 0 전자기 토크 정의 확인)·ψ_PM, 선간/상 저항, mH, 기준 온도를
+드라이브 파서가 변환하고 모든 변환을 기록, 무부하 손실 한 점 → 점성 계수 b = P0/ω0²(모양은 선언), 인버터·운전 영역은 프로젝트
+드라이브에서 유지. 값을 √2·√3·2배 바꾸는 규약(전압·저항·전류·에너지 기준)은 기본값 없이 선택해야 하고, 비운 필수 값은 0이 아니라
+'미입력'으로 거부됩니다. 모터 미리보기는 입력값만으로 무부하 역기전력 대 Vdc(약계자 시작·비제어 발전 속도)와 MTPA·특성 전류를 그립니다.
+합성 기준 기계를 데이터시트 형식(8극, Ke 선간 RMS/1000 rpm, 선간 R, mH, 6000 rpm 무부하 손실)으로 입력하면 기준 판정이 수치까지
+같습니다(`test_motor_datasheet_values_reproduce_the_reference_machine`).
+
+기존 테스트 결함 수정: 데이터시트 모듈 가져오기 테스트가 `api.module_losses(ex)`로 모듈 사양을 요청 본문 자리에 넘겨 가져온 곡선 대신
+내장 예시 모듈을 평가하고 있었습니다(페이지는 올바른 `{"module": …}` 형식을 씀). 이제 가져온 모듈이 평가되고 내장 모듈과 다름을 확인합니다.
 
 ## 0.4.0 변경 사항 (v0.3.0 대비)
 

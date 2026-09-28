@@ -15,6 +15,10 @@
                                           the built-in synthetic project)
     twb project diff A.json B.json        changed sections, paths and the analyses they feed
     twb project export OUT.json           write the built-in synthetic project (a template to edit)
+    twb reqset REQS.csv [--project P.json] [--candidates C.txt] [--out RESULTS.csv]
+                                          requirement set on one product: verdict, class, margin, limiting cause,
+                                          next data per requirement; candidates re-judged against every requirement
+    twb reqset --template OUT.csv         write the requirement CSV template
 """
 
 from __future__ import annotations
@@ -240,6 +244,133 @@ def cmd_project(args):
     return {"OK": 0, "WARNING": 1}.get(res["status"], 2)
 
 
+def cmd_reqset(args):
+    import copy
+    from . import requirement_set as RS
+    from .io import drive_from_dict
+    if args.template:
+        Path(args.template).write_text(RS.CSV_TEMPLATE, encoding="utf-8")
+        print(f"requirement CSV template written to {args.template}")
+        return 0
+    if not args.csv:
+        raise InputValidationError("reqset needs the requirement CSV (or --template OUT.csv)", field="csv")
+    prj = _project(args.project)
+    drive = drive_from_dict(copy.deepcopy(prj.data("drive")))
+    lim = prj.dc_limits()
+    reqs = RS.parse_requirements_csv(Path(args.csv).read_text(encoding="utf-8-sig"), drive.motor.pole_pairs)
+    cands = RS.parse_candidates(Path(args.candidates).read_text(encoding="utf-8")) if args.candidates else []
+    res = RS.evaluate_set(reqs, drive, lim, with_capability=not args.fast)
+    cres = RS.evaluate_candidates(reqs, drive, lim, cands, baseline=res) if cands else None
+    if args.out:
+        Path(args.out).write_text(RS.rows_to_csv(res["rows"]), encoding="utf-8")
+    if args.json:
+        _print_json({"project": prj.label, "drive": res["drive"], "summary": res["summary"], "rows": res["rows"],
+                     "priorities": res["priorities"], "candidates": cres, "note": res["note"]})
+    else:
+        sm = res["summary"]
+        print(f"{prj.label} - {res['drive']['drive_id']} ({res['drive']['origin']}, {res['drive']['fidelity']}): "
+              f"{sm['total']} requirement(s), PASS {sm['PASS']}, FAIL {sm['FAIL']}, UNKNOWN {sm['UNKNOWN']}")
+        for r in res["rows"]:
+            m = "" if r["margin_Nm"] is None else f" margin {r['margin_Nm']:.4g} N*m"
+            print(f"  {r['id']:<12} {r['verdict']:<8} {r['class_label_en']}{m}")
+            if r["verdict"] != "PASS":
+                print(f"      limiting: {r['limiting'] or '-'}")
+                for x in r["next_data"][:2]:
+                    print(f"      next: {x}")
+        for e in res["priorities"]:
+            print(f"  next data [{e['effort']}] {e['label_en']}: {', '.join(e['requirements'])}")
+        for c in (cres or {}).get("candidates", []):
+            print(f"  candidate {c['name']}: improves {', '.join(c['improves']) or '-'}; worsens "
+                  f"{', '.join(c['worsens']) or '-'}; all met: {'yes' if c['all_met'] else 'no'}"
+                  + (" [diagnostic]" if c["diagnostic_only"] else ""))
+        print(res["note"])
+    if not args.exit_code:
+        return 0
+    v = {r["verdict"] for r in res["rows"]}
+    return 2 if "FAIL" in v else 3 if "UNKNOWN" in v else 0
+
+
+def cmd_datasheet(args):
+    """Import a datasheet spec (module curves or representative values, capacitor, gate dv/dt, motor) into a project:
+    findings, the new section's digest and - with --out - the modified project file (a new revision stays the user's
+    decision).  The desktop value-entry dialog saves the same specs."""
+    from . import datasheet as DS
+    from .project import save_project, short
+    spec, base_dir = DS.load_spec(args.spec)
+    prj = _project(args.project)
+    new, res = DS.apply(prj, spec, base_dir)
+    if args.json:
+        _print_json({"section": res["section"], "digest": new.sections[res["section"]].digest,
+                     "provenance": res["provenance"], "findings": res["findings"], "project": new.identity()})
+    else:
+        print(f"{res['section']}: {res['provenance']['source']} -> digest {short(new.sections[res['section']].digest)}")
+        for f in res["findings"]:
+            print(f"  {f['level']:<8} {f['item']}: {f['detail']}")
+    if args.out:
+        if args.revision:
+            new = new.as_revision(args.revision, args.change or f"datasheet import: {res['provenance']['source']}")
+        print(f"project written to {save_project(new, args.out)} ({new.label})")
+    return 0
+
+
+def _mw_status(v: dict) -> None:
+    print(f"  package check       {v['package_check']}")
+    print(f"  target environment  {v['target_environment']}")
+    print(f"  model generation    {v['model_generation']} (Simulink static evaluation harness)")
+    print(f"  parity              {v['parity']}" + (f"  {v['cases']}" if v.get("cases") else ""))
+    for k, st in (v.get("stages") or {}).items():
+        print(f"    stage {k:<20} {st}")
+    print(f"  physical validation {v['physical_validation']}")
+    print(f"  current evidence    {'yes' if v['linked_as_current_evidence'] else 'no'}")
+    for pr in v["package_problems"] + v["problems"]:
+        print(f"  ! {pr}")
+    for f in v.get("failed_cases", [])[:20]:
+        print(f"  FAIL {f['case_id']}: {', '.join(f['failures'][:6])}")
+
+
+def cmd_mathworks(args):
+    """MathWorks transfer package: export (Python reference -> package), check (integrity), run (local MATLAB /
+    GNU Octave), verify (re-import a target report against this package and, with --project, this design)."""
+    from . import mathworks as MW
+    if args.action == "export":
+        man = MW.export_package(args.dir, _project(args.project), force=args.force)
+        if args.json:
+            _print_json({k: man[k] for k in ("dir", "semantic_fingerprint", "case_counts", "models",
+                                             "oracle_disagreements", "statuses")})
+        else:
+            print(f"{MW.SCHEMA} package written to {man['dir']}")
+            print(f"  fingerprint {man['semantic_fingerprint'][:16]}  project {man['project_label']}")
+            print(f"  models {', '.join(man['models'])}")
+            print(f"  cases {man['case_counts']}  layer-2 vs layer-1 disagreements: "
+                  f"{man['oracle_disagreements'] or 'none'}")
+            print(f"  run on the target: {man['entry_points']['matlab']}")
+        return 0
+    if args.action == "check":
+        r = MW.check_package(args.dir)
+        if args.json:
+            _print_json({k: v for k, v in r.items() if k != "manifest"})
+        else:
+            print(f"package check {r['status']}")
+            for pr in r["problems"] + r["warnings"]:
+                print(f"  ! {pr}")
+        return 0 if r["status"] == "PASS" else 1
+    if args.action == "run":
+        r = MW.run_local(args.dir, args.runtime)
+        v = r["verification"]
+        if args.json:
+            _print_json(r)
+        else:
+            print(f"{r['runtime']['kind']} ({r['runtime']['path']}) exit {r['exit_code']}, log {r['log']}")
+            _mw_status(v)
+        return 0 if v["parity"] == "PASS" else 1
+    v = MW.verify_report(args.dir, args.report, _project(args.project) if args.project else None)
+    if args.json:
+        _print_json(v)
+    else:
+        _mw_status(v)
+    return 0 if v["parity"] == "PASS" else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="twb", description="Traction engineering feasibility workbench")
     ap.add_argument("--version", action="version", version=f"traction-workbench {__version__}")
@@ -302,6 +433,37 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("files", nargs="*", help="project file(s); none = the built-in synthetic project")
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_project)
+    p = sub.add_parser("reqset", help="requirement set (CSV) on one product; candidates against every requirement")
+    p.add_argument("csv", nargs="?", help="requirement CSV (columns: see --template)")
+    p.add_argument("--project", help="project file (default: the built-in synthetic project)")
+    p.add_argument("--candidates", help="text file, one candidate per line: 'name: parameter=value, ...'")
+    p.add_argument("--out", help="write the result rows as CSV")
+    p.add_argument("--template", help="write the requirement CSV template and exit")
+    p.add_argument("--fast", action="store_true", help="skip the capability margins (verdicts only)")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--exit-code", action="store_true", help="exit 0 all PASS / 2 any FAIL / 3 otherwise UNKNOWN")
+    p.set_defaults(fn=cmd_reqset)
+    p = sub.add_parser("datasheet", help="import a datasheet spec (module curves or values, capacitor, dv/dt, motor) "
+                                         "into a project")
+    p.add_argument("spec", help="datasheet spec JSON (kind: module | capacitor | gate_edges | motor); CSV paths "
+                                "relative to it")
+    p.add_argument("--project", help="project file to import into (default: the built-in synthetic project)")
+    p.add_argument("--out", help="write the modified project here")
+    p.add_argument("--revision", help="make the result a new revision with this name (needs --out)")
+    p.add_argument("--change", help="change note of that revision")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_datasheet)
+    p = sub.add_parser("mathworks", help="MathWorks transfer package: export | check | run | verify")
+    p.add_argument("action", choices=("export", "check", "run", "verify"))
+    p.add_argument("dir", help="package directory")
+    p.add_argument("--project", help="project file (export: the design to transfer; verify: the CURRENT design "
+                                     "the report must belong to); default: the built-in synthetic project")
+    p.add_argument("--report", help="verify: report file (default <dir>/results/parity_report.json)")
+    p.add_argument("--runtime", choices=("matlab", "octave"), help="run: which local runtime (default: MATLAB, "
+                                                                     "else GNU Octave)")
+    p.add_argument("--force", action="store_true", help="export: write even over edited generated files")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_mathworks)
     p = sub.add_parser("acceptance", help="compare with the golden fixtures")
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_acceptance)

@@ -1,4 +1,4 @@
-# 요구 추적표 (Traceability) — 0.4.0
+# 요구 추적표 (Traceability) — 0.5.0
 
 이 문서는 독립 엔지니어링 리뷰(handoff), 감사 증거 패키지(dc7b338)의 재현 스크립트, 그리고 세 추가 명세
 (OEW/HEV, 파워모듈별 손실·단계별 효율, 가변 PWM·anti-jerk)의 각 항목이 **어디에 구현되었고 무엇으로 확인했는지**를
@@ -218,7 +218,105 @@
 (`check_gate_events`, 창 경계 펄스는 폭을 판정하지 않고 open으로 계수 — `test_a_pulse_cut_by_the_observation_window_is_not_a_runt`),
 EMI·PWM 예시의 데드타임 불일치(1.0 µs vs 손실 1.5 µs — 프로젝트의 제어기 한 값으로 통일).
 
-## 11. 비목표 (handoff §15, 추가 명세 비목표)
+## 11. MathWorks 이식·검증 브리지 (twb-mathworks/1)
+
+기준: MathWorks 이식 handoff(2026-09-28)와 Agentic SE 논문의 source-separated acceptance. 세 층 — (1) 요구·수용된 원천,
+(2) Python reference, (3) MathWorks — 을 분리하고, 먼저 2 → 3 이식과 parity를 만들되 3을 1에도 대조합니다.
+"Octave"는 GNU Octave 8.4를 MATLAB 언어 호환 proxy로 실행한 것이며 MATLAB·Simulink·System Composer 실행이 아닙니다.
+
+| 항목 | 내용 | 구현 | 확인 | 상태 |
+|---|---|---|---|---|
+| §3.1 | 식별: schema, 구현 SHA·dirty·의미 소스 hash, 입력 snapshot(project digest, 모델 content SHA-256, plane data SHA-256), generator·template revision, 수치 설정; byte vs semantic 동일성 | `mathworks/package.py` manifest, semantic fingerprint | `test_export_is_deterministic` | implemented |
+| §3.1 | 누락·NaN/Inf·enum의 의미를 schema에서 정함 (null = 미정의, DC 한계 finite/unlimited/not_declared) | `contract.py`, `cases.limits_spec` | `test_semantic_cases_keep_their_meaning` | implemented |
+| §3.2 | 규약(amplitude-invariant, phase peak, d on PM, 기계 rpm, pole pairs, 전력 부호, Te/Tshaft, peak/RMS, line/phase)을 검사 가능한 값으로 | `contract.CONVENTIONS`, `+twb/checkContract.m` | guard "Park convention refused", `test_check_refuses_…` | implemented |
+| §3.2 | physics와 control policy 분리; native optimiser는 전역 인증서를 상속하지 않음 | 요구 witness case(`layer2_claim`), gap report | `test_requirement_witnesses_carry_the_layer2_claim` | implemented (optimiser 이식은 exported_data_only) |
+| §3.3 | map 축·index·mask·cell 규칙·모서리·외삽 금지·온도 plane·대칭 근거, 행/열 순서를 전치로 추측하지 않음 | `contract.map_rules`, `+twb/checkModel.m`, `fluxMapLookup.m`, `selectPlane.m` | VF.MAP.* 21 case, 전치 거부 guard | implemented |
+| §3.3 | 이중 온도 보정·손실 이중 계산 검출 | `checkModel.m`, `loss_ownership`, `lossOwnershipConflicts.m` | guard X05 2건 | implemented |
+| §3.4 | 동적 모델의 상태·초기값·event 의미 | — | — | not_applicable (동적 모델 미이식, gap report) |
+| §3.5 | 요구의 quantity·comparator·조건, claim을 boolean으로 평탄화하지 않음, 출처 유지 | `cases.requirement_cases`, `architecture.requirement_links` | 요구 witness 11 case | implemented / uncertainty set 이식은 missing |
+| §4.1-1 | versioned 패키지 생성·검사, target compatibility report | `export_package`, `check_package`, `+twb/preflight.m`, `gap_report.json` | `test_check_refuses_…`, preflight.json | implemented |
+| §4.1-2 | 회사 환경 local entry point, 로그·오류 결과 | `+twb/runAll.m`, `run_local` (MATLAB `-batch` / Octave) | Octave 실행 | implemented (MATLAB 실행은 NOT_RUN) |
+| §4.1-3 | native constant dq evaluator + nonlinear flux-map evaluator, Python·analytical 대조 | `+twb/staticPoint.m`, `evaluatePoint.m`, `fluxMapLookup.m` | Octave 79 PASS, 심은 결함 9종 검출 | implemented |
+| §4.1-4 | Simulink 정적 평가 harness 생성 recipe | `+twb/buildEvaluationHarness.m`, `runHarness.m` | Octave 구문 검사만 | implemented, NOT_RUN (Simulink 없음) |
+| §4.1-5 | System Composer/SLDD 후보 mapping과 충돌 검출 | `architecture.py`, `+twb/compareDataItems.m`, `checkDictionary.m`, `buildArchitectureCandidate.m` | guard X09 2건 (Octave), `test_architecture_candidates_…` | candidates·충돌 논리 implemented; 모델 생성·SLDD 읽기 NOT_RUN |
+| §4.1-6 | machine-readable 보고서 저장·읽기, 미실행은 NOT_RUN | `runAll.m`, `verify_report` | `test_report_reimport_statuses_and_identity` | implemented |
+| §5.3 | 재실행·rename·충돌·사용자 수정: 새 폴더만, 편집된 생성물 덮어쓰기 금지, 사라진 ID ≠ 삭제 | `package._existing_guard`, harness/architecture 생성기 | `test_regeneration_never_overwrites_…` | implemented |
+| §6 | Agentic Toolkit 역할 한정, AI 없이 핵심 경로 | `AGENT_TASKS.md`, `twb.runAll` | — | implemented |
+| §8.2 | 상태를 하나의 초록불로 합치지 않음 | `desktop/mathworks_dialog.py`, `cli mathworks` | self-test `mathworks:package` | implemented |
+| X01 | export → parse → 재export; 모르는 schema·누락 단위·손상 hash | `check_package`, `loadPackage.m` | `test_export_is_deterministic`, `test_check_refuses_…` | implemented |
+| X02 | 상수 dq, ±속도, 구동/회생, 정지 | REF.F00–F05, PRODUCT.*, BND.* | golden + closed-form oracle, Octave | implemented |
+| X03 | 비정방·비대칭 map, 다른 축 길이, 내부 질의 | VF_D2_MAP (6×7 비균일·비대칭) | 전치 → ERROR/FAIL 검출 | implemented (미분은 정적 사용에 불필요: 동적 사용 NOT QUALIFIED로 전달) |
+| X04 | 구멍·외곽·온도 경계·잘못된 입력 | VF.MAP.* hole/edge/outside/above_planes/no_temperature | clip 심은 결함 검출 | implemented |
+| X05 | 온도 plane·Rs 보정·native loss on/off | VF_D1_TEMP, guard X05 | Rs 법칙 무시 결함 검출 | implemented |
+| X06 | 정확 경계·경계 안팎·미해결 최적화 | BND.* (±0.5, ±2 tol), 요구 witness의 evidence kind | ACTIVE=위반 결함 검출 | implemented |
+| X07 / X08 | 동적 모델·물리 포트 보존 | — | — | not_applicable (gap report) |
+| X09 | 재생성·rename·이름 충돌·사용자 수정 | `_existing_guard`, `compareDataItems.m` | guard X09, `test_regeneration_…` | implemented |
+| X10 | toolbox 부재·MATLAB 미실행·미지원 대상 | `preflight.m`, NOT_RUN 단계 | `test_report_reimport_…`, Octave run | implemented |
+| X11 | OEW/HEV topology | 제품 드라이브는 단일 VSI, OEW/HEV를 단일 VSI로 축소하지 않음 | gap report | not_applicable |
+| X12 | 잘못된 input/model/profile hash의 보고서 | `verify_report` (fingerprint·소비 파일 hash·project digest) | FOREIGN_REPORT, stale 테스트 | implemented (profile은 패키지 식별 밖 — 회사 환경에 둠) |
+
+## 12. 앱 검토·UX·anti-jerk·데이터시트 (0.5.0)
+
+| 항목 | 내용 | 구현 | 확인 | 상태 |
+|---|---|---|---|---|
+| 검토 B1 | PDF 보고서가 plot theme을 누설 | `plots/style.using`, `report_pdf.build_pdf` | `test_pdf_report_gives_the_callers_plot_theme_back` | implemented |
+| 검토 B2 | self-test가 theme 설정을 저장 | `set_theme(persist=False)` | 데스크톱 테스트 | implemented |
+| 검토 B3 | 요약 열이 결과 위젯을 지움 | `pages/decision.py` | 데스크톱 스모크 | implemented |
+| UX | 그룹 탐색, 화면 안내, 잘리지 않는 입력 패널, 특수값 표시, 오류 표시 | `main_window.py`, `widgets.tidy_inputs` | self-test `guide`, 폭 측정(잘림 0) | implemented |
+| P1-DAMP | 정상 토크 결손 폐형식, 2차 washout, 확장 상태의 샘플 루프 | `extensions/driveline.py` | `test_speed_highpass_steady_deficit_…`, `test_washout_sampled_stability_…` | implemented |
+| P1-A/B | 데이터시트 가져오기 (모듈 곡선·ESR·dv/dt, 외삽 없음, 공급사 provenance) | `datasheet.py`, `desktop/datasheet_dialog.py`, `cli datasheet` | `test_datasheet.py` 8건, self-test `datasheet:module` | implemented (측정 데이터 단계는 missing) |
+| P1-A/B | 데이터시트 대표값 직접 입력 (모터·모듈·커패시터·dv/dt): 선언된 구성 규칙, 규칙마다 기록, 규약 선택 강제, 미입력 거부, 파일 spec과 같은 결과 | `datasheet.representative_curves`·`motor_section`·`ESR_representative`, `desktop/datasheet_entry_dialog.py`, `plots/datasheet_figures.fig_datasheet_motor` | `test_datasheet.py` (기준 기계 재현, 곡선 = 선언 모델, I_max 위 UNKNOWN, ESR 대역 밖 UNKNOWN, 거부 사례), self-test `datasheet:entry_forms`·`datasheet:entry_motor` | implemented |
+| 엔진 | plane을 고를 수 없는 map 시나리오에서 capability가 죽음 | `physics.torque_scale`, `solvers/capability.py` | `test_scenario_that_selects_no_plane_…` | implemented |
+
+## 13. 공학 리뷰 (기준 6198099)
+
+동료 공학 리뷰(`ENGINEERING_REVIEW.md`, 반례 스크립트, 회귀 테스트 초안)의 지적을 실제 저장소에서 재현한 뒤 고쳤습니다.
+리뷰어의 회귀 테스트 7건은 수정 전 5건 실패 → 수정 후 7건 통과이며 그대로 `tests/test_review_6198099.py`에 들어 있습니다.
+
+| 항목 | 지적 | 구현 | 확인 | 상태 |
+|---|---|---|---|---|
+| F1 | 긴 정격(30 s·연속)의 초과를 짧은 요구의 실패로 전이, 양립하는 짧은·긴 정격이 CONFLICTING | `rating.applicability` → 증거 방향(`both` / `positive`), `duration_claim`: 긍정 전용 근거의 초과는 결론 없음(UNKNOWN), 충돌 판정은 결론을 내는 근거끼리만 | `test_longer_rating_cannot_exclude_…`, `test_compatible_short_and_long_…`, `test_a_same_duration_rating_still_…` | implemented |
+| F1b | 같은 지속시간이라도 '완전한 상한'과 '입증 영역'을 구분 | `RatingEnvelope.limit_semantics` (`rated_limit` / `demonstrated_region`) | `test_a_demonstrated_region_is_not_a_limit` | implemented |
+| F2 | `linear_declared` 표의 보간 한계 초과가 UNKNOWN | `_evaluate_envelope`: 선언된 선형 한계와 직접 비교 (RATING_NOT_MET), `conservative`는 괄호 의미 유지 | `test_declared_linear_rating_fails_…`, `test_conservative_interpolation_keeps_…` | implemented |
+| F3 | 열 가용 토크 집합이 정적 가능 구간 사이의 공백을 연결 | `thermal.torque_availability`: 정적 segment마다 따로 scan·bisection, segment 번호 보존, `thermal ⊆ static` 불변식 검사, UNKNOWN 표본은 잇지 않음 | `test_thermal_set_cannot_bridge_…`, `test_thermal_set_is_not_joined_across_an_unknown_sample` | implemented |
+| G1 | 정격 증거가 적용 제품·조건과 결속되지 않음 | `RatingEnvelope.applies_to` (drive_id·revision·content SHA-256), `control_policy`, `irrelevant_conditions`; `binding()`: 선언된 결속 불일치 → 적용 안 함, 결속 없음·필수 조건(냉각수·Vdc, 유한 정격은 초기 상태) 미처리 → 사용은 하되 모든 claim에 APPLICABILITY_UNCONFIRMED, 요구 층의 미결 항목; 판정 엔진이 평가 드라이브의 식별자를 넘김; case 파일 파서 | `test_rating_bound_to_another_product_…`, `test_bound_and_complete_rating_…`, `test_required_conditions_…`, `test_case_file_rating_fields_…` | implemented |
+| 우선순위 1 | 단일 냉간 펄스에서 반복 부하·고온 시작으로: 펄스–휴지–반복, 초기 노드 상태, R_s(T)·T_j 손실 결합; 첫 펄스·반복 정상주기의 허용 시간·토크, 냉각 회복 시간, 지배 노드; Foster 내부 상태는 물리 층 온도가 아님 | `extensions/thermal_cycle.repeated_load`: Foster 항을 스텝마다 정확히(지수) 적분하고 손실을 노드 온도에서 재평가(권선 노드 → R_s(T), 접합 노드 → 모듈 손실 T_j; 드라이브에 R_s 법칙이 없으면 이 분석용 선언 가능, 모듈 표 밖은 중단·외삽 없음); 시작 상태 = 냉각수 평형 / 예부하 정상상태(x = R·P) / 노드 온도(Cauer 사다리만 — 모달 좌표로 정확 변환, Foster는 거절); 주기 정상상태는 주기 사상(항별 아핀)의 고정점으로 정확히 풂(느린 노드도 폐형식과 일치); 허용 펄스 시간·토크, 첫 펄스 허용 토크, 반복 전 필요 휴지, 주기 유지 최소 휴지(폐형식, 뜨거운 온도 모서리의 손실; 구간 끝이 아니라 구간 안의 최고온도 — 지수합의 도함수 근으로 정확히, 시작 노드 온도는 시험 펄스의 기준 온도로 환산, 휴지 부하가 느린 노드를 다시 데우면 허용 휴지 구간의 끝도 표시); 열 페이지 '반복 부하' 탭·그림 | `tests/test_thermal_cycle.py`(폐형식 일치, 첫 한계 시각, 고온 시작, Cauer 노드 온도, R_s 피드백, 허용값 경계, 필요 휴지, 검증된 모델만 결론, 구간 안 최고점, 고온 침지 시작의 첫 펄스 허용값, 휴지 구간), self-test `thermal:repeated_load` | implemented |
+| 우선순위 2 | Vdc 입력의 위치를 유지하며 선택적 전원 임피던스: 보장된 단자 전압에서 다시 강하를 빼지 않음, OCV면 Thevenin V_inv = V_oc − I_dc·R_eq와 I_dc = P_dc/V_inv 결합, 구동·회생 부호, 소스 모델 유효 범위 | `analysis/source`: `TheveninSource`(R_eq, 근거, 전류·OCV 유효 범위), `resolve_terminal_voltage`(상근 고정점; 회생은 V_oc보다 높아짐; 축 출력만으로 V_oc²/4R_eq 초과면 어떤 드라이브로도 불가능 — 증명; 모델 무관 단자 전압 상한); `service.resolve_case_source`: 요구 Vdc 포트 `battery_ocv` + `source_model` → 해석된 단자 전압(범위는 끝점 사상)에서 기존 판정, 소스 claim을 AND로 합산(해석 실패면 드라이브 쪽은 OCV에서 — 낙관적임을 명시 — 보이고 소스 claim이 결정), 요구 층 미결 항목; 단자 전압 요구의 레코드 식별자는 불변; 판정 페이지 'Vdc 의미' 선택과 R_eq 입력 | `tests/test_source.py`, self-test `decision:battery_ocv` | implemented |
+| 우선순위 3 | 이미 있는 PWM 리플·선 스펙트럼을 같은 운전점의 위험 판정에 연결; 기본파 전류 한계와 실제 순간 피크 구별 | `pwm_policy.point_pwm_risk` / `api.pwm_risk_at`: 판정 witness 운전점에서 같은 변조·캐리어로 기본파 전류(정책의 dq 노름 한계) vs 보수 순간 피크 상한(선언된 소자/과전류 피크 한계와만 비교, 없으면 UNKNOWN), 추가 RMS, 주요 선(차수), DC-link 커패시터 부담, 모터 PWM 손실 구간, 요청≠파형 fsw; 판정 페이지 '추가 분석'에 'PWM 위험 (같은 운전점)' 탭; NVH·베어링 전류·정확한 피크는 평가하지 않음 | `tests/test_review_priorities.py`, self-test `decision:pwm_risk` | implemented |
+| 우선순위 5 | 모터 철손의 범위와 손실 분해; 민감도부터; 중복 합산 금지; id/iq 의존 철손이면 certificate 전제가 바뀜 | 원장 회전·철손 항에 범위(속도만의 등가 손실 토크, 부하·약계자·PWM 고조파를 따르지 않음, 별도 철손 맵을 위에 더하지 않음), 인버터+모터 η의 손실 민감도(각 확정 항 +10 %), Vdc 인증서 조건에 '속도만의 회전·철손' 전제를 명시 | `tests/test_review_priorities.py` | implemented (분해 모델은 자료가 생기면) |
+| 우선순위 4 | 전압 범위는 표본으로만 → 항상 UNKNOWN; 조건부 충분조건으로 해소 | `decision.vdc_range_certificate`: 정적 순구동(또는 정지)·최소전류 정책·Vdc 무관 `a0 + a2 I²` 손실(a0, a2 ≥ 0, 유효 전압 범위가 요구 범위 전체를 덮음, 모듈 손실 없음)·고정 소스 한계·명령 전압 예산 (1 − r_v)·Vdc/√3 단조 증가·저전압 끝점 FEASIBLE·P_dc > 0 → 정적 subclaim을 범위 전체에서 입증(수학 층 CERTIFIED, 한정자에 인증서 문장). 회생(높은 Vdc에서 충전 전력이 커짐 — 반례를 테스트로 보임)·Vdc 의존 손실·지속시간(정적 부분만 입증, 지속 부분은 표본)에는 적용하지 않음 | `test_vdc_range_is_certified_from_the_low_endpoint_…`(21점 조밀 격자로 |i|·P_dc 단조성 독립 확인), `test_the_certificate_does_not_cover_regeneration_and_why`, `test_no_certificate_with_a_vdc_dependent_loss_or_a_duration` | implemented |
+| 사용자 질문 | 온도 plane이 여러 개인 flux map에서 자석 온도가 없으면 capability·T–n이 UNKNOWN('자석 온도 필요') | 판정: 자석 온도를 말하지 않은 요구는 모델이 가진 **모든 plane 온도에서 for-all**(`decision._magnet_points`) — 선언된 온도 보간이 있으면 plane 사이 표본을 더하고 모두 가능해도 SAMPLED_COVERAGE(보간 구간은 표본뿐), 보간이 없으면 plane이 모델이 아는 전부라 모두 가능이면 FEASIBLE, 한 온도라도 불가능이면 INFEASIBLE + 반례 온도. T–n: `sweeps.envelope_family` — plane마다 그 온도에서 정확한 곡선 하나. 한 운전점 페이지(탐색·궤적·설계): `MagnetTempInput`(첫 plane 온도로 미리 설정·표시, 비우면 이유를 말하고 계산하지 않음, 다른 모델로 바뀌면 미지정으로 복귀) | `test_a_multi_plane_map_without_magnet_temperature_…`, `test_declared_interpolation_is_sampled_…`, `test_envelope_family_…`, `test_desktop_requirement_set_page_and_magnet_temperature_inputs` | implemented |
+| 사용자 기능 1 | 요구 묶음의 총괄 판정: CSV, 조건/연산자 확인, 요구별 판정·여유·지배 원인·미확인 근거; band 존재성 ≠ 제어 정확도 | `requirement_set.evaluate_set`(같은 제품·조건·근거, 행 = 단일 판정 기록과 동일한 record id), `parse_requirements_csv`(case 파일 파서, 알 수 없는 열·중복 id·모호한 정의 거절, `speed_kind`, `Vdc_port`), `interpretation`(band: '존재성 — 제어 정확도·전 구간 추종 아님'), 결과 CSV; 페이지 **요구 묶음·후보**(해석 확인, 판정 페이지에서 열기) | `tests/test_requirement_set.py` | implemented |
+| 사용자 기능 2 | 후보별로 모든 필수 요구를 재평가, 가중합 없음, 비용 자료 없이 비용 최적 없음 | `evaluate_candidates`: 후보마다 모든 요구 재판정, 개선/악화 목록, 전부 만족 여부, 진단용 파라미터 표시, Vdc는 요구의 조건이라 후보에서 거절 | `test_candidates_are_rejudged_…`, `test_candidate_changes_that_are_not_design_changes_…` | implemented |
+| 사용자 기능 3 | UNKNOWN을 다음 결정으로: 원인 분리와 추가 자료 우선순위(측정 난이도·판정 영향) | `classify`(모든 Reason이 정확히 한 분류 또는 위반 사유, 원인이 여럿이면 모두 유지), `next_data_priorities`(작업 종류: 선언 < 문서 < 해석 < 새 자료, 그다음 영향 받는 요구 수; '이것만으로 확정' vs '추가로 필요'), `levers`(바인딩 제약 → 완화하는 파라미터); 판정 페이지 배너에 분류와 닫는 방법 | `test_every_reason_is_classed_…`, `test_classify_keeps_every_cause_…`, `test_next_data_is_prioritised_…` | implemented |
+| 사용자 기능 4 | 입력 완성도별 진입점: 고객 사양만으로 필요조건, 서로 다른 운전점의 최대 토크×최대 속도 곱 금지, 포트·기계/전기 속도·지속시간 확인 | `spec_check`: 같은 운전점의 P_shaft = T·ω ≥ 0(구동)이면 P_dc ≥ P_shaft → 방전 전력/전류(범위면 최저 Vdc) 한계 초과는 어떤 드라이브로도 불가능; 회생은 손실이 흡수할 수 있어 '모델 필요'; 모델과 같은 허용오차. 모델이 UNKNOWN인 요구를 이 조건이 결정(FAIL, decided_by), 모델 PASS와 모순이면 표시하지 않고 오류 | `test_the_customer_numbers_alone_…`, `test_the_model_never_contradicts_…` | implemented |
+| 사용자 기능 5 | 결과 화면 순서: 요구 → 조건·데이터 수준 → 결론/여유 → 제한 원인 → 바꿀 수 있는 항목 → 다음 자료 → 상세 | 요구 묶음 상세 창이 이 순서(1–7)로 표시, 4층 판정·stale 표시는 판정 페이지에 그대로(선택한 요구를 판정 페이지에서 열기) | `test_desktop_requirement_set_page_…`(순서 검사), self-test `requirement_set:*` | implemented |
+
+## 14. PWM 고조파·가변 PWM 인계 (P0)
+
+인계 문서(`PWM_Harmonic_Variable_PWM_Handoff`)의 P0 항목을 현재 코드와 대조해 구현했습니다. 첫 번째 공학 리뷰(13절)를 우선했고,
+PR #5의 코드는 병합하지 않고 이 문서의 의미를 현재 코드 기준으로 다시 구현했습니다. 수용 테스트 A–F는
+`tests/test_pwm_handoff.py`에 있습니다.
+
+| 항목 | 인계 요구 | 구현 | 확인 | 상태 |
+|---|---|---|---|---|
+| §3.1 | `iron_bound_W`는 실제 철손이 아니라 선언된 **상한** — 이름·표시 | `HarmonicLossData.magnetic_hf_loss_bound_W`(정식, Fe+PM HF), `iron_bound_W`는 호환 별칭(둘이 다르면 거절), anchor 주파수에서만(보간 없음), 합산하지 않고 구간 끝으로만 | C1, C3 | implemented |
+| §4 L0 | R_ac 자료 없이도 PWM 동손 **R_dc 하한** 3·R_s(T)·ΣI²(평가한 선 스펙트럼), 0 W 금지, 대역 밖 전역 하한이라 부르지 않음 | `harmonic_copper_loss`: `lower_bound_W`, `bandwidth_Hz`, `status`(ESTABLISHED / LOWER_BOUND_ONLY), R_s는 시나리오의 R_s(T)(기본파 동손과 같은 값) | B1–B3, `test_rs_follows_…` | implemented |
+| §4 L1 | R_ac/R_dc(f) 표, 유의 고조파가 표 밖이면 정확값 UNKNOWN(외삽 금지) + 하한 유지, `rac_coverage_I2_fraction` | 같은 함수: 커버리지(ΣI² 비율), 표 밖 유의 선 → 정확값 None | B2, B3 | implemented |
+| §4 L2 | hairpin/근접효과 모델 | 임의 형상 모델을 만들지 않음 | — | deliberately unsupported |
+| §8 | 주 효율 원장에 PWM 동손·상한 노출, 전력 항등식 유지, control volume | `point_ledger(pwm_hf=…)`: 'PWM harmonic copper'(정확값 또는 ≥ 하한), 'PWM Fe+PM HF magnetic loss'(≤ 상한, 값 아님), `loss_interval_W`, 포트 전력·기본파 η는 그대로(항목에 `in_port_powers`), motor·inverter+motor·eDrive 경계에 `eta_interval_incl_pwm_hf`(구동: P_out/(P_in + x), 회생: (|P_in| − x)/|P_out|) | D, C1, C4 | implemented (P0 노출) |
+| §8 P1 | PWM 추가 모터 손실을 P_dc 회계·DC 한계 판정에 정식 결합, 미션 에너지에 같은 의미 | — | — | remaining (P1) |
+| §9 | 'best'는 평가 후보 중 최선, Pareto 에너지 축은 확정 손실만, Fe+PM 상한은 기대값이 아님, 겹치면 UNDECIDED | `policy_energy`(구간 [E_inv + PWM 동손(정확/하한), + Fe+PM 상한], 열린 끝 None), `_pareto`(에너지는 구간 분리로만 지배), `_best_interval`, `compare_intervals`(IMPROVED / WORSE / UNDECIDED / UNKNOWN), `ENERGY_CONTROL_VOLUME`(커패시터 ESR·LV 전력은 별도) | E3–E5, `test_control_volume_…`, `test_interval_comparison` | implemented |
+| §10 | '리플 포함 피크'는 정확한 피크가 아닌 보수 상한 | `i_peak_bound_A` / `i_peak_bound_max_A`, `peak_current_meaning`; 요청 본문의 한도 이름 `i_peak_bound_max_A`(저장 필드는 기존 `i_peak_incl_ripple_max_A`, 둘이 다르면 거절) | E6 | implemented |
+| §11 | 요청 fsw ≠ 파형 모델 fsw를 숨기지 않음 | 구간마다 `fsw_requested_Hz`, `fsw_waveform_used_Hz`, `fsw_error_percent`, 커패시터 모델의 사용 fsw, 0.5 % 초과 시 advisory, 그림에 × 표시 | A4 | implemented; 비동기 캐리어 파형 엔진은 remaining |
+| §12 | 공급된 NTC 궤적 ≠ 폐루프 열 시뮬레이션 | `thermal_scope` 메타데이터 | F | implemented; 폐루프(P4) remaining |
+| §14 | EMI/NVH/베어링 전류 영향은 평가하지 않았다고 명시 | `not_evaluated` | F | implemented |
+| §15 | 에너지 패널: 확정 스택 + 상한은 구간(해치/whisker), 필수 제약 표의 이름, 상세 표 | 그림(확정 스택, R_dc 하한 해치, 비교 구간 whisker/열린 화살표, 요청≠파형 fsw 표시), 페이지 상세 행(에너지 구간, fsw 오차, 제어 체적, 열 범위, 미평가) | 그림 렌더 테스트 | implemented |
+| §16 | 프로젝트 데이터 `motor_hf`(L_hf, R_ac, magnetic bound) | 효율 페이지는 가변 PWM 페이지와 같은 선언 예시(합성, 표시됨)를 사용 | B4 | remaining (P1) |
+| §19 A | 시간 적분 RMS ≈ 스펙트럼 RMS, fsw 2배 → 리플 1/2, m = 0 리플 0, 비정수 fsw/fe | 기존 모델 확인 | A1–A4 | implemented |
+| §6·§7 | Fe/PM ROM, THD→철손 계수 금지 | THD 계수를 만들지 않음, 보정 ROM은 자료가 생기면(P3) | — | deliberately unsupported (P3) |
+
+## 15. 비목표 (handoff §15, 추가 명세 비목표)
 
 generic motor CAD/FEA 복제, 정적 ASC로 demag/SOA 승인, 일반 IGBT 식으로 SiC 수명 보증, 드라이버 typical delay로 ASIL 승인,
 class 번호로 EMC 합격률, 평균 dq로 NVH/베어링/MHz 임피던스, 생산 anti-jerk 제어기 자동 납품, 보편 안정성 인증서,

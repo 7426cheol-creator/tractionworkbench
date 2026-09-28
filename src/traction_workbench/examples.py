@@ -11,7 +11,23 @@ requirements, study variants - stay with the analyses; only what is physically t
 
 from __future__ import annotations
 
+from pathlib import Path
+
 INF = float("inf")
+
+
+def examples_dir() -> Path | None:
+    """The shipped ``examples`` folder (case files, drives, datasheets): the PyInstaller bundle or the source tree."""
+    import sys
+    cands = []
+    frozen = getattr(sys, "_MEIPASS", None)
+    if frozen:
+        cands.append(Path(frozen) / "examples")
+    cands.append(Path(__file__).resolve().parents[2] / "examples")
+    for c in cands:
+        if c.is_dir():
+            return c
+    return None
 
 
 def lin_curve(unit, temps, i_max, a_by_t, b_by_t, n=9):

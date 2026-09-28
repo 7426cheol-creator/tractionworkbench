@@ -91,10 +91,14 @@ def project_line(pc: dict) -> str:
 
 
 def build_pdf(path, record: dict, rec=None, case=None, progress=None, envelope: bool = True) -> Path:
-    """Write the report; ``rec``/``case`` (objects from ``service.evaluate_case_full``) enable the graphs."""
+    """Write the report; ``rec``/``case`` (objects from ``service.evaluate_case_full``) enable the graphs.  The report
+    is always light; the caller's plot theme is restored afterwards."""
+    with S.using("light"):
+        return _build_pdf(path, record, rec, case, progress, envelope)
+
+
+def _build_pdf(path, record: dict, rec, case, progress, envelope: bool) -> Path:
     prog = progress or (lambda f, m="": None)
-    matplotlib.rcParams.update({})
-    S.apply("light")
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     v = record["verdict"]

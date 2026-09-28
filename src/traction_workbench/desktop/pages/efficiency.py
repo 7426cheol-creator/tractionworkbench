@@ -249,9 +249,35 @@ class EfficiencyPage(QWidget):
                     continue
                 val = f"{100 * r['eta']:.4f}% ({r['definition']}, {r['direction']})" if r["status"] == "DEFINED" else \
                     f"{r['status']} — {r.get('reason', '')}"
+                iv = r.get("eta_interval_incl_pwm_hf")
+                if iv:
+                    val += tr(" · PWM 고조파 손실 포함 η ∈ ", " · incl. PWM harmonic loss η ∈ ") + (
+                        f"[{'—' if iv[0] is None else f'{100 * iv[0]:.3f}'}, {100 * iv[1]:.3f}] %")
                 rows.append((f"η {r['label']}", val + (f" · {r['qualifier']}" if r.get("qualifier") else "")))
             rows.append((tr("알려진 손실 소계", "known loss subtotal"), f"{fmt(led['loss_known_subtotal_W'])} W"))
+            lo, hi = led.get("loss_interval_W") or (None, None)
+            rows.append((tr("손실 구간 (미상·상한 포함)", "loss interval (open items and bounds)"),
+                         f"[{fmt(lo)}, {fmt(hi) if hi is not None else '∞'}] W"))
+            for it in led["loss_items"]:
+                if it["item"].startswith("PWM"):
+                    v = (f"{fmt(it['W'])} W" if it["W"] is not None else
+                         f"≥ {fmt(it['lower_bound_W'])} W" if it.get("lower_bound_W") is not None else
+                         f"≤ {fmt(it['upper_bound_W'])} W" if it.get("upper_bound_W") is not None else "UNKNOWN")
+                    rows.append((f"{it['item']}", f"{v} · {it.get('status', '')} · {it.get('basis', '')}"))
+            hf = led.get("pwm_hf")
+            if hf:
+                rows.append((tr("PWM 고조파 입력", "PWM harmonic inputs"),
+                             f"L_hf {fmt(hf['L_hf_H'] and hf['L_hf_H'] * 1e6)} µH · fsw {fmt(hf['fsw_requested_Hz'] / 1e3)} kHz"
+                             f" ({tr('파형', 'waveform')} {fmt(hf['fsw_waveform_used_Hz'] / 1e3)} kHz) · m "
+                             f"{fmt(hf['modulation_index'], 4)} · {hf['basis']}"))
             rows.append((tr("미상 손실 항", "unknown loss items"), ", ".join(led["loss_unknown_items"]) or tr("없음", "none")))
+            sens = led.get("loss_sensitivity") or []
+            if sens:
+                rows.append((tr("손실 민감도 (각 항 +10%, 인버터+모터 η)", "loss sensitivity (each item +10 %, inverter+motor η)"),
+                             " · ".join(f"{x['item']}: {x['delta_eta_points']:+.3f} %p" for x in sens)))
+            rot = next((i for i in led["loss_items"] if i["item"].startswith("rotational")), None)
+            if rot and rot.get("scope"):
+                rows.append((tr("회전·철손 항의 범위", "scope of the rotational / iron item"), rot["scope"]))
             for k, val in (led.get("aux_metrics") or {}).items():
                 rows.append((k, f"{100 * val:.3f}%"))
             sc = led["inverter_scope"]
@@ -311,7 +337,7 @@ class EfficiencyPage(QWidget):
                             f"{fmt(pt['eta_regeneration_partial'] and 100 * pt['eta_regeneration_partial'], 5)} %)")))
         for k in ("P_dc", "P_ac", "P_m", "P_o"):
             rows.append((f"{k} E+ / E−", f"{e['E_pos_J'][k] / kwh * 1e3:.3f} / {e['E_neg_J'][k] / kwh * 1e3:.3f} Wh"))
-        rows.append((tr("구간 분류", "segment classes"), str({k: round(v.get("t", 0.0), 2) for k, v in e["segments"].items()})))
+        rows.append((tr("구간 분류", "segment classes"), {k: round(v.get("t", 0.0), 2) for k, v in e["segments"].items()}))
         self.k_eff.set_rows(rows)
 
     # ================================================================== module A/B
