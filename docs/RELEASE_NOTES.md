@@ -287,9 +287,9 @@ fixture E01(1-node 열) 값 77.6424 °C / 138.6294 s를 재현합니다.
 - 참조 패키지 manifest: 10/10 일치.
 - 독립 검산(production 비의존, 다른 방법): 136/136.
 - Production vs golden: 정방향 6건 정규화 오차 ≤ 2e-16, 역문제 11건 id/iq 최대 오차 5.5e-6 A(경계해는 ~1e-13 A), 라벨 일치, capability 4건 오차 ≤ 3e-7 N·m(구동 3건 certified, 인증 상한 = golden 1e-13 이내), fixture의 Lagrangian 승수·Hessian 고유값 상대오차 < 1e-6.
-- pytest 471개 통과(리뷰 재현 F01–F13·감사 재현·P0-B, P1 모듈, OEW/HEV, EMI, 효율 E-01..E-06, 가변 PWM, 드라이브라인 D-01..D-05,
+- pytest 488개 통과(리뷰 재현 F01–F13·감사 재현·P0-B, P1 모듈, OEW/HEV, EMI, 효율 E-01..E-06, 가변 PWM, 드라이브라인 D-01..D-05,
   모터 설계, 교환 패키지, 그래프 데이터의 물리 일관성, 냉각수·Cauer·유량 보정, 패시브 방전, 회로도, PDF 보고서, 데스크톱 headless smoke 포함).
-- 데스크톱 self-test 49/49. Windows CI에서 PyInstaller exe를 빌드하고 **동결된 exe로** acceptance 21/21과 self-test를 통과했습니다
+- 데스크톱 self-test 50/50. Windows CI에서 PyInstaller exe를 빌드하고 **동결된 exe로** acceptance 21/21과 self-test를 통과했습니다
   (아티팩트 `TractionWorkbench-windows-x64`).
 - 관찰: MTPA 내부점 golden(I00/I09/I10)은 평탄한 목적함수 때문에 정확 해와 최대 5.5e-6 A 차이(50자리 계산으로 확인). 허용오차 1e-3 A 이내이며 expected 값은 그대로 둡니다.
 

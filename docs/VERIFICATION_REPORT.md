@@ -1,6 +1,6 @@
 # Verification Report — Traction Workbench
 
-자동 생성: `python verification/make_report.py` · software 0.3.0 · commit `29d9038` · 2026-09-27 · Python 3.11.15, NumPy 2.4.6, SciPy 1.17.1
+자동 생성: `python verification/make_report.py` · software 0.3.0 · commit `80b6e7c` · 2026-09-28 · Python 3.11.15, NumPy 2.4.6, SciPy 1.17.1
 
 > 범위: 합성(synthetic) 참조 fixture에 대한 검증(verification)입니다. 하드웨어·공급사 데이터·외부 시뮬레이터에 대한 validation은 수행하지 않았습니다. 수치 자릿수는 회귀 검산용이며 실제 제품 정확도가 아닙니다.
 
@@ -9,10 +9,10 @@
 | 항목 | 결과 |
 |---|---|
 | 참조 패키지 무결성 (manifest SHA-256, 10 files) | OK |
-| 독립 fixture 검산 (production 코드 미사용) | 136/136 pass (35 s) |
+| 독립 fixture 검산 (production 코드 미사용) | 136/136 pass (29 s) |
 | Production vs golden acceptance | 21/21 pass |
-| pytest | 471 passed, 2 warnings in 194.64s (0:03:14) (196 s) |
-| 데스크톱 앱 self-test (headless, `twb selftest`) | 49/49 pass (183 s) |
+| pytest | 488 passed, 2 warnings in 183.86s (0:03:03) (186 s) |
+| 데스크톱 앱 self-test (headless, `twb selftest`) | 50/50 pass (160 s) |
 
 ## 2. 독립 fixture 검산 (`verification/independent_fixture_check.py`)
 
@@ -76,7 +76,7 @@ PASS  inverse:I10_STANDSTILL_TORQUE:golden                             |did|=5.5
 |---|---|---|
 | decision:ts012_600 | PASS | verdict PASS, expected PASS |
 | decision:ts012_450 | PASS | verdict FAIL, expected FAIL |
-| pdf_report | PASS | 129768 bytes |
+| pdf_report | PASS | 129769 bytes |
 | decision:ts012_10s | PASS | verdict UNKNOWN, expected UNKNOWN |
 | decision:regen_80 | PASS | verdict PASS, expected PASS |
 | decision:regen_100 | PASS | verdict FAIL, expected FAIL |
@@ -113,13 +113,14 @@ PASS  inverse:I10_STANDSTILL_TORQUE:golden                             |did|=5.5
 | pwm:policies | PASS | {'fixed 10 kHz': [], 'light-load 8 kHz': [], 'thermal fallback 6 kHz': ['current-loop phase margin 44.1 vs limit 45']} |
 | pwm:transition | PASS |  |
 | pwm:ripple | PASS |  |
+| pwm:sampling_transition | PASS | {'declared': 0.0, 'bumpless (volts, Ki*Ts remapped)': 0.0, 'error-sum integrator, Ki*Ts remapped': 82.3696710370678, 'in |
 | antijerk:variants | PASS | {'off': 'INFEASIBLE', 'shaping': 'INFEASIBLE', 'feedback': 'INFEASIBLE', 'combined': 'FEASIBLE'} |
 | antijerk:stability | PASS |  |
 | machine:trade | PASS | {'ref': 'UGO back-EMF', 'N-10%': 'high-speed torque @ min Vdc', 'N+10%': 'UGO back-EMF', 'L+20%': 'UGO back-EMF', 'PM-10 |
 | machine:winding | PASS | 0.9330127018922193 |
 | machine:k_turns_to_trade | PASS |  |
 | machine:sizing | PASS |  |
-| acceptance | PASS | <span style='color:#1a7f37; font-weight:600'>21/21 PASS · manifest OK</span> · 1.52 s · verification against synthetic f |
+| acceptance | PASS | <span style='color:#1a7f37; font-weight:600'>21/21 PASS · manifest OK</span> · 1.24 s · verification against synthetic f |
 | exchange:package | PASS |  |
 | decision:flux_map | PASS | UNKNOWN |
 | no_error_dialogs | PASS |  |
