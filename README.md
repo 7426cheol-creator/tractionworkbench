@@ -49,21 +49,85 @@
 
 ## 전문가용 그래프
 
+아래 화면은 모두 데스크톱 self-test(`twb selftest`)가 각 페이지를 실제 코드 경로로 실행한 그대로의 캡처입니다(내장 합성 예제 데이터,
+`python docs/make_screenshots.py`로 다시 만듭니다). 이미지를 누르면 원본 크기로 볼 수 있습니다.
+
+### 요구 판정·구동 성능
+
 | | |
 |---|---|
 | ![id–iq 제약 지도](docs/screenshots/idiq_map.jpg) | ![상 파형](docs/screenshots/waveforms.jpg) |
 | **id–iq 제약 지도**: 전압 타원(명령 예산·하드웨어 상한), 전류원, 선언 도메인, DC 방전/충전 한계, 등토크선, MTPA, MTPV(참고), 요구 토크 곡선, 최소전류 정책점, 전기적/DC 포함 가능 영역 | **상 파형**: 역 Park로 복원한 상전류, 상/선간 전압과 명령 예산, SVPWM 상 듀티(min-max 영상분, 평균값 모델)와 전압 reserve 대역, 쇄교자속, p(t) = P_ac 확인 |
-| ![벡터도](docs/screenshots/phasor_hexagon.jpg) | ![효율 맵](docs/screenshots/efficiency_map.jpg) |
-| **dq 벡터도**: e₀ = ω_eψ_PM, ω_eL_d·i_d(약계자 전압), −ω_eL_q·i_q, R_s·i, v와 전류각·φ·역률·자석/릴럭턴스 토크 분해 / **공간벡터 육각형** | **효율·손실 맵**: 최소전류 정책점 기준 η, 정책 경계·전기적 한계, 기저속도 곡선, DC 한계 위반 영역(빗금), 최고 효율점 |
-| ![궤적](docs/screenshots/trajectory.jpg) | ![열](docs/screenshots/thermal.jpg) |
-| **운전 궤적**: 속도가 오르며 MTPA에서 전압 타원을 따라 약계자로 이동하는 경로, DC 한계 위반점 | **열 → 토크 가용성**: 지속시간별 가용 토크와 노드 온도 궤적(노드별 냉각수 기준 온도 표시) |
-| ![시스템 개요](docs/screenshots/system_overview.jpg) | ![배터리 차단](docs/screenshots/dclink_overvoltage.jpg) |
-| **시스템 개요도**: 배터리–메인 릴레이(프리차지)–DC 링크–능동 방전–3상 브리지–모터–축, 운전점의 P_dc·I_dc·I_ph·V_LL·토크·효율과 전력 흐름 방향 | **회생 중 배터리 차단**: 릴레이 개방(빨강)과 회생 전력이 커패시터로만 들어가는 경로, 아래에 V(t)와 허용 반응 시간 |
-| ![열 회로망](docs/screenshots/thermal_network.jpg) | ![열 모델 편집](docs/screenshots/thermal_editor.jpg) |
-| **열 회로망**: Foster(병렬 RC 직렬)·Cauer(사다리) 회로도와 냉각수 순환(라디에이터·펌프 → 인버터 냉각판 → 모터 워터재킷, 각 지점 온도) | **열 모델 편집**: 노드별 발열원·비율·냉각수 위치, 단 표(R, τ 또는 C, 계산된 C 또는 R·C, 유량 의존), 4단 템플릿, 붙여넣기 |
+| ![벡터도](docs/screenshots/phasor_hexagon.jpg) | ![시스템 개요](docs/screenshots/system_overview.jpg) |
+| **dq 벡터도 · 공간벡터 육각형**: e₀ = ω_eψ_PM, ω_eL_d·i_d(약계자 전압), −ω_eL_q·i_q, R_s·i, v와 전류각·φ·역률·자석/릴럭턴스 토크 분해 | **시스템 개요도**: 배터리–메인 릴레이(프리차지)–DC 링크–능동 방전–3상 브리지–모터–축, 운전점의 P_dc·I_dc·I_ph·V_LL·토크·효율과 전력 흐름 방향 |
+| ![T–n 성능 곡선](docs/screenshots/envelope.jpg) | ![효율 맵](docs/screenshots/efficiency_map.jpg) |
+| **T–n 성능 곡선**: 최소전류 정책(DC 한계 포함) vs 전기적 곡선, 활성 제약별 색(전류 · 전압 · DC 방전/충전), 비교 Vdc, 구동·회생 사분면 | **효율·손실 맵**: 최소전류 정책점 기준 η(방향별 정의), 정책 경계·전기적 한계, 기저속도 곡선, DC 한계 위반·미상 손실 칸(빗금), 최고 효율점 |
+| ![운전 궤적](docs/screenshots/trajectory.jpg) | ![역설계](docs/screenshots/decision_inverse.jpg) |
+| **운전 궤적**: 속도가 오르며 MTPA에서 전압 타원을 따라 약계자로 이동하는 경로, DC 한계 위반점 | **FAIL → 무엇을 바꿔야 하나**: 450 V에서 필요조건으로 불가능이 증명된 요구(인버터를 키워도 해결 안 됨), capability vs Vdc 역설계 — 국소 경계 497.7 V. 인버터 전류 역설계·병목·완화·시나리오 비교 탭 |
+
+### 요구 묶음·후보
+
+| | |
+|---|---|
+| ![요구 묶음](docs/screenshots/requirement_set.jpg) | ![후보 × 요구](docs/screenshots/requirement_candidates.jpg) |
+| **요구 묶음**: 요구 5건을 같은 제품·조건·근거로 한 번에 판정 — 판정, UNKNOWN 원인 분류, 여유, 모델 없이 되는 사양 필요조건, 제한 원인, 다음 자료. 선택한 요구의 상세는 요구 → 조건·데이터 수준 → 결론·여유 → 제한 원인 → 바꿀 항목 → 다음 자료 순서 | **후보 × 요구**: 설계 변경안마다 모든 요구를 다시 판정(개선 ▲ / 악화 ▼ — 충전 한계 150 kW는 REQ-B를 풀고, 전류 250 A는 네 요구를 깸). 가중 점수·비용 최적 없음 |
+
+### 전력·열·효율
+
+| | |
+|---|---|
+| ![열 → 토크 가용성](docs/screenshots/thermal.jpg) | ![반복 부하](docs/screenshots/thermal_repeated_load.jpg) |
+| **열 → 토크 가용성**: 지속시간별 가용 토크와 노드 온도 궤적(노드별 냉각수 기준 온도 표시), 냉각수 입구·유량·부동액 물성. 검증되지 않은 열모델은 스크리닝(UNKNOWN 유지) | **반복 부하·고온 시작**: 450 N·m 8 s / 50 N·m 20 s를 40주기 — 첫 한계 4.24 s, 주기 정상상태(고정점)의 노드 최고온도와 여유, 허용 펄스 시간·토크(구간 안 최고온도 기준), 반복 전 필요 휴지 |
+| ![열 회로망](docs/screenshots/thermal_network.jpg) | ![모듈 손실](docs/screenshots/power_module.jpg) |
+| **열 회로망**: Foster(병렬 RC 직렬)·Cauer(사다리) 회로도와 냉각수 순환(라디에이터·펌프 → 인버터 냉각판 → 모터 워터재킷, 각 지점 온도) | **데이터시트 모듈 손실**: 소자별 도통·스위칭 손실, 토크에 따른 인버터 손실(모델 비교), 소자별 T_j — 표 밖은 외삽하지 않고 UNKNOWN |
+| ![DC-link 리플](docs/screenshots/power_ripple.jpg) | ![열 사이클·수명](docs/screenshots/power_life.jpg) |
+| **DC-link 리플**: 스위칭 주기의 커패시터 전류, 전류 스펙트럼과 ESR(f) 손실, 리플 전압, 커패시터 열·수명 게이트 | **열 사이클·수명**: 미션 → 소자별 T_j 이력 → rainflow ΔT_j 분포, 조건부 손상(공급사 사이클 모델이 없으면 UNKNOWN) |
+| ![효율 원장](docs/screenshots/efficiency_ledger.jpg) | ![경계별 효율 지도](docs/screenshots/efficiency_boundaries.jpg) |
+| **다섯 경계 효율·손실 원장**: 포트 전력 P_dc → P_ac → P_m → P_o, 확정 손실과 미상 항목, 모터 PWM 동손(R_dc 하한)과 Fe+PM HF 상한(점선 — 값이 아니라 구간의 끝), 경계별 η와 PWM을 포함한 η 구간 | **경계별 효율 지도**: 인버터 · 모터 · 인버터+모터 · eDrive η 지도(구동/회생 방향별 정의, 미상 칸 빗금, clamp 없음) |
+| ![미션 에너지](docs/screenshots/efficiency_mission.jpg) | ![모듈 A/B](docs/screenshots/module_ab.jpg) |
+| **미션 에너지**: 구간별 포트 전력, 포트별 E+ / E−, 방향별 에너지 효율(구동과 회생을 따로 — 순 에너지 비는 효율이 아님) | **모듈 A/B (IGBT vs SiC)**: 고정 정책 vs 설계별 정책, 운전점별 손실과 T_j(T_j는 결과), 선언된 오차 예산을 넘을 때만 우열 |
+
+### 제어·EMC
+
+| | |
+|---|---|
+| ![가변 PWM](docs/screenshots/pwm_policies.jpg) | ![타이밍·전환](docs/screenshots/pwm_timing.jpg) |
+| **가변 PWM 정책 비교**: 같은 궤적에서 고정 10 kHz · 경부하 8 kHz · 열 fallback 6 kHz — fsw 스케줄(× 요청 ≠ 파형 fsw), 에너지 구간 [확정, 확정 + PWM 동손 · Fe+PM 상한](겹치면 UNDECIDED), 필수 제약(T_j · 피크 전류 상한 · 커패시터 전류 · 위상 여유) | **타이밍·전환**: 지연 원장 → 캐리어 주파수별 전류 루프 위상 여유, fsw가 바꾸는 전류 루프·기계 모드 위상, shadow vs 즉시 reload(카운터 수준 검사) |
+| ![Anti-jerk](docs/screenshots/antijerk.jpg) | ![전도성 EMI](docs/screenshots/emi_spectrum.jpg) |
+| **Anti-jerk (2관성 드라이브라인)**: 20 → 150 N·m tip-in에서 off · 성형 · 피드백 · 결합 비교 — 실제 토크, 차량 가속도, jerk, 축 토크. jerk·정착 요구는 결합만 FEASIBLE | **전도성 EMI**: 스위칭 순서 소스 → CM/DM 경로 → RBW 선 합 추정 vs 한도(설계 여유 6 dB), 연속 대역 정확 열거, 대역별 필요 감쇠(CM/DM 지배). 스크리닝은 PASS가 아님 — 여기서는 3.8 MHz에서 최대 68.9 dB 초과 예측으로 UNKNOWN |
+
+### 안전·보호
+
+| | |
+|---|---|
+| ![FTTI](docs/screenshots/ftti.jpg) | ![배터리 차단](docs/screenshots/dclink_overvoltage.jpg) |
+| **FTTI 체인**: 고장 → 검출 → 확인 → 반응 → 안전 상태의 Gantt(최소/명목/최대), 중복 예산 검출, 보장 상한 경로와 FTTI 여유, 안전 종점의 종류 | **회생 중 배터리 차단**: 릴레이 개방(빨강)과 회생 전력이 커패시터로만 들어가는 경로, 아래에 V(t)와 허용 반응 시간 |
+| ![패시브 방전](docs/screenshots/passive_discharge.jpg) | ![안전 상태](docs/screenshots/safe_state.jpg) |
+| **패시브 방전**: 블리더 R_p 설계 창 — 목표 전압까지의 시간 vs 상시 손실, 방전 회로와 V(t) | **안전 상태 (ASC / Freewheel)**: 같은 운전점(12,000 rpm · 600 V)에서 두 회로의 전류 경로, 프로젝트 규칙(물리와 분리된 계층). 속도별 전류·토크·역기전력 곡선과 판정 표 탭 |
+| ![보호 타임라인](docs/screenshots/protection_timeline.jpg) | ![ASC 과도](docs/screenshots/asc_transient.jpg) |
+| **보호·고장 인과 궤적**: 임계값·디레이팅·고장 반응을 하나의 궤적에서 — DC-link 전압, 경고·고장·차단 임계값, 필터·확인 지연을 거친 반응 시각 | **ASC 고장 과도**: 운전점 → 단락 → ASC 정상상태의 상전류(비선형 자기 모델이 없으면 선형 스크리닝), 고객의 두 전류-시간 요구(피크·RMS)와 판정 |
+
+### 시스템·설계
+
+| | |
+|---|---|
+| ![OEW](docs/screenshots/oew.jpg) | ![HEV](docs/screenshots/hev.jpg) |
+| **OEW 듀얼 인버터**: 두 브리지의 전압 집합(육각형), 공통 bus / 분리 bus 비교, 영상분 제어. 운전점·포트 회계·쌍 안전 상태·i0 리플 탭 | **HEV 결합 토크 집합**: 두 기계(EM1 발전 · EM2 구동)의 동시 토크 가능 영역(공통 bus 전력·부스트 한계), 가지 전력 vs 순전력. 크랭킹 replay·부하 차단·유성기어 탭 |
+| ![모터 스케일링](docs/screenshots/machine_trade.jpg) | ![권선](docs/screenshots/machine_winding.jpg) |
+| **모터 설계 — 스케일링 트레이드**: 기준 모델 주변의 턴·병렬 회로·적층·자석 스케일링 후보를 같은 요구 여유로 비교(T–n 곡선, 요구별 여유 표), 계보와 무효화되는 데이터 | **권선 star of slots**: 48슬롯 8극(q = 2) — 슬롯 기전력 페이저, 권선계수·고조파, 상 배치(A/B/C), 평형·병렬 회로 |
+
+### 제품 데이터·검증
+
+| | |
+|---|---|
+| ![프로젝트](docs/screenshots/project.jpg) | ![데이터시트 값 입력](docs/screenshots/datasheet_entry.jpg) |
+| **프로젝트 데이터 패키지**: 한 제품의 섹션(drive · dc_source · module · dc_link · 제어기 · 열망 · 안전 · EMI set-up)과 digest·출처·개정, 일관성 검사, 개정 비교와 stale 표시 | **데이터시트 값 입력 (모터)**: 극수 · Ke · R · L 등 대표값 → 선언된 구성 규칙으로 모델(단위 변환·규칙 기록), 실시간 미리보기(무부하 역기전력 vs Vdc, MTPA·특성 전류) |
+| ![데이터시트 곡선](docs/screenshots/datasheet_import.jpg) | ![검증](docs/screenshots/verification.jpg) |
+| **데이터시트 곡선 가져오기**: 디지타이즈한 모듈 도통·스위칭 에너지 곡선(25 / 150 °C) → 공급사 provenance가 붙은 프로젝트 섹션, 외삽 없음 | **검증 (V&V)**: production vs golden acceptance 21/21(오차 / 허용오차), 참조 패키지 SHA-256, 알려진 한계 |
 
 그래프는 production 모델 값을 그대로 다시 표현한 것입니다(새 물리 없음). 파형·듀티는 스위칭 리플·데드타임이 없는 평균값 모델이며
 그림과 보고서에 그렇게 표기됩니다. 테스트가 역변환·전력 항등식·MTPA 접선 조건·기저속도 = 약계자 개시점을 독립적으로 확인합니다.
+모든 값은 합성(synthetic) 예제 데이터의 결과이며 하드웨어로 검증된 제품 수치가 아닙니다.
 
 ## 무엇이 다른가
 
@@ -86,7 +150,7 @@
 | 12,000 rpm · −80 N·m 회생 | **PASS** | 에너지 회수 회생, 충전 한계 내 |
 | 12,000 rpm · −100 N·m 회생 | **FAIL** | 최대 손실(600 A)로도 P_dc ≤ −111.3 kW < −100 kW: 배터리 수용 한계 |
 | 6,000 rpm · 350 N·m | **FAIL** | 손실 0이어도 축 출력 219.9 kW > 방전 200 kW |
-| Vdc 550–650 V 전 구간 · 100 N·m | **UNKNOWN** | 표본 5점 모두 가능하지만 연속 구간 보장은 아님 (SAMPLED_COVERAGE) |
+| Vdc 550–650 V 전 구간 · 100 N·m | **PASS** | 저전압 끝점 + **단조성 인증서**(정적 순구동, Vdc 무관 손실, 고정 소스 한계)로 전 구간 입증 — 표본점 통과만으로는 PASS가 아님 |
 | 정지 · 300 N·m | **PASS** (정적) | 등가 정현파 RMS, 효율 N/A, 정지 열 지속시간 추론 없음 |
 
 ## 개발·빌드
@@ -155,14 +219,17 @@ src/traction_workbench/
     models/                드라이브 모델: 모터·인버터·자속, 데이터시트 모듈 손실(module_loss.py — 커널이 평가, 2차 surrogate와 배타)
     physics.py             커널: 정방향 평가·제약, 손실 계약(loss_kind · i2_dc · pointwise_loss) — DC 논증의 분기는 여기 한 곳
     solvers/gate.py        공통 witness gate (모든 경로)
-    analysis/              역설계·병목·불확실성·정격, efficiency.py(다섯 경계·감속기·미션·모듈 A/B), machine_design.py
+    analysis/              역설계·병목·불확실성·정격, efficiency.py(다섯 경계·감속기·미션·모듈 A/B), machine_design.py,
+                           source.py(배터리 OCV + Thevenin R_eq → 단자 전압)
     extensions/            timing·dclink·safe_state·thermal·coolant (스크리닝), dclink_ripple·lifetime (P1-A),
-                           protection·asc_transient (P1-B), emi (P1-C), oew·hev, pwm_policy (가변 PWM), driveline (anti-jerk)
+                           protection·asc_transient (P1-B), emi (P1-C), oew·hev, pwm_policy (가변 PWM), driveline (anti-jerk),
+                           thermal_cycle (반복 부하·고온 시작)
   exchange.py    교환 패키지 twb-exchange/1 (규약·fixture) — 이식 패키지가 그대로 포함
   mathworks/     MathWorks 이식 패키지 twb-mathworks/1: contract(규약·물리량 사전), oracle(엔진 비의존 층-1 값), cases, architecture
                  (System Composer/SLDD 후보), package(export·check·run·verify), matlab/+twb (native MATLAB 코드)
   datasheet.py   데이터시트 가져오기 (디지타이즈 곡선·대표값·ESR·dv/dt·모터 특성값 → 프로젝트 섹션, 구성 규칙은 기록으로)
   project.py     프로젝트 데이터 패키지 (twb-project/1): 섹션 검증·digest·일관성 규칙·개정 비교·결과의 사용 기록
+  requirement_set.py  요구 묶음·후보 판정 (CSV, 해석 확인, 사양 필요조건, UNKNOWN 원인 분류, 다음 자료 우선순위)
   examples.py    내장 합성 프로젝트 — 모든 페이지 예시의 제품 데이터 출처 (api.example(name, project)로 합성)
   modulation.py  변조 법칙 하나 (SVPWM·SPWM·DPWM1 듀티·영상분) — 손실·EMI·리플·샘플링·그림이 공유
   validation.py  입력 숫자·구간·축 검증 (모든 층이 공유)
@@ -177,13 +244,15 @@ verification/    independent_fixture_check.py (production 비의존), make_repor
 tests/           골든·의미론·검증·리뷰 재현(P0-A/B)·확장·P1·OEW/HEV·EMI·효율·PWM·드라이브라인·모터 설계·교환·보고서·데스크톱,
                  아키텍처(층 base < models < kernel < engines < services < presentation, 지연 import 포함·비공개 결합·순환)
 examples/        case 파일, 단위가 선언된 drive 정의, datasheets/ (곡선·대표값·모터 spec 예시 — 가상 부품)
-docs/            RELEASE_NOTES.md (모델 계약·한계), TRACEABILITY.md (리뷰·추가 명세 추적표), VERIFICATION_REPORT.md, screenshots/
+docs/            RELEASE_NOTES.md (모델 계약·한계), TRACEABILITY.md (리뷰·추가 명세 추적표), VERIFICATION_REPORT.md,
+                 STATUS.md (현재 상태·남은 일·이어서 시작하는 법), screenshots/ (make_screenshots.py로 self-test 화면에서 갱신)
 ```
 
 ## 검증 상태
 
-- 참조 패키지 10개 파일 SHA-256 일치, 독립 검산 136/136, production vs golden 21/21, pytest 662 통과, 데스크톱 self-test 57/57,
-  Windows CI에서 동결된 exe로 acceptance·self-test 통과 — 상세: [`docs/VERIFICATION_REPORT.md`](docs/VERIFICATION_REPORT.md)
+- 참조 패키지 10개 파일 SHA-256 일치, 독립 검산 136/136, production vs golden 21/21, pytest 807 통과, 데스크톱 self-test 65/65.
+  CI 세 job(Linux 테스트 · MathWorks/Octave · Windows 동결 exe의 acceptance·self-test) 통과 — 상세: [`docs/VERIFICATION_REPORT.md`](docs/VERIFICATION_REPORT.md)
+  (보고서 머리에 생성 commit 표기)
 - MathWorks 이식 패키지: 패키지의 MATLAB 코드를 **GNU Octave 8.4**(MATLAB 언어 호환 proxy)로 실행해 79 PASS · 0 FAIL · 0 ERROR ·
   1 NOT_SUPPORTED, guard 6/6, 심은 결함 9종 모두 검출. **MATLAB 본체·Simulink·System Composer는 실행하지 않았습니다**(NOT_RUN).
 - **합성 fixture에 대한 verification입니다.** 하드웨어·공급사 데이터·외부 시뮬레이터 validation은 수행하지 않았습니다(V4–V5 미수행).
