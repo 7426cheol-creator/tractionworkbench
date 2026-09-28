@@ -140,7 +140,7 @@ flowchart TB
 | ADMISSIBLE · VIOLATION · UNKNOWN | PWM 정책 | 이번 수정 전에는 요구 미확립 구간도 VIOLATION이었음 → UNKNOWN으로 분리 |
 | OK · VIOLATION · UNKNOWN | 전류 샘플링 | 선언 한도 없으면 UNKNOWN |
 | A_LOWER_LOSS · B_LOWER_LOSS · UNDECIDED · NOT_COMPARABLE | 모듈 A/B | 선언 오차 예산을 넘을 때만 우열 |
-| IMPROVED · WORSE · UNDECIDED | PWM 모터+인버터 합 | 구간 비교 (고조파 철손 상한) |
+| IMPROVED · WORSE · UNDECIDED | PWM 모터+인버터 합 | 구간 비교 (PWM 동손 + 선언된 Fe+PM 고주파 손실 상한; 상한은 추정값이 아님) |
 | PASS · FAIL · INDETERMINATE | EMI 측정 trace | 측정 판정만; 스크리닝은 PASS가 아님 |
 | SCREENING_PASS / SCREENING_FAIL | ASC 과도의 **항목** | 항목 표시일 뿐 joint claim은 항상 UNKNOWN (이름이 오해될 수 있어 기록) |
 | REQUIREMENT_INCOMPLETE | EMI · ripple · ASC | 요구 정의 불완전 → UNKNOWN 사유 |
