@@ -162,11 +162,15 @@ class LossMap:
 class ReducerModel:
     """Single fixed-ratio reducer, calibrated PER DIRECTION (motoring efficiency is never inverted for regen).
 
-    Parametric form (drag at the motor side, mesh efficiency on the power through the mesh):
-      forward (P_m > 0):  P_o = eta_forward * (P_m - P_drag)
-      reverse (P_o < 0):  |P_m| = eta_reverse * |P_o| - P_drag
+    Parametric form (drag at the motor side, mesh efficiency on the power THROUGH the mesh, review R2 PT-08):
+      mesh input  Q = P_m - P_drag
+      Q >= 0 (forward through the mesh):  P_o = eta_forward * Q
+      Q <  0 (reverse through the mesh):  P_o = Q / eta_reverse
       P_drag = (c0 + c1 |w| + c2 w^2) |w|   (w = motor-side rad/s; zero at standstill - no P/omega divergence)
-    or directional loss maps. Outside the declared speed / torque / oil-temperature domain: UNKNOWN.
+    The branch follows Q, not the sign of P_m: a motor supplying less than the drag (P_m > 0, Q < 0) is fed from the
+    output, and the inverse P_m = P_o / eta_forward + P_drag (P_o >= 0), P_m = eta_reverse P_o + P_drag (P_o < 0) is
+    exact on both branches.  Directional loss maps do not define the mixed-flow region (forward map with P_o < 0):
+    UNKNOWN there.  Outside the declared speed / torque / oil-temperature domain: UNKNOWN.
     """
 
     ratio: float                                   # g = omega_motor / omega_output > 0
@@ -240,6 +244,10 @@ class ReducerModel:
                 if L is None:
                     return {"status": UNKNOWN, "P_o_W": None, "loss_W": None, "reason": "outside the forward loss map"}
                 P_o = P_m - L
+                if P_o < 0:
+                    return {"status": UNKNOWN, "P_o_W": None, "loss_W": None,
+                            "reason": "mixed-flow region (motor input below the loss, output power negative): the "
+                                      "directional loss maps do not define this direction"}
             else:
                 # reverse: the map is indexed by the motor-side torque magnitude; |P_o| = |P_m| + L
                 L = self.map_reverse.at(abs(n_rpm), abs(T_m))
@@ -249,12 +257,11 @@ class ReducerModel:
             return {"status": DEFINED, "P_o_W": P_o, "loss_W": L, "T_o_Nm": P_o / (w / self.ratio),
                     "reason": "directional loss map"}
         Pd = self._drag_W(w)
-        if P_m > tol_W:
-            P_o = self.eta_forward * (P_m - Pd)
-        else:
-            P_o = -(abs(P_m) + Pd) / self.eta_reverse if P_m < -tol_W else -Pd / self.eta_reverse
+        Q = P_m - Pd                                   # power into the mesh from the motor side
+        P_o = self.eta_forward * Q if Q >= 0.0 else Q / self.eta_reverse
         return {"status": DEFINED, "P_o_W": P_o, "loss_W": P_m - P_o, "T_o_Nm": P_o / (w / self.ratio),
-                "reason": "directional efficiencies + drag", "P_drag_W": Pd}
+                "reason": "directional efficiencies + drag", "P_drag_W": Pd, "mesh_power_W": Q,
+                "mesh_direction": "forward" if Q >= 0.0 else "reverse"}
 
     def motor_torque_for_output(self, n_rpm: float, T_o: float, oil_C: float | None) -> dict:
         """Motor-shaft torque that delivers T_o at the output (inverse of ``output_from_motor``; parametric form)."""
@@ -266,10 +273,8 @@ class ReducerModel:
             return {"status": UNKNOWN, "T_m_Nm": None, "reason": "standstill: the static torque ratio is not modelled"}
         Pd = self._drag_W(w)
         P_o = T_o * w / self.ratio
-        if P_o > 0:
-            P_m = P_o / self.eta_forward + Pd
-        else:
-            P_m = self.eta_reverse * P_o + Pd            # |P_m| = eta_r |P_o| - P_drag  (P_o < 0)
+        Q = P_o / self.eta_forward if P_o >= 0 else self.eta_reverse * P_o     # mesh input for that output
+        P_m = Q + Pd
         T_m = P_m / w
         bad = self._domain(n_rpm, T_m, oil_C)
         if bad:

@@ -368,6 +368,10 @@ def fig_hev_rejection(fig, lr: dict, title: str | None = None):
     b.set_ylabel(tr("잉여 전력 [kW] (주황)", "excess power [kW] (orange)"), color=S.REQUEST)
     b.grid(False)
     b.spines["right"].set_visible(True)
+    if lr.get("t_peak_s") is not None:
+        ax.plot([lr["t_peak_s"] * 1e3], [lr["V_peak_V"]], marker="o", ms=5, color=S.ACCENT)
+        ax.annotate(tr(f"최대 {lr['V_peak_V']:.2f} V", f"peak {lr['V_peak_V']:.2f} V"),
+                    (lr["t_peak_s"] * 1e3, lr["V_peak_V"]), textcoords="offset points", xytext=(6, -12), fontsize=7)
     tl = lr["time_to_limit_s"]
     if tl is not None and math.isfinite(tl):
         ax.axvline(tl * 1e3, color="#cf222e", ls=":", lw=1.2)

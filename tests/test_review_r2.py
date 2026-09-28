@@ -606,3 +606,115 @@ def test_pt09_fixed_policy_comparison_fixes_the_modulation():
     assert r["common_modulation"] == "svpwm" and "semiconductor" in r["ranking_scope"]
     assert not any("common to both" in s for s in r["not_evaluated"])
     assert any("not asserted to cancel" in s for s in r["not_evaluated"])
+
+
+# ---------------------------------------------------------------------------------------------- C1 / C2: CT-02, PT-08, CT-05
+
+def _unlimited_battery(ocv, R, uv=None):
+    from traction_workbench.extensions import hev as H
+    return H.Battery(ocv, R, DcSourceLimits(math.inf, math.inf, math.inf, math.inf), uv_min_V=uv, basis="test")
+
+
+def test_ct02_unregulated_bus_voltage_is_solved_with_the_machines():
+    from traction_workbench.extensions import hev as H
+    d = sf.synthetic_drive()
+    m1, m2 = H.BusMachine("M1", d, 12000.0), H.BusMachine("M2", d, 12000.0)
+    bat = _unlimited_battery(600.0, 0.2, uv=300.0)
+    r = H.joint_torque_set([m1, m2], 600.0, bat, n_levels=3, request=(140.0, 140.0))["request"]
+    assert r["status"] == "INFEASIBLE"                                  # was FEASIBLE at a fictitious 600 V
+    assert "highest bus voltage attainable" in r["reason"]
+    p_mech = 2 * 140.0 * 12000.0 * 2 * math.pi / 60.0
+    v_ub = 0.5 * (600.0 + math.sqrt(600.0 ** 2 - 4 * 0.2 * p_mech))
+    solo = PolicyEvaluator(d, Scenario("ub", 12000.0, v_ub, DcSourceLimits(math.inf, math.inf, math.inf,
+                                                                          math.inf))).solve(140.0)
+    assert solo.electrical.status is Status.INFEASIBLE                  # the proof's premise, independently
+    # a feasible cell is a coupled witness: V = OCV - R I and V I = sum P_dc(V) close at the returned state
+    u = H.unregulated_bus([m1, m2], [60.0, 40.0], bat)
+    assert u["status"] == "WITNESS"
+    rows = [PolicyEvaluator(d, Scenario("w", 12000.0, u["V_bus_V"], DcSourceLimits(math.inf, math.inf, math.inf,
+                                                                                   math.inf))).solve(T).point
+            for T in (60.0, 40.0)]
+    P = sum(p.Pdc_W for p in rows)
+    assert u["V_bus_V"] == pytest.approx(0.5 * (600.0 + math.sqrt(600.0 ** 2 - 4 * 0.2 * P)), abs=1e-4)
+    assert u["V_bus_V"] * (600.0 - u["V_bus_V"]) / 0.2 == pytest.approx(P, rel=1e-8)
+    zero = H.unregulated_bus([m1, m2], [60.0, 40.0], _unlimited_battery(600.0, 0.0))
+    assert zero["V_bus_V"] == 600.0                                      # a stiff battery holds the bus
+    regen = H.unregulated_bus([m1, m2], [-60.0, -40.0], bat)
+    assert regen["status"] == "WITNESS" and regen["V_bus_V"] > 600.0     # regeneration raises the bus
+
+
+def test_ct02_boosted_bus_uses_the_battery_sag_and_battery_side_uv():
+    from traction_workbench.extensions import hev as H
+    boost = H.BoostStage(D_max=0.5, I_L_max_A=600.0, a0_W=150.0, a2_W_per_A2=0.004, basis="test")
+    bat = _unlimited_battery(400.0, 0.05, uv=330.0)
+    s = boost.solve(60e3, 600.0, bat)
+    assert s["V_bat_V"] == pytest.approx(400.0 - 0.05 * s["I_L_A"], rel=1e-12)
+    assert s["V_bat_V"] * s["I_L_A"] == pytest.approx(60e3 + 150.0 + 0.004 * s["I_L_A"] ** 2, rel=1e-12)
+    assert s["duty"] == pytest.approx(1.0 - s["V_bat_V"] / 600.0) and not s["problems"]
+    d = sf.synthetic_drive()
+    m1, m2 = H.BusMachine("M1", d, 6000.0), H.BusMachine("M2", d, 6000.0)
+    j = H.joint_torque_set([m1, m2], 600.0, bat, boost=boost, n_levels=3, request=(150.0, 150.0))["request"]
+    assert j["status"] == "FEASIBLE" and j["V_bus_V"] == 600.0
+    v_bat = j["boost_state"]["V_bat_V"]
+    assert v_bat < 400.0 and j["boost_state"]["duty"] == pytest.approx(1.0 - v_bat / 600.0)   # sag feeds the duty
+    high_uv = _unlimited_battery(400.0, 0.05, uv=v_bat + 1.0)
+    k = H.joint_torque_set([m1, m2], 600.0, high_uv, boost=boost, n_levels=3, request=(150.0, 150.0))["request"]
+    assert k["status"] == "INFEASIBLE" and "UV" in k["reason"]            # UV applies on the battery side
+
+
+def test_pt08_reducer_inverse_and_forward_agree_on_both_mesh_branches():
+    from traction_workbench.analysis.efficiency import ReducerModel
+    red = ReducerModel(10.0, "output", (0.0, 20000.0), (0.0, 1000.0), (0.0, 150.0), 0.95, 0.9, (5.0, 0.0, 0.0),
+                       basis="synthetic")
+    inv = red.motor_torque_for_output(1000.0, -10.0, 60.0)
+    assert inv["T_m_Nm"] == pytest.approx(4.1, abs=1e-9)                 # motor still feeds the drag
+    fw = red.output_from_motor(1000.0, inv["T_m_Nm"], 60.0)
+    assert fw["T_o_Nm"] == pytest.approx(-10.0, abs=1e-9) and fw["mesh_direction"] == "reverse"   # was -8.55
+    for n in (1000.0, -1000.0, 4000.0):
+        w = n * 2 * math.pi / 60.0
+        for T_o in (-80.0, -10.0, -0.5, 0.0, 0.5, 10.0, 80.0):
+            T_m = red.motor_torque_for_output(n, T_o, 60.0)["T_m_Nm"]
+            f = red.output_from_motor(n, T_m, 60.0)
+            assert f["T_o_Nm"] == pytest.approx(T_o, abs=1e-9)
+            assert f["loss_W"] >= -1e-9 and f["loss_W"] == pytest.approx(T_m * w - T_o * w / 10.0, abs=1e-6)
+    q0 = red.output_from_motor(1000.0, 5.0, 60.0)                         # Q = 0: the motor exactly feeds the drag
+    assert q0["mesh_power_W"] == pytest.approx(0.0, abs=1e-9) and q0["P_o_W"] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_ct05_load_rejection_peak_trace_and_crossing_come_from_one_function():
+    from traction_workbench.extensions import hev as H
+    lr = H.load_rejection(500.0, 400.0, 440.0, [70e3], [20e3], t_react_s=0.0, t_ramp_s=400e-6, n=2001)
+    assert lr["V_peak_V"] == pytest.approx(434.248119, abs=1e-6) == max(lr["trace"]["V_V"])
+    assert lr["claim"]["status"] == "FEASIBLE"                          # not the 447.214 V over-estimate
+    assert lr["t_peak_s"] == pytest.approx(400e-6 * 50e3 / 70e3, rel=1e-12)
+    # crossing during the ramp: the exact root of the same energy function
+    hot = H.load_rejection(500.0, 400.0, 430.0, [70e3], [20e3], t_react_s=50e-6, t_ramp_s=400e-6)
+    tl = hot["time_to_limit_s"]
+    E_m = 0.5 * 500e-6 * (430.0 ** 2 - 400.0 ** 2)
+    tau = tl - 50e-6
+    assert 0 < tau < 400e-6 and 50e3 * 50e-6 + 70e3 * (tau - tau ** 2 / 800e-6) - 20e3 * tau == pytest.approx(E_m,
+                                                                                                             rel=1e-9)
+    assert hot["claim"]["status"] == "INFEASIBLE"
+    no_sink = H.load_rejection(500.0, 400.0, 480.0, [70e3], [], t_react_s=100e-6, t_ramp_s=200e-6)
+    assert no_sink["E_peak_J"] == pytest.approx(70e3 * 100e-6 + 0.5 * 70e3 * 200e-6, rel=1e-12)
+    absorbed = H.load_rejection(500.0, 400.0, 450.0, [20e3], [30e3], t_react_s=1e-3)
+    assert absorbed["V_peak_V"] == 400.0 and absorbed["time_to_limit_s"] == math.inf
+    drain = H.load_rejection(50.0, 400.0, 450.0, [10e3], [20e3], t_react_s=0.0, horizon_s=1.0)
+    assert drain["domain_end_s"] == pytest.approx(0.5 * 50e-6 * 400.0 ** 2 / 20e3, rel=1e-9)    # empties the cap
+
+
+def test_hev_cranking_solver_gaps_and_screening_clips_are_not_counterexamples():
+    from traction_workbench.extensions import hev as H
+    d = sf.synthetic_drive()
+    tab = H._starter_tables(d, 2.5, 800.0, 300.0)
+    assert H._interp_tables(tab, float(tab["speeds_rpm"][-1]) * 1.01, 50.0)[1] is None    # no clamp to the edge
+    bat = H.Battery(400.0, 0.05, DcSourceLimits(100e3, 30e3, math.inf, math.inf), uv_min_V=20.0, basis="t")
+    flat = H.CrankLoad((0.0, 90.0, 180.0), (0.0, 0.0, 0.0), 180.0, J_kgm2=0.25, basis="flat test load")
+    clip = H.cranking_replay(d, 2.5, flat, bat, 120.0, 800.0, 0.05, V_floor_V=25.0, theta0_deg=[0.0])
+    assert clip["runs"][0]["torque_clipped"] and clip["runs"][0]["failure_kind"] == "unresolved"
+    assert clip["claim"]["status"] == "UNKNOWN"                         # the screening envelope clipped the torque
+    comp = H.CrankLoad((0, 30, 60, 90, 120, 150, 180), (0, 40, 90, 60, -40, -60, 0), 180.0, f0_Nm=5.0,
+                       J_kgm2=0.25, basis="synthetic crank trace")
+    free = H.cranking_replay(d, 2.5, comp, bat, 20.0, 800.0, 0.3, V_floor_V=300.0, theta0_deg=[45.0])
+    held = H.cranking_replay(d, 2.5, comp, bat, 20.0, 800.0, 0.3, V_floor_V=300.0, theta0_deg=[45.0], backstop=True)
+    assert free["runs"][0]["reversed"] and not held["runs"][0]["reversed"]    # rebound only without a backstop
