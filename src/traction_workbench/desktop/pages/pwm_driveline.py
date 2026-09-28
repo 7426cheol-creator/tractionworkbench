@@ -242,7 +242,7 @@ class PwmDrivelinePage(QWidget):
             row.addWidget(w, 1)
             f.addRow(row)
             self.lim[key] = (on, w)
-        self.p_harm = check(tr("모터 고조파 데이터 사용 (예시 R_ac(f)·철손 상한)", "use motor harmonic data (example R_ac(f), iron bound)"), True)
+        self.p_harm = check(tr("모터 PWM 손실 데이터 사용 (R_ac(f)·Fe+PM 상한)", "use motor PWM-loss data (R_ac(f), Fe+PM bound)"), True)
         self.p_cap = check(tr("DC-link 커패시터 전류 계산 (예시 뱅크)", "compute DC-link capacitor current (example bank)"), True)
         f.addRow(self.p_harm)
         f.addRow(self.p_cap)
@@ -447,6 +447,11 @@ class PwmDrivelinePage(QWidget):
                                             "admissible": [p["admissible"] for p in r["policies"]],
                                             "E_inv_J": [p["E_inv_J"] for p in r["policies"]],
                                             "E_cu_harm_J": [p["E_cu_harm_J"] for p in r["policies"]],
+                                            "E_cu_harm_lb_J": [p.get("E_cu_harm_lb_J") for p in r["policies"]],
+                                            "E_magnetic_harm_bound_J": [p.get("E_magnetic_harm_bound_J") for p in r["policies"]],
+                                            "E_known_policy_sensitive_J": [p.get("E_known_policy_sensitive_J") for p in r["policies"]],
+                                            "E_policy_sensitive_upper_J": [p.get("E_policy_sensitive_upper_J") for p in r["policies"]],
+                                            "waveform_fsw_rel_error_max": [p.get("waveform_fsw_rel_error_max") for p in r["policies"]],
                                             "Tj_max_C": [p["Tj_max_C"] for p in r["policies"]],
                                             "phase_margin_min_deg": [p["phase_margin_min_deg"] for p in r["policies"]]})
         self.p_tabs.setCurrentWidget(self.pl_pol)
@@ -455,12 +460,17 @@ class PwmDrivelinePage(QWidget):
             nm = p["policy"]["name"]
             rows.append((nm, (tr("허용", "admissible") if p["admissible"] else tr("허용 안 됨: ", "not admissible: ") +
                               "; ".join(p["violations"]))))
+            elo, ehi = p.get("E_known_policy_sensitive_J"), p.get("E_policy_sensitive_upper_J")
+            interval = ("—" if elo is None else
+                        (f"{elo / 1e3:.4g} kJ +" if ehi is None else f"[{elo / 1e3:.4g}, {ehi / 1e3:.4g}] kJ"))
             rows.append(("   " + tr("에너지", "energy"),
-                         f"inverter {fmt(p['E_inv_J'] and p['E_inv_J'] / 1e3, 5)} kJ · harmonic Cu "
-                         f"{fmt(p['E_cu_harm_J'] and p['E_cu_harm_J'] / 1e3, 4)} kJ · iron bound "
-                         f"{fmt(p['E_iron_harm_bound_J'] and p['E_iron_harm_bound_J'] / 1e3, 4)} kJ"))
+                         f"inverter {fmt(p['E_inv_J'] and p['E_inv_J'] / 1e3, 5)} kJ · PWM Cu "
+                         f"{fmt(p['E_cu_harm_J'] and p['E_cu_harm_J'] / 1e3, 4)} kJ · Fe+PM upper "
+                         f"{fmt(p.get('E_magnetic_harm_bound_J') and p['E_magnetic_harm_bound_J'] / 1e3, 4)} kJ · "
+                         f"{tr('정책 민감 손실 구간', 'policy-sensitive interval')} {interval}"))
             rows.append(("   " + tr("여유", "margins"),
-                         f"Tj {fmt(p['Tj_max_C'], 4)} °C · î+ripple {fmt(p['i_peak_incl_ripple_max_A'], 4)} A · I_cap "
+                         f"Tj {fmt(p['Tj_max_C'], 4)} °C · î+ripple {tr('상한', 'upper')} "
+                         f"{fmt(p['i_peak_incl_ripple_max_A'], 4)} A · I_cap "
                          f"{fmt(p['I_cap_rms_max_A'], 4)} A · PM {fmt(p['phase_margin_min_deg'], 3)}° · Np min "
                          f"{fmt(p['pulse_ratio_min'], 3)}"))
             smp = [sg["sampling"] for sg in p["segments"] if sg.get("sampling")]
@@ -488,9 +498,19 @@ class PwmDrivelinePage(QWidget):
                              (f"Δinverter {fmt(v.get('delta_E_inv_J') and v['delta_E_inv_J'] / 1e3, 4)} kJ "
                               f"({fmt(v.get('relative_inv') and 100 * v['relative_inv'], 3)} %) · total "
                               f"{v['total']['status']}: {v['total']['reason']}") if "total" in v else v.get("reason", "")))
-        rows.append((tr("Pareto (허용 후보)", "Pareto (admissible)"), ", ".join(res["pareto"]) or tr("없음", "none")))
-        rows.append((tr("평가 후보 중 인버터 에너지 최선", "best inverter energy among evaluated"),
+        rows.append((tr("Known-loss Pareto (허용 후보)", "Known-loss Pareto (admissible)"),
+                     ", ".join(res["pareto"]) or tr("없음", "none")))
+        rows.append((tr("Pareto 범위", "Pareto scope"), res.get("pareto_scope", "")))
+        rows.append((tr("평가 후보 중 인버터 손실 최소", "lowest inverter loss among evaluated"),
                      res["best_inverter_energy_among_evaluated"] or tr("없음", "none")))
+        if res.get("best_known_policy_sensitive_energy_among_evaluated"):
+            rows.append((tr("알려진 정책 민감 손실 최소", "lowest known policy-sensitive loss"),
+                         res["best_known_policy_sensitive_energy_among_evaluated"]))
+        hd = res.get("harmonic_data")
+        if hd:
+            rows.append((tr("모터 PWM 손실 근거", "motor PWM-loss basis"), hd.get("basis", "")))
+        rows.append((tr("파형 모델 범위", "waveform model scope"), res.get("waveform_scope", "")))
+        rows.append((tr("열 모델 범위", "thermal model scope"), res.get("thermal_scope", "")))
         rows.append((tr("의미", "meaning"), res["meaning"]))
         self.k_pwm.set_rows(rows)
 
