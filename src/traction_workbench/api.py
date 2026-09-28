@@ -1228,9 +1228,9 @@ EXAMPLE_PWM = {
     "timing": {"sample_to_latch_us": 25.0, "filter_delay_us": 5.0, "updates_per_period": 1,
                "modulator_delay_fraction": 0.5, "min_pulse_us": 1.5, "wcet_source": "declared estimate",
                "basis": "example target timing (replace with the measured delay chain of the ECU)"},
-    "loop": {"Ld_uH": 200.0, "Lq_uH": 400.0, "R_mohm": 15.0, "bandwidth_Hz": 500.0, "gain_mapping": "continuous",
+    "loop": {"Ld_uH": 200.0, "Lq_uH": 400.0, "R_mohm": 15.0, "bandwidth_Hz": 450.0, "gain_mapping": "continuous",
              "reference_fsw_kHz": 10.0, "integrator_storage": "output", "on_transition": "keep", "anti_windup": True,
-             "basis": "example PI per axis, pole-zero cancellation at the declared design L_d / L_q (the plant is the machine's differential inductance at each operating point)"},
+             "basis": "example PI per axis, pole-zero cancellation at the declared design L_d / L_q (the plant is the machine's differential inductance at each operating point); bandwidth chosen for >= 45 deg SAMPLED-loop margin at the lowest normal update rate (8 kHz)"},
     "sensing": {"kind": "leg_shunt", "settle_us": 2.0, "aperture_us": 0.6, "sample_points": "valley",
                 "edge_noise": "own_leg", "reconstruct_from_two": True, "channel_skew_ns": 200.0,
                 "invalid_policy": "hold", "max_sample_age_us": 150.0, "current_error_max_A": 15.0,
@@ -1243,7 +1243,8 @@ EXAMPLE_PWM = {
                  "iron_bound_W": [[6e3, 420.0], [8e3, 350.0], [10e3, 300.0], [16e3, 220.0]],
                  "basis": "synthetic example (declare FEA / measured R_ac(f) and the harmonic iron-loss bound)"},
     "pwm_limits": {"Tj_max_C": 150.0, "i_peak_incl_ripple_max_A": 700.0, "cap_rms_max_A": 250.0,
-                   "phase_margin_min_deg": 45.0, "pulse_ratio_min": None, "transition_excursion_max_A": 50.0},
+                   "phase_margin_min_deg": 45.0, "pulse_ratio_min": 10.0, "transition_excursion_max_A": 50.0,
+                   "not_applicable": []},
     "use_capacitor": True,
     "transition": {"from_kHz": 10.0, "to_kHz": 20.0, "duty": 0.9, "deadtime_us": 1.0, "write_fraction": 0.3},
     "note": "example schedule, timing, harmonic data and limits are synthetic",
@@ -1291,7 +1292,9 @@ def pwm_policies(body):
                                                 tuple((float(f), float(w)) for f, w in (hd.get("iron_bound_W") or [])),
                                                 str(hd.get("basis", "")))
     bank, source = _ripple_bank(EXAMPLE_RIPPLE) if b.get("use_capacitor") else (None, None)
-    lim = PwmLimits(**{k: (None if v in (None, "") else float(v)) for k, v in (b.get("pwm_limits") or {}).items()})
+    pl = dict(b.get("pwm_limits") or {})
+    na = tuple(pl.pop("not_applicable", None) or ())
+    lim = PwmLimits(**{k: (None if v in (None, "") else float(v)) for k, v in pl.items()}, not_applicable=na)
     pols = [fixed_schedule(float(b["baseline_fsw_kHz"]) * 1e3)] + [_schedule(sd, b) for sd in b.get("schedules") or []]
     names = [p.name for p in pols]
     if len(set(names)) != len(names):
@@ -1379,9 +1382,11 @@ def pwm_timing(body):
         if led["total_delay_s"] is not None:
             row["phase_at_mode_deg"] = phase_lag_deg(f_mode, led["total_delay_s"])
             if loop is not None:
-                am = axis_margins(loop, led["total_delay_s"], fsw, plant, tc.updates_per_period)
+                am = axis_margins(loop, led["total_delay_s"], fsw, plant, tc.updates_per_period, tc)
                 bx = am["axes"][am["binding_axis"]] if am["binding_axis"] else {}
                 row.update({"phase_margin_deg": am["phase_margin_deg"], "binding_axis": am["binding_axis"],
+                            "sampled_stable": am["sampled_stable"],
+                            "continuous_screen_phase_margin_deg": bx.get("continuous_screen_phase_margin_deg"),
                             "crossover_Hz": bx.get("crossover_Hz"),
                             "phase_at_crossover_deg": bx.get("delay_phase_at_crossover_deg"),
                             "phase_margin_by_axis_deg": {a: v.get("phase_margin_deg") for a, v in am["axes"].items()}})
@@ -1445,7 +1450,7 @@ EXAMPLE_DRIVELINE = {
                  "combined": {"shaper": {"kind": "rate", "rate_Nm_per_s": 1500.0},
                               "damping": {"kind": "motor_speed_hpf", "Kd_Nms_per_rad": 1.5, "hpf_Hz": 2.0}}},
     "requirement": {"t_to_90_max_s": 0.25, "peak_vehicle_jerk_max_m_s3": 35.0, "settle_max_s": 0.6,
-                    "safety_reaction_max_s": 0.02,
+                    "safety_reaction_max_s": 0.02, "safety_band_Nm": 2.0,
                     "basis": "example comfort / response targets (declare the program's definitions)"},
     "sensing": {"load_speed_skew_ms": 0.0, "dropouts_ms": [], "dropout_signal": "load", "stale_limit_ms": 20.0,
                 "fade_ms": 10.0, "basis": "example speed-signal timing and fallback (declare the target's message "

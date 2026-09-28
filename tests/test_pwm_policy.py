@@ -333,5 +333,7 @@ def test_loop_margin_is_checked_on_both_machine_axes():
     assert r["light-load 8 kHz"]["status"] == "VIOLATION"
     per_axis = {p["policy"]["name"]: p for p in api.pwm_policies({})["policies"]}
     ax = per_axis["light-load 8 kHz"]["segments"][1]["timing"]["axes"]
-    assert ax["d"]["phase_margin_deg"] == pytest.approx(ax["q"]["phase_margin_deg"], abs=0.05)
+    # identical in continuous time; the sampled loop's pole-zero cancellation is only approximate (a ~0.1 deg
+    # discretisation difference between the axes with different R / L)
+    assert ax["d"]["phase_margin_deg"] == pytest.approx(ax["q"]["phase_margin_deg"], abs=0.3)
     assert per_axis["light-load 8 kHz"]["status"] == "ADMISSIBLE"

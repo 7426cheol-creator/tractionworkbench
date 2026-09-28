@@ -575,8 +575,12 @@ class PwmDrivelinePage(QWidget):
         self.q_st = number(rq["settle_max_s"], 0.001, 30, "s", 3, 0.05)
         self.q_safe = number(1e3 * rq.get("safety_reaction_max_s", 0.02), 0.01, 1e4, "ms", 2, 1,
                              tr("보호 시간: comfort 지표와 별도로 판정 (상쇄 안 함)", "protection time: judged apart from comfort (never traded)"))
+        self.q_band = number(rq.get("safety_band_Nm") or 2.0, 0.01, 1e4, "N·m", 2, 0.5,
+                             tr("안전 토크 도달 판정 대역 (선언 필요: 휴리스틱 대역은 승인 근거가 아님)",
+                                "safe-torque band (must be declared: a heuristic band never approves)"))
         for lab, w in ((tr("90% 응답 시간 max", "time to 90 % max"), self.q_t90), (tr("차량 저크 max", "vehicle jerk max"), self.q_j),
-                       (tr("정착 시간 max", "settling time max"), self.q_st), (tr("안전 반응 max", "safety reaction max"), self.q_safe)):
+                       (tr("정착 시간 max", "settling time max"), self.q_st), (tr("안전 반응 max", "safety reaction max"), self.q_safe),
+                       (tr("안전 토크 대역", "safe-torque band"), self.q_band)):
             f.addRow(lab, w)
         v.addWidget(g)
         row = QHBoxLayout()
@@ -631,7 +635,7 @@ class PwmDrivelinePage(QWidget):
                          "combined": {"shaper": sh, "damping": dp}}
         b["requirement"] = {"t_to_90_max_s": self.q_t90.value(), "peak_vehicle_jerk_max_m_s3": self.q_j.value(),
                             "settle_max_s": self.q_st.value(), "safety_reaction_max_s": 1e-3 * self.q_safe.value(),
-                            "basis": "UI"}
+                            "safety_band_Nm": self.q_band.value(), "basis": "UI"}
         drops = []
         for part in self.sg_drop.text().replace(",", ";").split(";"):
             part = part.strip()

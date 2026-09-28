@@ -899,3 +899,91 @@ def test_pd07_samples_belong_to_the_actual_trajectory():
     assert rel is not None and np.interp(rel, r["samples_t_s"], r["samples_y"]) < 134.0
     lag = simulate(ot, Sensor(period_s=0.01, tau_filter_s=0.5, initial_state=60.0), 135.0, 150.0, 6.0)
     assert lag["sensor_initial_state"]["basis"] == "declared" and lag["y"][0] == pytest.approx(60.0)
+
+
+# ---------------------------------------------------------------------------------------------- E: CT-01/03/04/06/07
+
+def test_ct01_an_open_required_check_is_never_admissible():
+    r = api.pwm_policies({"pwm_limits": {}, "schedules": [], "sensing": None, "loop": None,
+                          "segments": api.EXAMPLE_PWM["segments"][:1], "use_capacitor": False})
+    p = r["policies"][0]
+    assert p["status"] == "UNKNOWN" and not p["admissible"] and p["unverified_required"]
+    assert r["best_inverter_energy_among_evaluated"] is None and r["pareto"] == []
+    full = dict(api.EXAMPLE_PWM["pwm_limits"])
+    for key in ("Tj_max_C", "i_peak_incl_ripple_max_A", "cap_rms_max_A", "phase_margin_min_deg", "pulse_ratio_min"):
+        one = api.pwm_policies({"pwm_limits": {**full, key: None}, "schedules": []})["policies"][0]
+        assert one["status"] == "UNKNOWN", key                   # each missing mandatory limit alone
+    na = api.pwm_policies({"pwm_limits": {**full, "pulse_ratio_min": None, "not_applicable": ["pulse_ratio"]},
+                           "schedules": []})["policies"][0]
+    assert na["status"] == "ADMISSIBLE" and na["not_applicable_declared"] == ["pulse_ratio"]
+    nosense = api.pwm_policies({"sensing": None, "schedules": []})["policies"][0]
+    assert nosense["status"] == "UNKNOWN"                        # sampling validity is required unless declared N/A
+    ex = api.pwm_policies({})
+    adm = {q["policy"]["name"] for q in ex["policies"] if q["admissible"]}
+    assert set(ex["pareto"]) <= adm and ex["best_inverter_energy_among_evaluated"] in adm
+
+
+def test_ct03_response_is_measured_against_the_requested_target():
+    from traction_workbench.extensions import driveline as D
+    dl = D.Driveline(0.2, 2.0, 3000.0, 30.0, basis="independent audit synthetic")
+    ctl = D.Controller(0.001, 0.0, 0.01)
+    man = D.Maneuver(0.0, 200.0, 0.1, 3.0, 1000.0, window_Nm=(-100.0, 100.0), output_dt_s=0.0005)
+    res = D.evaluate_variants(dl, {"off": ctl}, man, {"t_to_90_max_s": 0.2, "peak_jerk_max": 1e9,
+                                                     "settle_max_s": 1.0})["variants"]["off"]
+    assert res["status"] == "INFEASIBLE" and res["metrics"]["achieved_fraction"] == pytest.approx(0.5, abs=1e-6)
+    assert res["metrics"]["t_to_90_s"] is None                          # half the request never reaches 90 %
+    slow = D.evaluate_variants(dl, {"off": D.Controller(0.001, 0.0, 1.0)},
+                               D.Maneuver(0.0, 80.0, 0.1, 1.5, 1000.0, window_Nm=(-300.0, 300.0)),
+                               {"t_to_90_max_s": 0.2, "peak_jerk_max": 1e9, "settle_max_s": 1.0})["variants"]["off"]
+    assert slow["status"] == "INFEASIBLE" and any("not reached by 0.2" in x for x in slow["reasons"])
+
+
+def test_ct04_safety_reaction_time_does_not_depend_on_the_output_grid():
+    from traction_workbench.extensions import driveline as D
+    dl = D.Driveline(0.2, 2.0, 3000.0, 30.0, basis="independent audit synthetic")
+    ctl = D.Controller(0.001, 0.0, 0.01)
+    man = D.Maneuver(100.0, 100.0, 0.0, 0.3, 1000.0, window_Nm=(-200.0, 200.0), emergency_t_s=0.1,
+                     emergency_T_Nm=0.0)
+    out = []
+    for dt in (0.05, 0.005, 0.0005):
+        sim = D.simulate(dl, ctl, replace(man, output_dt_s=dt))
+        out.append(D._safety_reaction(sim, man, 0.03, 2.0))
+    assert all(o["reaction_s"] == pytest.approx(0.01 * math.log(50.0), abs=1e-9) for o in out)     # 39.120230 ms
+    assert {o["status"] for o in out} == {"INFEASIBLE"}
+    loose = D._safety_reaction(D.simulate(dl, ctl, man), man, 0.05, None)
+    assert loose["status"] == "UNKNOWN" and not loose["band_declared"]    # an undeclared band never approves
+
+
+def test_ct06_the_implemented_sampled_loop_decides_stability():
+    from traction_workbench.extensions import pwm_policy as P
+    L, R, fc = 0.0003, 0.015, 2000.0
+    kp = 2 * math.pi * fc * L
+    lp = P.CurrentLoop(L, R, kp, kp * R / L)
+    tc = P.TimingConfig(20e-6, modulator_delay_fraction=0.0, basis="one update delay")
+    sl = P.sampled_loop(lp, 10e3, tc)
+    a = math.exp(-R * 1e-4 / L)
+    M = np.array([[a, 0.0, (1 - a) / R], [-kp * R / L * 1e-4, 1.0, 0.0], [-kp, 1.0, 0.0]])
+    assert sl["spectral_radius"] == pytest.approx(max(abs(np.linalg.eigvals(M))), rel=1e-12) == \
+        pytest.approx(1.119598, abs=1e-6)
+    assert not sl["stable"] and lp.margins(1e-4)["phase_margin_deg"] == pytest.approx(18.0, abs=1e-6)
+    am = P.axis_margins(lp, 1e-4, 10e3, None, 1, tc)
+    assert am["sampled_stable"] is False and am["phase_margin_deg"] < 0          # not approved by the 18 deg screen
+    fast = [P.sampled_loop(lp, f, P.TimingConfig(1e-9, modulator_delay_fraction=0.5, basis="t")) for f in (1e6, 1e7)]
+    cont = [lp.margins(1.5 / f)["phase_margin_deg"] for f in (1e6, 1e7)]
+    assert abs(fast[1]["phase_margin_deg"] - cont[1]) < abs(fast[0]["phase_margin_deg"] - cont[0]) < 1.0
+
+
+def test_ct07_harmonic_representation_invariance_and_exact_phase_peak():
+    from traction_workbench.extensions import oew as O
+    d = sf.synthetic_drive()
+    res = []
+    for amp, ph in ((-1.0, 0.0), (1.0, math.pi)):
+        topo = O.OewTopology("common_bus", 600.0, zero_sequence=O.ZeroSequenceModel(5e-5, ((3072, amp, ph),),
+                                                                                   basis="adversarial"),
+                             reserve_fraction=0.0)
+        res.append(O.oew_point(d, topo, 60.0 / (2 * math.pi * 4), 0.0, 0.0, waveforms=False))
+    assert res[0]["voltage_allocation"] == res[1]["voltage_allocation"]
+    assert res[0]["voltage_allocation"]["status"] == "INFEASIBLE"           # a 3072 V e0 cannot live on 600 V
+    iso = O.OewTopology("isolated", 400.0, 400.0)
+    o = O.oew_point(d, iso, 3000.0, -80.0, 120.0, waveforms=False, n_theta=36)
+    assert o["currents"]["phase_peak_A"] == pytest.approx(math.hypot(80.0, 120.0), rel=1e-12)   # exact, not sampled
