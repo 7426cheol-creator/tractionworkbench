@@ -111,7 +111,7 @@
 | §4.1 | 동기 PWM (전기각 동기 패턴) | — | — | missing (P2) |
 | §4.1 | spread spectrum / random PWM | — | — | missing (P2) |
 | §4.2 | 스케줄 fsw의 모듈 손실 (이벤트 합과 평균식 일치) | 모듈 모델 fsw 치환 + 결합 Tj | 평균 vs 이벤트 합 (1% 이내) | implemented |
-| §4.2 | 모터 고조파: R_ac(f) 동손, 철손은 선언 상한 → 총합은 구간 비교, 없으면 UNKNOWN | `HarmonicLossData`, `_versus` | 테스트 | implemented / evidence_missing |
+| §4.2 | 모터 PWM 고조파: R_ac(f) 동손, Fe+PM 고주파 손실은 선언 **상한** → 총합은 구간 비교, 없으면 UNKNOWN. R_ac 미확립 시 R_dc 기반 동손 하한만 유지 | `HarmonicLossData`, `harmonic_copper_loss`, `_versus` | 테스트 | implemented / evidence_missing |
 | §4.3 | 전류 리플·펄스 과전류 (RL 기준, 시간 적분 = 엣지 합 스펙트럼) | `phase_ripple` | 시간/FFT RMS 1e-3 | implemented |
 | §4.3 | DC-link 커패시터 전류 (fsw별 재계산) | `dclink_ripple.ripple_analysis` 재사용 | 정책 테스트 | implemented |
 | §4.3 | EMC/NVH 결합 | EMI 페이지 (캐리어 위상 포함) | — | partial (정책 비교에 자동 연동 안 함 → 설계별 정책 비교에서 '미평가'로 명시) |
