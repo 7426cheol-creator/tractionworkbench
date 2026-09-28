@@ -29,6 +29,7 @@ from .extensions.safe_state import safe_state_screening
 from .extensions.thermal import ThermalModel, thermal_duration, torque_availability
 from .extensions.timing import analyze_timing
 from .scenario import DcSourceLimits, Scenario
+from .status import Claim, Reason, Status
 from .solvers.policy import PolicyEvaluator
 from .analysis.dominance import capability_dominance, requirement_relaxation
 from .analysis.sizing import size_parameter
@@ -381,7 +382,7 @@ EXAMPLE_MODULE = {
 def module_losses(body):
     """Datasheet-based inverter losses at the decision operating point, fed into P_dc (review 8.8)."""
     from dataclasses import replace as _rep
-    from .models.module_loss import electrothermal_fixed_point, inverter_losses, loss_claim, standstill_hotspot
+    from .models.module_loss import electrothermal_fixed_point, loss_claim, point_losses, standstill_hotspot
     b = body or {}
     mspec = b.get("module") or EXAMPLE_MODULE
     model = module_model_from_dict(mspec)
@@ -403,23 +404,31 @@ def module_losses(body):
     if pt is None:
         out["note"] = "no operating point: " + sol_m.policy_claim.detail
         return _jsonable(out)
-    full = inverter_losses(model, pt.id_A, pt.iq_A, pt.vd_V, pt.vq_V, vdc, tj)
+    # the SAME evaluation the kernel used for P_dc (review R2 PT-02): at standstill the DC-current per-angle model,
+    # never a rotating-period average of a point that does not rotate
+    from .settings import DEFAULT_SETTINGS as _DS
+    stand = abs(pt.omega_e) <= _DS.speed_zero_tol_rad_s
+    full = point_losses(model, pt.id_A, pt.iq_A, pt.vd_V, pt.vq_V, vdc, tj, standstill=stand, refine_check=True)
     out["operating_point"] = {"id_A": pt.id_A, "iq_A": pt.iq_A, "i_peak_A": pt.i_peak_A, "Pac_W": pt.Pac_W,
                               "Pdc_module_W": pt.Pdc_W, "Pinv_module_W": pt.Pinv_W,
                               "Pinv_surrogate_W": None if sol_q.point is None else sol_q.point.Pinv_W,
                               "Pdc_surrogate_W": None if sol_q.point is None else sol_q.point.Pdc_W}
-    out["losses"] = {k: full[k] for k in ("per_position_W", "conduction_W", "switching_W", "semiconductor_W",
-                                         "driver_aux_W", "dc_side_W", "hottest_position", "hottest_position_W",
-                                         "modulation_index", "power_factor", "phi_deg", "established", "problems",
-                                         "angle_refinement_rel_diff", "not_modelled")}
-    out["leg_detail"] = {"conduction_W": full["leg"]["conduction_W"], "switching_W": full["leg"]["switching_W"],
-                         "switching_fraction": full["leg"]["switching_fraction"],
-                         "energy_scaling": full["leg"]["energy_scaling"]}
+    out["losses"] = {k: full.get(k) for k in ("per_position_W", "per_die_W", "die_basis", "conduction_W",
+                                             "switching_W", "semiconductor_W", "driver_aux_W", "dc_side_W",
+                                             "hottest_position", "hottest_position_W", "sharing", "modulation_index",
+                                             "power_factor", "phi_deg", "established", "problems",
+                                             "angle_refinement_rel_diff", "not_modelled")}
+    out["losses"]["evaluation"] = "standstill (DC phase currents, worst sampled angle)" if stand else \
+        "fundamental-period average"
+    if full.get("leg") is not None:
+        out["leg_detail"] = {"conduction_W": full["leg"]["conduction_W"], "switching_W": full["leg"]["switching_W"],
+                             "switching_fraction": full["leg"]["switching_fraction"],
+                             "energy_scaling": full["leg"]["energy_scaling"]}
     out["claim"] = loss_claim(full, None if b.get("P_allow_W") in (None, "") else float(b["P_allow_W"]))
     out["standstill"] = {k: v for k, v in standstill_hotspot(model, pt.i_peak_A, vdc, tj).items() if k != "curve"}
     if mspec.get("Rth_K_per_W"):
         fp = electrothermal_fixed_point(model, {"id_A": pt.id_A, "iq_A": pt.iq_A, "vd_V": pt.vd_V, "vq_V": pt.vq_V,
-                                                "Vdc_V": vdc}, float(mspec["Rth_K_per_W"]),
+                                                "Vdc_V": vdc, "standstill": stand}, float(mspec["Rth_K_per_W"]),
                                         float(mspec.get("T_ref_C", 65.0)))
         out["electrothermal"] = {k: v for k, v in fp.items() if k != "history"}
         out["electrothermal"]["iterations_history"] = fp.get("history", [])[:20]
@@ -441,7 +450,7 @@ def module_losses(body):
 
 
 EXAMPLE_RIPPLE = {
-    "capacitor": {"C_uF": 500.0, "ESL_nH": 15.0, "Rth_K_per_W": 0.35, "T_ref_C": 65.0,
+    "capacitor": {"C_uF": 500.0, "ESL_nH": 15.0, "Rth_K_per_W": 0.35, "T_ref_C": 65.0, "T_valid_C": [-40.0, 105.0],
                   "ESR_table": [[100.0, 3.0], [1e3, 2.0], [1e4, 1.6], [1e5, 1.8], [1e6, 3.0]],
                   "ESR_unit": "mohm", "life_hours_table": [], "life_voltage_V": None, "life_basis": "",
                   "source": "synthetic film-capacitor bank example (not a product)"},
@@ -528,61 +537,162 @@ EXAMPLE_MISSION = {
     "junction_network": {"R_K_per_W": [f * EXAMPLE_MODULE["Rth_K_per_W"] for f in (0.12, 0.29, 0.35, 0.24)],
                          "tau_s": [0.005, 0.08, 0.8, 6.0],
                          "note": "synthetic junction-to-coolant Foster network of the example module: its steady "
-                                 "sum is the module's Rth (the same thermal path as the efficiency / PWM pages)"},
+                                 "sum is the module's Rth (the same thermal path as the efficiency / PWM pages); "
+                                 "used for every die unless junction_networks names the die's role"},
+    "junction_networks": None,
+    "mission_kind": "finite",
     "cycling_model": None, "D_allow": None, "mission_repeats": 1.0, "ton_rule": "none", "cutoff_K": 0.0,
-    "note": "synthetic mission; the Tj history comes from a screening electrothermal chain (screening damage only)",
+    "note": "synthetic mission; the Tj histories come from a screening electrothermal chain at a fixed "
+            "loss-evaluation temperature (screening damage only)",
 }
 
 
+def _damage_over_devices(per: dict) -> dict:
+    """ONE fatigue verdict over every physical die: violated if one die is, established only if every die is."""
+    claims = {d: r["damage"]["claim"] for d, r in per.items()}
+    bad = [d for d, c in claims.items() if c["status"] == "INFEASIBLE"]
+    if bad:
+        c = dict(claims[bad[0]])
+        c["detail"] = f"die {bad[0]}: " + c["detail"]
+        return c
+    if all(c["status"] == "FEASIBLE" for c in claims.values()):
+        c = dict(next(iter(claims.values())))
+        c["detail"] = "every die: " + "; ".join(f"{d}: {v['detail']}" for d, v in claims.items())
+        return c
+    d0 = next(d for d, c in claims.items() if c["status"] != "FEASIBLE")
+    c = dict(claims[d0])
+    c["detail"] = f"die {d0}: " + c["detail"]
+    return c
+
+
 def lifetime(body):
-    """Mission -> hottest-device losses (datasheet module model) -> Tj(t) -> rainflow -> conditional damage (12)."""
+    """Mission -> losses per PHYSICAL die (datasheet module model) -> one Tj(t) per die -> rainflow -> conditional
+    damage per die (review 12; R2 PT-06 / PT-07)."""
     from dataclasses import replace as _rep
-    from .extensions.lifetime import CyclingModel, cycle_analysis, foster_trace
+    from .extensions.lifetime import CyclingModel, cycle_analysis, die_mission, foster_trace
     b = {**EXAMPLE_MISSION, **(body or {})}
+    cm = b.get("cycling_model")
+    model_obj = None if not cm else CyclingModel(**{k: (tuple(v) if isinstance(v, list) else v) for k, v in cm.items()})
+    ton_rule = b.get("ton_rule", "none")
+    D_allow = None if b.get("D_allow") in (None, "") else float(b["D_allow"])
+    cutoff, repeats = float(b.get("cutoff_K") or 0.0), float(b.get("mission_repeats") or 1.0)
+    qualifiers = []
     if b.get("trace"):
         tr = b["trace"]
         t, T = np.asarray(tr["t_s"], float), np.asarray(tr["T_C"], float)
-        src = "imported Tj trace"
-        seg_rows = []
+        dev = str(tr.get("device") or "declared device")
+        basis = str(tr.get("basis") or "").strip()
+        qualified = bool(tr.get("qualified")) and bool(basis)
+        note = ("qualified history of one junction: " + basis) if qualified else (
+            "imported history without a declared qualification of its junction and source")
+        per = {dev: cycle_analysis(t, T, model_obj, ton_rule, D_allow, cutoff, repeats,
+                                   repeating_mission=bool(b.get("repeating_mission", False)),
+                                   source="imported Tj trace", trace_kind="declared" if qualified else "screening",
+                                   trace_note=note)}
+        traces = {dev: T}
+        seg_rows, kind, src = [], "imported", "imported Tj trace"
+        qualifiers.append(note)
     else:
         mspec = b.get("module") or EXAMPLE_MODULE
         model = module_model_from_dict(mspec)
         base = _drive(b)
-        drv = _rep(base, inverter=_rep(base.inverter, loss=None, module_loss=model,
-                                       module_Tj_C=float(mspec.get("Tj_eval_C", 150.0))))
-        dt = float(b.get("dt_s") or 0.05)
-        net = b["junction_network"]
-        seg_rows, t_list, p_list = [], [], []
-        now = 0.0
-        for _rep_k in range(int(b.get("repeat_in_trace") or 1)):
-            for sg in b["segments"]:
-                sc = Scenario("mission", float(sg["speed_rpm"]), float(b["Vdc_V"]), _limits(b))
-                sol = PolicyEvaluator(drv, sc).solve(float(sg["torque_Nm"]))
-                det = None if sol.point is None else sol.point.inverter_loss_detail
-                p_hot = det["hottest_position_W"] if det and det.get("established") else None
-                if _rep_k == 0:
-                    seg_rows.append({**sg, "policy": sol.policy_claim.status.value, "P_hot_device_W": p_hot})
-                if p_hot is None:
-                    raise InputValidationError(f"segment {sg}: hottest-device loss not established "
-                                               f"({sol.policy_claim.detail if sol.point is None else det.get('problems')})",
-                                               field="segments")
-                n = max(2, int(round(float(sg["duration_s"]) / dt)))
-                ts = now + np.arange(n) * (float(sg["duration_s"]) / n)
-                t_list.append(ts)
-                p_list.append(np.full(n, p_hot))
-                now += float(sg["duration_s"])
-        t = np.concatenate(t_list + [np.array([now])])
-        P = np.concatenate(p_list + [np.array([0.0])])
-        T = foster_trace(t, P, tuple(net["R_K_per_W"]), tuple(net["tau_s"]), float(b["coolant_C"]))
-        src = "screening electrothermal chain (datasheet module losses at the policy points, Foster network)"
-    cm = b.get("cycling_model")
-    model_obj = None if not cm else CyclingModel(**{k: (tuple(v) if isinstance(v, list) else v) for k, v in cm.items()})
-    r = cycle_analysis(t, T, model_obj, b.get("ton_rule", "none"),
-                       None if b.get("D_allow") in (None, "") else float(b["D_allow"]),
-                       float(b.get("cutoff_K") or 0.0), float(b.get("mission_repeats") or 1.0),
-                       repeating_mission=bool(b.get("repeating_mission", True)), source=src)
+        tj_eval = float(mspec.get("Tj_eval_C", 150.0))
+        drv = _rep(base, inverter=_rep(base.inverter, loss=None, module_loss=model, module_Tj_C=tj_eval))
+        kind = b.get("mission_kind") or "finite"
+        seg_rows, die_W, unknown, unachieved = [], [], [], []
+        for k, sg in enumerate(b["segments"]):
+            sc = Scenario("mission", float(sg["speed_rpm"]), float(b["Vdc_V"]), _limits(b))
+            sol = PolicyEvaluator(drv, sc).solve(float(sg["torque_Nm"]))
+            if sol.point is None:
+                raise InputValidationError(f"segment {k + 1} {sg}: no operating point ({sol.policy_claim.detail}) - "
+                                           f"an unachieved segment is never credited as mission", field="segments")
+            det = sol.point.inverter_loss_detail
+            if not det or not det.get("established"):
+                raise InputValidationError(f"segment {k + 1} {sg}: module losses not established "
+                                           f"({None if not det else det.get('problems')})", field="segments")
+            infeasible = [c.name for c in (sol.policy_claim, sol.dc_claim) if c is not None and c.status is
+                          Status.INFEASIBLE]
+            if infeasible:
+                unachieved.append(k + 1)
+            pd = det.get("per_die_thermal_W") or {}
+            if not pd:
+                unknown.append(k + 1)
+            die_W.append(pd)
+            seg_rows.append({**sg, "policy": sol.policy_claim.status.value, "achieved": not infeasible,
+                             "P_hot_device_W": det["hottest_position_W"], "hottest_die": det["hottest_position"],
+                             "per_die_W": pd or None})
+        durations = [float(sg["duration_s"]) for sg in b["segments"]]
+        nets_by_role = b.get("junction_networks") or {}
+        net0 = b["junction_network"]
+        src = ("screening electrothermal chain: datasheet module losses per physical die at the policy points "
+               f"(fixed Tj {tj_eval:g} degC, no loss(Tj) feedback), one Foster network per die")
+        qualifiers += [f"losses evaluated at a fixed Tj of {tj_eval:g} degC (no loss(Tj) feedback): screening chain",
+                       "die-to-die thermal coupling not modelled",
+                       "fundamental-period average losses (no sub-fundamental junction ripple)"]
+        if unknown:
+            # the per-die heat of a standstill segment with current depends on the unknown electrical angle: no die
+            # history exists, only the hottest-die envelope (a temperature screening, never a fatigue input)
+            t_list, p_list, now = [], [], 0.0
+            dt = float(b.get("dt_s") or 0.05)
+            for _ in range(int(b.get("repeat_in_trace") or 1)):
+                for sg, row in zip(b["segments"], seg_rows):
+                    n = max(2, int(round(float(sg["duration_s"]) / dt)))
+                    t_list.append(now + np.arange(n) * (float(sg["duration_s"]) / n))
+                    p_list.append(np.full(n, row["P_hot_device_W"]))
+                    now += float(sg["duration_s"])
+            t = np.concatenate(t_list + [np.array([now])])
+            P = np.concatenate(p_list + [np.array([0.0])])
+            T_env = foster_trace(t, P, tuple(net0["R_K_per_W"]), tuple(net0["tau_s"]), float(b["coolant_C"]))
+            env = cycle_analysis(t, T_env, None, source="hottest-die envelope (temperature screening only)")
+            env["damage"]["claim"] = Claim(
+                "thermal_cycling_damage", Status.UNKNOWN, "thermal-fatigue damage per physical die",
+                "per-die mission", reasons=(Reason.MISSING_INPUT,),
+                detail=f"segment(s) {unknown} at standstill with current: the per-die heat depends on the unknown "
+                       f"electrical angle, so no die history exists (the hottest-die envelope is a temperature "
+                       f"screening, not a fatigue input)").to_dict()
+            step = max(1, t.size // 3000)
+            env["trace"] = {"t_s": t[::step].tolist(), "T_C": T_env[::step].tolist(),
+                            "basis": "hottest-die envelope (not one device)"}
+            env.update(segments=seg_rows, devices={}, governing_device=None, mission_kind=kind, qualifiers=qualifiers)
+            env["cycles"] = env["cycles"][:500]
+            return _jsonable(env)
+        nets = {}
+        for d in die_W[0]:
+            role = d.split("_", 1)[-1]
+            n_ = nets_by_role.get(role) or net0
+            nets[d] = (tuple(n_["R_K_per_W"]), tuple(n_["tau_s"]))
+        ms = die_mission(durations, die_W, nets, float(b["coolant_C"]), float(b.get("dt_s") or 0.05), kind,
+                         int(b.get("repeat_in_trace") or 1))
+        t = ms["t_s"]
+        traces = ms["T_C"]
+        note = "generated screening chain (" + ms["basis"] + ")"
+        per = {d: cycle_analysis(t, traces[d], model_obj, ton_rule, D_allow, cutoff, repeats, repeating_mission=True,
+                                 source=src, trace_kind="screening", trace_note=note) for d in ms["dies"]}
+        qualifiers.append(ms["basis"])
+        if unachieved:
+            for d in per:
+                per[d]["damage"]["claim"] = Claim(
+                    "thermal_cycling_damage", Status.UNKNOWN, "thermal-fatigue damage per physical die",
+                    "per-die mission", reasons=(Reason.OUTSIDE_ALLOWED_OPERATING_DOMAIN,),
+                    detail=f"segment(s) {unachieved} are not achieved (policy / DC claim INFEASIBLE): no lifetime "
+                           f"for a mission the drive does not perform").to_dict()
+
+    def rank(d):
+        dm = per[d]["damage"]
+        return (dm.get("D") if dm.get("D") is not None else -1.0, per[d]["max_range_K"], d)
+    gov = max(sorted(per), key=rank)
+    r = dict(per[gov])
+    r["damage"] = {**per[gov]["damage"], "claim": _damage_over_devices(per)}
+    r["devices"] = {d: {"max_range_K": v["max_range_K"], "T_max_C": v["T_max_C"], "T_min_C": v["T_min_C"],
+                        "reversals": v["reversals"], "cycles_counted": v["damage"]["cycles_counted"],
+                        "D": v["damage"].get("D"), "claim": v["damage"]["claim"]["status"],
+                        "histogram": v["histogram"]} for d, v in sorted(per.items())}
+    r["governing_device"] = gov
+    r["mission_kind"] = kind
+    r["qualifiers"] = qualifiers
     step = max(1, t.size // 3000)
-    r["trace"] = {"t_s": t[::step].tolist(), "T_C": T[::step].tolist()}
+    r["trace"] = {"t_s": t[::step].tolist(), "T_C": np.asarray(traces[gov])[::step].tolist(),
+                  "device": gov, "per_device_T_C": {d: np.asarray(v)[::step].tolist() for d, v in sorted(traces.items())}}
     r["segments"] = seg_rows
     r["cycles"] = r["cycles"][:500]
     return _jsonable(r)

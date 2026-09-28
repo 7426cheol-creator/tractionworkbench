@@ -2,7 +2,7 @@
  "kind": "implementation regression anchor (not an independent reference)",
  "generated": {
   "software": "0.3.0",
-  "commit": "14c1848",
+  "commit": "de7d521",
   "date_utc": "2026-09-28"
  },
  "tolerance": {
@@ -42,9 +42,9 @@
     "id_A": 0.0,
     "iq_A": 300.0,
     "evaluable": true,
-    "Pinv_W": 1389.7390337902866,
-    "Pdc_W": 3414.7390337902866,
-    "hottest_position_W": 472.9949167113966,
+    "Pinv_W": 1389.6295411885317,
+    "Pdc_W": 3414.6295411885317,
+    "hottest_position_W": 474.9911372963522,
     "established": true
    },
    {
@@ -53,9 +53,9 @@
     "id_A": -150.0,
     "iq_A": -200.0,
     "evaluable": true,
-    "Pinv_W": 1099.8216002705997,
+    "Pinv_W": 1099.8216002706,
     "Pdc_W": -79175.33739306402,
-    "hottest_position_W": 98.52835516617563,
+    "hottest_position_W": 98.52835516617564,
     "established": true
    }
   ],

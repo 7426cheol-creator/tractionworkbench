@@ -329,3 +329,280 @@ def test_d_r2_05_zero_charge_acceptance_stays_in_the_diagnosis(drive):
     tied = [j for j in r["joint"] if set(j["constraints"]) == {"DC_CHARGE_POWER", "DC_CHARGE_CURRENT"}]
     assert tied and tied[0]["classification"] == "joint bottleneck"
     assert r["base_policy_capability_Nm"] - tied[0]["gain_Nm"] == pytest.approx(-4.45197934, abs=1e-5)
+
+
+# ---------------------------------------------------------------------------------------------- B1: PT-01 / PT-02
+
+def _resistive(tech, **kw):
+    from traction_workbench.models.module_loss import ModuleLossModel, SwitchDevice, linear_table
+    v = linear_table(0.0, 0.002, 1000.0, (25.0, 200.0))
+    z = linear_table(0.0, 0.0, 1000.0, (25.0, 200.0), "mJ")
+    dev = SwitchDevice(tech, v, v if tech == "IGBT" else linear_table(3.0, 0.0, 1000.0, (25.0, 200.0)), z, z, z,
+                       **kw)
+    return ModuleLossModel(dev, 20000.0, modulation="spwm", deadtime_s=0.0)
+
+
+def test_pt01_sic_channel_and_body_diode_heat_one_die():
+    from traction_workbench.models.module_loss import inverter_losses
+    r = inverter_losses(_resistive("SiC_MOSFET"), 300.0, 0.0, 0.0, 240.0, 600.0, 25.0)
+    assert r["semiconductor_W"] == pytest.approx(270.0, rel=1e-9)          # 3 phases x 2 dies x R I^2 / 4
+    assert set(r["per_die_W"]) == {"upper_mosfet", "lower_mosfet"}
+    assert all(w == pytest.approx(45.0, rel=1e-9) for w in r["per_die_W"].values())
+    assert r["hottest_position_W"] == pytest.approx(45.0, rel=1e-9)
+    assert 3.0 * sum(r["per_die_W"].values()) == pytest.approx(r["semiconductor_W"], rel=1e-12)   # dies sum to total
+
+
+def test_pt02_standstill_uses_the_actual_duty_and_the_same_data_gate():
+    from dataclasses import replace as rep
+    from traction_workbench.models.module_loss import (ModuleLossModel, linear_table, point_losses,
+                                                        standstill_hotspot)
+    h = standstill_hotspot(_resistive("SiC_MOSFET"), 300.0, 600.0, 25.0)
+    assert h["module_total_W"] == pytest.approx(270.0, rel=1e-6)          # sum_k R i_k^2 at every angle
+    igbt = _resistive("IGBT")
+    igbt = ModuleLossModel(rep(igbt.device, e_on=linear_table(0.0, 0.1, 1000.0, (25.0, 200.0), "mJ")), 20000.0)
+    moving = point_losses(igbt, 300.0, 0.0, 100.0, 0.0, 400.0, 25.0, standstill=False)
+    still = point_losses(igbt, 300.0, 0.0, 0.0, 0.0, 400.0, 25.0, standstill=True)
+    assert not moving["established"] and not still["established"]          # 400 V != 600 V test voltage: no scaling
+
+
+# ---------------------------------------------------------------------------------------------- B2: PT-03 / 04 / 05
+
+def _cap(**kw):
+    from traction_workbench.extensions.dclink_ripple import CapacitorBank
+    return CapacitorBank(500e-6, ((100.0, 0.002), (1e7, 0.002)), **kw)
+
+
+def test_pt03_divergent_iteration_is_never_converged_nor_settled():
+    from traction_workbench.extensions.dclink_ripple import ripple_analysis
+    bank = _cap(Rth_K_per_W=10.0, ESR_temp_coeff_per_K=0.1, T_ref_C=65.0, T_valid_C=(60.0, 125.0),
+                life_hours_table=((60.0, 1e5), (125.0, 1e3)), life_basis="test table")
+    r = ripple_analysis(350.0, 0.8, 0.3, 200.0, 10e3, 600.0, bank, T_ref_C=65.0)
+    h = r["hotspot"]
+    assert not h["converged"] and h["T_hot_C"] is None and h["termination"] == "no_equilibrium_in_domain"
+    assert h["analytic_fixed_current"]["slope"] >= 1.0 and not h["analytic_fixed_current"]["equilibrium_exists"]
+    assert r["claims"]["capacitor_loss"]["status"] == "UNKNOWN" and r["P_cap_W"] is None
+    assert r["life"]["status"] == "UNKNOWN" and r["claims"]["capacitor_life"]["status"] == "UNKNOWN"
+
+
+def test_pt03_closed_forms_and_explicit_termination():
+    from traction_workbench.extensions.dclink_ripple import ripple_analysis
+    const = ripple_analysis(350.0, 0.8, 0.3, 200.0, 10e3, 600.0, _cap(Rth_K_per_W=5.0), T_ref_C=65.0)
+    P0 = const["P_cap_W"]
+    assert const["hotspot"]["termination"] == "closed_form"
+    assert const["hotspot"]["T_hot_C"] == pytest.approx(65.0 + 5.0 * P0, abs=1e-9)          # constant ESR
+    a, R = 0.004, 0.5
+    aff = ripple_analysis(350.0, 0.8, 0.3, 200.0, 10e3, 600.0,
+                          _cap(Rth_K_per_W=R, ESR_temp_coeff_per_K=a, T_ref_C=65.0, T_valid_C=(-40.0, 300.0)),
+                          T_ref_C=65.0)
+    dT = R * P0 / (1.0 - R * P0 * a)                                        # fixed current, affine ESR(T)
+    assert aff["hotspot"]["converged"] and aff["hotspot"]["T_hot_C"] == pytest.approx(65.0 + dT, abs=1e-6)
+    assert aff["hotspot"]["analytic_fixed_current"]["T_hot_C"] == pytest.approx(65.0 + dT, abs=1e-9)
+    assert abs(aff["hotspot"]["residual_K"]) <= 1e-6
+    ex = ripple_analysis(350.0, 0.8, 0.3, 200.0, 10e3, 600.0,
+                         _cap(Rth_K_per_W=R, ESR_temp_coeff_per_K=a, T_ref_C=65.0, T_valid_C=(-40.0, 300.0)),
+                         T_ref_C=65.0, max_iter=3)
+    assert ex["hotspot"]["termination"] == "max_iter" and ex["hotspot"]["T_hot_C"] is None
+    out = ripple_analysis(350.0, 0.8, 0.3, 200.0, 10e3, 600.0, _cap(Rth_K_per_W=5.0, T_valid_C=(-40.0, 70.0)),
+                          T_ref_C=65.0)
+    assert out["hotspot"]["termination"] == "out_of_domain" and out["claims"]["capacitor_loss"]["status"] == "UNKNOWN"
+    with pytest.raises(InputValidationError):
+        _cap(Rth_K_per_W=5.0, ESR_temp_coeff_per_K=0.01)                   # a temperature law needs its domain
+    with pytest.raises(InputValidationError):
+        _cap(ESR_temp_coeff_per_K=0.1, T_ref_C=65.0, T_valid_C=(-40.0, 125.0))   # law not positive on the domain
+
+
+def test_pt04_current_split_and_heat_are_solved_at_one_temperature():
+    from scipy.optimize import brentq
+    from traction_workbench.extensions.dclink_ripple import (SourceImpedance, ripple_analysis, spectrum,
+                                                              switching_waveform)
+    bank = _cap(Rth_K_per_W=5.0, ESR_temp_coeff_per_K=0.01, T_ref_C=65.0, T_valid_C=(-30.0, 150.0))
+    src = SourceImpedance(0.005, 1e-9, "synthetic")
+    r = ripple_analysis(350.0, 0.8, 0.3, 200.0, 10e3, 600.0, bank, src, T_ref_C=65.0)
+    h = r["hotspot"]
+    assert h["converged"] and h["T_hot_C"] == pytest.approx(110.5491, abs=1e-4)       # not the frozen 120.4158
+    w = switching_waveform(350.0, 0.8, 0.3, 200.0, 10e3)
+    sp = spectrum(w["i_inv_A"], 200.0)
+    f, x = sp["f_Hz"][1:], sp["complex"][1:]
+    wt = np.full(f.size, 2.0)
+    wt[-1] = 1.0                                                          # Nyquist bin counted once
+
+    def g(T):                                                            # independent scalar root, network re-solved
+        zs = src.z(f)
+        ic = x * zs / (zs + bank.impedance(f, T))
+        return T - 65.0 - 5.0 * float(np.sum(wt * np.abs(ic) ** 2 * bank.esr(f, T)[0]))
+    assert h["T_hot_C"] == pytest.approx(brentq(g, 65.0, 150.0, xtol=1e-12), abs=1e-7)
+    assert r["state"]["T_C"] == h["T_hot_C"] and r["P_cap_W"] == pytest.approx(h["P_W"], rel=1e-12)
+    assert abs(h["residual_K"]) <= 1e-6 and r["kcl_residual_rel"] < 1e-12
+
+
+def test_pt04_bank_rth_basis_is_explicit():
+    from traction_workbench.extensions.dclink_ripple import CapacitorBank, SourceImpedance, ripple_analysis
+    tab = ((100.0, 0.004), (1e7, 0.004))
+    src = SourceImpedance(0.02, 1e-9, "synthetic")
+    with pytest.raises(InputValidationError):
+        CapacitorBank(250e-6, tab, Rth_K_per_W=5.0, count=2, symmetric_layout=True)          # basis not stated
+    per = CapacitorBank(250e-6, tab, Rth_K_per_W=5.0, count=2, symmetric_layout=True, Rth_basis="per_capacitor")
+    bank = CapacitorBank(250e-6, tab, Rth_K_per_W=5.0, count=2, symmetric_layout=True, Rth_basis="bank")
+    rp = ripple_analysis(350.0, 0.8, 0.3, 200.0, 10e3, 600.0, per, src, T_ref_C=65.0)
+    rb = ripple_analysis(350.0, 0.8, 0.3, 200.0, 10e3, 600.0, bank, src, T_ref_C=65.0)
+    assert rp["P_cap_W"] == pytest.approx(rb["P_cap_W"], rel=1e-12)
+    assert rp["hotspot"]["T_hot_C"] - 65.0 == pytest.approx((rb["hotspot"]["T_hot_C"] - 65.0) / 2.0, rel=1e-12)
+
+
+def test_pt05_capacitor_branch_aliases_agree_and_mappings_are_explicit():
+    from traction_workbench.extensions.dclink_ripple import SourceImpedance, ripple_analysis
+    src = SourceImpedance(0.02, 1e-9, "synthetic")
+
+    def run(loc, qty, lim=140.0, bw=1e5, bank=None):
+        return ripple_analysis(350.0, 0.8, 0.3, 200.0, 10e3, 600.0, bank or _cap(), src,
+                               requirement={"location": loc, "quantity": qty, "limit": lim, "bandwidth_Hz": bw})
+    a = run("capacitor_branch", "current_ac_rms")
+    b = run("capacitor_branch", "capacitor_current_rms")
+    assert a["requirement_value"] == pytest.approx(110.7757, abs=1e-4) == b["requirement_value"]
+    assert a["claims"]["ripple_requirement"]["status"] == b["claims"]["ripple_requirement"]["status"] == "FEASIBLE"
+    assert a["requirement"]["branch"] == "capacitor_current"
+    inv = run("inverter_dc_input", "current_ac_rms")
+    assert inv["requirement"]["branch"] == "inverter_current" and inv["requirement_value"] > a["requirement_value"]
+    node = run("dc_link_bus", "current_ac_rms")
+    assert node["claims"]["ripple_requirement"]["reasons"] == ["REQUIREMENT_INCOMPLETE"]
+    batt = run("battery_terminal", "voltage_pp", lim=50.0)
+    assert batt["claims"]["ripple_requirement"]["reasons"] == ["OUTSIDE_MODEL_DOMAIN"]
+
+
+def test_pt05_narrow_esr_evidence_cannot_pass_outside_its_band():
+    from traction_workbench.extensions.dclink_ripple import CapacitorBank, SourceImpedance, ripple_analysis
+    narrow = CapacitorBank(500e-6, ((100.0, 0.002), (5000.0, 0.002)))
+    r = ripple_analysis(350.0, 0.8, 0.3, 200.0, 10e3, 600.0, narrow, SourceImpedance(0.02, 1e-9, "synthetic"),
+                        requirement={"location": "capacitor_branch", "quantity": "capacitor_current_rms",
+                                     "limit": 140.0, "bandwidth_Hz": 1e5})
+    c = r["claims"]["ripple_requirement"]
+    assert c["status"] == "UNKNOWN" and c["reasons"] == ["BOUND_INCONCLUSIVE"]
+    lo, hi = r["requirement"]["bounds"]
+    assert lo < 140.0 < hi and r["requirement_value"] is None and r["P_cap_W"] is None
+    assert r["I_cap_rms_A"] is None and r["I_cap_rms_bounds_A"][1] > r["I_cap_rms_bounds_A"][0]
+
+
+def test_pt05_frequency_wise_kcl_nyquist_band_edge_and_sampling_resolution():
+    from traction_workbench.extensions.dclink_ripple import (SourceImpedance, _Network, _rms_weights, ripple_analysis,
+                                                              switching_waveform)
+    src = SourceImpedance(0.02, 2e-6, "synthetic")
+    w = switching_waveform(350.0, 0.8, 0.3, 200.0, 10e3)
+    net = _Network(w, _cap(), src)
+    st = net.at(65.0)
+    assert np.max(np.abs(net.X - st["Ic"] - st["Is"])) <= 1e-12 * np.max(np.abs(net.X))
+    x = w["i_inv_A"]
+    assert np.sum(net.inv_rms_h[1:] ** 2) == pytest.approx(np.mean(x ** 2) - np.mean(x) ** 2, rel=1e-12)
+    assert list(_rms_weights(8, 5)) == [1.0, math.sqrt(2), math.sqrt(2), math.sqrt(2), 1.0]
+    req = {"location": "capacitor_branch", "quantity": "capacitor_current_rms", "limit": 1e3}
+    at = ripple_analysis(350.0, 0.8, 0.3, 200.0, 10e3, 600.0, _cap(), src, requirement={**req, "bandwidth_Hz": 1e4})
+    below = ripple_analysis(350.0, 0.8, 0.3, 200.0, 10e3, 600.0, _cap(), src,
+                            requirement={**req, "bandwidth_Hz": 1e4 - 1.0})
+    assert at["requirement_value"] > below["requirement_value"]            # the harmonic at the band edge counts
+    fine = ripple_analysis(350.0, 0.8, 0.3, 200.0, 10e3, 600.0, _cap(), src, requirement={**req, "bandwidth_Hz": 1e4},
+                           samples_per_carrier=256)
+    assert at["requirement"]["resolution_delta"] == pytest.approx(abs(fine["requirement_value"] -
+                                                                      at["requirement_value"]), rel=1e-9)
+    assert 0.0 < at["requirement"]["resolution_delta"] < 0.05 * at["requirement_value"]
+
+
+def test_pt05_passive_bounds_contain_every_passive_capacitor_impedance():
+    from traction_workbench.extensions.dclink_ripple import CapacitorBank, SourceImpedance, _Network, switching_waveform
+    net = _Network(switching_waveform(350.0, 0.8, 0.3, 200.0, 10e3), CapacitorBank(500e-6, ((100.0, 0.002),)),
+                   SourceImpedance(0.02, 2e-6, "synthetic"))
+    rng = np.random.default_rng(7)
+    X, Zs, wt, ac = net.X, net.Zs, net.wt, net.ac
+    for _ in range(300):
+        zc = 10 ** rng.uniform(-6, 1) * (rng.random() < 0.9) + 1j * rng.choice([-1, 1]) * 10 ** rng.uniform(-6, 1)
+        ic, is_ = X * Zs / (Zs + zc), X * zc / (Zs + zc)
+        for br, m in (("capacitor_current", ic), ("source_current", is_), ("bus_voltage", ic * zc)):
+            lo, hi = net.bounds(br)
+            val = np.abs(m) * wt
+            assert np.all(val[ac] <= hi[ac] * (1 + 1e-9) + 1e-12) and np.all(val[ac] >= lo[ac] * (1 - 1e-9) - 1e-12)
+
+
+# ---------------------------------------------------------------------------------------------- B3: PT-06 / PT-07
+
+def test_pt06_alternating_motoring_regen_cycles_every_physical_die():
+    from traction_workbench.extensions.lifetime import cycle_analysis, die_mission
+    from traction_workbench.models.module_loss import ModuleLossModel, inverter_losses
+    mod = ModuleLossModel(_resistive("IGBT").device, 10000.0, modulation="spwm")
+    seg = [inverter_losses(mod, 300.0 * math.cos(p), 300.0 * math.sin(p), 240.0, 0.0, 600.0, 25.0)["per_die_thermal_W"]
+           for p in (0.0, math.pi)]
+    assert seg[0]["upper_igbt"] == pytest.approx(37.7789, abs=1e-4) == seg[1]["upper_diode"]
+    assert seg[0]["upper_diode"] == pytest.approx(7.2211, abs=1e-4) == seg[1]["upper_igbt"]
+    assert max(seg[0].values()) == pytest.approx(max(seg[1].values()), rel=1e-12)     # the max heat is constant
+    nets = {d: ((0.05, 0.1), (0.1, 1.0)) for d in seg[0]}
+    ms = die_mission([2.0, 2.0], seg, nets, 65.0, 0.01, "periodic", repeat=5)
+    ranges = {d: cycle_analysis(ms["t_s"], ms["T_C"][d], repeating_mission=True)["max_range_K"] for d in ms["dies"]}
+    assert all(v > 3.0 for v in ranges.values())                          # every die cycles; none is lost
+    rev = die_mission([2.0, 2.0], [dict(reversed(list(s.items()))) for s in seg], nets, 65.0, 0.01, "periodic", 5)
+    assert all(np.array_equal(ms["T_C"][d], rev["T_C"][d]) for d in ms["dies"])   # reporting order is irrelevant
+
+
+def test_pt06_startup_once_periodic_steady_state_and_api_devices():
+    from traction_workbench.extensions.lifetime import cycle_analysis, die_mission
+    nets = {"a_igbt": ((0.1,), (1.0,))}
+    one = die_mission([5.0, 5.0], [{"a_igbt": 100.0}, {"a_igbt": 20.0}], nets, 65.0, 0.05, "finite", 1)
+    three = die_mission([5.0, 5.0], [{"a_igbt": 100.0}, {"a_igbt": 20.0}], nets, 65.0, 0.05, "finite", 3)
+    c1 = cycle_analysis(one["t_s"], one["T_C"]["a_igbt"], repeating_mission=True)["cycles"]
+    c3 = cycle_analysis(three["t_s"], three["T_C"]["a_igbt"], repeating_mission=True)["cycles"]
+    cold = [sum(c["count"] for c in cs if c["min"] < 65.0 + 1e-3) for cs in (c1, c3)]
+    assert cold == [1.0, 1.0]                                        # the cold start-up / shutdown cycle: once
+    assert sum(c["count"] for c in c3) == pytest.approx(sum(c["count"] for c in c1) + 2.0)   # inner cycles repeat
+    per = die_mission([5.0, 5.0], [{"a_igbt": 100.0}, {"a_igbt": 20.0}], nets, 65.0, 0.05, "periodic", 1)
+    assert per["closure_K"] < 1e-9 and per["T_C"]["a_igbt"][0] > 65.0 + 1.0      # steady state, not a warm-up
+    r = api.lifetime({})
+    assert r["governing_device"] in r["devices"] and len(r["devices"]) == 4
+    assert r["damage"]["claim"]["status"] == "UNKNOWN"
+
+
+def test_pt06_screening_chain_and_unachieved_mission_never_rate_damage():
+    law = {"mechanism": "synthetic", "A": 1e12, "a": -5.0, "b_K": 0.0, "dT_valid_K": [0.0, 200.0],
+           "Tref_valid_C": [-50.0, 250.0], "basis": "synthetic law (not a product)"}
+    r = api.lifetime({"cycling_model": law, "D_allow": 1.0})
+    assert r["damage"]["claim"]["status"] == "UNKNOWN" and r["damage"]["claim"]["reasons"] == ["SCREENING_ONLY"]
+    q = api.lifetime({"trace": {"t_s": [0, 1, 2, 3, 4], "T_C": [60, 100, 60, 100, 60], "qualified": True,
+                                "basis": "measured, device U1 lower IGBT", "device": "U1 lower IGBT"},
+                      "cycling_model": law, "D_allow": 1.0})
+    assert q["damage"]["claim"]["status"] == "FEASIBLE" and q["governing_device"] == "U1 lower IGBT"
+    low = api.lifetime({"limits": {"discharge_power_max_W": 5000.0, "charge_power_max_W": 5000.0,
+                                   "discharge_current_max_A": 1000.0, "charge_current_max_A": 1000.0}})
+    assert any(not s["achieved"] for s in low["segments"])
+    assert low["damage"]["claim"]["reasons"] == ["OUTSIDE_ALLOWED_OPERATING_DOMAIN"]
+
+
+def test_pt07_heating_time_is_the_heating_interval():
+    from traction_workbench.extensions.lifetime import CyclingModel, cycle_analysis
+    cm = CyclingModel("synthetic timing law", 1000.0, 0.0, 0.0, c=1.0, dT_valid_K=(1.0, 100.0),
+                      ton_valid_s=(0.0, 1000.0), basis="synthetic (not a supplier law)", scatter_factor=1.0)
+    for periodic in (False, True):
+        r = cycle_analysis([0.0, 1.0, 10.0], [40.0, 100.0, 40.0], cm, "rise_time", repeating_mission=periodic)
+        assert r["damage"]["D"] == pytest.approx(1.0 / 1000.0, rel=1e-12)          # 1 s heating, not 9 s cooling
+    t = np.array([0.0, 1.0, 10.0, 11.0, 20.0])
+    x = np.array([40.0, 100.0, 40.0, 100.0, 40.0])
+    base = cycle_analysis(t, x, cm, "rise_time", repeating_mission=True)["damage"]["D"]
+    rot = cycle_analysis(np.concatenate([t[2:], t[1:3] + 20.0]), np.concatenate([x[2:], x[1:3]]), cm, "rise_time",
+                         repeating_mission=True)["damage"]["D"]
+    shifted = cycle_analysis(t + 1234.5, x, cm, "rise_time", repeating_mission=True)["damage"]["D"]
+    assert base == pytest.approx(rot, rel=1e-12) == shifted
+    nested = cycle_analysis([0, 2, 5, 6, 7, 9, 12, 20.0], [40, 100, 100, 80, 90, 70, 100, 40.0], cm, "rise_time",
+                            repeating_mission=True)
+    ton = {(c["min"], c["max"]): c["t_heating_s"] for c in nested["cycles"]}
+    assert ton == {(80.0, 90.0): pytest.approx(1.0), (70.0, 100.0): pytest.approx(3.0), (40.0, 100.0): pytest.approx(2.0)}
+    zero = cm.nf({"range": 60.0, "min": 40.0, "mean": 70.0, "max": 100.0}, 0.0)
+    missing = cm.nf({"range": 60.0, "min": 40.0, "mean": 70.0, "max": 100.0}, None)
+    assert zero[0] is None and missing[0] is None                           # never replaced by 1 s
+    with pytest.raises(InputValidationError):
+        cycle_analysis([0.0, 1.0, 10.0], [40.0, 100.0, 70.0], repeating_mission=True)   # a warm-up is not periodic
+
+
+def test_pt09_fixed_policy_comparison_fixes_the_modulation():
+    b = api.EXAMPLE_EFFICIENCY["compare"]
+    mix = {**b, "B": {**b["B"], "module": {**b["B"]["module"], "modulation": "dpwm1"}},
+           "requests": [[6000.0, 150.0, 600.0]]}
+    with pytest.raises(InputValidationError):
+        api.module_compare({"compare": mix, "mission": None})
+    r = api.module_compare({"compare": {**b, "requests": [[6000.0, 150.0, 600.0]]}, "mission": None})
+    assert r["common_modulation"] == "svpwm" and "semiconductor" in r["ranking_scope"]
+    assert not any("common to both" in s for s in r["not_evaluated"])
+    assert any("not asserted to cancel" in s for s in r["not_evaluated"])

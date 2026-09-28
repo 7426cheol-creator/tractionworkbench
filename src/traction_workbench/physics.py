@@ -26,7 +26,7 @@ import numpy as np
 from .errors import InputValidationError, OutsideModelDomain
 from .models.components import LOSS_MODULE, LOSS_QUADRATIC, DriveModel
 from .models.flux import ConstantFluxModel, FluxMapModel
-from .models.module_loss import inverter_losses, standstill_hotspot
+from .models.module_loss import point_losses
 from .validation import finite as _finite
 from .scenario import Scenario
 from .settings import DEFAULT_SETTINGS, NumericalSettings
@@ -259,21 +259,9 @@ class DriveKernel:
         from dataclasses import replace as _rep
         fsw = self.scenario.switching_frequency_Hz
         mod = self.module if fsw is None else _rep(self.module, fsw_Hz=fsw)
-        if abs(self.omega_e) <= self.settings.speed_zero_tol_rad_s:
-            # DC phase currents: the fundamental-period average is meaningless; worst electrical angle instead
-            h = standstill_hotspot(mod, float(np.hypot(id_A, iq_A)), self.Vdc, self.module_Tj)
-            if not h.get("established"):
-                return {"established": False, "problems": [h.get("problem", "standstill loss not established")],
-                        "value_kind": mod.device.value_kind}
-            tot = max(r[2] for r in h["curve"])
-            return {"established": True, "semiconductor_W": tot, "conduction_W": float("nan"),
-                    "switching_W": float("nan"), "per_position_W": {}, "hottest_position": "worst angle",
-                    "hottest_position_W": h["hottest_device_W"], "modulation_index": 0.0, "power_factor": float("nan"),
-                    "Tj_eval_C": self.module_Tj, "fsw_Hz": mod.fsw_Hz, "value_kind": mod.device.value_kind,
-                    "problems": [], "dc_side_W": tot + (mod.driver_aux_W if mod.aux_from_hv_dc else 0.0),
-                    "standstill": {"angle_at_max_deg": h["angle_at_max_deg"], "total_over_six_W": h["total_over_six_W"],
-                                   "note": "worst electrical angle (sampled); total/6 is not a device-level input"}}
-        return inverter_losses(mod, id_A, iq_A, vd, vq, self.Vdc, self.module_Tj, refine_check=False)
+        # one evaluation for every consumer: the rotating average, or at standstill the DC-current per-angle model
+        return point_losses(mod, id_A, iq_A, vd, vq, self.Vdc, self.module_Tj,
+                            standstill=abs(self.omega_e) <= self.settings.speed_zero_tol_rad_s)
 
     @property
     def tau_rot_or_zero(self) -> float:
@@ -709,9 +697,10 @@ def evaluate_point(kernel: DriveKernel, id_A: float, iq_A: float) -> OperatingPo
         voltage_ceiling_V=k.V_ceiling, voltage_margin_V=k.Vb - v_cmd, constraints=constraints,
         pwm_ratio=pwm_ratio, notes=tuple(notes),
         inverter_loss_detail=None if ml is None else {
-            k2: ml[k2] for k2 in ("established", "semiconductor_W", "conduction_W", "switching_W", "per_position_W",
-                                  "hottest_position", "hottest_position_W", "modulation_index", "power_factor",
-                                  "Tj_eval_C", "fsw_Hz", "value_kind", "problems")},
+            k2: ml.get(k2) for k2 in ("established", "semiconductor_W", "conduction_W", "switching_W",
+                                      "per_position_W", "per_die_W", "per_die_thermal_W", "die_basis",
+                                      "hottest_position", "hottest_position_W", "modulation_index", "power_factor",
+                                      "Tj_eval_C", "fsw_Hz", "value_kind", "problems", "sharing", "standstill")},
     )
 
 

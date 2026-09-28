@@ -574,10 +574,13 @@ def compare_modules(base_drive, candidates: list, requests: list, limits, coolan
                     oil_temp_C: float | None = None, mission: list | None = None) -> dict:
     """SiC / IGBT (or any two module designs) on the same delivered requirement.
 
-    ``fixed_policy``: same motor, source, demand, PWM frequency and coolant; each module keeps its own data, gate /
-    dead time and thermal path (Tj is a RESULT, not forced equal). ``design_specific``: each candidate runs its own
-    declared PWM frequency - EMC, ripple and timing constraints must then be re-evaluated for each design (not
-    done here), so the result is a loss comparison under declared policies, not an approval.
+    ``fixed_policy``: same motor, source, demand, modulation and PWM frequency and coolant - a candidate pair with
+    different modulation is rejected, never represented as one policy (review R2 PT-09); each module keeps its own
+    data, legal gate / dead time and thermal path (Tj is a RESULT, not forced equal).  ``design_specific``: each
+    candidate runs its own declared policy - EMC, ripple and timing constraints must then be re-evaluated for each
+    design (not done here), so the result is a loss comparison under declared policies, not a global optimisation
+    and not an approval.  Either way the ranking is of the SEMICONDUCTOR (module) loss: the motor PWM-harmonic,
+    capacitor and auxiliary losses are not evaluated and are never asserted to cancel between technologies.
     ``requests``: [(speed_rpm, torque_Nm, Vdc_V)], ``mission``: [(duration_s, speed_rpm, torque_Nm, Vdc_V)].
     """
     from ..scenario import Scenario
@@ -589,6 +592,10 @@ def compare_modules(base_drive, candidates: list, requests: list, limits, coolan
         raise InputValidationError("the fixed-policy comparison needs the common PWM frequency", field="common_fsw_Hz")
     fsw = common_fsw_Hz if mode == "fixed_policy" else None
     A, B = candidates
+    if mode == "fixed_policy" and A.model.modulation != B.model.modulation:
+        raise InputValidationError(f"a fixed-policy comparison fixes the modulation: {A.name} uses "
+                                   f"{A.model.modulation}, {B.name} uses {B.model.modulation} - declare one modulation "
+                                   f"for both, or compare the declared policies design-specifically", field="modulation")
     kinds = {A.model.device.value_kind, B.model.device.value_kind}
     rows = []
     for (n, T, vdc) in requests:
@@ -610,18 +617,31 @@ def compare_modules(base_drive, candidates: list, requests: list, limits, coolan
                               "reason": "both candidates must deliver the same requirement (FEASIBLE) before any "
                                         "efficiency ranking"}
         rows.append(row)
+    diffs = [k for k, a, b in (("dead time", A.model.deadtime_s, B.model.deadtime_s),
+                               ("switching edges / technology", A.model.device.technology, B.model.device.technology))
+             if a != b]
+    harm = ("motor PWM-harmonic losses: not evaluated and not asserted to cancel (" +
+            ("same modulation and carrier, but " + " and ".join(diffs) + " differ" if (mode == "fixed_policy" and diffs)
+             else "same modulation and carrier; no evidence that the edge-dependent part cancels"
+             if mode == "fixed_policy" else "the pulse policies differ") + ")")
     out = {"mode": mode, "common_fsw_Hz": fsw, "coolant_C": coolant_C, "rows": rows,
+           "common_modulation": A.model.modulation if mode == "fixed_policy" else None,
+           "ranking_scope": "semiconductor (module) loss only - not an eDrive ranking: motor PWM-harmonic, capacitor "
+                            "and auxiliary losses are not in it; the eDrive efficiency deltas cover the modelled parts "
+                            "only",
            "candidates": [{"name": c.name, "technology": c.model.device.technology, "value_kind": c.model.device.value_kind,
-                           "fsw_Hz": fsw or c.model.fsw_Hz, "deadtime_s": c.model.deadtime_s,
-                           "Rth_K_per_W": c.Rth_K_per_W, "loss_error_rel": c.loss_error_rel,
-                           "error_basis": c.error_basis} for c in candidates],
+                           "modulation": c.model.modulation, "fsw_Hz": fsw or c.model.fsw_Hz,
+                           "deadtime_s": c.model.deadtime_s, "Rth_K_per_W": c.Rth_K_per_W,
+                           "loss_error_rel": c.loss_error_rel, "error_basis": c.error_basis} for c in candidates],
            "not_evaluated": (["EMC / dv/dt / overshoot after a gate or frequency change", "DC-link ripple and capacitor "
-                              "heating at the new frequency", "control timing at the new period",
-                              "motor PWM harmonic losses"] if mode == "design_specific" else
-                             ["motor PWM harmonic losses (identical PWM: common to both)"]) +
-                            ["SOA / short-circuit withstand / lifetime (efficiency does not approve them)"],
-           "meaning": "fixed-policy: the module change under one policy; design-specific: module + declared policy "
-                      "changes. No technology is better by rule; typical data do not rank a production population."}
+                              "heating at the new frequency", "control timing at the new period"]
+                             if mode == "design_specific" else []) +
+                            [harm, "DC-link capacitor losses", "SOA / short-circuit withstand / lifetime (efficiency "
+                                                               "does not approve them)"],
+           "meaning": "fixed-policy: the module change under one declared modulation and carrier; design-specific: "
+                      "module + declared policy changes (a comparison of declared policies, not a global "
+                      "optimisation). No technology is better by rule; typical data do not rank a production "
+                      "population."}
     if mission:
         out["mission"] = _mission_compare(base_drive, candidates, mission, limits, coolant_C, fsw, reducer, oil_temp_C,
                                           kinds)

@@ -137,10 +137,20 @@ class SwitchDevice:
     value_kind: str = "typical"            # "typical" | "max"  (typical is not a guaranteed bound)
     test_conditions: tuple = ()            # (("Rg_on_ohm", 2.0), ("Vge_V", 15.0), ("deadtime_s", 1e-6), ...)
     source: str = ""
+    # physical owner of the reverse current (review R2 PT-01): IGBT -> its anti-parallel diode (a separate die);
+    # SiC MOSFET -> 'intrinsic' (third-quadrant channel AND body diode heat the MOSFET die) or 'external_diode'
+    # (a declared anti-parallel diode takes the dead-time conduction and the recovery: a separate die)
+    reverse_path: str = ""
 
     def __post_init__(self):
         if self.technology not in ("IGBT", "SiC_MOSFET"):
             raise InputValidationError("technology must be IGBT or SiC_MOSFET", field="technology")
+        rp = (self.reverse_path or ("antiparallel_diode" if self.technology == "IGBT" else "intrinsic")).strip()
+        allowed = ("antiparallel_diode",) if self.technology == "IGBT" else ("intrinsic", "external_diode")
+        if rp not in allowed:
+            raise InputValidationError(f"reverse_path of a {self.technology} must be one of {allowed}",
+                                       field="reverse_path")
+        object.__setattr__(self, "reverse_path", rp)
         if self.energy_basis not in ("per_device", "commutation_pair_total"):
             raise InputValidationError("energy_basis must be per_device or commutation_pair_total",
                                        field="energy_basis")
@@ -208,11 +218,12 @@ def _duties(theta: np.ndarray, V_pk: float, Vdc: float, modulation: str):
 
 
 def leg_losses(model: ModuleLossModel, I_pk: float, phi_rad: float, V_pk: float, Vdc: float, Tj_C: float,
-               n_angle: int | None = None) -> dict:
-    """Average losses of the four positions of one leg over a fundamental period (per parallel module)."""
+               n_angle: int | None = None, share: float = 1.0) -> dict:
+    """Average losses of the four positions of one leg over a fundamental period (per parallel module; ``share``
+    scales this module's current, e.g. 1 + sharing error for the hottest parallel module)."""
     n = n_angle or model.n_angle
     theta = (np.arange(n) + 0.5) * TWO_PI / n
-    i = I_pk * np.cos(theta - phi_rad) / model.parallel
+    i = I_pk * np.cos(theta - phi_rad) / model.parallel * share
     d, _sw, over = _duties(theta, V_pk, Vdc, model.modulation)
     problems = []
     if over:
@@ -221,14 +232,14 @@ def leg_losses(model: ModuleLossModel, I_pk: float, phi_rad: float, V_pk: float,
     return leg_losses_trajectory(model, i, d, Vdc, Tj_C, problems)
 
 
-def leg_losses_trajectory(model: ModuleLossModel, i: np.ndarray, d: np.ndarray, Vdc: float, Tj_C: float,
-                          problems: list | None = None) -> dict:
-    """Average losses of one leg for a uniformly sampled period.
+def _leg_samples(model: ModuleLossModel, i: np.ndarray, d: np.ndarray, Vdc: float, Tj_C: float,
+                 problems: list | None = None) -> dict:
+    """Heat of every conduction path and switching event of one leg AT EACH SAMPLE (per parallel module).
 
-    ``i``: leg output current per parallel module (+ = out of the leg into the load); ``d``: upper-switch duty in
-    [0, 1] at the same samples.  The leg switches wherever 0 < d < 1 (a clamped leg does not switch but still
-    conducts).  Used for the single VSI (declared modulation) and for each bridge of a dual inverter (duty
-    trajectories from the voltage allocation).
+    The one evaluator of the model (review R2 PT-02): the rotating period average and the standstill per-angle
+    evaluation both use it, with the same data applicability gate - every active curve is checked over the current
+    and temperature it is read at, and switching energies away from the test voltage need a declared scaling law
+    (otherwise NaN + a problem: a missing loss is never zero).
     """
     dev = model.device
     i = np.asarray(i, dtype=float)
@@ -247,47 +258,64 @@ def leg_losses_trajectory(model: ModuleLossModel, i: np.ndarray, d: np.ndarray, 
     von = dev.v_on.eval(a, Tj_C)
     vrev = dev.v_rev.eval(a, Tj_C)
     td_frac = min(1.0, 2.0 * model.deadtime_s * model.fsw_Hz)
-    # conduction: forward path of the gated switch, reverse path of the complementary position
-    fwd = d * von * a                                     # upper switch when i > 0, lower switch mirrored
+    z = np.zeros_like(a)
+    reverse_parts = None
     if dev.technology == "IGBT":
-        rev = (1.0 - d) * vrev * a                        # anti-parallel diode carries the reverse current
-        rev_parts = {"diode": rev}
+        lo_rev = (1.0 - d) * vrev * a                     # anti-parallel diode carries the reverse current
+        up_rev = d * vrev * a
     else:
         vch = (dev.v_channel_rev.eval(a, Tj_C) if dev.v_channel_rev is not None else von)
-        t_bd = np.minimum(1.0 - d, td_frac)               # body diode only during the dead times
-        t_ch = np.clip(1.0 - d - td_frac, 0.0, None)      # channel (synchronous rectification) for the rest
-        rev_parts = {"body_diode": t_bd * vrev * a, "channel_reverse": t_ch * vch * a}
-        rev = rev_parts["body_diode"] + rev_parts["channel_reverse"]
-    # by symmetry: i > 0 -> upper switch fwd, lower reverse; i < 0 -> lower switch fwd with duty (1-d)
-    fwd_lo = (1.0 - d) * von * a
-    if dev.technology == "IGBT":
-        rev_hi = d * vrev * a
-    else:
-        t_bd_hi = np.minimum(d, td_frac)
-        t_ch_hi = np.clip(d - td_frac, 0.0, None)
-        rev_hi = t_bd_hi * vrev * a + t_ch_hi * vch * a
-    P = lambda arr, mask: float(np.mean(np.where(mask, arr, 0.0)))
-    cond = {"upper_switch": P(fwd, ipos), "lower_reverse": P(rev, ipos),
-            "lower_switch": P(fwd_lo, ineg), "upper_reverse": P(rev_hi, ineg)}
-    # switching events (only while the leg switches)
+        t_bd, t_ch = np.minimum(1.0 - d, td_frac), np.clip(1.0 - d - td_frac, 0.0, None)
+        t_bd_hi, t_ch_hi = np.minimum(d, td_frac), np.clip(d - td_frac, 0.0, None)
+        lo_rev = t_bd * vrev * a + t_ch * vch * a         # body diode in the dead times, channel otherwise
+        up_rev = t_bd_hi * vrev * a + t_ch_hi * vch * a
+        reverse_parts = {"lower_deadtime": np.where(ipos, t_bd * vrev * a, z),
+                         "lower_channel": np.where(ipos, t_ch * vch * a, z),
+                         "upper_deadtime": np.where(ineg, t_bd_hi * vrev * a, z),
+                         "upper_channel": np.where(ineg, t_ch_hi * vch * a, z)}
+    # i > 0: upper switch forward (duty d), lower reverse (1 - d); i < 0 mirrored
+    cond = {"upper_switch": np.where(ipos, d * von * a, z), "lower_reverse": np.where(ipos, lo_rev, z),
+            "lower_switch": np.where(ineg, (1.0 - d) * von * a, z), "upper_reverse": np.where(ineg, up_rev, z)}
     k, knote = dev.energy_scale(Vdc)
     if k is None:
         problems.append(knote)
-        swl = {"upper_switch": math.nan, "lower_switch": math.nan, "upper_recovery": math.nan,
-               "lower_recovery": math.nan}
+        nan = np.full_like(a, np.nan)
+        swl = {"upper_switch": nan, "lower_switch": nan, "upper_recovery": nan, "lower_recovery": nan}
     else:
-        eon, eoff = dev.e_on.eval(a, Tj_C) * k, dev.e_off.eval(a, Tj_C) * k
-        err = dev.e_rr.eval(a, Tj_C) * k if (dev.e_rr is not None and dev.energy_basis == "per_device") else 0.0 * a
         f = model.fsw_Hz
-        swl = {"upper_switch": f * P(eon + eoff, ipos & sw), "lower_switch": f * P(eon + eoff, ineg & sw),
-               "lower_recovery": f * P(err, ipos & sw), "upper_recovery": f * P(err, ineg & sw)}
+        eonoff = (dev.e_on.eval(a, Tj_C) + dev.e_off.eval(a, Tj_C)) * k
+        err = dev.e_rr.eval(a, Tj_C) * k if (dev.e_rr is not None and dev.energy_basis == "per_device") else z
+        swl = {"upper_switch": np.where(ipos & sw, f * eonoff, z), "lower_switch": np.where(ineg & sw, f * eonoff, z),
+               "lower_recovery": np.where(ipos & sw, f * err, z), "upper_recovery": np.where(ineg & sw, f * err, z)}
     if np.any(np.isnan(von)) or np.any(np.isnan(vrev)):
         problems.append("conduction curve not given down to zero current")
-    return {"conduction_W": cond, "switching_W": swl, "problems": problems, "energy_scaling": knote,
-            "switching_fraction": float(np.mean(sw)), "deadtime_fraction": td_frac}
+    return {"conduction": cond, "switching": swl, "reverse_parts": reverse_parts, "problems": problems,
+            "energy_scaling": knote, "sw_mask": sw, "deadtime_fraction": td_frac}
+
+
+def leg_losses_trajectory(model: ModuleLossModel, i: np.ndarray, d: np.ndarray, Vdc: float, Tj_C: float,
+                          problems: list | None = None) -> dict:
+    """Average losses of one leg for a uniformly sampled period.
+
+    ``i``: leg output current per parallel module (+ = out of the leg into the load); ``d``: upper-switch duty in
+    [0, 1] at the same samples.  The leg switches wherever 0 < d < 1 (a clamped leg does not switch but still
+    conducts).  Used for the single VSI (declared modulation) and for each bridge of a dual inverter (duty
+    trajectories from the voltage allocation).
+    """
+    smp = _leg_samples(model, i, d, Vdc, Tj_C, problems)
+    mean = lambda arr: float(np.mean(arr))   # noqa: E731
+    rp = smp["reverse_parts"]
+    return {"conduction_W": {k: mean(v) for k, v in smp["conduction"].items()},
+            "switching_W": {k: mean(v) for k, v in smp["switching"].items()},
+            "reverse_parts_W": None if rp is None else {k: mean(v) for k, v in rp.items()},
+            "problems": smp["problems"], "energy_scaling": smp["energy_scaling"],
+            "switching_fraction": float(np.mean(smp["sw_mask"])) if np.size(smp["sw_mask"]) else 0.0,
+            "deadtime_fraction": smp["deadtime_fraction"]}
 
 
 def positions(leg: dict) -> dict:
+    """Current-DIRECTION contributions of one leg (forward / reverse per position).  Not thermal owners: with a SiC
+    MOSFET the forward and the reverse contribution of a position heat the same die (use ``dies``)."""
     c, s = leg["conduction_W"], leg["switching_W"]
     return {"upper_switch": c["upper_switch"] + s["upper_switch"],
             "upper_diode_or_reverse": c["upper_reverse"] + s["upper_recovery"],
@@ -295,37 +323,106 @@ def positions(leg: dict) -> dict:
             "lower_diode_or_reverse": c["lower_reverse"] + s["lower_recovery"]}
 
 
+def dies(leg: dict, device: SwitchDevice) -> tuple[dict, str]:
+    """Heat per PHYSICAL die of one leg (review R2 PT-01): every conduction path and switching event is summed by the
+    die that owns it.  IGBT: transistor and anti-parallel diode are separate dies.  SiC MOSFET with an intrinsic
+    reverse path: first- and third-quadrant channel conduction, body-diode conduction and its recovery heat ONE die.
+    With a declared external diode the dead-time conduction and the recovery belong to that diode.  Returns the dies
+    and the basis; with commutation-pair-total energies the per-die numbers are a conservative BOUND (the pair energy
+    is charged to both dies of the commutation) and do not sum to the total."""
+    c, s = leg["conduction_W"], leg["switching_W"]
+    pair = device.energy_basis == "commutation_pair_total"
+    basis = ("conservative bound: pair-total switching energy charged to both dies of each commutation" if pair
+             else "per-die heat; the dies sum to the leg's semiconductor loss")
+    if device.technology == "IGBT":
+        out = {"upper_igbt": c["upper_switch"] + s["upper_switch"],
+               "upper_diode": c["upper_reverse"] + s["upper_recovery"] + (s["lower_switch"] if pair else 0.0),
+               "lower_igbt": c["lower_switch"] + s["lower_switch"],
+               "lower_diode": c["lower_reverse"] + s["lower_recovery"] + (s["upper_switch"] if pair else 0.0)}
+        return out, basis
+    rp = leg.get("reverse_parts_W") or {}
+    if device.reverse_path == "intrinsic":
+        out = {"upper_mosfet": c["upper_switch"] + s["upper_switch"] + c["upper_reverse"] + s["upper_recovery"],
+               "lower_mosfet": c["lower_switch"] + s["lower_switch"] + c["lower_reverse"] + s["lower_recovery"]}
+        if pair:
+            out = {"upper_mosfet": out["upper_mosfet"] + s["lower_switch"],
+                   "lower_mosfet": out["lower_mosfet"] + s["upper_switch"]}
+        return out, basis
+    out = {"upper_mosfet": c["upper_switch"] + s["upper_switch"] + rp.get("upper_channel", 0.0),
+           "upper_diode": rp.get("upper_deadtime", 0.0) + s["upper_recovery"] + (s["lower_switch"] if pair else 0.0),
+           "lower_mosfet": c["lower_switch"] + s["lower_switch"] + rp.get("lower_channel", 0.0),
+           "lower_diode": rp.get("lower_deadtime", 0.0) + s["lower_recovery"] + (s["upper_switch"] if pair else 0.0)}
+    return out, basis
+
+
+def _hottest(d: dict) -> tuple[str, float]:
+    name = max(d, key=lambda k: -1.0 if math.isnan(d[k]) else d[k])
+    return name, d[name]
+
+
+def _sharing(model: ModuleLossModel) -> tuple[float, float] | None:
+    """Current shares of the hottest and of the other parallel modules under the declared sharing error: the hot
+    module carries (1 + e) of its nominal share, the others the rest - the currents still sum to the phase current
+    (review R2 PT-01; a positive error on every module would create current)."""
+    n, e = model.parallel, model.sharing_error
+    if n <= 1 or e <= 0:
+        return None
+    return 1.0 + e, 1.0 - e / (n - 1)
+
+
 def inverter_losses(model: ModuleLossModel, id_A: float, iq_A: float, vd_V: float, vq_V: float, Vdc_V: float,
                     Tj_C: float, refine_check: bool = True) -> dict:
-    """Module losses at one dq operating point (fundamental phase-peak values)."""
+    """Module losses at one dq operating point (fundamental phase-peak values), fundamental-period average.
+
+    ``hottest_position`` / ``hottest_position_W`` name the hottest PHYSICAL die (review R2 PT-01; with a declared
+    sharing error, the die of the hottest parallel module) - the input of every junction-temperature use.
+    ``per_position_W`` keeps the current-direction contributions for reference; they are not thermal owners.
+    """
     I_pk = math.hypot(id_A, iq_A)
     V_pk = math.hypot(vd_V, vq_V)
     phi = (math.atan2(vq_V, vd_V) - math.atan2(iq_A, id_A)) if (I_pk > 0 and V_pk > 0) else 0.0
     m = V_pk / (0.5 * Vdc_V)
     leg = leg_losses(model, I_pk, phi, V_pk, Vdc_V, Tj_C)
     pos = positions(leg)
+    per_die, die_basis = dies(leg, model.device)
     per_leg = sum(pos.values())
     total_semis = 3.0 * model.parallel * per_leg
     cond_total = 3.0 * model.parallel * sum(leg["conduction_W"].values())
     sw_total = 3.0 * model.parallel * sum(leg["switching_W"].values())
-    established = not leg["problems"]
-    # hotspot: the most loaded position, with the current-sharing error on the hottest parallel module
-    worst_pos = max(pos, key=lambda k: -1 if math.isnan(pos[k]) else pos[k])
-    share = 1.0 + model.sharing_error
-    hot = None
-    if model.sharing_error > 0 and established:
-        lh = leg_losses(model, I_pk * share, phi, V_pk, Vdc_V, Tj_C)
-        hot = max(positions(lh).values())
+    problems = list(leg["problems"])
+    hot_name, hot_W = _hottest(per_die)
+    per_die_thermal = dict(per_die)
+    sharing = None
+    sh = _sharing(model)
+    if sh is not None:
+        lh = leg_losses(model, I_pk, phi, V_pk, Vdc_V, Tj_C, share=sh[0])
+        lo = leg_losses(model, I_pk, phi, V_pk, Vdc_V, Tj_C, share=sh[1])
+        problems += [f"hottest parallel module (current x{sh[0]:g}): {q}" for q in lh["problems"] if q not in problems]
+        dh, _ = dies(lh, model.device)
+        nominal = hot_W
+        hot_name, hot_W = _hottest(dh)
+        per_die_thermal = dict(dh)
+        sharing = {"hot_module_current_share": sh[0] / model.parallel,
+                   "other_module_current_share": sh[1] / model.parallel,
+                   "semiconductor_W": 3.0 * (sum(positions(lh).values()) + (model.parallel - 1) * sum(positions(lo).values())),
+                   "hottest_die_equal_sharing_W": nominal,
+                   "note": "admissible allocation: the hottest module at (1 + e) of its share, the others at the "
+                           "rest; currents sum to the phase current"}
+    established = not problems
     out = {"I_pk_A": I_pk, "V_pk_V": V_pk, "modulation_index": m, "phi_deg": math.degrees(phi),
            "power_factor": math.cos(phi), "Tj_eval_C": Tj_C, "fsw_Hz": model.fsw_Hz, "modulation": model.modulation,
-           "per_position_W": pos, "leg": leg, "conduction_W": cond_total, "switching_W": sw_total,
+           "per_position_W": pos, "per_die_W": per_die, "per_die_thermal_W": per_die_thermal, "die_basis": die_basis,
+           "leg": leg,
+           "conduction_W": cond_total, "switching_W": sw_total,
            "semiconductor_W": total_semis, "driver_aux_W": model.driver_aux_W,
            "dc_side_W": total_semis + (model.driver_aux_W if model.aux_from_hv_dc else 0.0),
-           "hottest_position": worst_pos, "hottest_position_W": pos[worst_pos],
-           "hottest_with_sharing_error_W": hot, "established": established, "problems": leg["problems"],
+           "hottest_position": hot_name, "hottest_position_W": hot_W,
+           "hottest_with_sharing_error_W": None if sharing is None else hot_W, "sharing": sharing,
+           "established": established, "problems": problems,
            "value_kind": model.device.value_kind,
            "not_modelled": ["current ripple", "dead-time voltage error", "minimum pulse / pulse dropping",
-                            "ringing, C_oss hard-commutation at zero current", "die-level sharing inside a module"]}
+                            "ringing, C_oss hard-commutation at zero current", "die-level sharing inside a module",
+                            "low-frequency junction ripple within the fundamental period (average model)"]}
     if refine_check and established:
         coarse = leg_losses(model, I_pk, phi, V_pk, Vdc_V, Tj_C, n_angle=max(36, model.n_angle // 2))
         c_tot = 3.0 * model.parallel * sum(positions(coarse).values())
@@ -333,40 +430,107 @@ def inverter_losses(model: ModuleLossModel, id_A: float, iq_A: float, vd_V: floa
     return out
 
 
+def standstill_losses(model: ModuleLossModel, I_pk: float, Vdc_V: float, Tj_C: float, V_pk: float = 0.0,
+                      phi_rad: float = 0.0, n_angle: int = 720, share: float = 1.0) -> dict:
+    """DC phase currents at standstill (review R2 PT-02).
+
+    For each sampled electrical angle every phase carries a constant current and its leg the ACTUAL duty of the
+    declared modulation for the (resistive) terminal voltage; heat per physical die from the same per-sample
+    evaluator as the rotating model (SiC: gate-on reverse channel and body diode on the same die) and the same data
+    gate (every active curve, the Vdc scaling of the energies - missing is UNKNOWN, never zero).  The electrical
+    angle at standstill is not known: the result is the worst sampled angle, reported with the angle range.
+    """
+    thetas = (np.arange(n_angle) + 0.5) * TWO_PI / n_angle
+    m = V_pk / (0.5 * Vdc_V)
+    d_raw = duties(thetas + phi_rad, m, 0.0, model.modulation)
+    problems = []
+    if overmodulated(d_raw):
+        problems.append(f"overmodulation at standstill (V_pk {V_pk:.4g} V at Vdc {Vdc_V:g} V): not supported")
+    d3 = np.clip(d_raw, 0.0, 1.0)
+    worst = np.zeros(n_angle)
+    worst_name = np.array([""] * n_angle, dtype=object)
+    die_max: dict = {}
+    total = np.zeros(n_angle)
+    cond = np.zeros(n_angle)
+    swit = np.zeros(n_angle)
+    die_basis = ""
+    for k in range(3):
+        i_k = I_pk * np.cos(thetas - TWO_PI * k / 3.0) / model.parallel * share
+        smp = _leg_samples(model, i_k, d3[k], Vdc_V, Tj_C)
+        problems += [q for q in smp["problems"] if q not in problems]
+        leg = {"conduction_W": smp["conduction"], "switching_W": smp["switching"],
+               "reverse_parts_W": smp["reverse_parts"]}
+        dd, die_basis = dies(leg, model.device)
+        for name, arr in dd.items():
+            die_max[name] = max(die_max.get(name, 0.0), float(np.max(arr)))
+            better = arr > worst
+            worst = np.where(better, arr, worst)
+            worst_name = np.where(better, f"phase {'abc'[k]} {name}", worst_name)
+        c_k = sum(smp["conduction"].values())
+        s_k = sum(smp["switching"].values())
+        cond += c_k * model.parallel
+        swit += s_k * model.parallel
+        total += (c_k + s_k) * model.parallel
+    if problems:
+        return {"established": False, "problems": problems, "problem": "; ".join(problems)}
+    j = int(np.argmax(worst))
+    return {"established": True, "problems": [], "hottest_device_W": float(worst[j]), "hottest_die": str(worst_name[j]),
+            "angle_at_max_deg": math.degrees(thetas[j]), "module_total_W": float(total[j]),
+            "conduction_W": float(cond[j]), "switching_W": float(swit[j]),
+            "total_max_over_angle_W": float(total.max()), "total_min_over_angle_W": float(total.min()),
+            "total_over_six_W": float(total[j]) / 6.0, "die_basis": die_basis,
+            "per_die_max_over_angle_W": die_max,
+            "note": "sampled over the unknown electrical angle (worst angle reported); total/6 is not a "
+                    "junction-temperature input at standstill",
+            "curve": [(float(t), float(w), float(tt)) for t, w, tt in zip(thetas, worst, total)]}
+
+
 def standstill_hotspot(model: ModuleLossModel, I_pk: float, Vdc_V: float, Tj_C: float, n_angle: int = 720) -> dict:
-    """DC phase currents at standstill: per-device loss vs electrical angle (sampled), max over the angle."""
-    dev = model.device
-    best = None
-    rows = []
-    for th in (np.arange(n_angle) + 0.5) * TWO_PI / n_angle:
-        worst_here = 0.0
-        total_here = 0.0
-        for off in (0.0, -TWO_PI / 3, TWO_PI / 3):
-            i = I_pk * math.cos(th + off) / model.parallel
-            a = abs(i)
-            d = 0.5                                     # negligible voltage reference at standstill
-            ok, why = dev.v_on.covers(a, Tj_C)
-            if not ok:
-                return {"established": False, "problem": why}
-            von = float(dev.v_on.eval(np.array([a]), Tj_C)[0])
-            vrev = float(dev.v_rev.eval(np.array([a]), Tj_C)[0])
-            k, _ = dev.energy_scale(Vdc_V)
-            esw = 0.0 if k is None else float((dev.e_on.eval(np.array([a]), Tj_C)[0] +
-                                               dev.e_off.eval(np.array([a]), Tj_C)[0]) * k) * model.fsw_Hz
-            err = 0.0 if (k is None or dev.e_rr is None or dev.energy_basis != "per_device") else \
-                float(dev.e_rr.eval(np.array([a]), Tj_C)[0] * k) * model.fsw_Hz
-            p_sw_dev = d * von * a + esw
-            p_rev_dev = (1 - d) * vrev * a + err if dev.technology == "IGBT" else \
-                min(1 - d, 2 * model.deadtime_s * model.fsw_Hz) * vrev * a + err
-            worst_here = max(worst_here, p_sw_dev, p_rev_dev)
-            total_here += (p_sw_dev + p_rev_dev) * model.parallel
-        rows.append((float(th), worst_here, total_here))
-        if best is None or worst_here > best[1]:
-            best = rows[-1]
-    return {"established": True, "hottest_device_W": best[1], "angle_at_max_deg": math.degrees(best[0]),
-            "module_total_W": best[2], "total_over_six_W": best[2] / 6.0,
-            "note": "sampled over the electrical angle; total/6 is not a junction-temperature input at standstill",
-            "curve": rows}
+    """Former interface: standstill with a negligible terminal voltage (duty of the declared modulation at m = 0)."""
+    return standstill_losses(model, I_pk, Vdc_V, Tj_C, n_angle=n_angle)
+
+
+def point_losses(model: ModuleLossModel, id_A: float, iq_A: float, vd_V: float, vq_V: float, Vdc_V: float,
+                 Tj_C: float, standstill: bool, refine_check: bool = False) -> dict:
+    """THE module-loss evaluation of an operating point for every consumer (kernel, API, pages): the rotating
+    period average, or at standstill the per-angle DC-current evaluation - never one for the other."""
+    if not standstill:
+        return inverter_losses(model, id_A, iq_A, vd_V, vq_V, Vdc_V, Tj_C, refine_check=refine_check)
+    I_pk = math.hypot(id_A, iq_A)
+    V_pk = math.hypot(vd_V, vq_V)
+    phi = (math.atan2(vq_V, vd_V) - math.atan2(iq_A, id_A)) if (I_pk > 0 and V_pk > 0) else 0.0
+    h = standstill_losses(model, I_pk, Vdc_V, Tj_C, V_pk, phi)
+    if not h["established"]:
+        return {"established": False, "problems": h["problems"], "value_kind": model.device.value_kind,
+                "Tj_eval_C": Tj_C, "fsw_Hz": model.fsw_Hz, "standstill": True}
+    hot_name, hot_W, sharing = (h["hottest_die"] or "none (no current)"), h["hottest_device_W"], None
+    sh = _sharing(model)
+    if sh is not None:
+        hh = standstill_losses(model, I_pk, Vdc_V, Tj_C, V_pk, phi, share=sh[0])
+        if not hh["established"]:
+            return {"established": False, "problems": [f"hottest parallel module (current x{sh[0]:g}): {q}"
+                                                       for q in hh["problems"]],
+                    "value_kind": model.device.value_kind, "Tj_eval_C": Tj_C, "fsw_Hz": model.fsw_Hz,
+                    "standstill": True}
+        sharing = {"hottest_die_equal_sharing_W": hot_W, "note": "hottest parallel module at (1 + e) of its share"}
+        hot_name, hot_W = hh["hottest_die"], hh["hottest_device_W"]
+    tot = h["total_max_over_angle_W"]
+    # the per-die heat at standstill depends on the unknown electrical angle: a die's history is known only without
+    # current (every die at zero); otherwise only the bound over the angle is (a heat bound is not a cycle bound)
+    zero = I_pk == 0.0
+    return {"established": True, "semiconductor_W": tot, "conduction_W": h["conduction_W"],
+            "switching_W": h["switching_W"], "per_position_W": {}, "per_die_W": {},
+            "per_die_thermal_W": ({k: 0.0 for k in h["per_die_max_over_angle_W"]} if zero else {}),
+            "per_die_bound_over_angle_W": h["per_die_max_over_angle_W"], "die_basis": h["die_basis"],
+            "hottest_position": f"{hot_name} (worst angle)", "hottest_position_W": hot_W, "sharing": sharing,
+            "modulation_index": V_pk / (0.5 * Vdc_V), "power_factor": math.cos(phi), "Tj_eval_C": Tj_C,
+            "fsw_Hz": model.fsw_Hz, "value_kind": model.device.value_kind, "problems": [],
+            "dc_side_W": tot + (model.driver_aux_W if model.aux_from_hv_dc else 0.0),
+            "driver_aux_W": model.driver_aux_W,
+            "standstill": {"angle_at_max_deg": h["angle_at_max_deg"], "total_over_six_W": h["total_over_six_W"],
+                           "total_range_over_angle_W": [h["total_min_over_angle_W"], h["total_max_over_angle_W"]],
+                           "note": "DC phase currents at the unknown electrical angle: the worst sampled angle; "
+                                   "total/6 is not a device-level input"}}
 
 
 def electrothermal_fixed_point(model: ModuleLossModel, op: dict, Rth_K_per_W: float, T_ref_C: float,
@@ -379,7 +543,8 @@ def electrothermal_fixed_point(model: ModuleLossModel, op: dict, Rth_K_per_W: fl
     T = float(T_ref_C)
     hist = []
     for it in range(max_iter):
-        r = inverter_losses(model, op["id_A"], op["iq_A"], op["vd_V"], op["vq_V"], op["Vdc_V"], T, refine_check=False)
+        r = point_losses(model, op["id_A"], op["iq_A"], op["vd_V"], op["vq_V"], op["Vdc_V"], T,
+                         standstill=bool(op.get("standstill", False)))
         if not r["established"]:
             return {"converged": False, "reason": "; ".join(r["problems"]), "history": hist}
         P = r["hottest_position_W"]

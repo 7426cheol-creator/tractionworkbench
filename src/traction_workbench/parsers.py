@@ -76,9 +76,15 @@ def capacitor_bank_from_dict(cfg: dict):
     from .extensions.dclink_ripple import CapacitorBank, SourceImpedance
     cap = cfg["capacitor"]
     k_esr = {"mohm": 1e-3, "ohm": 1.0}[cap.get("ESR_unit", "mohm")]
+    dom = cap.get("T_valid_C")
     bank = CapacitorBank(float(cap["C_uF"]) * 1e-6, tuple((float(f), float(r) * k_esr) for f, r in cap["ESR_table"]),
                          ESL_H=float(cap.get("ESL_nH") or 0.0) * 1e-9,
                          Rth_K_per_W=None if cap.get("Rth_K_per_W") in (None, "") else float(cap["Rth_K_per_W"]),
+                         ESR_temp_coeff_per_K=float(cap.get("ESR_temp_coeff_per_K") or 0.0),
+                         T_ref_C=float(cap.get("ESR_table_T_C") if cap.get("ESR_table_T_C") not in (None, "") else 25.0),
+                         T_valid_C=None if not dom else tuple(float(v) for v in dom),
+                         Rth_basis=str(cap.get("Rth_basis") or ""), count=int(cap.get("count") or 1),
+                         symmetric_layout=bool(cap.get("symmetric_layout")),
                          life_hours_table=tuple((float(t), float(h)) for t, h in (cap.get("life_hours_table") or [])),
                          life_voltage_V=None if cap.get("life_voltage_V") in (None, "") else float(cap["life_voltage_V"]),
                          life_basis=str(cap.get("life_basis") or ""))
