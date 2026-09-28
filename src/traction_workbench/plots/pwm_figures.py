@@ -65,30 +65,31 @@ def fig_pwm_policies(fig, res: dict, title: str | None = None):
     x = np.arange(len(pols))
     inv = [(p["E_inv_J"] or np.nan) / 1e3 for p in pols]
     hcu = [(p["E_cu_harm_J"] or 0.0) / 1e3 for p in pols]
-    fe = [(p["E_iron_harm_bound_J"] or 0.0) / 1e3 for p in pols]
+    mag = [(p.get("E_magnetic_harm_bound_J") or 0.0) / 1e3 for p in pols]
     ax2.bar(x, inv, 0.55, color=[_pc(i, t) for i in range(len(pols))], alpha=0.8, label=tr("인버터 손실", "inverter loss"))
-    ax2.bar(x, hcu, 0.55, bottom=inv, color="#bf8700", alpha=0.7, label=tr("모터 고조파 동손", "motor harmonic copper"))
-    ax2.bar(x, fe, 0.55, bottom=np.array(inv) + np.array(hcu), color="none", ec="#8250df", hatch="//",
-            label=tr("고조파 철손 상한 (선언)", "harmonic iron bound (declared)"))
+    ax2.bar(x, hcu, 0.55, bottom=inv, color="#bf8700", alpha=0.7, label=tr("모터 PWM 동손", "motor PWM copper"))
+    ax2.bar(x, mag, 0.55, bottom=np.array(inv) + np.array(hcu), color="none", ec="#8250df", hatch="//",
+            label=tr("Fe+PM PWM 손실 상한 (선언, 추정값 아님)", "Fe+PM PWM loss upper bound (declared, not an estimate)"))
     for i, p in enumerate(pols):
         v = p.get("versus_baseline")
         if v and v.get("delta_E_inv_J") is not None:
             txt = f"Δinv {100 * (v.get('relative_inv') or 0):+.1f}%\n" + tr("총합: ", "total: ") + v["total"]["status"]
-            ax2.annotate(txt, (x[i], inv[i] + hcu[i] + fe[i]), xytext=(0, 4), textcoords="offset points", ha="center",
+            ax2.annotate(txt, (x[i], inv[i] + hcu[i] + mag[i]), xytext=(0, 4), textcoords="offset points", ha="center",
                          fontsize=6.5, color=t["fg"])
         if not p["admissible"]:
             ax2.annotate("✗", (x[i], inv[i] / 2), ha="center", fontsize=14, color="#cf222e")
-    tops = [a + b + c for a, b, c in zip(inv, hcu, fe) if np.isfinite(a + b + c)]
+    tops = [a + b + c for a, b, c in zip(inv, hcu, mag) if np.isfinite(a + b + c)]
     if tops:                                         # head room: the per-bar notes stay inside the axes, under the title
         ax2.set_ylim(0, max(tops) * 1.6)
     ax2.set_xticks(x)
     ax2.set_xticklabels([n.replace(" ", "\n", 1) for n in names], fontsize=7)
     ax2.set_ylabel(tr("궤적 에너지 [kJ]", "trajectory energy [kJ]"))
     ax2.legend(fontsize=6.5, loc="upper left", framealpha=0.95)
-    ax2.set_title(tr("에너지 (인버터 개선 ≠ 모터+인버터 개선)", "energy (inverter gain ≠ motor+inverter gain)"), fontsize=9)
+    ax2.set_title(tr("정책 민감 손실 에너지 · 해칭 = Fe+PM 상한(실제값 아님)",
+                     "policy-sensitive loss energy · hatch = Fe+PM upper bound (not an actual value)"), fontsize=9)
     # utilisation of the mandatory limits
     lim = res["limits"]
-    items = [("Tj", "Tj_max_C", "Tj_max_C", False), (tr("피크 전류", "peak current"), "i_peak_incl_ripple_max_A",
+    items = [("Tj", "Tj_max_C", "Tj_max_C", False), (tr("피크 전류 상한", "peak-current bound"), "i_peak_incl_ripple_max_A",
                                                         "i_peak_incl_ripple_max_A", False),
              (tr("커패시터 전류", "cap. current"), "I_cap_rms_max_A", "cap_rms_max_A", False),
              (tr("위상 여유", "phase margin"), "phase_margin_min_deg", "phase_margin_min_deg", True)]
@@ -108,8 +109,10 @@ def fig_pwm_policies(fig, res: dict, title: str | None = None):
     ax3.set_title(tr("필수 제약 (효율과 맞바꾸지 않음)", "mandatory constraints (never traded for efficiency)"), fontsize=9)
     ax3.legend(fontsize=6.5, loc="upper left")
     best = res.get("best_inverter_energy_among_evaluated")
-    _note(ax3, tr(f"평가 후보 중 인버터 에너지 최선: {best or '없음'}\nPareto: {', '.join(res['pareto']) or '없음'}",
-                  f"best inverter energy among evaluated: {best or 'none'}\nPareto: {', '.join(res['pareto']) or 'none'}"),
+    _note(ax3, tr(f"평가 후보 중 인버터 손실 최소: {best or '없음'}\n"
+                  f"known-loss Pareto: {', '.join(res['pareto']) or '없음'}",
+                  f"lowest inverter loss among evaluated: {best or 'none'}\n"
+                  f"known-loss Pareto: {', '.join(res['pareto']) or 'none'}"),
           loc="upper right", fontsize=6.5)
     return fig
 
