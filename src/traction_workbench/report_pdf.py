@@ -139,16 +139,16 @@ def build_pdf(path, record: dict, rec=None, case=None, progress=None, envelope: 
         pg.flush()
 
         if rec is not None and case is not None:
-            idx = next((i for i, c in enumerate(rec.conditions) if c.solution.point is not None), 0)
+            idx = next((i for i, c in enumerate(rec.conditions) if c.primary.point is not None), 0)
             cond = rec.conditions[idx]
             sc = cond.scenario
-            T = rec.requirement.target_Nm
+            T = cond.primary_torque_Nm            # the accepted witness torque (review R2 D-R2-03)
             title = f"{req.get('req_id', '')} · {sc.speed_rpm:g} rpm · {T:g} N·m · {sc.Vdc_V:g} V"
             prog(0.2, "id-iq map")
             plane = M.idiq_plane(case.drive, sc.source_limits, sc.speed_rpm, sc.Vdc_V, T, scenario=sc)
             _fig(pdf, F.fig_idiq, plane, title=title)
-            if cond.solution.point is not None:
-                pt = cond.solution.point
+            if cond.primary.point is not None:
+                pt = cond.primary.point
                 pv = O.point_view(case.drive, sc, pt.id_A, pt.iq_A, T)
                 prog(0.35, "waveforms")
                 from .plots import schematics as SC

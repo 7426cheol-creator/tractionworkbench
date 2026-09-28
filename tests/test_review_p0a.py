@@ -180,9 +180,11 @@ def test_f03b_iq_validity_edge_is_a_boundary_not_an_exception(drive, limits):
 def _env(eid, duration, t_max, prio=0, cond=(), rev="A"):
     from traction_workbench.analysis.rating import RatingEnvelope
     from traction_workbench.models.provenance import DataOrigin, Provenance
+    from traction_workbench.analysis.rating import ApprovalState, RatingApproval
     prov = Provenance(DataOrigin.SUPPLIER, "test sheet", rev, "supplier-rated (test fixture)")
     return RatingEnvelope(eid, rev, duration, (0.0, 16000.0), (t_max, t_max), prov,
-                          min_braking_torque_Nm=(-t_max, -t_max), conditions=cond, priority=prio)
+                          min_braking_torque_Nm=(-t_max, -t_max), conditions=cond, priority=prio,
+                          approval=RatingApproval(ApprovalState.APPROVED, f"TEST-{eid}", rev, "test rating"))
 
 
 def test_f04_ten_second_rating_never_passes_a_continuous_requirement():
@@ -739,9 +741,15 @@ def test_synthetic_or_unvalidated_envelope_is_a_model_experiment_not_a_rating():
     from traction_workbench.analysis.rating import RatingEnvelope, duration_claim
     from traction_workbench.models.provenance import DataOrigin, Provenance
 
+    from traction_workbench.analysis.rating import ApprovalState, RatingApproval
+
     def env(origin, status, kind="supplier_rated"):
+        # R2 D-R2-01: approval is typed; the free-text status only describes.  The 'released' fixtures carry an
+        # explicit approval with its evidence identity, the others none.
+        appr = (RatingApproval(ApprovalState.APPROVED, "RS-AUDIT-0", "0", "10 s rating (audit fixture)")
+                if "released" in status else None)
         return RatingEnvelope("E10", "0", 10.0, (0.0, 12000.0), (200.0, 200.0),
-                              Provenance(origin, "audit example", "0", status), evidence_kind=kind)
+                              Provenance(origin, "audit example", "0", status), evidence_kind=kind, approval=appr)
     syn = duration_claim((env(DataOrigin.SYNTHETIC, "UNVALIDATED"),), 10, 12000, 150, {})
     assert syn.status is Status.UNKNOWN and "model experiment" in syn.detail
     assert all(e.kind.value != "supplier_rated_envelope" for e in syn.evidence)

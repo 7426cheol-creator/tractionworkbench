@@ -44,10 +44,10 @@ def _evaluate_task(progress, case: dict, analyses_curves: list):
 def _condition_views(rec, case_obj, idx: int) -> dict:
     cond = rec.conditions[idx]
     sc = cond.scenario
-    T = rec.requirement.target_Nm
+    T = cond.primary_torque_Nm            # the accepted witness torque (review R2 D-R2-03), not a failed band centre
     plane = M.idiq_plane(case_obj.drive, sc.source_limits, sc.speed_rpm, sc.Vdc_V, T, scenario=sc)
     pv = None
-    pt = cond.solution.point
+    pt = cond.primary.point
     if pt is not None:
         pv = O.point_view(case_obj.drive, sc, pt.id_A, pt.iq_A, T)
     return {"plane": plane, "pv": pv}
@@ -376,7 +376,7 @@ class DecisionPage(QWidget):
         c = rec_d["conditions"][idx]
         sc = c["scenario"]
         title = (f"{rec_d['requirement'].get('req_id', '')} · {sc['speed_rpm_mechanical']:g} rpm · "
-                 f"{rec.requirement.target_Nm:g} N·m · {sc['Vdc_V_inverter_dc_terminal']:g} V")
+                 f"{rec.conditions[idx].primary_torque_Nm:g} N·m · {sc['Vdc_V_inverter_dc_terminal']:g} V")
         self.views.show_plane(views["plane"], title=title)
         if views["pv"] is not None:
             self.views.show_point(views["pv"], title + tr(" · 최소전류 정책점", " · minimum-current policy point"))
@@ -395,6 +395,10 @@ class DecisionPage(QWidget):
                 (tr("정책 capability [N·m] / certified", "policy capability [N·m] / certified"),
                  f"{fmt(pcap.get('achieved_value_Nm'))} / {pcap.get('certified')}"),
                 (tr("capability 제한 제약", "capability limited by"), ", ".join(pcap.get("active_constraints_at_witness") or []) or "—")]
+        rc = c.get("rejected_band_centre")
+        if rc:
+            rows.append((tr("밴드 중심 (탈락 후보, 진단용)", "band centre (rejected candidate, diagnostic)"),
+                         f"T = {fmt(rc['torque_Nm'])} N·m: {rc['policy_claim']} · P_dc = {fmt(rc['Pdc_W'])} W"))
         op = c["policy_solution"]["operating_point"]
         if op:
             cur = next((x for x in op["constraints"] if x["name"] == "CURRENT"), None)

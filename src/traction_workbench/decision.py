@@ -19,6 +19,7 @@ import numpy as np
 
 from . import __version__
 from .analysis.rating import RatingEnvelope, duration_claim
+from .identity import content_sha256, implementation
 from .models.components import DriveModel
 from .models.provenance import FIDELITY_ALLOWED_CLAIMS
 from .requirement import Requirement
@@ -67,9 +68,25 @@ class ConditionResult:
     witness_torque_Nm: float | None = None      # torque of the single witness behind every part of the claim
     witness_solution: PolicySolution | None = None
 
+    # review R2 D-R2-03: every output (record, report, PDF, desktop, limiting factors, actions) shows the solution
+    # at the ACCEPTED requirement witness; a band centre that failed is a named diagnostic, never the primary point
+    @property
+    def primary(self) -> PolicySolution:
+        return self.witness_solution or self.solution
+
+    @property
+    def primary_torque_Nm(self) -> float:
+        return self.primary.T_request_Nm
+
+    @property
+    def rejected_centre(self) -> PolicySolution | None:
+        ws = self.witness_solution
+        return None if ws is None or ws is self.solution else self.solution
+
     def to_dict(self) -> dict:
         ws = self.witness_solution
         wp = None if ws is None else ws.point
+        rc = self.rejected_centre
         return {
             "scenario": self.scenario.describe(),
             "requirement_claim_at_this_condition": self.requirement_claim.to_dict(),
@@ -80,8 +97,13 @@ class ConditionResult:
                 "note": "the static, DC and duration parts of the claim are evaluated at this same witness",
             },
             "torque_capability_margin_Nm": self.torque_margin_Nm,
-            "policy_solution": self.solution.to_dict(),
-            "band_witness_solution": (None if ws is None or ws is self.solution else ws.to_dict()),
+            "torque_capability_margin_basis": "policy capability vs the requirement target (band centre for a band)",
+            "policy_solution": self.primary.to_dict(),
+            "policy_solution_torque_Nm": self.primary_torque_Nm,
+            "rejected_band_centre": None if rc is None else {
+                "note": "diagnostic only: the band centre failed; the requirement is answered at the witness above",
+                "torque_Nm": rc.T_request_Nm, "policy_claim": rc.policy_claim.status.value,
+                "Pdc_W": None if rc.point is None else rc.point.Pdc_W, "solution": rc.to_dict()},
             "policy_capability": None if self.capability is None else self.capability.to_dict(),
             "duration_claim": None if self.duration is None else self.duration.to_dict(),
         }
@@ -104,6 +126,7 @@ class DecisionRecord:
     input_sha256: str
     settings: NumericalSettings
     analyses: dict = field(default_factory=dict)
+    implementation: dict = field(default_factory=dict)
 
     @property
     def layers(self) -> dict:
@@ -114,6 +137,7 @@ class DecisionRecord:
             "record_type": "EngineeringDecisionRecord",
             "record_id": self.record_id,
             "software": {"name": "traction-workbench", "version": __version__},
+            "implementation": self.implementation,
             "input_sha256": self.input_sha256,
             "verdict": {**self.verdict.to_dict(), "scope": self.verdict_scope, "qualifiers": list(self.qualifiers),
                         "layers": self.layers},
@@ -367,8 +391,13 @@ def _limiting_and_actions(req: Requirement, results: list[ConditionResult], samp
             lst.append(text)
 
     for cr in results:
-        sol = cr.solution
+        sol = cr.primary                     # the accepted witness when a band found one (review R2 D-R2-03)
         tag = f"[Vdc={cr.scenario.Vdc_V:g} V]"
+        rc = cr.rejected_centre
+        if rc is not None:
+            add(limiting, f"{tag} band centre {rc.T_request_Nm:g} N*m is {rc.policy_claim.status.value} (rejected "
+                          f"candidate, diagnostic only); the requirement is answered at the witness "
+                          f"{cr.primary_torque_Nm:g} N*m")
         for sc in sol.screens:
             if sc.violated:
                 add(limiting, f"{tag} necessary condition violated: {sc.statement}")
@@ -496,13 +525,22 @@ def evaluate_requirement(req: Requirement, drive: DriveModel, *, scenario: Scena
         "range_samples": range_samples,
         "numerical_settings": settings.to_dict(),
         "software_version": __version__,
+        # review R2 D-R2-02: the descriptions above are for people; the identity is the CONTENT of every model the
+        # verdict used - all loss tables, axes, masks, scaling laws, auxiliary ownership, coefficients and flags
+        "content_sha256": {
+            "drive": content_sha256(drive), "requirement": content_sha256(req),
+            "scenario_template": None if scenario is None else content_sha256(scenario),
+            "source_limits": None if source_limits is None else content_sha256(source_limits),
+            "ratings": [content_sha256(r) for r in ratings], "numerical_settings": content_sha256(settings)},
     }
     digest = sha256_of(snapshot)
+    impl = implementation()
+    rid = sha256_of({"input_sha256": digest, "implementation": impl})
     return DecisionRecord(
-        record_id=f"DR-{req.req_id}-{digest[:12]}", requirement=req, drive=drive, conditions=tuple(results),
+        record_id=f"DR-{req.req_id}-{rid[:12]}", requirement=req, drive=drive, conditions=tuple(results),
         verdict=agg, verdict_scope=scope, qualifiers=tuple(qualifiers), limiting_factors=tuple(limiting),
         next_actions=tuple(actions), unevaluated=tuple(unevaluated), assumptions=tuple(assumptions),
-        snapshot=jsonable(snapshot), input_sha256=digest, settings=settings)
+        snapshot=jsonable(snapshot), input_sha256=digest, settings=settings, implementation=dict(impl))
 
 
 _jsonable = jsonable          # former private name (compatibility)

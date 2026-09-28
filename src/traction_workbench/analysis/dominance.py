@@ -11,6 +11,14 @@ and is evaluated with ``sizing``.
 Independent review F13: a gain is an interval (both capabilities carry a
 resolution), and a relaxation whose capability could not be established is
 "unresolved" - never "not limiting".
+
+Second review R2 (D-R2-05): a limit of ZERO (e.g. no charge acceptance) is a
+real, often decisive constraint - a relative change of it is undefined, so it
+is relaxed by an explicit absolute step in its native unit (power W, current
+A = the same W at Vdc) and reported as such; it is never dropped from the
+diagnosis.  Tied power / current caps of one side are always also relaxed
+together.  A declared-unlimited limit has nothing to relax.  The gain interval
+is the sampled resolution, not an enclosure of the global capability change.
 """
 
 from __future__ import annotations
@@ -36,23 +44,55 @@ RELAXABLE = {
 }
 
 
-def _relaxed(drive, scenario, names, rel):
+ABS_POWER_STEP_W = 1000.0          # absolute relaxation of a zero DC limit (currents: the same W at Vdc)
+
+
+def _abs_step(name: str, scenario, drive, scale: float = 1.0) -> float:
+    if name.startswith("DC_") and name.endswith("_POWER"):
+        return ABS_POWER_STEP_W * scale
+    if name.startswith("DC_") and name.endswith("_CURRENT"):
+        return ABS_POWER_STEP_W * scale / scenario.Vdc_V
+    if name == "ID_MIN":
+        return -0.01 * drive.inverter.current_limit_A_peak * scale
+    return 0.0
+
+
+def _relaxed(drive, scenario, names, rel, abs_scale: float | None = None):
+    """Relax each named limit by the relative ``rel`` - or, for a zero limit, by its absolute step (x ``abs_scale``,
+    default rel / 1 %)."""
     d, s = drive, scenario
     for n in names:
         p, _ = RELAXABLE[n]
         base = get_value(d, s, p)
-        d, s = apply(d, s, p, base * (1.0 + rel))
+        if base == 0:
+            d, s = apply(d, s, p, _abs_step(n, scenario, drive, rel / 0.01 if abs_scale is None else abs_scale))
+        else:
+            d, s = apply(d, s, p, base * (1.0 + rel))
     return d, s
 
 
+def _perturbation(name, drive, scenario, rel):
+    p, _ = RELAXABLE[name]
+    base = get_value(drive, scenario, p)
+    if base == 0:
+        return (f"absolute {_abs_step(name, scenario, drive, rel / 0.01):+.6g} (zero limit: a relative change is "
+                f"undefined)")
+    return f"relative {rel:+.2%}"
+
+
 def _available(drive, scenario):
+    """Declared, finite limits (zero included); undeclared ones cannot be relaxed, unlimited ones need none."""
+    import math
     out = []
     for n, (p, _) in RELAXABLE.items():
         v = get_value(drive, scenario, p)
-        if v is None or v == 0:
+        if v is None or not math.isfinite(v):
             continue
         out.append(n)
     return out
+
+
+TIED = (("DC_DISCHARGE_POWER", "DC_DISCHARGE_CURRENT"), ("DC_CHARGE_POWER", "DC_CHARGE_CURRENT"))
 
 
 @dataclass(frozen=True)
@@ -98,6 +138,7 @@ def capability_dominance(drive: DriveModel, scenario: Scenario, direction: int =
         gains[name] = gain
         p, _ = RELAXABLE[name]
         lim = get_value(drive, scenario, p)
+        new_lim = get_value(d, s, p)
         if gain is None:
             cls = "unresolved (capability not established)"
         elif gain - eps > 0:
@@ -106,27 +147,34 @@ def capability_dominance(drive: DriveModel, scenario: Scenario, direction: int =
             cls = "relaxation lowered the capability (non-monotonic response)"
         else:
             cls = "not limiting alone (gain within resolution)"
-        rows.append((("constraint", name), ("parameter", p), ("limit", lim), ("relaxed_limit", lim * (1 + relaxation)),
+        rows.append((("constraint", name), ("parameter", p), ("limit", lim), ("relaxed_limit", new_lim),
+                     ("perturbation", _perturbation(name, drive, scenario, relaxation)),
                      ("capability_Nm", v), ("gain_Nm", gain),
                      ("gain_interval_Nm", None if gain is None else [gain - eps, gain + eps]),
-                     ("sensitivity_Nm_per_unit", None if gain is None else gain / abs(lim * relaxation)),
+                     ("gain_interval_meaning", "sampled resolution (two bisected boundaries), not an enclosure of the "
+                                               "global capability change"),
+                     ("sensitivity_Nm_per_unit", None if gain is None or new_lim == lim else gain / abs(new_lim - lim)),
                      ("active_at_base", name in active),
                      ("classification", cls)))
     joint = []
+    avail = set(gains)
     weak = [n for n in gains if gains[n] is not None and gains[n] <= eps]
-    cand_pairs = [pr for pr in combinations(weak, 2)
-                  if pr[0] in active or pr[1] in active or set(pr) == {"DC_DISCHARGE_POWER", "DC_DISCHARGE_CURRENT"}
-                  or set(pr) == {"DC_CHARGE_POWER", "DC_CHARGE_CURRENT"}]
+    cand_pairs = [pr for pr in combinations(weak, 2) if pr[0] in active or pr[1] in active]
+    # tied caps of one side are always relaxed together (either can bind alone; together they are one constraint)
+    cand_pairs += [pr for pr in TIED if set(pr) <= avail and pr not in cand_pairs]
     for a, b in cand_pairs:
         d, s = _relaxed(drive, scenario, [a, b], relaxation)
         cap = policy_capability(PolicyEvaluator(d, s, settings), direction, samples=samples, certify=False)
         v = cap.value_Nm if cap.accepted else None
         gain = None if (v is None or base_v is None) else direction * (v - base_v)
+        pert = [_perturbation(n, drive, scenario, relaxation) for n in (a, b)]
         if gain is None:
-            joint.append((("constraints", [a, b]), ("gain_Nm", None), ("classification", "unresolved")))
-        elif gain - eps > 0:
-            joint.append((("constraints", [a, b]), ("gain_Nm", gain), ("gain_interval_Nm", [gain - eps, gain + eps]),
-                          ("classification", "joint bottleneck")))
+            joint.append((("constraints", [a, b]), ("perturbation", pert), ("gain_Nm", None),
+                          ("classification", "unresolved")))
+        elif gain - eps > 0 and not any(g is not None and g - eps > 0 for g in (gains.get(a), gains.get(b))):
+            # only a pair helps: a joint bottleneck (a pair containing a limit that is limiting alone adds nothing)
+            joint.append((("constraints", [a, b]), ("perturbation", pert), ("gain_Nm", gain),
+                          ("gain_interval_Nm", [gain - eps, gain + eps]), ("classification", "joint bottleneck")))
     notes = ["relaxations are diagnostic (cause analysis), not realisable hardware changes",
              f"gain resolution +-{eps:.2e} N*m (two sampled capability boundaries); a gain inside it is not a "
              f"'limiting' finding, and a relaxation without an established capability is 'unresolved'",
@@ -199,7 +247,8 @@ def requirement_relaxation(drive: DriveModel, scenario: Scenario, T_request: flo
                      ("minimal_meaning", "smallest sufficient relaxation found; UNKNOWN statuses were met below it - "
                                          "not a proven minimum" if unresolved.get((name,)) else
                                          "bracketed between an insufficient and a sufficient relaxation (sampled)"),
-                     ("relaxed_limit", None if f is None else lim * (1 + f))))
+                     ("relaxed_limit", None if f is None else get_value(*_relaxed(drive, scenario, [name], f), p)),
+                     ("perturbation", None if f is None else _perturbation(name, drive, scenario, f))))
         singles_ok |= f is not None
     if not singles_ok:
         names = _available(drive, scenario)

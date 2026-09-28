@@ -121,12 +121,18 @@ def decision_markdown(rec) -> str:
         sc = cr.scenario
         L += ["", f"## Condition: n = {sc.speed_rpm:g} rpm, Vdc = {sc.Vdc_V:g} V", "",
               f"**At this condition: {BADGE[cr.requirement_claim.status.value]}** — {cr.requirement_claim.detail}", ""]
-        claims = list(cr.solution.claims) + ([cr.duration] if cr.duration is not None else [])
+        prim = cr.primary
+        claims = list(prim.claims) + ([cr.duration] if cr.duration is not None else [])
         L += _claims_table(claims)
-        L += ["", "### Operating point (minimum-current policy)", ""]
-        L += _point_section(cr.solution.point)
-        if cr.solution.active_loss_candidate is not None:
-            a = cr.solution.active_loss_candidate
+        L += ["", f"### Operating point (minimum-current policy, T = {fmt(cr.primary_torque_Nm, 6, 'N·m')})", ""]
+        L += _point_section(prim.point)
+        rc = cr.rejected_centre
+        if rc is not None:
+            L += ["", f"_Band centre {fmt(rc.T_request_Nm, 6, 'N·m')}: {rc.policy_claim.status.value} - rejected "
+                      f"candidate, diagnostic only (P_dc = {fmt(None if rc.point is None else rc.point.Pdc_W, 7, 'W')}); "
+                      f"the requirement is answered at the witness above._"]
+        if prim.active_loss_candidate is not None:
+            a = prim.active_loss_candidate
             L += ["", f"_Active-loss candidate (outside the default policy, not adopted): id = {fmt(a.id_A, 7, 'A')}, "
                       f"iq = {fmt(a.iq_A, 7, 'A')}, P_dc = {fmt(a.Pdc_W, 7, 'W')}._"]
         if cr.witness_torque_Nm is not None and cr.witness_solution is not None \
@@ -146,9 +152,9 @@ def decision_markdown(rec) -> str:
                   f"- Limited by: {', '.join(cap.active_constraints) or '—'}"]
             for n in cap.notes[1:]:
                 L.append(f"- {n}")
-        if cr.solution.screens:
+        if prim.screens:
             L += ["", "### Necessary-condition screens", ""]
-            for s in cr.solution.screens:
+            for s in prim.screens:
                 L.append(f"- {'**violated**' if s.violated else 'passed'} — {s.statement} _({s.scope})_")
     L += ["", "## Limiting factors", ""] + ([f"- {x}" for x in rec.limiting_factors] or ["- none identified"])
     L += ["", "## Next actions", ""] + ([f"- {x}" for x in rec.next_actions] or ["- none"])

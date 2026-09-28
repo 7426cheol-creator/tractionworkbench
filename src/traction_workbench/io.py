@@ -271,7 +271,7 @@ def requirement_from_dict(d: dict, conv: Conversions, pole_pairs: int | None = N
 
 
 def rating_from_dict(d: dict, conv: Conversions):
-    from .analysis.rating import RatingEnvelope
+    from .analysis.rating import RatingApproval, RatingEnvelope
     dur = _req(d, "duration", "rating")
     dsec = math.inf if dur == "continuous" else quantity(dur, "time", "rating.duration", conv)
     sp = speed_rpm(_req(d, "speed", "rating"), "rating.speed", conv, None, True)
@@ -286,7 +286,10 @@ def rating_from_dict(d: dict, conv: Conversions):
         provenance=provenance_from_dict(d.get("provenance"), "rating.provenance"),
         min_braking_torque_Nm=None if tb is None else tuple(quantity(tb, "torque", "rating.min_braking_torque", conv, True)),
         conditions=tuple(conds), condition_tolerances=tuple((d.get("condition_tolerances") or {}).items()),
-        interpolation=d.get("interpolation", "conservative"), evidence_kind=d.get("evidence_kind", "supplier_rated"))
+        interpolation=d.get("interpolation", "conservative"), evidence_kind=d.get("evidence_kind", "supplier_rated"),
+        approval=None if not d.get("approval") else RatingApproval(**{
+            k: v for k, v in d["approval"].items()
+            if k in ("state", "evidence_id", "evidence_revision", "intended_use", "approved_by")}))
 
 
 @dataclass
