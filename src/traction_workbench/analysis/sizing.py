@@ -127,8 +127,12 @@ def size_parameter(drive: DriveModel, scenario: Scenario, T_request: float, para
              "regions: FEASIBLE = witnessed, INFEASIBLE = proven excluded at the samples, UNKNOWN = unresolved; "
              "between samples every statement is sampled, not a continuous proof"]
     if parameter == "Vdc_V":
-        notes.append("the synthetic inverter-loss surrogate has no Vdc dependence; switching-loss change with Vdc "
-                     "needs loss data before this becomes a hardware proposal")
+        if drive.inverter.module_loss is not None:
+            notes.append("the datasheet module model scales switching losses with Vdc only through a declared scaling "
+                         "law; without one, samples away from the switching test voltage are UNKNOWN (no extrapolation)")
+        else:
+            notes.append("the synthetic inverter-loss surrogate has no Vdc dependence; switching-loss change with Vdc "
+                         "needs loss data before this becomes a hardware proposal")
     if PARAMETERS[parameter][0] == "diagnostic":
         notes.append("diagnostic change: indicates the cause, not a realisable design proposal")
     if len(ranges) > 1:

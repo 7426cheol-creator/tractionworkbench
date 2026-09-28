@@ -455,11 +455,19 @@ class PolicyEvaluator:
                              evidence=(Evidence.make(EvidenceKind.ANALYTIC_BOUND,
                                                      f"P_ac = {pac:.6g} W already exceeds the discharge cap; P_inv >= 0"),),
                              detail="discharge limit exceeded for any passive inverter loss")
-            return Claim("dc_source", Status.UNKNOWN, q, scope, POLICY_NAME, reasons=(Reason.MISSING_INPUT,),
+            if k.module is not None:
+                # a module model IS declared: its data do not cover this point (e.g. Vdc away from the switching
+                # test voltage without a declared scaling law) - say so instead of calling the model missing
+                probs = (point.inverter_loss_detail or {}).get("problems") or []
+                why = "datasheet module loss not established at this point" + (f" ({'; '.join(probs)})" if probs else "")
+                reason = Reason.OUTSIDE_MODEL_DOMAIN
+            else:
+                why, reason = "inverter loss model missing", Reason.MISSING_INPUT
+            return Claim("dc_source", Status.UNKNOWN, q, scope, POLICY_NAME, reasons=(reason,),
                          evidence=(Evidence.make(EvidenceKind.ANALYTIC_BOUND,
                                                  f"inverter loss unknown: P_dc in [{pac:.6g}, inf) W",
                                                  charge_side_satisfied=chg_ok),),
-                         detail="inverter loss model missing; electrical-only claims are not promoted to DC claims")
+                         detail=why + "; electrical-only claims are not promoted to DC claims")
         dcs = [c for c in point.constraints if c.group in ("DISCHARGE_SOURCE", "CHARGE_SOURCE")]
         viol = [c for c in dcs if c.state == "VIOLATED"]
         active = [c for c in dcs if c.state == "ACTIVE"]
