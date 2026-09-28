@@ -15,6 +15,10 @@
                                           the built-in synthetic project)
     twb project diff A.json B.json        changed sections, paths and the analyses they feed
     twb project export OUT.json           write the built-in synthetic project (a template to edit)
+    twb reqset REQS.csv [--project P.json] [--candidates C.txt] [--out RESULTS.csv]
+                                          requirement set on one product: verdict, class, margin, limiting cause,
+                                          next data per requirement; candidates re-judged against every requirement
+    twb reqset --template OUT.csv         write the requirement CSV template
 """
 
 from __future__ import annotations
@@ -240,6 +244,52 @@ def cmd_project(args):
     return {"OK": 0, "WARNING": 1}.get(res["status"], 2)
 
 
+def cmd_reqset(args):
+    import copy
+    from . import requirement_set as RS
+    from .io import drive_from_dict
+    if args.template:
+        Path(args.template).write_text(RS.CSV_TEMPLATE, encoding="utf-8")
+        print(f"requirement CSV template written to {args.template}")
+        return 0
+    if not args.csv:
+        raise InputValidationError("reqset needs the requirement CSV (or --template OUT.csv)", field="csv")
+    prj = _project(args.project)
+    drive = drive_from_dict(copy.deepcopy(prj.data("drive")))
+    lim = prj.dc_limits()
+    reqs = RS.parse_requirements_csv(Path(args.csv).read_text(encoding="utf-8-sig"), drive.motor.pole_pairs)
+    cands = RS.parse_candidates(Path(args.candidates).read_text(encoding="utf-8")) if args.candidates else []
+    res = RS.evaluate_set(reqs, drive, lim, with_capability=not args.fast)
+    cres = RS.evaluate_candidates(reqs, drive, lim, cands, baseline=res) if cands else None
+    if args.out:
+        Path(args.out).write_text(RS.rows_to_csv(res["rows"]), encoding="utf-8")
+    if args.json:
+        _print_json({"project": prj.label, "drive": res["drive"], "summary": res["summary"], "rows": res["rows"],
+                     "priorities": res["priorities"], "candidates": cres, "note": res["note"]})
+    else:
+        sm = res["summary"]
+        print(f"{prj.label} - {res['drive']['drive_id']} ({res['drive']['origin']}, {res['drive']['fidelity']}): "
+              f"{sm['total']} requirement(s), PASS {sm['PASS']}, FAIL {sm['FAIL']}, UNKNOWN {sm['UNKNOWN']}")
+        for r in res["rows"]:
+            m = "" if r["margin_Nm"] is None else f" margin {r['margin_Nm']:.4g} N*m"
+            print(f"  {r['id']:<12} {r['verdict']:<8} {r['class_label_en']}{m}")
+            if r["verdict"] != "PASS":
+                print(f"      limiting: {r['limiting'] or '-'}")
+                for x in r["next_data"][:2]:
+                    print(f"      next: {x}")
+        for e in res["priorities"]:
+            print(f"  next data [{e['effort']}] {e['label_en']}: {', '.join(e['requirements'])}")
+        for c in (cres or {}).get("candidates", []):
+            print(f"  candidate {c['name']}: improves {', '.join(c['improves']) or '-'}; worsens "
+                  f"{', '.join(c['worsens']) or '-'}; all met: {'yes' if c['all_met'] else 'no'}"
+                  + (" [diagnostic]" if c["diagnostic_only"] else ""))
+        print(res["note"])
+    if not args.exit_code:
+        return 0
+    v = {r["verdict"] for r in res["rows"]}
+    return 2 if "FAIL" in v else 3 if "UNKNOWN" in v else 0
+
+
 def cmd_datasheet(args):
     """Import a datasheet spec (module curves or representative values, capacitor, gate dv/dt, motor) into a project:
     findings, the new section's digest and - with --out - the modified project file (a new revision stays the user's
@@ -383,6 +433,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("files", nargs="*", help="project file(s); none = the built-in synthetic project")
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_project)
+    p = sub.add_parser("reqset", help="requirement set (CSV) on one product; candidates against every requirement")
+    p.add_argument("csv", nargs="?", help="requirement CSV (columns: see --template)")
+    p.add_argument("--project", help="project file (default: the built-in synthetic project)")
+    p.add_argument("--candidates", help="text file, one candidate per line: 'name: parameter=value, ...'")
+    p.add_argument("--out", help="write the result rows as CSV")
+    p.add_argument("--template", help="write the requirement CSV template and exit")
+    p.add_argument("--fast", action="store_true", help="skip the capability margins (verdicts only)")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--exit-code", action="store_true", help="exit 0 all PASS / 2 any FAIL / 3 otherwise UNKNOWN")
+    p.set_defaults(fn=cmd_reqset)
     p = sub.add_parser("datasheet", help="import a datasheet spec (module curves or values, capacitor, dv/dt, motor) "
                                          "into a project")
     p.add_argument("spec", help="datasheet spec JSON (kind: module | capacitor | gate_edges | motor); CSV paths "

@@ -524,6 +524,68 @@ def hint(text: str) -> QLabel:
     return lab
 
 
+class MagnetTempInput(QWidget):
+    """Optional magnet temperature of ONE operating condition (unchecked = not stated).
+
+    A flux map with several temperature planes has no single operating point without it: ``sync(drive)`` pre-sets
+    the first plane temperature whenever the drive's plane set changes (visible and editable, like the default speed
+    and Vdc) and ``note`` lists the planes; leaving such a model resets it to "not stated"; otherwise it stays as the
+    user set it."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        h = QHBoxLayout(self)
+        h.setContentsMargins(0, 0, 0, 0)
+        self.on = QCheckBox()
+        self.on.setToolTip(tr("체크하면 이 자석 온도에서 계산합니다 (체크 해제 = 미지정)",
+                              "checked: computed at this magnet temperature (unchecked = not stated)"))
+        self.value = number(20.0, -60.0, 250.0, "°C", 1, 5)
+        self.value.setEnabled(False)
+        self.on.toggled.connect(self.value.setEnabled)
+        h.addWidget(self.on)
+        h.addWidget(self.value, 1)
+        self.note = hint("")
+        self.note.hide()
+        self.planes: list = []
+        self._synced = None
+
+    def get(self) -> float | None:
+        return float(self.value.value()) if self.on.isChecked() else None
+
+    def sync(self, drive) -> None:
+        from ..viz.sweeps import plane_temperatures
+        planes = plane_temperatures(drive)
+        if planes == self._synced:
+            return
+        prev, self._synced, self.planes = self._synced, planes, planes
+        if not planes and prev:
+            self.on.setChecked(False)          # a temperature picked for another model's planes is not carried over
+        if planes:
+            self.on.setChecked(True)
+            self.value.setValue(planes[0])
+            txt = ", ".join(f"{t:g}" for t in planes)
+            self.note.setText(tr(f"이 flux map의 자석 온도 plane: {txt} °C — 한 운전점은 한 온도에서 계산합니다(판정 페이지는 "
+                                 f"온도를 말하지 않은 요구를 모든 plane에서, 성능 곡선은 plane마다 봅니다)",
+                                 f"magnet-temperature planes of this flux map: {txt} degC - one operating point is "
+                                 f"computed at one temperature (the decision page judges an unstated temperature at "
+                                 f"every plane, the envelope page draws one curve per plane)"))
+            self.note.show()
+        else:
+            self.note.hide()
+
+    def missing(self, parent) -> bool:
+        """True (and says why) when the model needs a magnet temperature for one operating point and none is set."""
+        if self.planes and self.get() is None:
+            txt = ", ".join(f"{t:g}" for t in self.planes)
+            error_box(parent, tr("자석 온도 필요", "magnet temperature needed"),
+                      tr(f"이 flux map은 자석 온도 plane이 여러 개입니다 ({txt} °C). 한 운전점은 한 온도에서만 정의되므로 자석 "
+                         f"온도를 지정하세요.", f"this flux map has several magnet-temperature planes ({txt} degC); one "
+                                              f"operating point is defined at one temperature - state the magnet "
+                                              f"temperature."))
+            return True
+        return False
+
+
 class ConceptNote(QWidget):
     """Collapsible explanation for newcomers (the expert content stays unchanged)."""
 

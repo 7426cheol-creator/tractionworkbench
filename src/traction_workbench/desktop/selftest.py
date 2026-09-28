@@ -16,7 +16,7 @@ from pathlib import Path
 from .. import __version__, api
 
 EXPECTED = {"ts012_600": "PASS", "ts012_450": "FAIL", "ts012_10s": "UNKNOWN", "regen_80": "PASS",
-            "regen_100": "FAIL", "dis_350": "FAIL", "range": "UNKNOWN", "stall": "PASS"}
+            "regen_100": "FAIL", "dis_350": "FAIL", "range": "PASS", "stall": "PASS"}      # range: monotonicity certificate
 
 
 def run_self_test(app, out_dir) -> int:
@@ -92,6 +92,27 @@ def run_self_test(app, out_dir) -> int:
         check("performance", perf.res is not None and perf.res["map"]["status"].size > 0)
         des = visit("design", 4, ["run1", "run2"], [(None, "12_design_sizing"), (lambda pg: pg.tabs.setCurrentIndex(1), "13_design_dominance")])
         check("design", des.p_curve._draw is not None and des.p_dom._draw is not None)
+        # requirement set (review 6198099 user features): the template judged on the project, then candidates
+        rs = visit("requirement_set", 4, ["check_reading", "run"],
+                   [(None, "12a_requirement_set"), (lambda pg: pg.tabs.setCurrentIndex(1), "12b_requirement_priorities")])
+        sm = rs.result["set"]["summary"] if rs.result else {}
+        check("requirement_set", (sm.get("total"), sm.get("PASS"), sm.get("FAIL"), sm.get("UNKNOWN")) == (5, 3, 1, 1)
+              and rs.detail.toPlainText().startswith("1. ") and "REQ-A" in rs.detail.toPlainText(), sm)
+        rs.cands.setPlainText("charge 150 kW: charge_power_max_W=150000, charge_current_max_A=400\n"
+                              "current 250 A: I_peak_max_A=250")
+        rs.run()
+        cs = {c["name"]: c for c in ((rs.result or {}).get("candidates") or {}).get("candidates", [])}
+        check("requirement_set:candidates", cs.get("charge 150 kW", {}).get("improves") == ["REQ-B"]
+              and set(cs.get("current 250 A", {}).get("worsens", [])) == {"REQ-A", "REQ-C", "REQ-D", "REQ-E"},
+              {k: (c["improves"], c["worsens"]) for k, c in cs.items()})
+        rs.tabs.setCurrentIndex(2)
+        shot(win, "12c_requirement_candidates")
+        rs.tabs.setCurrentIndex(0)
+        rs.res_table.selectRow(1)
+        rs.open_in_decision()
+        got = page.result["record"] if page.result else {}
+        check("requirement_set:open", got.get("requirement", {}).get("req_id") == "REQ-B"
+              and got.get("verdict", {}).get("verdict") == "FAIL", got.get("requirement", {}).get("req_id"))
         saf = visit("safety", 5, ["run_ftti", "run_discharge", "run_passive", "run_overvoltage", "run_safe"],
                     [(None, "14_safety_ftti"), (lambda pg: pg.tabs.setCurrentIndex(1), "15_safety_dclink"),
                      (lambda pg: pg.dc_tabs.setCurrentIndex(1), "15a_safety_passive"),

@@ -11,26 +11,33 @@ from ...i18n import tr
 from ...plots import figures as F
 from ...viz import maps as M
 from ...viz import sweeps as SW
-from ..widgets import ConceptNote, PlotPanel, combo, error_box, hint, number, primary_button
+from ..widgets import ConceptNote, PlotPanel, check, combo, error_box, hint, number, primary_button
 
 RESOLUTION = {"fast": (25, 24, 21), "normal": (41, 40, 33), "fine": (61, 60, 49)}
 
 
-def _task(progress, drive, limits, vdc, compare, res, flux_map):
+def _task(progress, drive, limits, vdc, compare, res, flux_map, magnet_temp_C=None):
     ns, nt, ne = RESOLUTION[res]
     if flux_map:
         ns, nt, ne = min(ns, 17), min(nt, 16), min(ne, 17)
+    if magnet_temp_C is None and SW.plane_temperatures(drive):
+        # several flux-map planes and no stated magnet temperature: one exact envelope per plane, no map
+        env, fam, note = SW.envelope_family(drive, limits, vdc, None, n=ne, progress=progress)
+        return {"env": env, "compare": [(tr(f"자석 {lab.split()[1]} °C", f"magnet {lab.split()[1]} °C"), e)
+                                        for lab, e in fam], "map": None, "note": note}
     parts = 2 + len(compare)
-    env = SW.envelope(drive, limits, vdc, n=ne, progress=lambda f, m: progress(f / parts, m))
+    env = SW.envelope(drive, limits, vdc, n=ne, progress=lambda f, m: progress(f / parts, m),
+                      magnet_temp_C=magnet_temp_C)
     envs = []
     for i, v in enumerate(compare):
-        envs.append((f"Vdc = {v:g} V", SW.envelope(drive, limits, v, n=ne,
+        envs.append((f"Vdc = {v:g} V", SW.envelope(drive, limits, v, n=ne, magnet_temp_C=magnet_temp_C,
                                                     progress=lambda f, m, i=i: progress((1 + i + f) / parts, m))))
     tmax = np.nanmax(env["max"]["electrical_T_Nm"]) if np.isfinite(env["max"]["electrical_T_Nm"]).any() else None
     tmin = np.nanmin(env["min"]["electrical_T_Nm"]) if np.isfinite(env["min"]["electrical_T_Nm"]).any() else None
-    speeds, torques = M.default_axes(drive, limits, vdc, ns, nt, T_max=tmax, T_min=tmin)
-    mp = M.tn_map(drive, limits, vdc, speeds, torques, progress=lambda f, m: progress((parts - 1 + f) / parts, m))
-    return {"env": env, "compare": envs, "map": mp}
+    speeds, torques = M.default_axes(drive, limits, vdc, ns, nt, T_max=tmax, T_min=tmin, magnet_temp_C=magnet_temp_C)
+    mp = M.tn_map(drive, limits, vdc, speeds, torques, progress=lambda f, m: progress((parts - 1 + f) / parts, m),
+                  magnet_temp_C=magnet_temp_C)
+    return {"env": env, "compare": envs, "map": mp, "note": ""}
 
 
 class PerformancePage(QWidget):
@@ -48,8 +55,20 @@ class PerformancePage(QWidget):
         self.compare = QLineEdit("450")
         self.compare.setToolTip(tr("쉼표로 구분한 비교 Vdc 목록 (예: 450, 700)", "comma-separated Vdc values to compare"))
         self.res_combo = combo([(tr("빠름", "fast"), "fast"), (tr("보통", "normal"), "normal"), (tr("정밀", "fine"), "fine")], "normal")
+        self.magnet_on = check(tr("자석 온도", "magnet temp."), False,
+                               tr("온도 plane이 여러 개인 flux map: 미지정이면 plane 온도마다 곡선을 따로 그리고 맵은 계산하지 "
+                                  "않습니다 (온도를 골라 주지 않음).", "flux map with several temperature planes: without a "
+                                  "temperature one envelope per plane is drawn and no map is computed (no temperature is "
+                                  "picked for you)."))
+        self.magnet = number(120, -40, 250, "°C", 1)
+        self.magnet.setEnabled(False)
+        self.magnet_on.toggled.connect(self.magnet.setEnabled)
+        mrow = QHBoxLayout()
+        mrow.addWidget(self.magnet_on)
+        mrow.addWidget(self.magnet, 1)
         f.addRow("Vdc", self.vdc)
         f.addRow(tr("비교 Vdc", "compare Vdc"), self.compare)
+        f.addRow("", mrow)
         f.addRow(tr("해상도", "resolution"), self.res_combo)
         v.addWidget(g)
         self.run_btn = primary_button(tr("성능 곡선·맵 계산", "compute envelope & maps"))
@@ -109,7 +128,8 @@ class PerformancePage(QWidget):
         s = self.win.state
         self.run_btn.setEnabled(False)
         self.win.runner.run("performance", tr("성능 곡선·맵", "envelope & maps"), _task, self._show, s.drive, s.limits,
-                            self.vdc.value(), compare, self.res_combo.currentData(), s.is_flux_map(), on_error=self._err)
+                            self.vdc.value(), compare, self.res_combo.currentData(), s.is_flux_map(),
+                            self.magnet.value() if self.magnet_on.isChecked() else None, on_error=self._err)
 
     def _err(self, msg, tb):
         self.run_btn.setEnabled(True)
@@ -123,12 +143,23 @@ class PerformancePage(QWidget):
                                "electrical_max_Nm": env["max"]["electrical_T_Nm"], "policy_min_Nm": env["min"]["T_Nm"],
                                "electrical_min_Nm": env["min"]["electrical_T_Nm"],
                                "id_at_max_A": env["max"]["id_A"], "iq_at_max_A": env["max"]["iq_A"]}
-        self.p_env.draw(F.fig_envelope, env, (), res["compare"], name=f"envelope_{env['Vdc_V']:.0f}V", csv=csv)
+        title = None
+        if res.get("note"):
+            title = tr("자석 온도 미지정: 선언된 flux-map plane 온도마다 한 곡선 (각 곡선은 그 온도에서 정확) — 온도를 지정하면 "
+                       "단일 곡선과 맵", "magnet temperature not stated: one envelope per declared flux-map plane (each exact "
+                       "at its temperature) - state a temperature for a single envelope and the maps")
+        self.p_env.draw(F.fig_envelope, env, (), res["compare"], title=title, name=f"envelope_{env['Vdc_V']:.0f}V",
+                        csv=csv)
         det = {**env["max"], "x": env["x"], "x_kind": "speed", "current_limit_A": env["current_limit_A"],
                "voltage_budget_V": env["voltage_budget_V"], "P_dis_eff_W": env["P_dis_eff_W"],
                "P_chg_eff_W": env["P_chg_eff_W"], "Vdc_V": env["Vdc_V"]}
-        self.p_detail.draw(F.fig_sweep, det, title=tr("최대 토크(정책) 곡선을 따라가는 운전점", "operating points along the max-torque (policy) envelope"),
-                           name="envelope_detail", csv=csv)
+        if res.get("note"):
+            self.p_detail.placeholder(tr("자석 온도를 지정하면 최대 토크 곡선을 따라가는 운전점을 그립니다.",
+                                         "state the magnet temperature to follow the operating points along the envelope."))
+        else:
+            self.p_detail.draw(F.fig_sweep, det, title=tr("최대 토크(정책) 곡선을 따라가는 운전점",
+                                                          "operating points along the max-torque (policy) envelope"),
+                               name="envelope_detail", csv=csv)
         self._draw_map()
 
     def _draw_map(self):
@@ -136,6 +167,11 @@ class PerformancePage(QWidget):
             return
         q = self.quantity.currentData()
         mp = self.res["map"]
+        if mp is None:
+            self.p_map.placeholder(tr("자석 온도를 지정하면 효율·손실 맵을 계산합니다 (온도 plane이 여러 개인 flux map: 온도를 "
+                                      "골라 주지 않음).", "state the magnet temperature to compute the maps (flux map with "
+                                      "several temperature planes: no temperature is picked for you)."))
+            return
         sp, tq = mp["speeds"], mp["torques"]
 
         def hover(x, y, _ax, mp=mp):

@@ -13,12 +13,12 @@ from ...solvers.policy import PolicyEvaluator
 from ...viz import maps as M
 from ...viz import operating as O
 from ..opviews import OperatingViews
-from ..widgets import ConceptNote, KeyValueTable, error_box, hint, number, primary_button
+from ..widgets import ConceptNote, KeyValueTable, MagnetTempInput, error_box, hint, number, primary_button
 
 
-def _task(progress, drive, limits, n, vdc, mode, T, idv, iqv):
+def _task(progress, drive, limits, n, vdc, mode, T, idv, iqv, magnet_temp_C=None):
     progress(0.1, tr("계산", "computing"))
-    sc = Scenario("explorer", n, vdc, limits)
+    sc = Scenario("explorer", n, vdc, limits, magnet_temp_C=magnet_temp_C)
     out = {"mode": mode, "scenario": sc}
     if mode == "policy":
         sol = PolicyEvaluator(drive, sc).solve(T)
@@ -37,7 +37,7 @@ def _task(progress, drive, limits, n, vdc, mode, T, idv, iqv):
         out["T"] = None if pt is None else pt.Tshaft_Nm
     out["pv"] = None if pt is None else O.point_view(drive, sc, pt.id_A, pt.iq_A, out["T"])
     progress(0.5, tr("id–iq 지도", "id–iq map"))
-    out["plane"] = M.idiq_plane(drive, limits, n, vdc, out["T"] if mode == "policy" else None)
+    out["plane"] = M.idiq_plane(drive, limits, n, vdc, out["T"] if mode == "policy" else None, scenario=sc)
     if out["pv"] is not None and mode == "forward":
         out["plane"]["policy_point"] = None
         out["plane"]["picked_point"] = (pt.id_A, pt.iq_A)
@@ -59,6 +59,11 @@ class ExplorerPage(QWidget):
         self.vdc = number(600, 1, 2000, "V", 2, 10)
         f.addRow(tr("속도", "speed"), self.n)
         f.addRow("Vdc", self.vdc)
+        self.magnet = MagnetTempInput()
+        f.addRow(tr("자석 온도", "magnet temp."), self.magnet)
+        f.addRow(self.magnet.note)
+        self.magnet.sync(win.state.drive)
+        win.state.drive_changed.connect(lambda: self.magnet.sync(self.win.state.drive))
         v.addWidget(g)
         g = QGroupBox(tr("운전점 지정", "operating point"))
         f = QFormLayout(g)
@@ -114,9 +119,12 @@ class ExplorerPage(QWidget):
     def run(self):
         s = self.win.state
         mode = "policy" if self.m_policy.isChecked() else "forward"
+        if self.magnet.missing(self):
+            return
         self.run_btn.setEnabled(False)
         self.win.runner.run("explorer", tr("운전점 탐색", "explorer"), _task, self._show, s.drive, s.limits, self.n.value(),
-                            self.vdc.value(), mode, self.T.value(), self.id.value(), self.iq.value(), on_error=self._err)
+                            self.vdc.value(), mode, self.T.value(), self.id.value(), self.iq.value(), self.magnet.get(),
+                            on_error=self._err)
 
     def _err(self, msg, tb):
         self.run_btn.setEnabled(True)
@@ -133,6 +141,8 @@ class ExplorerPage(QWidget):
         pl = res["plane"]
         sc = res["scenario"]
         title = f"n = {sc.speed_rpm:g} rpm · Vdc = {sc.Vdc_V:g} V"
+        if sc.magnet_temp_C is not None:
+            title += tr(f" · 자석 {sc.magnet_temp_C:g} °C", f" · magnet {sc.magnet_temp_C:g} degC")
         if res["mode"] == "forward":
             diag = "" if res["forward"].get("accepted") else tr(" · 진단용 (DIAGNOSTIC ONLY)", " · DIAGNOSTIC ONLY")
             title += f" · id = {self.id.value():g} A, iq = {self.iq.value():g} A ({tr('정방향 평가', 'forward evaluation')}){diag}"

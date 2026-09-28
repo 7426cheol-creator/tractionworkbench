@@ -226,3 +226,129 @@ def test_case_file_rating_fields_and_the_decision_record():
     rec3 = S.evaluate_case(other)
     dur = rec3["conditions"][0]["duration_claim"]
     assert dur["status"] == "UNKNOWN" and "another product" in dur["detail"]
+
+
+# -- priority 4: Vdc-range certificate from the low endpoint --------------------------------------------------------
+
+def _synthetic():
+    from traction_workbench import spec_fixtures as sf
+    return sf.synthetic_drive(), sf.synthetic_limits()
+
+
+def test_vdc_range_is_certified_from_the_low_endpoint_and_the_theorem_holds_numerically():
+    import numpy as np
+    from traction_workbench.decision import evaluate_requirement
+    from traction_workbench.requirement import Requirement
+    from traction_workbench.scenario import Scenario
+    from traction_workbench.solvers.policy import PolicyEvaluator
+    drive, lim = _synthetic()
+    req = Requirement("R-V", "550..650 V, 100 N*m @ 12000 rpm", 100.0, 12000.0, (550.0, 650.0),
+                      Vdc_quantifier="for_all")
+    rec = evaluate_requirement(req, drive, source_limits=lim, with_capability=False)
+    assert rec.verdict.status is Status.FEASIBLE and rec.range_certificates[0]["applies"]
+    assert rec.layers["mathematical"]["status"] == "CERTIFIED"
+    assert not any("sampled points only" in a for a in rec.next_actions)
+    # independent check of the argument on a dense grid: feasible everywhere, |i| and P_dc never grow with Vdc
+    i_prev = p_prev = math.inf
+    for v in np.linspace(550.0, 650.0, 21):
+        sol = PolicyEvaluator(drive, Scenario("v", 12000.0, float(v), lim)).solve(100.0)
+        assert sol.policy_claim.status is Status.FEASIBLE
+        assert sol.point.i_peak_A <= i_prev * (1 + 1e-9) and sol.point.Pdc_W <= p_prev * (1 + 1e-9)
+        i_prev, p_prev = sol.point.i_peak_A, sol.point.Pdc_W
+
+
+def test_the_certificate_does_not_cover_regeneration_and_why():
+    """Regen: less field-weakening current at a higher Vdc means less loss and MORE charging power - a charge limit
+    met at the low endpoint can be exceeded at the high one, so the low endpoint proves nothing there."""
+    from dataclasses import replace
+    from traction_workbench.decision import evaluate_requirement
+    from traction_workbench.requirement import Requirement
+    from traction_workbench.scenario import Scenario
+    from traction_workbench.solvers.policy import PolicyEvaluator
+    drive, lim = _synthetic()
+    free = replace(lim, charge_power_max_W=math.inf)
+    p = {v: PolicyEvaluator(drive, Scenario("r", 12000.0, v, free)).solve(-60.0).point.Pdc_W for v in (550.0, 650.0)}
+    assert p[650.0] < p[550.0] < 0                                   # more charging power at the higher Vdc
+    cap = replace(lim, charge_power_max_W=-0.5 * (p[550.0] + p[650.0]))
+    req = Requirement("R-G", "regen over 550..650 V", -60.0, 12000.0, (550.0, 650.0), Vdc_quantifier="for_all")
+    rec = evaluate_requirement(req, drive, source_limits=cap, with_capability=False)
+    assert rec.conditions[0].requirement_claim.status is Status.FEASIBLE          # the low endpoint passes ...
+    assert rec.conditions[-1].requirement_claim.status is Status.INFEASIBLE        # ... the high one does not
+    assert rec.verdict.status is Status.INFEASIBLE and not rec.range_certificates[0]["applies"]
+    assert any("counterexample" in q for q in rec.qualifiers)
+
+
+def test_no_certificate_with_a_vdc_dependent_loss_or_a_duration():
+    from dataclasses import replace
+    from traction_workbench.decision import evaluate_requirement
+    from traction_workbench.requirement import Requirement
+    drive, lim = _synthetic()
+    req = Requirement("R-V", "range", 100.0, 12000.0, (550.0, 650.0), Vdc_quantifier="for_all")
+    narrow = replace(drive, inverter=replace(drive.inverter, loss=replace(drive.inverter.loss, valid_Vdc_V=(500.0, 620.0))))
+    rec = evaluate_requirement(req, narrow, source_limits=lim, with_capability=False)
+    assert rec.verdict.status is not Status.FEASIBLE
+    assert not rec.range_certificates[0]["checks"][1]["holds"]                       # loss validity misses 650 V
+    timed = Requirement("R-T", "range 10 s", 100.0, 12000.0, (550.0, 650.0), Vdc_quantifier="for_all", duration_s=10.0)
+    rec2 = evaluate_requirement(timed, drive, source_limits=lim, with_capability=False)
+    assert rec2.range_certificates[0]["static_certified"] and not rec2.range_certificates[0]["applies"]
+    assert rec2.verdict.status is Status.UNKNOWN and any("static part is certified" in q for q in rec2.qualifiers)
+
+
+# -- multi-plane flux map without a stated magnet temperature: examined for all its temperatures -------------------
+
+def _two_plane_map(interpolation=None):
+    from dataclasses import replace
+    from traction_workbench import spec_fixtures as sf
+    d = sf.manufactured_map_drive()
+    cold = replace(d.motor.flux.planes[0], magnet_temp_C=20.0, label="20 degC")
+    hot = replace(cold, psi_d_Wb=cold.psi_d_Wb - 0.01, magnet_temp_C=120.0, label="120 degC (PM flux -0.01 Wb)")
+    flux = replace(d.motor.flux, planes=(cold, hot), temperature_interpolation=interpolation,
+                   temperature_interpolation_basis="test: linear in magnet temperature" if interpolation else "")
+    return replace(d, motor=replace(d.motor, flux=flux)), sf.synthetic_limits()
+
+
+def test_a_multi_plane_map_without_magnet_temperature_is_examined_at_every_plane():
+    from traction_workbench.decision import evaluate_requirement
+    from traction_workbench.requirement import Requirement
+    drive, lim = _two_plane_map()
+    ok = evaluate_requirement(Requirement("R-M", "100 N*m", 100.0, 3000.0, 600.0), drive, source_limits=lim,
+                              with_capability=False)
+    assert [c.scenario.magnet_temp_C for c in ok.conditions] == [20.0, 120.0]
+    assert ok.verdict.status is Status.FEASIBLE                    # every temperature the model has
+    assert any("for ALL flux-map temperatures" in q for q in ok.qualifiers)
+    assert any("magnet temperature not stated" in x for x in ok.layers["requirement"]["open_items"])
+    hot_fail = evaluate_requirement(Requirement("R-M", "125 N*m", 125.0, 3000.0, 600.0), drive, source_limits=lim,
+                                    with_capability=False)
+    st = {c.scenario.magnet_temp_C: c.requirement_claim.status for c in hot_fail.conditions}
+    assert st == {20.0: Status.FEASIBLE, 120.0: Status.INFEASIBLE}
+    assert hot_fail.verdict.status is Status.INFEASIBLE
+    assert any("magnet 120 degC" in q for q in hot_fail.qualifiers)
+    stated = evaluate_requirement(Requirement("R-M", "125 N*m at 20 degC", 125.0, 3000.0, 600.0, magnet_temp_C=20.0),
+                                  drive, source_limits=lim, with_capability=False)
+    assert len(stated.conditions) == 1 and stated.verdict.status is Status.FEASIBLE
+
+
+def test_declared_interpolation_is_sampled_between_the_planes_never_certified():
+    from traction_workbench.decision import evaluate_requirement
+    from traction_workbench.requirement import Requirement
+    drive, lim = _two_plane_map("linear")
+    rec = evaluate_requirement(Requirement("R-M", "100 N*m", 100.0, 3000.0, 600.0), drive, source_limits=lim,
+                               with_capability=False)
+    temps = [c.scenario.magnet_temp_C for c in rec.conditions]
+    assert temps[0] == 20.0 and temps[-1] == 120.0 and len(temps) > 2
+    assert all(c.requirement_claim.status is Status.FEASIBLE for c in rec.conditions)
+    assert rec.verdict.status is Status.UNKNOWN and Reason.SAMPLED_COVERAGE in rec.verdict.reasons
+
+
+def test_envelope_family_one_exact_envelope_per_plane_without_a_temperature():
+    import numpy as np
+    from traction_workbench.viz import sweeps as SW
+    drive, lim = _two_plane_map()
+    assert SW.plane_temperatures(drive) == [20.0, 120.0]
+    env, fam, note = SW.envelope_family(drive, lim, 600.0, None, n=5)
+    assert [lab for lab, _e in fam] == ["magnet 20 degC", "magnet 120 degC"] and "not stated" in note
+    assert not np.isfinite(env["max"]["T_Nm"]).any()                         # no temperature picked for the user
+    cold, hot = fam[0][1]["max"]["T_Nm"], fam[1][1]["max"]["T_Nm"]
+    assert np.isfinite(cold[1]) and np.isfinite(hot[1]) and hot[1] < cold[1]   # weaker magnets, less low-speed torque
+    one, fam1, note1 = SW.envelope_family(drive, lim, 600.0, 120.0, n=5)
+    assert fam1 == [] and note1 == "" and np.allclose(one["max"]["T_Nm"], hot, equal_nan=True)

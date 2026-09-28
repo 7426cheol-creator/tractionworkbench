@@ -32,7 +32,7 @@ MAP_FIELDS = FIELDS
 
 
 def tn_map(drive: DriveModel, limits: DcSourceLimits, Vdc_V: float, speeds, torques,
-           progress: Progress = None) -> dict:
+           progress: Progress = None, magnet_temp_C: float | None = None) -> dict:
     speeds = np.asarray(speeds, float)
     torques = np.asarray(torques, float)
     shape = (torques.size, speeds.size)
@@ -41,7 +41,7 @@ def tn_map(drive: DriveModel, limits: DcSourceLimits, Vdc_V: float, speeds, torq
     fw = np.zeros(shape, dtype=bool)
     total = speeds.size
     for j, s in enumerate(speeds):
-        ev = PolicyEvaluator(drive, Scenario("map", float(s), float(Vdc_V), limits))
+        ev = PolicyEvaluator(drive, Scenario("map", float(s), float(Vdc_V), limits, magnet_temp_C=magnet_temp_C))
         for i, T in enumerate(torques):
             st, pt = policy_point(ev, float(T))
             status[i, j] = st
@@ -59,12 +59,13 @@ def tn_map(drive: DriveModel, limits: DcSourceLimits, Vdc_V: float, speeds, torq
 
 
 def default_axes(drive: DriveModel, limits: DcSourceLimits, Vdc_V: float, n_speed: int, n_torque: int,
-                 T_max: float | None = None, T_min: float | None = None) -> tuple[np.ndarray, np.ndarray]:
+                 T_max: float | None = None, T_min: float | None = None,
+                 magnet_temp_C: float | None = None) -> tuple[np.ndarray, np.ndarray]:
     hi = max(abs(drive.domain.speed_rpm[0]), abs(drive.domain.speed_rpm[1]))
     speeds = np.linspace(0.01 * hi, hi, n_speed)          # efficiency is N/A at standstill
     n_torque += n_torque % 2                              # even count: T = 0 (efficiency N/A) is not a node
     if T_max is None or T_min is None:
-        k = DriveKernel(drive, Scenario("axes", 0.0, float(Vdc_V), limits))
+        k = DriveKernel(drive, Scenario("axes", 0.0, float(Vdc_V), limits, magnet_temp_C=magnet_temp_C))
         from .sweeps import grid_extreme
         g_hi = grid_extreme(k, +1, include_dc=False)
         g_lo = grid_extreme(k, -1, include_dc=False)

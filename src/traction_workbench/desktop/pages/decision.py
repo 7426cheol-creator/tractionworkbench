@@ -17,6 +17,7 @@ from ...analysis.variation import PARAMETERS
 from ...i18n import language, tr
 from ...plots import figures as F
 from ...plots.labels import change_kind_label, param_label
+from ...requirement_set import classify
 from ...viz import design as DS
 from ...viz import maps as M
 from ...viz import operating as O
@@ -54,8 +55,8 @@ def _condition_views(rec, case_obj, idx: int) -> dict:
     return {"plane": plane, "pv": pv}
 
 
-def _envelope_task(progress, drive, limits, Vdc):
-    return SW.envelope(drive, limits, Vdc, n=33, progress=progress)
+def _envelope_task(progress, drive, limits, Vdc, magnet_temp_C=None):
+    return SW.envelope(drive, limits, Vdc, n=33, progress=progress, magnet_temp_C=magnet_temp_C)
 
 
 class DecisionPage(QWidget):
@@ -100,8 +101,11 @@ class DecisionPage(QWidget):
         self.speed = number(12000, -30000, 30000, "rpm", 1, 100.0, tr("기계 회전속도", "mechanical speed"))
         self.vdc = number(600, 1, 2000, "V", 2, 10.0, tr("인버터 DC 단자 전압", "inverter DC terminal voltage"))
         self.range_on = check(tr("Vdc 범위 요구", "Vdc range"), False,
-                              tr("범위 전체를 요구하면 표본점 통과만으로 PASS가 아닙니다 (SAMPLED_COVERAGE).",
-                                 "a range requirement never becomes PASS from samples alone (SAMPLED_COVERAGE)"))
+                              tr("범위 전체를 요구하면 표본점 통과만으로 PASS가 아닙니다 (SAMPLED_COVERAGE). 단조성 조건(정적 순구동, Vdc "
+                                 "무관 손실, 고정 소스 한계)이 성립하면 저전압 끝점으로 범위 전체를 입증합니다.",
+                                 "a range requirement never becomes PASS from samples alone (SAMPLED_COVERAGE); when "
+                                 "the monotonicity conditions hold (static motoring, Vdc-independent loss, fixed source "
+                                 "limits) the low endpoint proves the whole range"))
         self.vdc_hi = number(650, 1, 2000, "V", 2, 10.0)
         self.vdc_hi.setEnabled(False)
         self.range_on.toggled.connect(self.vdc_hi.setEnabled)
@@ -124,6 +128,29 @@ class DecisionPage(QWidget):
         cr = QHBoxLayout()
         cr.addWidget(self.coolant_on)
         cr.addWidget(self.coolant)
+        self.magnet_on = check(tr("자석 온도", "magnet temp."), False,
+                               tr("flux map에 온도 plane이 여러 개일 때 미지정이면 map의 모든 온도에서 for-all로 평가합니다 "
+                                  "(선언된 보간 사이는 표본 검사). 한 온도에서의 요구면 여기에 적으세요. 상수 dq 모델은 자속 "
+                                  "온도 법칙과 기준 온도가 있어야 이 값을 씁니다.",
+                                  "with several flux-map temperature planes an unstated magnet temperature is examined "
+                                  "for ALL the map's temperatures (declared interpolation sampled in between); state it "
+                                  "when the requirement applies at one temperature. A constant-dq model needs its flux "
+                                  "temperature law and reference temperature to use it."))
+        self.magnet = number(120, -40, 250, "°C", 1)
+        mr = QHBoxLayout()
+        mr.addWidget(self.magnet_on)
+        mr.addWidget(self.magnet)
+        self.winding_on = check(tr("권선 온도", "winding temp."), False,
+                                tr("Rs 온도 법칙과 기준 온도가 선언된 모델에서만 쓰입니다 (없으면 MISSING_INPUT).",
+                                   "used only with a declared Rs temperature law and reference temperature (else "
+                                   "MISSING_INPUT)"))
+        self.winding = number(120, -40, 250, "°C", 1)
+        wr = QHBoxLayout()
+        wr.addWidget(self.winding_on)
+        wr.addWidget(self.winding)
+        for on, w in ((self.coolant_on, self.coolant), (self.magnet_on, self.magnet), (self.winding_on, self.winding)):
+            w.setEnabled(on.isChecked())
+            on.toggled.connect(w.setEnabled)
         f.addRow("ID", self.req_id)
         f.addRow(tr("원문", "text"), self.req_text)
         f.addRow(tr("토크", "torque"), self.torque)
@@ -134,6 +161,8 @@ class DecisionPage(QWidget):
         f.addRow("", dr)
         f.addRow("", self.dur_cont)
         f.addRow("", cr)
+        f.addRow("", mr)
+        f.addRow("", wr)
         v.addWidget(g)
 
         g = QGroupBox(tr("추가 분석", "additional analyses"))
@@ -193,6 +222,43 @@ class DecisionPage(QWidget):
         self.an_size_v.setChecked("Vdc_V" in sz)
         self.an_size_i.setChecked("I_peak_max_A" in sz)
 
+    def show_requirement(self, req) -> None:
+        """Fill the form from a parsed requirement (e.g. one opened from the requirement set).  Items the form does
+        not hold (band operator, initial state) travel in the case itself; the hint says so."""
+        self.req_id.setText(req.req_id)
+        self.req_text.setPlainText(req.text)
+        self.torque.setValue(req.target_Nm)
+        self.speed.setValue(req.speed_rpm)
+        if req.is_range:
+            self.vdc.setValue(req.Vdc_V[0])
+            self.vdc_hi.setValue(req.Vdc_V[1])
+            self.range_on.setChecked(True)
+        else:
+            self.vdc.setValue(req.Vdc_V)
+            self.range_on.setChecked(False)
+        if req.duration_s is None:
+            self.dur_none.setChecked(True)
+        elif req.duration_s == float("inf"):
+            self.dur_cont.setChecked(True)
+        else:
+            self.dur_sec.setChecked(True)
+            self.duration.setValue(req.duration_s)
+        for on, w, val in ((self.coolant_on, self.coolant, req.coolant_temp_C),
+                           (self.magnet_on, self.magnet, req.magnet_temp_C),
+                           (self.winding_on, self.winding, req.winding_temp_C)):
+            on.setChecked(val is not None)
+            if val is not None:
+                w.setValue(val)
+        extra = []
+        if req.operator == "band":
+            extra.append(tr(f"band ±{req.band_Nm:g} N·m", f"band +/-{req.band_Nm:g} N*m"))
+        if req.initial_state:
+            extra.append(tr(f"초기 상태 {req.initial_state}", f"initial state {req.initial_state}"))
+        self.preset_hint.setText(tr("요구 묶음에서 연 요구", "opened from the requirement set") + (
+            tr(f" — {', '.join(extra)}는 이 폼에 없어 case에 담겨 계산됩니다(여기서 다시 실행하면 빠짐)",
+               f" - {', '.join(extra)} are not on this form; they travel in the case (a re-run from here drops them)")
+            if extra else ""))
+
     def _case(self) -> tuple[dict, list]:
         vdc = [self.vdc.value(), self.vdc_hi.value()] if self.range_on.isChecked() else self.vdc.value()
         req = {"id": self.req_id.text().strip() or "REQ-UI", "text": self.req_text.toPlainText().strip() or "(desktop input)",
@@ -203,6 +269,10 @@ class DecisionPage(QWidget):
             req["duration_s"] = "continuous"
         if self.coolant_on.isChecked():
             req["coolant_temp_C"] = self.coolant.value()
+        if self.magnet_on.isChecked():
+            req["magnet_temp_C"] = self.magnet.value()
+        if self.winding_on.isChecked():
+            req["winding_temp_C"] = self.winding.value()
         an = {}
         curves = []
         base_v = self.vdc.value()
@@ -322,9 +392,17 @@ class DecisionPage(QWidget):
         v = rec["verdict"]
         reasons = ", ".join(v["reasons"]) or "—"
         qual = "".join(f"<br>· {q}" for q in v.get("qualifiers", []))
+        cls = classify(v["status"], v["reasons"])
+        why = ""
+        if v["status"] != "FEASIBLE":           # the class of the answer says which kind of work could change it
+            why = (f"<br>{tr('분류', 'class')}: <b>{tr(cls['label_ko'], cls['label_en'])}</b>"
+                   + (f" — {cls['hint']}" if cls["hint"] else "")
+                   + (tr(f" (원인 {len(cls['classes'])}개: {', '.join(cls['classes'])})",
+                         f" ({len(cls['classes'])} causes: {', '.join(cls['classes'])})")
+                      if len(cls.get("classes") or []) > 1 else ""))
         html = (f"<b>{rec['requirement'].get('req_id', '')}</b> — {rec['requirement'].get('original_text', '')}<br>"
                 f"{tr('사유', 'reasons')}: <b>{reasons}</b> · {tr('결정 claim', 'deciding claims')}: "
-                f"{', '.join(v.get('deciding_claims', [])) or '—'}{qual}<br>"
+                f"{', '.join(v.get('deciding_claims', [])) or '—'}{why}{qual}<br>"
                 f"<span style='font-size:8pt'>{tr('범위', 'scope')}: {v.get('scope', '')}<br>record {rec['record_id']} · "
                 f"input SHA-256 {rec['input_sha256'][:16]}… · {rec.get('elapsed_s', 0):.2f} s</span>")
         self.banner.set(v["verdict"], html)
@@ -333,7 +411,10 @@ class DecisionPage(QWidget):
         for i, c in enumerate(rec["conditions"]):
             sc = c["scenario"]
             st = c["requirement_claim_at_this_condition"]["status"]
-            self.cond_combo.addItem(f"#{i + 1}  n = {sc['speed_rpm_mechanical']:g} rpm · Vdc = {sc['Vdc_V_inverter_dc_terminal']:g} V · {st}", i)
+            mt = "" if sc.get("magnet_temp_C") is None else tr(f" · 자석 {sc['magnet_temp_C']:g} °C",
+                                                              f" · magnet {sc['magnet_temp_C']:g} °C")
+            self.cond_combo.addItem(f"#{i + 1}  n = {sc['speed_rpm_mechanical']:g} rpm · Vdc = "
+                                    f"{sc['Vdc_V_inverter_dc_terminal']:g} V{mt} · {st}", i)
         self.cond_combo.blockSignals(False)
         groups = []
         for i, c in enumerate(rec["conditions"]):
@@ -383,7 +464,8 @@ class DecisionPage(QWidget):
         c = rec_d["conditions"][idx]
         sc = c["scenario"]
         title = (f"{rec_d['requirement'].get('req_id', '')} · {sc['speed_rpm_mechanical']:g} rpm · "
-                 f"{rec.conditions[idx].primary_torque_Nm:g} N·m · {sc['Vdc_V_inverter_dc_terminal']:g} V")
+                 f"{rec.conditions[idx].primary_torque_Nm:g} N·m · {sc['Vdc_V_inverter_dc_terminal']:g} V"
+                 + ("" if sc.get("magnet_temp_C") is None else f" · {sc['magnet_temp_C']:g} °C"))
         self.views.show_plane(views["plane"], title=title)
         if views["pv"] is not None:
             self.views.show_point(views["pv"], title + tr(" · 최소전류 정책점", " · minimum-current policy point"))
@@ -455,7 +537,7 @@ class DecisionPage(QWidget):
             return
         rec = self.result["rec"]
         sc = rec.conditions[max(0, self.cond_combo.currentIndex())].scenario
-        key = (id(self.result), sc.Vdc_V)
+        key = (id(self.result), sc.Vdc_V, sc.magnet_temp_C)
         if key in self._env_cache:
             self._draw_env(self._env_cache[key])
             return
@@ -465,19 +547,24 @@ class DecisionPage(QWidget):
         def done(env, key=key):
             self._env_cache[key] = env
             self._draw_env(env)
-        self.win.runner.run("decision-env", tr("T–n 곡선", "T–n envelope"), _envelope_task, done, drive, sc.source_limits, sc.Vdc_V)
+        self.win.runner.run("decision-env", tr("T–n 곡선", "T–n envelope"), _envelope_task, done, drive, sc.source_limits,
+                            sc.Vdc_V, sc.magnet_temp_C)
 
     def _draw_env(self, env):
         rec_d = self.result["record"]
         reqs = []
         for c in rec_d["conditions"]:
             sc = c["scenario"]
-            if abs(sc["Vdc_V_inverter_dc_terminal"] - env["Vdc_V"]) < 1e-9:
+            if abs(sc["Vdc_V_inverter_dc_terminal"] - env["Vdc_V"]) < 1e-9 and \
+                    sc.get("magnet_temp_C") == env.get("magnet_temp_C"):
                 st = c["requirement_claim_at_this_condition"]["status"]
                 reqs.append({"id": rec_d["requirement"].get("req_id", ""), "speed_rpm": sc["speed_rpm_mechanical"],
                              "torque_Nm": self.result["rec"].requirement.target_Nm,
                              "verdict": {"FEASIBLE": "PASS", "INFEASIBLE": "FAIL"}.get(st, "UNKNOWN")})
-        self.env_panel.draw(F.fig_envelope, env, reqs, name=f"envelope_{env['Vdc_V']:.0f}V",
+        title = None if env.get("magnet_temp_C") is None else tr(
+            f"T–n 성능 곡선 · Vdc = {env['Vdc_V']:.0f} V · 자석 {env['magnet_temp_C']:g} °C",
+            f"T–n envelope · Vdc = {env['Vdc_V']:.0f} V · magnet {env['magnet_temp_C']:g} °C")
+        self.env_panel.draw(F.fig_envelope, env, reqs, title=title, name=f"envelope_{env['Vdc_V']:.0f}V",
                             csv=lambda env=env: {"speed_rpm": env["x"], "policy_max_Nm": env["max"]["T_Nm"],
                                                  "electrical_max_Nm": env["max"]["electrical_T_Nm"],
                                                  "policy_min_Nm": env["min"]["T_Nm"],

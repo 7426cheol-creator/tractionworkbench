@@ -130,10 +130,15 @@ def test_s07_policy_hole_and_vdc_are_unknown(drive):
 
 
 def test_s08_sampled_coverage_is_not_a_worst_case_pass(drive, limits):
-    req = Requirement("REQ-S08", "550..650 V, 100 N*m @ 12000 rpm", 100, 12000, (550, 650), Vdc_quantifier="for_all")
+    # regen: no monotonicity certificate applies, so passing samples stay samples (engineering review 6198099 #4)
+    req = Requirement("REQ-S08", "550..650 V, -50 N*m @ 12000 rpm", -50, 12000, (550, 650), Vdc_quantifier="for_all")
     rec = evaluate_requirement(req, drive, source_limits=limits)
     assert rec.verdict.status is Status.UNKNOWN and rec.verdict.reasons[0].value == "SAMPLED_COVERAGE"
     assert all(c.requirement_claim.status is Status.FEASIBLE for c in rec.conditions)
+    # motoring with the Vdc-independent a0 + a2 I^2 loss: proven from the low endpoint, not from the samples
+    mot = Requirement("REQ-S08M", "550..650 V, 100 N*m @ 12000 rpm", 100, 12000, (550, 650), Vdc_quantifier="for_all")
+    rec_m = evaluate_requirement(mot, drive, source_limits=limits)
+    assert rec_m.verdict.status is Status.FEASIBLE and rec_m.range_certificates[0]["applies"]
 
 
 def test_s08_bounded_input_adaptive_vs_fixed(drive):

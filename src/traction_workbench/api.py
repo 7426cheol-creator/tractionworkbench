@@ -69,7 +69,8 @@ PRESETS = [
      "hint": {"ko": "축 출력만으로 방전 한계 초과", "en": "Shaft power alone exceeds the discharge cap"},
      "req": {"id": "REQ-PK-350", "text": "6,000 rpm에서 350 N·m", "torque_Nm": 350, "speed_rpm": 6000, "Vdc_V": 600}},
     {"key": "range", "title": {"ko": "Vdc 550–650 V 전 구간", "en": "Vdc 550–650 V range"},
-     "hint": {"ko": "표본점 통과만으로 전 구간 PASS 아님", "en": "Sampled points do not prove the whole range"},
+     "hint": {"ko": "저전압 끝점 + 단조성 조건으로 전 구간 입증 (표본만으로는 PASS 아님)",
+              "en": "Proven for the whole range from the low end by monotonicity (samples alone would not)"},
      "req": {"id": "REQ-RANGE", "text": "550~650 V 전 구간에서 12,000 rpm 100 N·m", "torque_Nm": 100, "speed_rpm": 12000,
              "Vdc_V": [550, 650]}},
     {"key": "stall", "title": {"ko": "정지 300 N·m", "en": "Standstill 300 N·m"},
@@ -105,6 +106,9 @@ def case_from_body(body) -> dict:
         req["duration"] = "continuous" if r["duration_s"] == "continuous" else {"value": r["duration_s"], "unit": "s"}
     if r.get("coolant_temp_C") not in (None, ""):
         req["conditions"]["coolant_temp"] = {"value": r["coolant_temp_C"], "unit": "degC"}
+    for key, cond in (("magnet_temp_C", "magnet_temp"), ("winding_temp_C", "winding_temp")):
+        if r.get(key) not in (None, ""):
+            req["conditions"][cond] = {"value": r[key], "unit": "degC"}
     if r.get("operator") == "band":
         req["operator"] = "band"
         req["band"] = {"value": r.get("band_Nm"), "unit": "N*m"}

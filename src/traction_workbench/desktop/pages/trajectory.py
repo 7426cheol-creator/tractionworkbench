@@ -11,21 +11,26 @@ from ...i18n import tr
 from ...plots import figures as F
 from ...viz import maps as M
 from ...viz import sweeps as SW
+from ...scenario import Scenario
 from ..opviews import plane_hover
-from ..widgets import ConceptNote, KeyValueTable, PlotPanel, error_box, fmt, hint, integer, number, primary_button
+from ..widgets import (ConceptNote, KeyValueTable, MagnetTempInput, PlotPanel, error_box, fmt, hint, integer, number,
+                       primary_button)
 
 
-def _task(progress, drive, limits, mode, n, T, vdc, points, n_max):
+def _task(progress, drive, limits, mode, n, T, vdc, points, n_max, magnet_temp_C=None):
+    sc = Scenario("trajectory", 0.0, vdc, limits, magnet_temp_C=magnet_temp_C)
     if mode == "torque":
-        sw = SW.torque_sweep(drive, limits, n, vdc, n=points, progress=lambda f, m: progress(0.85 * f, m))
+        sw = SW.torque_sweep(drive, limits, n, vdc, n=points, progress=lambda f, m: progress(0.85 * f, m),
+                             magnet_temp_C=magnet_temp_C)
         progress(0.9, tr("id–iq 지도", "id–iq map"))
-        plane = M.idiq_plane(drive, limits, n, vdc, None)
+        plane = M.idiq_plane(drive, limits, n, vdc, None, scenario=sc)
     else:
         speeds = np.linspace(0.0, n_max, points)
-        sw = SW.speed_sweep(drive, limits, T, vdc, speeds=speeds, progress=lambda f, m: progress(0.85 * f, m))
+        sw = SW.speed_sweep(drive, limits, T, vdc, speeds=speeds, progress=lambda f, m: progress(0.85 * f, m),
+                            magnet_temp_C=magnet_temp_C)
         progress(0.9, tr("id–iq 지도", "id–iq map"))
         extra = [s for s in np.linspace(0, n_max, 5)[1:-1]]
-        plane = M.idiq_plane(drive, limits, n_max, vdc, T, extra_speeds=extra)
+        plane = M.idiq_plane(drive, limits, n_max, vdc, T, extra_speeds=extra, scenario=sc)
     return {"sweep": sw, "plane": plane, "mode": mode}
 
 
@@ -62,6 +67,11 @@ class TrajectoryPage(QWidget):
         f.addRow(self.m_torque)
         f.addRow(tr("속도 (토크 스윕)", "speed (torque sweep)"), self.n)
         f.addRow("Vdc", self.vdc)
+        self.magnet = MagnetTempInput()
+        f.addRow(tr("자석 온도", "magnet temp."), self.magnet)
+        f.addRow(self.magnet.note)
+        self.magnet.sync(win.state.drive)
+        win.state.drive_changed.connect(lambda: self.magnet.sync(self.win.state.drive))
         f.addRow(tr("표본 수", "samples"), self.points)
         v.addWidget(g)
         self.run_btn = primary_button(tr("궤적 계산", "compute trajectory"))
@@ -104,9 +114,12 @@ class TrajectoryPage(QWidget):
         pts = self.points.value()
         if s.is_flux_map():
             pts = min(pts, 41)
+        if self.magnet.missing(self):
+            return
         self.run_btn.setEnabled(False)
         self.win.runner.run("trajectory", tr("궤적", "trajectory"), _task, self._show, s.drive, s.limits, mode,
-                            self.n.value(), self.T.value(), self.vdc.value(), pts, s.speed_max(), on_error=self._err)
+                            self.n.value(), self.T.value(), self.vdc.value(), pts, s.speed_max(), self.magnet.get(),
+                            on_error=self._err)
 
     def _err(self, msg, tb):
         self.run_btn.setEnabled(True)
@@ -121,6 +134,8 @@ class TrajectoryPage(QWidget):
         else:
             title = tr(f"속도 스윕 · T = {sw['T_Nm']:g} N·m · Vdc = {sw['Vdc_V']:g} V (전압 타원: 여러 속도)",
                        f"speed sweep · T = {sw['T_Nm']:g} N·m · Vdc = {sw['Vdc_V']:g} V (voltage ellipses at several speeds)")
+        if sw.get("magnet_temp_C") is not None:
+            title += tr(f" · 자석 {sw['magnet_temp_C']:g} °C", f" · magnet {sw['magnet_temp_C']:g} degC")
         csv = lambda sw=sw: {k: sw[k] for k, _ in FIELD_LABELS}
         self.p_plane.draw(F.fig_idiq, pl, sw, title=title, name="trajectory_dq", csv=csv, hover=plane_hover(pl))
         self.p_vars.draw(F.fig_sweep, sw, title=title, name="trajectory_quantities", csv=csv)

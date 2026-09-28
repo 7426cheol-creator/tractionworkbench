@@ -24,7 +24,8 @@ validation(V4–V5)은 수행하지 않았습니다. 수치 자릿수는 회귀 
   분리는 그 밖입니다. PWM 리플·최소 펄스·지연·전환은 '가변 PWM' 페이지의 선언 기반 스크리닝이며, 데이터시트 모듈 손실의 온도
   결합은 효율·모듈 비교에서 계산됩니다.
 - 파형·듀티 그래프는 같은 기본파 값의 재표현(평균값 모델)이며 스위칭 파형이 아닙니다.
-- Vdc 범위 요구는 표본점 통과만으로 PASS가 되지 않습니다(SAMPLED_COVERAGE).
+- Vdc 범위 요구는 표본점 통과만으로 PASS가 되지 않습니다(SAMPLED_COVERAGE). 단조성 조건(정적 순구동, 최소전류 정책, Vdc 무관
+  a0 + a2·I² 손실이 범위 전체에서 유효, 고정 소스 한계)이 성립할 때만 저전압 끝점으로 정적 판정을 범위 전체에 입증합니다.
 - flux map 모델은 셀 단위 쌍선형 보간, 데이터 밖 외삽 없음. 격자 기반 곡선·맵은 시각화용 근사입니다.
 - 열·FTTI·방전·과전압·ASC/Freewheel은 선언 값 기반 스크리닝이며 기능안전 승인·SOA 검증을 대신하지 않습니다.
 - 회생 경계는 에너지 회수(최소전류) 정책 기준이며, 의도적 손실 증가 운전은 진단으로만 보고합니다.
@@ -44,7 +45,9 @@ limit, declared operating domain, average DC power/current limits.
   minimum pulse, delay and transitions are declared-data screenings on the 'Variable PWM' page; the temperature
   coupling of datasheet module losses is computed in 'Efficiency & modules'.
 - Waveform and duty plots re-express the same fundamental values (average model); they are not switching waveforms.
-- A Vdc range requirement never becomes PASS from samples alone (SAMPLED_COVERAGE).
+- A Vdc range requirement never becomes PASS from samples alone (SAMPLED_COVERAGE). Only when the monotonicity
+  conditions hold (static motoring, minimum-current policy, Vdc-independent a0 + a2*I^2 loss valid over the range,
+  fixed source limits) does the low endpoint prove the static verdict for the whole range.
 - Flux maps: bilinear per cell, no extrapolation. Grid-based curves/maps are visualisation approximations.
 - Thermal, FTTI, discharge, overvoltage and ASC/freewheel are screenings of declared values; they do not replace
   functional-safety approval or SOA verification.

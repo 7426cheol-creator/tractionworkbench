@@ -27,6 +27,7 @@ from .pages.performance import PerformancePage
 from .pages.power import PowerPage
 from .pages.project import ProjectPage
 from .pages.protection import ProtectionPage
+from .pages.requirement_set import RequirementSetPage
 from .pages.pwm_driveline import PwmDrivelinePage
 from .pages.safety import SafetyPage
 from .pages.thermal import ThermalPage
@@ -38,6 +39,7 @@ from .worker import TaskRunner
 
 PAGES = (
     ("decision", lambda: tr("요구 판정", "Decision"), DecisionPage),
+    ("requirement_set", lambda: tr("요구 묶음·후보", "Requirement set"), RequirementSetPage),
     ("explorer", lambda: tr("운전점 탐색", "Operating point"), ExplorerPage),
     ("trajectory", lambda: tr("궤적", "Trajectories"), TrajectoryPage),
     ("performance", lambda: tr("성능 곡선·맵", "Envelope & maps"), PerformancePage),
@@ -60,7 +62,8 @@ PAGES = (
 # navigation: pages grouped by the engineering question they answer (the stack keeps the PAGES order)
 NAV_GROUPS = (
     (lambda: tr("제품 데이터", "Product data"), ("project", "model")),
-    (lambda: tr("요구·구동 성능", "Requirement & drive"), ("decision", "explorer", "trajectory", "performance", "design")),
+    (lambda: tr("요구·구동 성능", "Requirement & drive"), ("decision", "requirement_set", "explorer", "trajectory",
+                                                                   "performance", "design")),
     (lambda: tr("전력·열·효율", "Power, heat & efficiency"), ("thermal", "power", "efficiency")),
     (lambda: tr("제어·EMC", "Control & EMC"), ("pwm_driveline", "emi")),
     (lambda: tr("안전·보호", "Safety & protection"), ("safety", "protection")),
@@ -76,6 +79,11 @@ PAGE_INFO = {
     "decision": lambda: tr("요구(토크·속도·전압·지속시간)를 PASS/FAIL/UNKNOWN으로 판정하고 근거·병목·다음 조치를 보여줍니다",
                            "judges a requirement (torque, speed, voltage, duration) PASS/FAIL/UNKNOWN with evidence, "
                            "bottlenecks and next actions"),
+    "requirement_set": lambda: tr("요구 여러 건을 같은 제품·조건·근거로 한 번에 판정(CSV), UNKNOWN 원인 분류와 다음 자료, "
+                                  "설계 후보를 모든 요구에 대해 재판정",
+                                  "many requirements judged at once on one product, conditions and evidence (CSV), the "
+                                  "class of each open answer and the next data, candidates re-judged against every "
+                                  "requirement"),
     "explorer": lambda: tr("한 운전점(토크 요구 또는 id·iq 직접)의 전압·전류·전력·손실·제약",
                            "one operating point (torque request or id/iq): voltages, currents, powers, losses, constraints"),
     "trajectory": lambda: tr("속도·토크 스윕을 따라 정책 운전점과 한계 전환(약계자·DC 한계)",
@@ -106,7 +114,8 @@ PAGE_INFO = {
 
 
 # runner task -> page that shows it (safety-page analyses run inline and report through ``note_result``)
-TASK_PAGE = {"decision": "decision", "decision-env": "decision", "explorer": "explorer", "trajectory": "trajectory",
+TASK_PAGE = {"decision": "decision", "decision-env": "decision", "requirement_set": "requirement_set",
+             "explorer": "explorer", "trajectory": "trajectory",
              "performance": "performance", "design-sweep": "design", "design-dom": "design", "thermal": "thermal",
              "protection": "protection", "asc": "protection", "module": "power", "ripple": "power",
              "lifetime": "power", "efficiency": "efficiency", "efficiency_map": "efficiency",
@@ -118,7 +127,8 @@ TASK_PAGE = {"decision": "decision", "decision-env": "decision", "explorer": "ex
              "winding": "machine", "concept_sizing": "machine", "ftti": "safety", "passive": "safety",
              "discharge": "safety", "overvoltage": "safety", "safe_state": "safety"}
 # tasks whose argument is not a request body: they run on the state's drive and limits
-STATE_TASKS = ("decision-env", "explorer", "trajectory", "performance", "design-sweep", "design-dom")
+STATE_TASKS = ("decision-env", "requirement_set", "explorer", "trajectory", "performance", "design-sweep",
+               "design-dom")
 LIMIT_PAIRS = (("discharge_power_max_W", "discharge_power_max"), ("charge_power_max_W", "charge_power_max"),
                ("discharge_current_max_A", "discharge_current_max"), ("charge_current_max_A", "charge_current_max"))
 

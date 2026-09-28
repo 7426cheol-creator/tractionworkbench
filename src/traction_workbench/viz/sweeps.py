@@ -180,8 +180,10 @@ def electrical_torque_range(k: DriveKernel) -> tuple[float, float] | None:
 # ---------------------------------------------------------------------------
 
 def torque_sweep(drive: DriveModel, limits: DcSourceLimits, speed_rpm: float, Vdc_V: float, n: int = 81,
-                 T_range: tuple[float, float] | None = None, progress: Progress = None) -> dict:
-    ev = PolicyEvaluator(drive, Scenario("torque-sweep", float(speed_rpm), float(Vdc_V), limits))
+                 T_range: tuple[float, float] | None = None, progress: Progress = None,
+                 magnet_temp_C: float | None = None) -> dict:
+    ev = PolicyEvaluator(drive, Scenario("torque-sweep", float(speed_rpm), float(Vdc_V), limits,
+                                         magnet_temp_C=magnet_temp_C))
     k = ev.k
     caps = {}
     if k.kind == "constant_dq" and ev.speed_in_domain and k.evaluable:
@@ -206,12 +208,13 @@ def torque_sweep(drive: DriveModel, limits: DcSourceLimits, speed_rpm: float, Vd
         tab.put(i, st, pt)
         _tick(progress, (i + 1) / Ts.size, f"T = {T:.1f} N*m")
     return tab.out(x=Ts, x_kind="torque", speed_rpm=float(speed_rpm), Vdc_V=float(Vdc_V), caps=caps,
+                   magnet_temp_C=magnet_temp_C,
                    current_limit_A=k.Imax, voltage_budget_V=k.Vb, kind=k.kind,
                    P_dis_eff_W=k.P_dis_eff, P_chg_eff_W=k.P_chg_eff)
 
 
 def speed_sweep(drive: DriveModel, limits: DcSourceLimits, T_Nm: float, Vdc_V: float, speeds=None, n: int = 81,
-                progress: Progress = None) -> dict:
+                progress: Progress = None, magnet_temp_C: float | None = None) -> dict:
     if speeds is None:
         hi = max(abs(drive.domain.speed_rpm[0]), abs(drive.domain.speed_rpm[1]))
         speeds = np.linspace(0.0, hi, n)
@@ -219,28 +222,31 @@ def speed_sweep(drive: DriveModel, limits: DcSourceLimits, T_Nm: float, Vdc_V: f
     tab = _Table(speeds.size)
     k = None
     for i, s in enumerate(speeds):
-        ev = PolicyEvaluator(drive, Scenario("speed-sweep", float(s), float(Vdc_V), limits))
+        ev = PolicyEvaluator(drive, Scenario("speed-sweep", float(s), float(Vdc_V), limits, magnet_temp_C=magnet_temp_C))
         k = ev.k
         st, pt = policy_point(ev, float(T_Nm))
         tab.put(i, st, pt)
         _tick(progress, (i + 1) / speeds.size, f"n = {s:.0f} rpm")
-    return tab.out(x=speeds, x_kind="speed", T_Nm=float(T_Nm), Vdc_V=float(Vdc_V),
+    return tab.out(x=speeds, x_kind="speed", T_Nm=float(T_Nm), Vdc_V=float(Vdc_V), magnet_temp_C=magnet_temp_C,
                    current_limit_A=None if k is None else k.Imax, kind=None if k is None else k.kind,
                    voltage_budget_V=None if k is None else k.Vb,
                    P_dis_eff_W=None if k is None else k.P_dis_eff, P_chg_eff_W=None if k is None else k.P_chg_eff)
 
 
 def envelope(drive: DriveModel, limits: DcSourceLimits, Vdc_V: float, speeds=None, n: int = 41,
-             directions=(1, -1), method: str = "auto", progress: Progress = None) -> dict:
+             directions=(1, -1), method: str = "auto", progress: Progress = None,
+             magnet_temp_C: float | None = None) -> dict:
     """Capability vs speed with the witness point at every speed (policy incl. DC, and electrical only)."""
     if speeds is None:
         hi = max(abs(drive.domain.speed_rpm[0]), abs(drive.domain.speed_rpm[1]))
         speeds = np.linspace(0.0, hi, n)
     speeds = np.asarray(speeds, float)
-    kind = DriveKernel(drive, Scenario("probe", float(speeds[0]), float(Vdc_V), limits)).kind
+    kind = DriveKernel(drive, Scenario("probe", float(speeds[0]), float(Vdc_V), limits,
+                                       magnet_temp_C=magnet_temp_C)).kind
     if method == "auto":
         method = "solver" if kind == "constant_dq" else "grid"
-    out = {"x": speeds, "x_kind": "speed", "Vdc_V": float(Vdc_V), "method": method, "kind": kind}
+    out = {"x": speeds, "x_kind": "speed", "Vdc_V": float(Vdc_V), "method": method, "kind": kind,
+           "magnet_temp_C": magnet_temp_C}
     total = speeds.size * len(directions)
     step = 0
     for direction in directions:
@@ -249,7 +255,7 @@ def envelope(drive: DriveModel, limits: DcSourceLimits, Vdc_V: float, speeds=Non
         el = np.full(speeds.size, np.nan)
         pol_T = np.full(speeds.size, np.nan)
         for i, s in enumerate(speeds):
-            sc = Scenario("envelope", float(s), float(Vdc_V), limits)
+            sc = Scenario("envelope", float(s), float(Vdc_V), limits, magnet_temp_C=magnet_temp_C)
             if method == "solver":
                 ev = PolicyEvaluator(drive, sc, CURVE_SETTINGS)
                 pc = policy_capability(ev, direction, certify=False)
@@ -272,9 +278,38 @@ def envelope(drive: DriveModel, limits: DcSourceLimits, Vdc_V: float, speeds=Non
             step += 1
             _tick(progress, step / total, f"{tag}: n = {s:.0f} rpm")
         out[tag] = pol.out(T_Nm=pol_T, electrical_T_Nm=el)
-    k0 = DriveKernel(drive, Scenario("probe", float(speeds[0]), float(Vdc_V), limits))
+    k0 = DriveKernel(drive, Scenario("probe", float(speeds[0]), float(Vdc_V), limits, magnet_temp_C=magnet_temp_C))
     out.update(current_limit_A=k0.Imax, voltage_budget_V=k0.Vb, P_dis_eff_W=k0.P_dis_eff, P_chg_eff_W=k0.P_chg_eff)
     return out
+
+
+def plane_temperatures(drive: DriveModel) -> list[float]:
+    """The declared magnet temperatures of a flux map with several planes ([] otherwise)."""
+    planes = getattr(drive.motor.flux, "planes", ())
+    temps = [p.magnet_temp_C for p in planes]
+    return sorted(float(t) for t in temps) if len(temps) > 1 and all(t is not None for t in temps) else []
+
+
+def envelope_family(drive: DriveModel, limits: DcSourceLimits, Vdc_V: float, magnet_temp_C: float | None = None,
+                    n: int = 41, progress: Progress = None) -> tuple[dict, list, str]:
+    """-> (envelope, [(label, envelope at a plane temperature)], note).
+
+    A flux map with several temperature planes and no stated magnet temperature has no single envelope (the
+    temperature is part of the model): each plane's envelope is computed exactly at its own temperature and the main
+    envelope stays empty - no temperature is picked for the user."""
+    temps = plane_temperatures(drive) if magnet_temp_C is None else []
+    if not temps:
+        return envelope(drive, limits, Vdc_V, n=n, progress=progress, magnet_temp_C=magnet_temp_C), [], ""
+    fam = []
+    for i, t in enumerate(temps):
+        fam.append((f"magnet {t:g} degC", envelope(
+            drive, limits, Vdc_V, n=n, magnet_temp_C=t,
+            progress=None if progress is None else (lambda f, m, i=i: progress((i + f) / len(temps), m)))))
+    empty = envelope(drive, limits, Vdc_V, n=max(3, n // 8), magnet_temp_C=None)
+    note = ("magnet temperature not stated: one envelope per declared flux-map plane ("
+            + ", ".join(f"{t:g}" for t in temps) + " degC), each exact at its temperature; state a temperature for "
+            "a single envelope (and the maps)")
+    return empty, fam, note
 
 
 def power_curve(env: dict, tag: str = "max") -> np.ndarray:

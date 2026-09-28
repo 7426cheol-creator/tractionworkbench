@@ -614,9 +614,11 @@ def test_f12_claim_layers_are_separate(drive, limits):
     sup = replace(drive, provenance=Provenance(DataOrigin.SUPPLIER, "sheet", "B", "supplier-declared"))
     lay2 = evaluate_requirement(req, sup, source_limits=limits).layers
     assert lay2["qualification"]["status"].startswith("DATA-DECLARED")      # never promoted to "qualified"
-    rng = Requirement("R-R", "range", 100.0, 12000.0, (550.0, 650.0), Vdc_quantifier="for_all")
+    rng = Requirement("R-R", "range (regen)", -50.0, 12000.0, (550.0, 650.0), Vdc_quantifier="for_all")
     assert evaluate_requirement(rng, drive, source_limits=limits).layers["mathematical"]["status"] == \
-        "SAMPLED_OR_BOUNDED"
+        "SAMPLED_OR_BOUNDED"                                    # no monotonicity certificate for regen: sampled
+    mot = Requirement("R-M", "range (motoring)", 100.0, 12000.0, (550.0, 650.0), Vdc_quantifier="for_all")
+    assert evaluate_requirement(mot, drive, source_limits=limits).layers["mathematical"]["status"] == "CERTIFIED"
 
 
 # ----------------------------------------------------------------------------------------------
