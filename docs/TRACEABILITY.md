@@ -1,4 +1,4 @@
-# 요구 추적표 (Traceability) — 0.4.0
+# 요구 추적표 (Traceability) — 0.5.0
 
 이 문서는 독립 엔지니어링 리뷰(handoff), 감사 증거 패키지(dc7b338)의 재현 스크립트, 그리고 세 추가 명세
 (OEW/HEV, 파워모듈별 손실·단계별 효율, 가변 PWM·anti-jerk)의 각 항목이 **어디에 구현되었고 무엇으로 확인했는지**를
@@ -218,7 +218,56 @@
 (`check_gate_events`, 창 경계 펄스는 폭을 판정하지 않고 open으로 계수 — `test_a_pulse_cut_by_the_observation_window_is_not_a_runt`),
 EMI·PWM 예시의 데드타임 불일치(1.0 µs vs 손실 1.5 µs — 프로젝트의 제어기 한 값으로 통일).
 
-## 11. 비목표 (handoff §15, 추가 명세 비목표)
+## 11. MathWorks 이식·검증 브리지 (twb-mathworks/1)
+
+기준: MathWorks 이식 handoff(2026-09-28)와 Agentic SE 논문의 source-separated acceptance. 세 층 — (1) 요구·수용된 원천,
+(2) Python reference, (3) MathWorks — 을 분리하고, 먼저 2 → 3 이식과 parity를 만들되 3을 1에도 대조합니다.
+"Octave"는 GNU Octave 8.4를 MATLAB 언어 호환 proxy로 실행한 것이며 MATLAB·Simulink·System Composer 실행이 아닙니다.
+
+| 항목 | 내용 | 구현 | 확인 | 상태 |
+|---|---|---|---|---|
+| §3.1 | 식별: schema, 구현 SHA·dirty·의미 소스 hash, 입력 snapshot(project digest, 모델 content SHA-256, plane data SHA-256), generator·template revision, 수치 설정; byte vs semantic 동일성 | `mathworks/package.py` manifest, semantic fingerprint | `test_export_is_deterministic` | implemented |
+| §3.1 | 누락·NaN/Inf·enum의 의미를 schema에서 정함 (null = 미정의, DC 한계 finite/unlimited/not_declared) | `contract.py`, `cases.limits_spec` | `test_semantic_cases_keep_their_meaning` | implemented |
+| §3.2 | 규약(amplitude-invariant, phase peak, d on PM, 기계 rpm, pole pairs, 전력 부호, Te/Tshaft, peak/RMS, line/phase)을 검사 가능한 값으로 | `contract.CONVENTIONS`, `+twb/checkContract.m` | guard "Park convention refused", `test_check_refuses_…` | implemented |
+| §3.2 | physics와 control policy 분리; native optimiser는 전역 인증서를 상속하지 않음 | 요구 witness case(`layer2_claim`), gap report | `test_requirement_witnesses_carry_the_layer2_claim` | implemented (optimiser 이식은 exported_data_only) |
+| §3.3 | map 축·index·mask·cell 규칙·모서리·외삽 금지·온도 plane·대칭 근거, 행/열 순서를 전치로 추측하지 않음 | `contract.map_rules`, `+twb/checkModel.m`, `fluxMapLookup.m`, `selectPlane.m` | VF.MAP.* 21 case, 전치 거부 guard | implemented |
+| §3.3 | 이중 온도 보정·손실 이중 계산 검출 | `checkModel.m`, `loss_ownership`, `lossOwnershipConflicts.m` | guard X05 2건 | implemented |
+| §3.4 | 동적 모델의 상태·초기값·event 의미 | — | — | not_applicable (동적 모델 미이식, gap report) |
+| §3.5 | 요구의 quantity·comparator·조건, claim을 boolean으로 평탄화하지 않음, 출처 유지 | `cases.requirement_cases`, `architecture.requirement_links` | 요구 witness 11 case | implemented / uncertainty set 이식은 missing |
+| §4.1-1 | versioned 패키지 생성·검사, target compatibility report | `export_package`, `check_package`, `+twb/preflight.m`, `gap_report.json` | `test_check_refuses_…`, preflight.json | implemented |
+| §4.1-2 | 회사 환경 local entry point, 로그·오류 결과 | `+twb/runAll.m`, `run_local` (MATLAB `-batch` / Octave) | Octave 실행 | implemented (MATLAB 실행은 NOT_RUN) |
+| §4.1-3 | native constant dq evaluator + nonlinear flux-map evaluator, Python·analytical 대조 | `+twb/staticPoint.m`, `evaluatePoint.m`, `fluxMapLookup.m` | Octave 79 PASS, 심은 결함 9종 검출 | implemented |
+| §4.1-4 | Simulink 정적 평가 harness 생성 recipe | `+twb/buildEvaluationHarness.m`, `runHarness.m` | Octave 구문 검사만 | implemented, NOT_RUN (Simulink 없음) |
+| §4.1-5 | System Composer/SLDD 후보 mapping과 충돌 검출 | `architecture.py`, `+twb/compareDataItems.m`, `checkDictionary.m`, `buildArchitectureCandidate.m` | guard X09 2건 (Octave), `test_architecture_candidates_…` | candidates·충돌 논리 implemented; 모델 생성·SLDD 읽기 NOT_RUN |
+| §4.1-6 | machine-readable 보고서 저장·읽기, 미실행은 NOT_RUN | `runAll.m`, `verify_report` | `test_report_reimport_statuses_and_identity` | implemented |
+| §5.3 | 재실행·rename·충돌·사용자 수정: 새 폴더만, 편집된 생성물 덮어쓰기 금지, 사라진 ID ≠ 삭제 | `package._existing_guard`, harness/architecture 생성기 | `test_regeneration_never_overwrites_…` | implemented |
+| §6 | Agentic Toolkit 역할 한정, AI 없이 핵심 경로 | `AGENT_TASKS.md`, `twb.runAll` | — | implemented |
+| §8.2 | 상태를 하나의 초록불로 합치지 않음 | `desktop/mathworks_dialog.py`, `cli mathworks` | self-test `mathworks:package` | implemented |
+| X01 | export → parse → 재export; 모르는 schema·누락 단위·손상 hash | `check_package`, `loadPackage.m` | `test_export_is_deterministic`, `test_check_refuses_…` | implemented |
+| X02 | 상수 dq, ±속도, 구동/회생, 정지 | REF.F00–F05, PRODUCT.*, BND.* | golden + closed-form oracle, Octave | implemented |
+| X03 | 비정방·비대칭 map, 다른 축 길이, 내부 질의 | VF_D2_MAP (6×7 비균일·비대칭) | 전치 → ERROR/FAIL 검출 | implemented (미분은 정적 사용에 불필요: 동적 사용 NOT QUALIFIED로 전달) |
+| X04 | 구멍·외곽·온도 경계·잘못된 입력 | VF.MAP.* hole/edge/outside/above_planes/no_temperature | clip 심은 결함 검출 | implemented |
+| X05 | 온도 plane·Rs 보정·native loss on/off | VF_D1_TEMP, guard X05 | Rs 법칙 무시 결함 검출 | implemented |
+| X06 | 정확 경계·경계 안팎·미해결 최적화 | BND.* (±0.5, ±2 tol), 요구 witness의 evidence kind | ACTIVE=위반 결함 검출 | implemented |
+| X07 / X08 | 동적 모델·물리 포트 보존 | — | — | not_applicable (gap report) |
+| X09 | 재생성·rename·이름 충돌·사용자 수정 | `_existing_guard`, `compareDataItems.m` | guard X09, `test_regeneration_…` | implemented |
+| X10 | toolbox 부재·MATLAB 미실행·미지원 대상 | `preflight.m`, NOT_RUN 단계 | `test_report_reimport_…`, Octave run | implemented |
+| X11 | OEW/HEV topology | 제품 드라이브는 단일 VSI, OEW/HEV를 단일 VSI로 축소하지 않음 | gap report | not_applicable |
+| X12 | 잘못된 input/model/profile hash의 보고서 | `verify_report` (fingerprint·소비 파일 hash·project digest) | FOREIGN_REPORT, stale 테스트 | implemented (profile은 패키지 식별 밖 — 회사 환경에 둠) |
+
+## 12. 앱 검토·UX·anti-jerk·데이터시트 (0.5.0)
+
+| 항목 | 내용 | 구현 | 확인 | 상태 |
+|---|---|---|---|---|
+| 검토 B1 | PDF 보고서가 plot theme을 누설 | `plots/style.using`, `report_pdf.build_pdf` | `test_pdf_report_gives_the_callers_plot_theme_back` | implemented |
+| 검토 B2 | self-test가 theme 설정을 저장 | `set_theme(persist=False)` | 데스크톱 테스트 | implemented |
+| 검토 B3 | 요약 열이 결과 위젯을 지움 | `pages/decision.py` | 데스크톱 스모크 | implemented |
+| UX | 그룹 탐색, 화면 안내, 잘리지 않는 입력 패널, 특수값 표시, 오류 표시 | `main_window.py`, `widgets.tidy_inputs` | self-test `guide`, 폭 측정(잘림 0) | implemented |
+| P1-DAMP | 정상 토크 결손 폐형식, 2차 washout, 확장 상태의 샘플 루프 | `extensions/driveline.py` | `test_speed_highpass_steady_deficit_…`, `test_washout_sampled_stability_…` | implemented |
+| P1-A/B | 데이터시트 가져오기 (모듈 곡선·ESR·dv/dt, 외삽 없음, 공급사 provenance) | `datasheet.py`, `desktop/datasheet_dialog.py`, `cli datasheet` | `test_datasheet.py` 8건, self-test `datasheet:module` | implemented (측정 데이터 단계는 missing) |
+| 엔진 | plane을 고를 수 없는 map 시나리오에서 capability가 죽음 | `physics.torque_scale`, `solvers/capability.py` | `test_scenario_that_selects_no_plane_…` | implemented |
+
+## 13. 비목표 (handoff §15, 추가 명세 비목표)
 
 generic motor CAD/FEA 복제, 정적 ASC로 demag/SOA 승인, 일반 IGBT 식으로 SiC 수명 보증, 드라이버 typical delay로 ASIL 승인,
 class 번호로 EMC 합격률, 평균 dq로 NVH/베어링/MHz 임피던스, 생산 anti-jerk 제어기 자동 납품, 보편 안정성 인증서,

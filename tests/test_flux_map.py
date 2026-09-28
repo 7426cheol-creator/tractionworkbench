@@ -199,3 +199,21 @@ def test_incomplete_coverage_is_not_a_physical_limit():
     assert sol.electrical.status.value == "UNKNOWN"
     assert "OUTSIDE_MODEL_DOMAIN" in [r.value for r in sol.electrical.reasons]
     assert sol.policy_claim.status.value == "UNKNOWN"
+
+
+def test_scenario_that_selects_no_plane_is_unknown_not_a_crash():
+    """Found by the MathWorks transfer package's verification map: a multi-plane map without a magnet temperature
+    selects no plane; the capability paths computed their tolerance scale from the missing plane and raised
+    AttributeError.  They must return a non-evidence result that names the missing input."""
+    from traction_workbench import service as S
+    from traction_workbench.mathworks.cases import vf_map_drive
+    d = vf_map_drive()
+    lim = sf.synthetic_limits()
+    for kind in ("policy", "physical"):
+        r = S.capability(d, lim, 3000.0, 600.0, 1, kind=kind)
+        assert r["accepted_as_evidence"] is False
+        assert any("magnet temperature must be stated" in m for m in r["diagnostic_only_because"])
+    rows = S.capability_curve(d, lim, 600.0, speeds=[1000.0])["rows"]
+    assert rows[0]["policy_max_Nm"] is None and rows[0]["electrical_max_Nm"] is None
+    k = DriveKernel(d, scenario(3000.0, 600.0))
+    assert not k.evaluable and k.torque_scale() >= 1.0

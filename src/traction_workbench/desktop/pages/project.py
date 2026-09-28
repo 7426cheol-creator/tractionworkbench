@@ -55,6 +55,7 @@ class ProjectPage(QWidget):
                           (tr("새 개정…", "new revision…"), self.new_revision),
                           (tr("파일과 비교…", "compare with file…"), self.diff_with),
                           (tr("데이터시트 가져오기…", "import datasheet…"), self.import_datasheet),
+                          (tr("MathWorks 이식 패키지…", "MathWorks package…"), self.mathworks_package),
                           (tr("내장 합성 프로젝트", "built-in synthetic project"), self.reset_builtin)):
             b = QPushButton(label)
             b.clicked.connect(lambda _=False, f=fn: f())
@@ -227,6 +228,15 @@ class ProjectPage(QWidget):
         if apply:
             dlg.apply()
         elif not _selftest():
+            dlg.exec()
+        return dlg
+
+    def mathworks_package(self, folder: str | None = None):
+        """The MathWorks transfer package dialog; with ``folder`` it exports there without waiting for the user - the
+        self-test path."""
+        from ..mathworks_dialog import MathWorksDialog
+        dlg = MathWorksDialog(self.win, folder)
+        if not _selftest():
             dlg.exec()
         return dlg
 

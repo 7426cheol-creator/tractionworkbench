@@ -63,7 +63,7 @@ flowchart TB
     TM["timing FTTI"] --- PR["protection"] --- EM["emi"] --- LF["lifetime"] --- TH["thermal · coolant"] --- RP["dclink_ripple"]
   end
   subgraph out["표현·교환"]
-    API["api · service · cli · exchange"]
+    API["api · service · cli · exchange · mathworks · datasheet"]
     VZ["viz · plots"]
     UI["desktop 16 페이지 · selftest · PDF"]
   end
@@ -102,7 +102,7 @@ flowchart TB
 
 - 모듈 수준 순환: **없음**. 지연 import 순환 1개: `physics ↔ solvers.gate` (gate는 사실상 physics 층; 동작은 정상).
 - 위쪽 의존: 검토 당시 `physics → extensions.module_loss` (R1) — **수정 후 0**. 층은 base(errors·status·settings·units·validation·modulation)
-  < models(models·scenario·requirement) < kernel(physics·solvers) < engines(analysis·extensions) < services(io·exchange·service·decision·report·api)
+  < models(models·scenario·requirement) < kernel(physics·solvers) < engines(analysis·extensions) < services(io·exchange·mathworks·datasheet·service·decision·report·api)
   < presentation(plots·viz·report_pdf·desktop·cli)이며, 입력 어댑터 `io`와 진입점 `cli`는 각각 services·presentation 층이라
   `io → analysis.rating`, `cli → desktop`은 위반이 아닙니다. `tests/test_architecture.py`가 이 층 규칙(지연 import 포함)과
   모듈 수준 순환 0을 강제합니다.
@@ -191,6 +191,7 @@ flowchart TB
 | Anti-jerk | 추가 명세 D-01..D-05, 출력 좌표 독립 ODE | V3 | ● ● ● ● | 합성 ROM | FRF 식별, wheel slip, 다관성 |
 | 모터 설계 | 교과서 권선계수, dq 스케일링 항등식 | V2 | ● ● ● ○ | — | FEA/CAD 연계(비목표) |
 | 교환 패키지 | 위 fixture를 코드에서 직접 생성 | — | ● ○ ○ — | — | MATLAB 쪽 parity 실행 (V4) |
+| MathWorks 이식 (twb-mathworks/1) | golden_forward·manufactured potential·계약 수식·map 집합 정의(엔진 비의존 oracle), 심은 결함 9종 | V2 | ● ● ● ● | 합성 fixture + 제품 드라이브 | MATLAB 본체·Simulink harness·System Composer 실행 (Octave proxy만 실행) |
 
 ● 있음 · ○ 해당 교환 fixture 없음. **전체 판단**: 뼈대(dq 모델·판정)는 V3로 가장 성숙하고, 확장 분석은 핵심 식마다
 독립 기준을 가진 V2 수준입니다. 물리 검증(V4–V6)은 모든 영역에서 없으며, 예시 데이터는 모두 합성입니다 — 도구는
@@ -281,3 +282,16 @@ flowchart TB
 | `examples.SYNTHETIC_PROJECT` | `test_project`, self-test 예시 기준값(정책 순위, A/B 판정 등), `test_review_r2` |
 | `project.COMPONENTS` / 페이지 요청 형태 | 데스크톱 smoke(기본 페이지 요청은 로컬 변경 없음), self-test `project:usage` |
 | 섹션 parser (`parsers.py`) | `test_project` (섹션 검증), 해당 분석 테스트 |
+
+## 9. 0.5.0 — MathWorks 이식 브리지의 위치
+
+`mathworks/`는 services 층에 있고 엔진을 **읽기만** 합니다: 모델 데이터는 `identity.content_sha256`과 같은 객체에서, Python 값은
+`physics.forward_evaluation`·`solvers.gate.check_witness`·`service.evaluate_case_full`에서 나옵니다. 독립 값(`mathworks/oracle.py`)은
+엔진을 import하지 않습니다(테스트가 import 목록을 확인). 새 결합은 없으며, 이식 fixture가 커널의 결함 하나(plane을 고를 수 없는 map
+시나리오에서 capability가 죽음)를 드러내 고쳤습니다.
+
+| 바꾸는 것 | 재검증 |
+|---|---|
+| `physics.py` 수식·제약·gate, `settings.py` | `test_mathworks` (Octave parity — MATLAB 쪽도 같이 바꿔야 함), 패키지 재export (fingerprint가 바뀜) |
+| `contract.CONVENTIONS` / 물리량 사전 | MATLAB `checkContract.m`·`compareCase.m`, `test_mathworks` |
+| flux map 보간·plane 규칙 (`models/flux.py`) | `fluxMapLookup.m`·`selectPlane.m`, VF.MAP.* case, 심은 결함 테스트 |

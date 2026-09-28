@@ -308,10 +308,15 @@ class DriveKernel:
             psi = self.psi if self.psi is not None else 0.0
             dl = abs(self.Ld - self.Lq)
             return max(1.0, 1.5 * self.p * (psi * self.Imax + dl * self.Imax ** 2 / 2.0))
-        plane = self.plane
-        d, q = np.meshgrid(plane.id_axis_A, plane.iq_axis_A, indexing="ij")
-        tem = 1.5 * self.p * (plane.psi_d_Wb * q - plane.psi_q_Wb * d)
-        return max(1.0, float(np.nanmax(np.abs(np.where(plane.valid, tem, np.nan)))))
+        # a scenario that selects no plane (several planes, no or an unvalidated magnet temperature) is not
+        # evaluable; its tolerances still need a scale: the model's own planes give one (no plane -> no crash)
+        planes = (self.plane,) if self.plane is not None else self.drive.motor.flux.planes
+        out = 1.0
+        for plane in planes:
+            d, q = np.meshgrid(plane.id_axis_A, plane.iq_axis_A, indexing="ij")
+            tem = 1.5 * self.p * (plane.psi_d_Wb * q - plane.psi_q_Wb * d)
+            out = max(out, float(np.nanmax(np.abs(np.where(plane.valid, tem, np.nan)))))
+        return out
 
     def describe(self) -> dict:
         return {

@@ -9,6 +9,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QPushButton, QScrollArea,
                                QSplitter, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
+from ...examples import examples_dir  # noqa: F401 (the pages import it from here)
 from ...i18n import tr
 from ...io import load_json_file
 from ..state import BUILTIN_DRIVES
@@ -29,19 +30,6 @@ def _fill(parent, key, value):
     it = QTreeWidgetItem(parent, [str(key), fmt(value) if not isinstance(value, str) else value])
     it.setToolTip(1, it.text(1))
     return it
-
-
-def examples_dir() -> Path | None:
-    import sys
-    cands = []
-    frozen = getattr(sys, "_MEIPASS", None)
-    if frozen:
-        cands.append(Path(frozen) / "examples")
-    cands.append(Path(__file__).resolve().parents[4] / "examples")
-    for c in cands:
-        if c.is_dir():
-            return c
-    return None
 
 
 class ModelPage(QWidget):

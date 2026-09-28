@@ -290,6 +290,20 @@ def run_self_test(app, out_dir) -> int:
         else:
             check("datasheet:module", False, "examples/datasheets not found")
         win.state.set_project(builtin_project())
+        # MathWorks transfer package: export of the active project; nothing has run on a target yet
+        mw_dir = out / "mathworks_package"
+        if mw_dir.exists():
+            import shutil
+            shutil.rmtree(mw_dir)
+        mw = pj.mathworks_package(str(mw_dir))
+        mw.show()
+        app.processEvents()
+        mw.grab().save(str(out / "18e_mathworks_package.png"))
+        v = mw.verification or {}
+        check("mathworks:package", v.get("package_check") == "PASS" and v.get("parity") == "NOT_RUN"
+              and v.get("model_generation") == "NOT_RUN" and not v.get("linked_as_current_evidence")
+              and (mw_dir / "matlab" / "+twb" / "runAll.m").is_file(), v.get("problems"))
+        mw.close()
         html = win.page_guide_html()
         check("guide", all(PAGE_INFO[k]() in html for k in PAGE_INFO) and win.current_page() in PAGE_INFO)
         vv = visit("verification", 8, ["run"], [(None, "19_verification")])

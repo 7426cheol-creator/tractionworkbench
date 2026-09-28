@@ -1,7 +1,69 @@
-# Traction Workbench v0.4.0 — Release / Handback Notes
+# Traction Workbench v0.5.0 — Release / Handback Notes
 
 기준선: `reference/traction_workbench_spec_v1` (Blueprint, Implementation Handoff, Reference Cases, golden JSON; manifest SHA-256 일치 확인).
 이 문서는 Handoff H12가 요구한 실행 방법, model contract, 제약 목록, 알려진 한계, 검증 실행 결과, 실패/미구현 항목, data provenance, 재현 조건을 담습니다.
+
+## 0.5.0 변경 사항 (v0.4.0 대비)
+
+**MathWorks 이식 패키지 `twb-mathworks/1`** — Python Workbench를 실행 가능한 reference 구현으로 보고, 그 요구·모델·파라미터·
+시나리오·계산 의미·결과를 MATLAB / Simulink / System Composer로 재현 가능하게 옮깁니다. 새 verification framework가 아니라
+기존 구조(twb-project/1, twb-exchange/1, 결정 기록의 claim·evidence, provenance·content hash)를 그대로 싣고 이식에 필요한 것만
+더했습니다. 세 층을 분리합니다: (1) 요구·수용된 원천, (2) Python reference, (3) MathWorks — 대상은 (2)와 (1) 모두와 비교됩니다.
+
+1. **무엇을 옮기는가** — `manifest.json`(schema, 구현 SHA·dirty·의미 소스 파일 hash, project digest, 파일별 SHA-256, semantic
+   fingerprint: canonical ASCII JSON이라 byte 동일 ⇔ 의미 동일), `contract.json`(검사 가능한 규약 열거값, 물리량 사전의 단위·tolerance
+   class, 제약·에너지 모드·사유·claim 어휘, 수치 설정, map·손실 규칙, 세 층), `models/*.json`(제품 드라이브 + 참조·검증 fixture:
+   파라미터·온도 법칙·flux plane(행 = id)·mask·대칭·온도 보간·손실 closure·**손실 소유권**·content SHA-256·provenance·자기 qualification),
+   `cases/*.json`(forward 48, flux lookup 21, 요구 witness 11 — 각 case에 Python 값과 oracle 값·tolerance), `architecture/`
+   (System Composer/SLDD 후보와 회사 profile 양식), `source/`(프로젝트, 교환 패키지, 참조 패키지 manifest), `gap_report.json`,
+   `matlab/+twb/`, 사람용 이식 안내(`README.md`)와 agent 작업표(`AGENT_TASKS.md`).
+2. **MathWorks에서 무엇이 재현되는가** — native MATLAB: 상수 dq(D1)와 flux map(D2)의 정상상태 forward 평가(전압·토크·전력·손실·
+   전압 예산·제약 상태·에너지 모드·항등식·evidence gate), plane 선택·선언된 온도 보간, 요구 witness 재검사(FEASIBLE claim의 재현;
+   INFEASIBLE/UNKNOWN은 층-2 근거로 전달), 패키지 guard(전치 거부, 이중 온도 보정 거부, 규약 불일치 거부, 손실 이중 계산 검출,
+   사전 충돌 상태). Simulink 정적 평가 harness(`twb.buildEvaluationHarness`/`twb.runHarness` — MATLAB Function block이 같은
+   `twb.staticPoint`를 호출, 동적 plant 아님), System Composer 후보 모델(`twb.buildArchitectureCandidate`), SLDD 충돌 검사
+   (`twb.checkDictionary`, 읽기 전용)는 문서화된 API로 작성했고 해당 제품이 있는 환경에서 실행될 때까지 **NOT_RUN**입니다.
+   최적화기(MTPA/약계자)·capability 인증서·데이터시트 모듈 손실·열·PWM·anti-jerk·보호·EMI·OEW/HEV는 데이터·계약·근거 수준으로만
+   전달합니다(`gap_report.json`).
+3. **같은 의미인지 어떻게 확인하는가** — 물리량 class별 `|q_t − q_r| ≤ atol + rtol·max(|q_t|,|q_r|)`(IEEE double, 같은 연산 순서:
+   V·A·N·m 1e-9/1e-12, W 1e-6/1e-12, Wb 1e-15/1e-12)와 상태(evaluable·사유·gate 사유·제약 상태·에너지 모드·위반 그룹·claim)의
+   완전 일치. Oracle은 엔진을 import하지 않는 모듈이 참조 패키지(golden_forward, manufactured potential — manifest SHA-256 확인)와
+   계약 수식, map의 집합 정의로 계산합니다. 내보낼 때 (2)↔(1) 불일치는 보고되고 숨겨지지 않습니다(현재 0건). 대상 보고서는 Python이
+   **원시 값에서 다시 계산**해 판정합니다. 비교에 이빨이 있는지 CI가 확인합니다: MATLAB 코드에 심은 결함 — 토크 계수, 모서리 규칙
+   제거, UNKNOWN 대신 clip, 결측 DC 한계 = 무제한, ACTIVE = 위반, map 전치, power-invariant Park, 온도 보간 제거, Rs 법칙 무시 — 이
+   모두 그 결함을 겨냥한 case에서 FAIL/ERROR가 됩니다. 이 환경과 CI에서 GNU Octave 8.4(MATLAB 언어 호환 proxy)로 **79 PASS · 0 FAIL ·
+   0 ERROR · 1 NOT_SUPPORTED**(witness가 없는 INFEASIBLE 요구), guard 6/6. MATLAB 자체·Simulink·System Composer는 실행하지 않았습니다.
+4. **작업이 System Composer → Simulink → Simscape로 발전해도 연결을 어떻게 유지하는가** — 보고서는 semantic fingerprint와 소비한 모든
+   파일의 SHA-256을 기록하고, 재수입은 그 패키지에만(다른 패키지 → FOREIGN_REPORT), 그 설계 개정에만(project digest가 다르면 현재
+   근거가 아님) 연결합니다. stable ID(부품·연결·signal·데이터 항목·요구·case)와 회사 profile의 명시적 `id_map`으로 이름이 바뀌어도
+   추적하며, 이름만 같은 항목은 같은 것으로 보지 않습니다(NAME_MATCH_ONLY). 생성 파일을 편집하면 재생성이 멈추고(편집 목록 보고),
+   생성기는 새 폴더에만 쓰며 사라진 ID를 삭제 명령으로 해석하지 않습니다. 같은 case 집합이 상세 모델의 회귀 기준이 되며, 상세 모델의
+   차이는 fidelity 비교(같은 입력·초기조건·손실 경계, 설명된 discrepancy)로 기록합니다.
+
+사용: 프로젝트 페이지 → *MathWorks 이식 패키지…*(만들기 · 로컬 실행(MATLAB `-batch` 또는 Octave) · 보고서 가져오기 — 패키지 검사 /
+대상 환경 / 모델 생성 / parity / guard / 물리 검증 / 현재 근거를 따로 표시), CLI `twb mathworks export|check|run|verify`, 회사 PC에서는
+`addpath(fullfile(pkg,'matlab')); twb.runAll(pkg)` — AI·네트워크 불필요. Agentic Toolkit은 같은 결정적 entry point를 호출하는 선택적
+orchestration입니다(`AGENT_TASKS.md`: 단위·map·초기상태·tolerance를 지어내거나 기대값을 고쳐 통과시키는 것 금지).
+
+이식 fixture가 찾은 엔진 결함: 여러 온도 plane을 가진 flux map에서 자석 온도를 주지 않거나 plane 밖 온도를 주면(plane 선택 불가)
+policy·physical capability와 T–n 곡선이 torque scale을 없는 plane에서 계산하다 `AttributeError`로 죽었습니다. 이제 모델의 plane들로
+scale을 잡고, 결과는 사유(자석 온도 필요)를 밝힌 비증거(UNKNOWN)입니다 —
+`test_scenario_that_selects_no_plane_is_unknown_not_a_crash`.
+
+**앱 전체 검토·UX** — 63개 화면을 검토해 고친 것: PDF 보고서가 밝은 plot theme을 데스크톱에 남기던 것(`style.using`으로 호출자의
+theme 복원 + 회귀 테스트), self-test가 사용자 theme 설정을 저장하던 것, 요구 판정 페이지의 요약 열이 결과 위젯을 지우던 것, dict의
+Python repr 표시, 0이 아닌 '미선언/없음/미지정' 표시, 쓰지 않는 보호 plant 행 숨김, 잘린 라벨·범례·표. 탐색을 공학 질문별 그룹으로
+나누고, *도움말 → 화면 안내*, 입력 패널이 잘리지 않는 콤보·체크박스·스크롤 영역(1600×1000 · 1280×760 · 1100×700에서 잘림 0),
+placeholder에서 비활성인 그림 버튼, 삼키지 않는 내보내기 오류, 파라미터 표시 이름.
+
+**Anti-jerk** — 속도 high-pass 피드백은 요청 토크의 정상 성분 일부를 지웠습니다(폐형식 −Kd(T−T_L)/(ω_c J + Kd), 이제 결과에 표시).
+2차 washout(`hpf_order: 2`)이 정상 결손을 없애며 예시가 이를 씁니다. 샘플링 루프 고유값 분석이 추가 상태를 포함하고, 안정성 판정이
+시뮬레이션 진동과 일치하는지 테스트합니다.
+
+**데이터시트 가져오기 (로드맵 P1-A/B의 데이터시트 단계)** — 디지타이즈된 모듈 곡선(long CSV 또는 WebPlotDigitizer), 커패시터 ESR 표,
+게이트 dv/dt → 공급사 provenance(qualified 아님)의 프로젝트 섹션. 모든 온도가 덮는 전류 구간에서만 재표본(외삽 없음, 0 A 기준점은
+선언 시에만), 데이터시트 tr/tf(전류 천이)는 전압 에지로 거부, 발견 사항(findings) 기록. CLI `twb datasheet`, 미리보기 대화상자,
+전력변환 페이지의 모듈 편집을 프로젝트에 반영. 측정 데이터 단계(DPT 에지 family, 부품 임피던스, FEA dq 정규화)는 로드맵에 남습니다.
 
 ## 0.4.0 변경 사항 (v0.3.0 대비)
 

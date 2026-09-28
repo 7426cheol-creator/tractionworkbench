@@ -262,6 +262,64 @@ def cmd_datasheet(args):
     return 0
 
 
+def _mw_status(v: dict) -> None:
+    print(f"  package check       {v['package_check']}")
+    print(f"  target environment  {v['target_environment']}")
+    print(f"  model generation    {v['model_generation']} (Simulink static evaluation harness)")
+    print(f"  parity              {v['parity']}" + (f"  {v['cases']}" if v.get("cases") else ""))
+    for k, st in (v.get("stages") or {}).items():
+        print(f"    stage {k:<20} {st}")
+    print(f"  physical validation {v['physical_validation']}")
+    print(f"  current evidence    {'yes' if v['linked_as_current_evidence'] else 'no'}")
+    for pr in v["package_problems"] + v["problems"]:
+        print(f"  ! {pr}")
+    for f in v.get("failed_cases", [])[:20]:
+        print(f"  FAIL {f['case_id']}: {', '.join(f['failures'][:6])}")
+
+
+def cmd_mathworks(args):
+    """MathWorks transfer package: export (Python reference -> package), check (integrity), run (local MATLAB /
+    GNU Octave), verify (re-import a target report against this package and, with --project, this design)."""
+    from . import mathworks as MW
+    if args.action == "export":
+        man = MW.export_package(args.dir, _project(args.project), force=args.force)
+        if args.json:
+            _print_json({k: man[k] for k in ("dir", "semantic_fingerprint", "case_counts", "models",
+                                             "oracle_disagreements", "statuses")})
+        else:
+            print(f"{MW.SCHEMA} package written to {man['dir']}")
+            print(f"  fingerprint {man['semantic_fingerprint'][:16]}  project {man['project_label']}")
+            print(f"  models {', '.join(man['models'])}")
+            print(f"  cases {man['case_counts']}  layer-2 vs layer-1 disagreements: "
+                  f"{man['oracle_disagreements'] or 'none'}")
+            print(f"  run on the target: {man['entry_points']['matlab']}")
+        return 0
+    if args.action == "check":
+        r = MW.check_package(args.dir)
+        if args.json:
+            _print_json({k: v for k, v in r.items() if k != "manifest"})
+        else:
+            print(f"package check {r['status']}")
+            for pr in r["problems"] + r["warnings"]:
+                print(f"  ! {pr}")
+        return 0 if r["status"] == "PASS" else 1
+    if args.action == "run":
+        r = MW.run_local(args.dir, args.runtime)
+        v = r["verification"]
+        if args.json:
+            _print_json(r)
+        else:
+            print(f"{r['runtime']['kind']} ({r['runtime']['path']}) exit {r['exit_code']}, log {r['log']}")
+            _mw_status(v)
+        return 0 if v["parity"] == "PASS" else 1
+    v = MW.verify_report(args.dir, args.report, _project(args.project) if args.project else None)
+    if args.json:
+        _print_json(v)
+    else:
+        _mw_status(v)
+    return 0 if v["parity"] == "PASS" else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="twb", description="Traction engineering feasibility workbench")
     ap.add_argument("--version", action="version", version=f"traction-workbench {__version__}")
@@ -332,6 +390,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--change", help="change note of that revision")
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_datasheet)
+    p = sub.add_parser("mathworks", help="MathWorks transfer package: export | check | run | verify")
+    p.add_argument("action", choices=("export", "check", "run", "verify"))
+    p.add_argument("dir", help="package directory")
+    p.add_argument("--project", help="project file (export: the design to transfer; verify: the CURRENT design "
+                                     "the report must belong to); default: the built-in synthetic project")
+    p.add_argument("--report", help="verify: report file (default <dir>/results/parity_report.json)")
+    p.add_argument("--runtime", choices=("matlab", "octave"), help="run: which local runtime (default: MATLAB, "
+                                                                     "else GNU Octave)")
+    p.add_argument("--force", action="store_true", help="export: write even over edited generated files")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_mathworks)
     p = sub.add_parser("acceptance", help="compare with the golden fixtures")
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_acceptance)

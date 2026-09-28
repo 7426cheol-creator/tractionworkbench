@@ -38,6 +38,39 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: python -m pytest -q
 
+  mathworks:
+    name: MathWorks transfer package (GNU Octave runs the MATLAB code)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: GNU Octave (MATLAB-language runner; MATLAB / Simulink stages stay NOT_RUN)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends octave
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test]"
+      - name: Export the package, run twb.runAll in Octave, re-import and recompute the report
+        run: |
+          twb mathworks export build/mathworks
+          twb mathworks run build/mathworks --runtime octave
+      - name: Transfer tests with the target side executed (parity, planted defects, guards)
+        run: python -m pytest -q tests/test_mathworks.py
+      - name: Upload the package and its report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mathworks-transfer-package
+          path: build/mathworks
+          if-no-files-found: ignore
+
   windows:
     name: Windows executable
     runs-on: windows-latest
