@@ -24,7 +24,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..errors import InputValidationError
-from ..models.flux import _finite
+from ..validation import finite as _finite
 from ..status import Claim, Evidence, EvidenceKind, Reason, Status
 
 K_B_EV = 8.617333262e-5

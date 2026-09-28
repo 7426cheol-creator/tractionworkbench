@@ -42,7 +42,8 @@ import math
 
 from ..errors import InputValidationError
 from ..models.components import DriveModel
-from ..models.flux import ConstantFluxModel, _finite
+from ..models.flux import ConstantFluxModel
+from ..validation import finite as _finite
 from ..status import Claim, Evidence, EvidenceKind, Reason, Status
 
 SQRT3 = math.sqrt(3.0)

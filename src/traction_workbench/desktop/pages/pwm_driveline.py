@@ -160,7 +160,10 @@ class PwmDrivelinePage(QWidget):
         self.tm_mod = number(tm["modulator_delay_fraction"], 0, 1, "", 3, 0.05)
         self.tm_pul = number(tm["min_pulse_us"], 0, 100, "µs", 2, 0.1)
         self.tm_basis = QLineEdit(tm["basis"])
-        self.lp_L = number(lp["L_uH"], 1, 1e5, "µH", 1, 10)
+        self.lp_Ld = number(lp.get("Ld_uH") or lp.get("L_uH"), 1, 1e5, "µH", 1, 10,
+                            tr("d축 설계 인덕턴스 (이득 설계값; 플랜트는 운전점의 기계 차동 인덕턴스)",
+                               "d-axis design inductance (gain design; the plant is the machine's differential L at the point)"))
+        self.lp_Lq = number(lp.get("Lq_uH") or lp.get("L_uH"), 1, 1e5, "µH", 1, 10)
         self.lp_R = number(lp["R_mohm"], 0, 1e4, "mΩ", 2, 1)
         self.lp_bw = number(lp["bandwidth_Hz"], 1, 1e5, "Hz", 0, 50)
         self.lp_map = combo([(tr("연속 이득 (Ki·Ts 재매핑)", "continuous gains (Ki·Ts remapped)"), "continuous"),
@@ -176,7 +179,8 @@ class PwmDrivelinePage(QWidget):
         for lab, w in ((tr("샘플→latch (ADC+WCET)", "sample→latch (ADC+WCET)"), self.tm_lat), (tr("필터 지연", "filter delay"), self.tm_flt),
                        (tr("갱신", "update"), self.tm_upd), (tr("변조기 지연 비율", "modulator delay fraction"), self.tm_mod),
                        (tr("최소 펄스", "minimum pulse"), self.tm_pul), (tr("근거", "basis"), self.tm_basis),
-                       ("L (dq)", self.lp_L), ("R", self.lp_R), (tr("전류 루프 대역", "current-loop bandwidth"), self.lp_bw),
+                       (tr("L_d 설계", "L_d design"), self.lp_Ld), (tr("L_q 설계", "L_q design"), self.lp_Lq), ("R", self.lp_R),
+                       (tr("전류 루프 대역", "current-loop bandwidth"), self.lp_bw),
                        (tr("이득 매핑", "gain mapping"), self.lp_map), (tr("적분기 상태", "integrator state"), self.lp_int),
                        (tr("fsw 전환 시", "at an fsw change"), self.lp_tr), ("", self.lp_aw)):
             f.addRow(lab, w)
@@ -304,7 +308,8 @@ class PwmDrivelinePage(QWidget):
                        "updates_per_period": self.tm_upd.currentData(), "modulator_delay_fraction": self.tm_mod.value(),
                        "min_pulse_us": self.tm_pul.value(), "wcet_source": "declared estimate",
                        "basis": self.tm_basis.text().strip()}
-        b["loop"] = {"L_uH": self.lp_L.value(), "R_mohm": self.lp_R.value(), "bandwidth_Hz": self.lp_bw.value(),
+        b["loop"] = {"Ld_uH": self.lp_Ld.value(), "Lq_uH": self.lp_Lq.value(), "R_mohm": self.lp_R.value(),
+                     "bandwidth_Hz": self.lp_bw.value(),
                      "gain_mapping": self.lp_map.currentData(), "reference_fsw_kHz": self.p_base.value(), "basis": "UI",
                      "integrator_storage": self.lp_int.currentData(), "on_transition": self.lp_tr.currentData(),
                      "anti_windup": self.lp_aw.isChecked()}
@@ -445,9 +450,17 @@ class PwmDrivelinePage(QWidget):
                                              "phase_at_mode_deg", "phase_at_crossover_deg")})
         self.p_tabs.setCurrentWidget(self.pl_tim)
         rows = [(f"{x['fsw_Hz'] / 1e3:g} kHz", (tr("deadline 미준수", "deadline missed") if not x["deadline_ok"] else
-                                                 f"τ {1e6 * x['total_delay_s']:.1f} µs · PM {fmt(x.get('phase_margin_deg'), 3)}° · "
-                                                 f"{tr('모드 위상', 'mode phase')} {fmt(x.get('phase_at_mode_deg'), 3)}°"))
+                                                 f"τ {1e6 * x['total_delay_s']:.1f} µs · PM {fmt(x.get('phase_margin_deg'), 3)}° "
+                                                 f"({tr('결속 축', 'binding axis')} {x.get('binding_axis') or '—'}: "
+                                                 + ", ".join(f"{a} {fmt(v, 3)}°" for a, v in (x.get('phase_margin_by_axis_deg') or {}).items())
+                                                 + f") · {tr('모드 위상', 'mode phase')} {fmt(x.get('phase_at_mode_deg'), 3)}°"))
                 for x in res["rows"]]
+        pl = res.get("plant_L_H")
+        if pl:
+            pp = res.get("plant_point") or {}
+            rows.insert(0, (tr("플랜트 (기계 차동 L)", "plant (machine differential L)"),
+                            f"L_d {1e6 * pl['d']:.1f} µH · L_q {1e6 * pl['q']:.1f} µH @ {pp.get('speed_rpm', 0):.0f} rpm, "
+                            f"{pp.get('torque_Nm', 0):.0f} N·m"))
         for key in ("transition_shadow", "transition_immediate"):
             t = res[key]
             rows.append((t["update"], ("OK" if t["ok"] else tr("위반", "violation")) +

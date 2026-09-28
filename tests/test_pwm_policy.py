@@ -310,3 +310,28 @@ def test_transients_route():
     v = t["transition"]["variants"]
     assert v["bumpless (volts, Ki*Ts remapped)"]["excursion_A"] == 0.0
     assert v["integrator reset"]["excursion_A"] > v["error-sum integrator, Ki*Ts remapped"]["excursion_A"] > 0
+
+
+def test_one_pulse_pattern_for_losses_ripple_and_sampling():
+    """The module data's declared modulation is replaced by the policy's (review finding: the page's SPWM choice
+    reached the ripple and sampling but not the losses)."""
+    r = api.pwm_policies({"modulation": "spwm"})
+    assert r["module_modulation"] == {**r["module_modulation"], "declared": "svpwm", "used": "spwm"}
+    base = api.pwm_policies({})
+    assert r["policies"][0]["E_inv_J"] != base["policies"][0]["E_inv_J"]         # the losses follow the pattern
+    with pytest.raises(InputValidationError):
+        api.pwm_policies({"modulation": "dpwm1"})                                 # not supported by the edge models
+
+
+def test_loop_margin_is_checked_on_both_machine_axes():
+    """A single 'mean' L applies the same gains to both axes: the d axis (smaller L) crosses over higher and binds
+    (review finding); per-axis design on the machine's inductances keeps both axes at the designed margin."""
+    single = {**api.EXAMPLE_PWM["loop"], "L_uH": 300.0, "Ld_uH": None, "Lq_uH": None}
+    r = {p["policy"]["name"]: p for p in api.pwm_policies({"loop": single})["policies"]}
+    seg = r["light-load 8 kHz"]["segments"][1]
+    assert seg["timing"]["binding_axis"] == "d" and seg["timing"]["phase_margin_deg"] < 45.0
+    assert r["light-load 8 kHz"]["status"] == "VIOLATION"
+    per_axis = {p["policy"]["name"]: p for p in api.pwm_policies({})["policies"]}
+    ax = per_axis["light-load 8 kHz"]["segments"][1]["timing"]["axes"]
+    assert ax["d"]["phase_margin_deg"] == pytest.approx(ax["q"]["phase_margin_deg"], abs=0.05)
+    assert per_axis["light-load 8 kHz"]["status"] == "ADMISSIBLE"

@@ -168,7 +168,7 @@ def build_package(include_examples: bool = True) -> dict:
         "fixtures": fixtures(),
     }
     if include_examples:
-        from .decision import _jsonable
+        from .decision import jsonable as _jsonable
         pkg["example_inputs"] = _jsonable({"efficiency": api.EXAMPLE_EFFICIENCY, "reducer": api.EXAMPLE_REDUCER,
                                            "module_igbt": api.EXAMPLE_MODULE, "module_sic": api.EXAMPLE_MODULE_SIC,
                                            "pwm": api.EXAMPLE_PWM, "driveline": api.EXAMPLE_DRIVELINE,

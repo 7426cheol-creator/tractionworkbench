@@ -28,7 +28,8 @@ import numpy as np
 
 from ..errors import InputValidationError
 from ..models.components import DriveModel, RotationalLossModel
-from ..models.flux import ConstantFluxModel, CurrentBox, FluxMapModel, _finite
+from ..models.flux import ConstantFluxModel, CurrentBox, FluxMapModel
+from ..validation import finite as _finite
 from ..models.provenance import Provenance
 from ..scenario import DcSourceLimits, Scenario
 from ..solvers.capability import policy_capability

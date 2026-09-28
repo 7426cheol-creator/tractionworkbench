@@ -25,7 +25,8 @@ import numpy as np
 
 from .errors import InputValidationError, OutsideModelDomain
 from .models.components import DriveModel
-from .models.flux import ConstantFluxModel, FluxMapModel, _finite
+from .models.flux import ConstantFluxModel, FluxMapModel
+from .validation import finite as _finite
 from .scenario import Scenario
 from .settings import DEFAULT_SETTINGS, NumericalSettings
 from .status import Reason

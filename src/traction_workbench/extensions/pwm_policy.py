@@ -20,13 +20,14 @@ the comparison that never trades a mandatory constraint for efficiency.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
 from ..errors import InputValidationError
-from ..models.flux import _finite
-from .emi import SwitchingSource, _duties, _edge_lines, pwm_edges
+from ..modulation import duties as _duties
+from ..validation import finite as _finite
+from .emi import SwitchingSource, edge_lines, pwm_edges
 
 TWO_PI = 2.0 * math.pi
 VARS = ("speed_rpm", "torque_abs_Nm", "Vdc_V", "sensor_temp_C")
@@ -486,9 +487,45 @@ class CurrentLoop:
                 math.degrees(wc * tau_s)}
 
 
+def axis_loops(loop) -> dict:
+    """{'d': CurrentLoop, 'q': CurrentLoop}: a single declared loop applies the SAME gains to both axes."""
+    if loop is None:
+        return {}
+    return dict(loop) if isinstance(loop, dict) else {"d": loop, "q": loop}
+
+
+def differential_inductances(drive, scenario, id_A: float, iq_A: float, dI_A: float = 1.0) -> dict | None:
+    """L_d,diff = dpsi_d/di_d and L_q,diff = dpsi_q/di_q of the MACHINE model at the operating point (central
+    differences; for the constant model the declared L_d, L_q).  The current-loop plant, not its design value."""
+    from ..physics import forward_evaluation
+    pts = [forward_evaluation(drive, scenario, id_A + a, iq_A + b).point
+           for a, b in ((dI_A, 0.0), (-dI_A, 0.0), (0.0, dI_A), (0.0, -dI_A))]
+    if any(x is None for x in pts):
+        return None
+    Ld = (pts[0].psi_d_Wb - pts[1].psi_d_Wb) / (2 * dI_A)
+    Lq = (pts[2].psi_q_Wb - pts[3].psi_q_Wb) / (2 * dI_A)
+    if Ld <= 0 or Lq <= 0:
+        return None
+    return {"d": Ld, "q": Lq}
+
+
+def axis_margins(loop, tau_s: float, fsw_Hz: float, plant_L: dict | None = None, updates_per_period: int = 1) -> dict:
+    """Phase margin per axis with the DECLARED gains on the PLANT inductance (the machine's differential inductance
+    at the operating point when given, else the design value); the binding axis is the minimum."""
+    out = {}
+    for ax, lp in axis_loops(loop).items():
+        Lp = (plant_L or {}).get(ax, lp.L_H)
+        mg = replace(lp, L_H=Lp).margins(tau_s, lp.effective_Ki(fsw_Hz, updates_per_period))
+        out[ax] = {**mg, "plant_L_H": Lp, "design_L_H": lp.L_H}
+    pms = [v["phase_margin_deg"] for v in out.values() if v.get("phase_margin_deg") is not None]
+    return {"axes": out, "phase_margin_deg": min(pms) if pms else None,
+            "binding_axis": min(out, key=lambda a: out[a]["phase_margin_deg"] if out[a].get("phase_margin_deg")
+                                is not None else math.inf) if out else None}
+
+
 def transition_transient(loop: CurrentLoop, tc: TimingConfig, fsw_from_Hz: float, fsw_to_Hz: float, i_ref_A: float,
                          e_V: float, V_max_V: float, band_A: float | None = None, t_after_s: float | None = None,
-                         n_before: int = 40) -> dict:
+                         n_before: int = 40, plant_L_H: float | None = None) -> dict:
     """One current-loop axis across a carrier-frequency change at a CONSTANT operating point (addendum 4.4 items 5-6).
 
     Sampled PI with the declared gain mapping, integrator storage and transition handling, voltage saturation with
@@ -510,12 +547,13 @@ def transition_transient(loop: CurrentLoop, tc: TimingConfig, fsw_from_Hz: float
 
     def ki_disc(T):
         return loop.Ki * (T if loop.gain_mapping == "continuous" else Tref)
-    L, R, e = loop.L_H, loop.R_ohm, float(e_V)
+    L, R, e = (plant_L_H or loop.L_H), loop.R_ohm, float(e_V)            # plant; the gains stay the declared ones
     v_ss = R * i_ref_A + e
     if abs(v_ss) > V_max_V:
         return {"evaluated": False, "reason": f"steady voltage {abs(v_ss):.4g} V above the limit {V_max_V:.4g} V"}
     band = band_A if band_A is not None else max(0.01 * abs(i_ref_A), 0.5)
-    t_after = t_after_s if t_after_s is not None else min(0.25, max(40.0 * L / loop.Kp, 5.0 * L / R if R > 0 else 0.0))
+    t_after = t_after_s if t_after_s is not None else min(0.25, max(40.0 * L / loop.Kp, 5.0 * loop.L_H / R if R > 0
+                                                                     else 0.0))
     t_sw = n_before * T0
     t_end = t_sw + t_after
 
@@ -614,7 +652,7 @@ def phase_ripple(Vdc_V: float, m: float, alpha_rad: float, fe_Hz: float, fsw_Hz:
     if edges:
         kk, t0, sgn, tau, _cur = (np.array(z) for z in zip(*edges))
         wgt = np.where(kk == 0, 2.0 / 3.0, -1.0 / 3.0)
-        Vl = _edge_lines(t0, tau, sgn * wgt * Vdc_V, f, T)
+        Vl = edge_lines(t0, tau, sgn * wgt * Vdc_V, f, T)
     else:
         kk = t0 = sgn = wgt = np.array([])
         Vl = np.zeros(f.size, complex)
@@ -875,18 +913,26 @@ class PwmLimits:
 def _segment_eval(base_drive, cand, seg: dict, fsw: float, coolant_C: float, limits_dc, timing: TimingConfig,
                   loop: CurrentLoop | None, L_hf_H: float, harmonic: HarmonicLossData | None, bank, source,
                   modulation: str, sensing: SensingConfig | None = None) -> dict:
-    from ..analysis.efficiency import _module_point
+    from ..analysis.efficiency import module_point
     from ..scenario import Scenario
     from .dclink_ripple import ripple_analysis
     sc = Scenario("pwm", float(seg["speed_rpm"]), float(seg["Vdc_V"]), limits_dc, coolant_temp_C=coolant_C)
-    r = _module_point(base_drive, cand, sc, float(seg["torque_Nm"]), coolant_C, fsw, None, None)
+    r = module_point(base_drive, cand, sc, float(seg["torque_Nm"]), coolant_C, fsw, None, None)
     out = {"fsw_Hz": fsw, "status": r["status"], "reason": r.get("reason", ""), "Tj_C": r.get("Tj_C")}
     p = r.get("point")
     led = delay_ledger(fsw, timing)
     out["timing"] = {k: led[k] for k in ("deadline_ok", "deadline_margin_s", "total_delay_s", "update_period_s")}
+    plant = None
+    if p is not None:
+        plant = differential_inductances(base_drive, sc, p["id_A"], p["iq_A"])
+        out["plant_L_H"] = plant
     if loop is not None and led["total_delay_s"] is not None:
-        mg = loop.margins(led["total_delay_s"], loop.effective_Ki(fsw, timing.updates_per_period))
-        out["timing"].update({"phase_margin_deg": mg["phase_margin_deg"], "crossover_Hz": mg["crossover_Hz"]})
+        am = axis_margins(loop, led["total_delay_s"], fsw, plant, timing.updates_per_period)
+        out["timing"].update({"phase_margin_deg": am["phase_margin_deg"], "binding_axis": am["binding_axis"],
+                              "axes": {a: {k: v.get(k) for k in ("phase_margin_deg", "crossover_Hz", "plant_L_H",
+                                                                  "design_L_H")} for a, v in am["axes"].items()},
+                              "plant": "machine differential inductance at the operating point" if plant else
+                                       "design inductance (operating point not established)"})
     if p is None:
         return out
     d = r["detail"] or {}
@@ -935,6 +981,12 @@ def evaluate_policies(base_drive, cand, segments: list[dict], policies: list, co
     current loop at the new segment's operating point (gain / integrator mapping, saturation)."""
     if not policies:
         raise InputValidationError("no policies", field="policies")
+    if modulation not in ("svpwm", "spwm"):
+        raise InputValidationError("the policy evaluation's ripple / sampling / edge models support svpwm and spwm",
+                                   field="modulation")
+    declared_mod = getattr(cand.model, "modulation", modulation)
+    if declared_mod != modulation:                   # ONE pulse pattern for losses, ripple, sampling and capacitor
+        cand = replace(cand, model=replace(cand.model, modulation=modulation))
     lim = limits or PwmLimits()
     out = []
     for pol in policies:
@@ -953,8 +1005,10 @@ def evaluate_policies(base_drive, cand, segments: list[dict], policies: list, co
                 e = {"t_s": t_now, "from_fsw_Hz": prev_fsw, "to_fsw_Hz": fsw, "reason": state["reason"],
                      "carrier_change": fsw != prev_fsw}
                 if fsw != prev_fsw and loop is not None and ev.get("iq_A") is not None and ev.get("vq_V") is not None:
-                    tr = transition_transient(loop, timing, prev_fsw, fsw, ev["iq_A"],
-                                              ev["vq_V"] - loop.R_ohm * ev["iq_A"], ev["voltage_budget_V"])
+                    lq = axis_loops(loop)["q"]
+                    tr = transition_transient(lq, timing, prev_fsw, fsw, ev["iq_A"],
+                                              ev["vq_V"] - lq.R_ohm * ev["iq_A"], ev["voltage_budget_V"],
+                                              plant_L_H=(ev.get("plant_L_H") or {}).get("q"))
                     e["transient"] = {k: tr.get(k) for k in ("evaluated", "reason", "output_jump_V", "excursion_A",
                                                              "band_A", "settle_s", "saturated_samples", "Ki_eff_ratio",
                                                              "bumpless", "horizon_s")}
@@ -979,6 +1033,10 @@ def evaluate_policies(base_drive, cand, segments: list[dict], policies: list, co
     return {"policies": out, "pareto": [o["policy"]["name"] for o in pareto],
             "best_inverter_energy_among_evaluated": None if best is None else best["policy"]["name"],
             "limits": lim.__dict__, "coolant_C": coolant_C, "modulation": modulation,
+            "module_modulation": {"declared": declared_mod, "used": modulation,
+                                  "note": None if declared_mod == modulation else
+                                  "the module data's declared modulation is replaced by the policy's: one pulse pattern "
+                                  "for losses, ripple, sampling and capacitor current"},
             "meaning": "evaluated candidates only (no global optimum claimed); a mandatory violation is never traded "
                        "for efficiency; an inverter-loss gain is not a motor+inverter gain without a harmonic-loss "
                        "bound"}
@@ -1022,7 +1080,8 @@ def _aggregate(pol, rows, events, lim: PwmLimits, loop: CurrentLoop | None = Non
         elif lim.transition_excursion_max_A is None:
             unknown.append(f"{tag}: current excursion {tr['excursion_A']:.4g} A - no allowed excursion declared")
         elif tr["excursion_A"] > lim.transition_excursion_max_A:
-            why = "integrator reset" if tr.get("output_jump_V") and loop is not None and loop.on_transition == "reset" \
+            why = "integrator reset" if tr.get("output_jump_V") and loop is not None and \
+                axis_loops(loop)["q"].on_transition == "reset" \
                 else ("error-sum integrator under Ki*Ts remapping" if not tr.get("bumpless") else "loop dynamics")
             viol.append(f"{tag}: current excursion {tr['excursion_A']:.4g} A > {lim.transition_excursion_max_A:g} A "
                         f"({why}; output jump {tr['output_jump_V']:.4g} V)")

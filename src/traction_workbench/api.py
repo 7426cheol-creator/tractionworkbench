@@ -14,7 +14,7 @@ import numpy as np
 from . import __version__
 from . import service as S
 from . import spec_fixtures as sf
-from .decision import _jsonable
+from .decision import jsonable as _jsonable
 from .errors import InputValidationError
 from .extensions.coolant import PROPERTY_SOURCE, CoolantLoop, CoolantStation, eg_water_properties
 from .extensions.dclink import active_discharge, passive_discharge, regen_disconnect_overvoltage
@@ -650,8 +650,10 @@ EXAMPLE_MISSION = {
                  {"duration_s": 6.0, "speed_rpm": 1000.0, "torque_Nm": 300.0},
                  {"duration_s": 25.0, "speed_rpm": 8000.0, "torque_Nm": 40.0}],
     "repeat_in_trace": 3, "dt_s": 0.05, "Vdc_V": 600.0, "coolant_C": 65.0,
-    "junction_network": {"R_K_per_W": [0.02, 0.05, 0.06, 0.04], "tau_s": [0.005, 0.08, 0.8, 6.0],
-                         "note": "synthetic junction-to-coolant Foster network (not a product)"},
+    "junction_network": {"R_K_per_W": [f * EXAMPLE_MODULE["Rth_K_per_W"] for f in (0.12, 0.29, 0.35, 0.24)],
+                         "tau_s": [0.005, 0.08, 0.8, 6.0],
+                         "note": "synthetic junction-to-coolant Foster network of the example module: its steady "
+                                 "sum is the module's Rth (the same thermal path as the efficiency / PWM pages)"},
     "cycling_model": None, "D_allow": None, "mission_repeats": 1.0, "ton_rule": "none", "cutoff_K": 0.0,
     "note": "synthetic mission; the Tj history comes from a screening electrothermal chain (screening damage only)",
 }
@@ -1077,10 +1079,11 @@ EXAMPLE_EFFICIENCY = {
                              {"duration_s": 15.0, "speed_rpm": 0.0, "torque_Nm": 0.0},
                              {"duration_s": 30.0, "speed_rpm": 11000.0, "torque_Nm": 30.0}]},
     "compare": {"mode": "fixed_policy", "common_fsw_kHz": 10.0, "coolant_C": 65.0,
-                "A": {"label": "IGBT design", "module": EXAMPLE_MODULE, "Rth_K_per_W": 0.09, "loss_error_rel": 0.10,
+                "A": {"label": "IGBT design", "module": EXAMPLE_MODULE, "Rth_K_per_W": EXAMPLE_MODULE["Rth_K_per_W"],
+                      "loss_error_rel": 0.10,
                       "error_basis": "example engineering budget - replace with DPT / holdout evidence "
                                      "(not a statistical confidence)"},
-                "B": {"label": "SiC design", "module": EXAMPLE_MODULE_SIC, "Rth_K_per_W": 0.12,
+                "B": {"label": "SiC design", "module": EXAMPLE_MODULE_SIC, "Rth_K_per_W": EXAMPLE_MODULE_SIC["Rth_K_per_W"],
                       "loss_error_rel": 0.10, "error_basis": "example engineering budget - replace with DPT / holdout "
                                                              "evidence (not a statistical confidence)"},
                 "B_fsw_kHz": 20.0,
@@ -1240,7 +1243,8 @@ def module_compare(body):
 # ------------------------------------------------------------------ variable PWM (variable-PWM / anti-jerk addendum)
 
 EXAMPLE_PWM = {
-    "module": EXAMPLE_MODULE, "Rth_K_per_W": 0.09, "coolant_C": 65.0, "modulation": "svpwm", "L_hf_uH": 200.0,
+    "module": EXAMPLE_MODULE, "Rth_K_per_W": EXAMPLE_MODULE["Rth_K_per_W"], "coolant_C": 65.0, "modulation": "svpwm",
+    "L_hf_uH": 200.0,
     "baseline_fsw_kHz": 10.0,
     "min_dwell_s": 0.5, "hysteresis": {"speed_rpm": 300.0, "torque_abs_Nm": 10.0, "sensor_temp_C": 3.0},
     "schedules": [
@@ -1260,9 +1264,9 @@ EXAMPLE_PWM = {
     "timing": {"sample_to_latch_us": 25.0, "filter_delay_us": 5.0, "updates_per_period": 1,
                "modulator_delay_fraction": 0.5, "min_pulse_us": 1.5, "wcet_source": "declared estimate",
                "basis": "example target timing (replace with the measured delay chain of the ECU)"},
-    "loop": {"L_uH": 300.0, "R_mohm": 15.0, "bandwidth_Hz": 500.0, "gain_mapping": "continuous",
+    "loop": {"Ld_uH": 200.0, "Lq_uH": 400.0, "R_mohm": 15.0, "bandwidth_Hz": 500.0, "gain_mapping": "continuous",
              "reference_fsw_kHz": 10.0, "integrator_storage": "output", "on_transition": "keep", "anti_windup": True,
-             "basis": "example PI with pole-zero cancellation at the mean dq inductance"},
+             "basis": "example PI per axis, pole-zero cancellation at the declared design L_d / L_q (the plant is the machine's differential inductance at each operating point)"},
     "sensing": {"kind": "leg_shunt", "settle_us": 2.0, "aperture_us": 0.6, "sample_points": "valley",
                 "edge_noise": "own_leg", "reconstruct_from_two": True, "channel_skew_ns": 200.0,
                 "invalid_policy": "hold", "max_sample_age_us": 150.0, "current_error_max_A": 15.0,
@@ -1307,15 +1311,34 @@ def _timing(t: dict):
 
 
 def _loop(lp: dict | None):
+    """PI current loop(s) with pole-zero cancellation at the DESIGN inductance: per axis ({'d', 'q'}) when L_d and
+    L_q are declared, else one loop whose gains apply to both axes (checked against both machine axes)."""
     from .extensions.pwm_policy import CurrentLoop
     if not lp:
         return None
-    L, R = float(lp["L_uH"]) * 1e-6, float(lp["R_mohm"]) * 1e-3
-    kp = 2 * math.pi * float(lp["bandwidth_Hz"]) * L
-    return CurrentLoop(L, R, kp, kp * R / L, str(lp.get("gain_mapping", "continuous")),
-                       None if lp.get("reference_fsw_kHz") in (None, "") else float(lp["reference_fsw_kHz"]) * 1e3,
-                       str(lp.get("basis", "")), str(lp.get("integrator_storage", "output")),
-                       str(lp.get("on_transition", "keep")), bool(lp.get("anti_windup", True)))
+    R = float(lp["R_mohm"]) * 1e-3
+    w = 2 * math.pi * float(lp["bandwidth_Hz"])
+
+    def one(L):
+        return CurrentLoop(L, R, w * L, w * R, str(lp.get("gain_mapping", "continuous")),
+                           None if lp.get("reference_fsw_kHz") in (None, "") else float(lp["reference_fsw_kHz"]) * 1e3,
+                           str(lp.get("basis", "")), str(lp.get("integrator_storage", "output")),
+                           str(lp.get("on_transition", "keep")), bool(lp.get("anti_windup", True)))
+    if lp.get("Ld_uH") not in (None, "") and lp.get("Lq_uH") not in (None, ""):
+        return {"d": one(float(lp["Ld_uH"]) * 1e-6), "q": one(float(lp["Lq_uH"]) * 1e-6)}
+    return one(float(lp["L_uH"]) * 1e-6)
+
+
+def _plant_point(b: dict, default_speed: float = 6000.0, default_torque: float = 150.0):
+    """Policy point at the body's speed / torque and the machine's differential inductances there."""
+    from .extensions.pwm_policy import differential_inductances
+    d = _drive(b)
+    n, T, vdc = _num(b, "speed_rpm", default_speed), _num(b, "torque_Nm", default_torque), _num(b, "Vdc_V", 600.0)
+    sc = Scenario("plant", n, vdc, _limits(b))
+    sol = PolicyEvaluator(d, sc).solve(T)
+    if sol.point is None:
+        raise InputValidationError("no operating point: " + sol.policy_claim.detail, field="torque_Nm")
+    return sol.point, differential_inductances(d, sc, sol.point.id_A, sol.point.iq_A), (n, T, vdc)
 
 
 def _sensing(sd: dict | None):
@@ -1389,11 +1412,14 @@ def pwm_transients(body):
         curves[kind] = {"m": m_grid, "valid_fraction": [r["valid_fraction"] for r in rows],
                         "max_age_s": [r["max_age_s"] for r in rows], "error_bound_A": [r["error_bound_A"] for r in rows]}
     tc = _timing(b["timing"])
-    loop = _loop(b.get("loop"))
+    loops = _loop(b.get("loop"))
     trn = b["transition"]
     f0, f1 = float(trn["from_kHz"]) * 1e3, float(trn["to_kHz"]) * 1e3
     variants = {}
+    from .extensions.pwm_policy import axis_loops, differential_inductances
+    loop = axis_loops(loops).get("q")
     if loop is not None:
+        pl = differential_inductances(d, Scenario("transients", n, vdc, _limits(b)), pt.id_A, pt.iq_A) or {}
         e = pt.vq_V - loop.R_ohm * pt.iq_A
         for label, lp in (("declared", loop),
                           ("bumpless (volts, Ki*Ts remapped)", _rep(loop, gain_mapping="continuous", integrator_storage="output",
@@ -1404,7 +1430,8 @@ def pwm_transients(body):
                           ("fixed discrete gains", _rep(loop, gain_mapping="fixed_discrete", integrator_storage="output",
                                                         on_transition="keep",
                                                         reference_fsw_Hz=loop.reference_fsw_Hz or f0))):
-            variants[label] = transition_transient(lp, tc, f0, f1, pt.iq_A, e, pt.voltage_budget_V)
+            variants[label] = transition_transient(lp, tc, f0, f1, pt.iq_A, e, pt.voltage_budget_V,
+                                                   plant_L_H=pl.get("q"))
     lim = (b.get("pwm_limits") or {}).get("transition_excursion_max_A")
     return _jsonable({"point": {"speed_rpm": n, "torque_Nm": T, "Vdc_V": vdc, "m": m, "f_e_Hz": fe, "fsw_Hz": fsw,
                                 "iq_A": pt.iq_A, "vq_V": pt.vq_V, "i_peak_A": pt.i_peak_A,
@@ -1414,12 +1441,16 @@ def pwm_transients(body):
 
 
 def pwm_timing(body):
-    """Delay ledger, current-loop margin and phase lag vs carrier frequency; one clock-level period transition."""
-    from .extensions.pwm_policy import delay_ledger, phase_lag_deg, transition_check
+    """Delay ledger, current-loop margin per axis (machine plant at a reference point) and phase lag vs carrier
+    frequency; one clock-level period transition."""
+    from .extensions.pwm_policy import axis_loops, axis_margins, delay_ledger, phase_lag_deg, transition_check
     b = {**EXAMPLE_PWM, **(body or {})}
     tc = _timing(b["timing"])
     loop = _loop(b.get("loop"))
     f_mode = float(b.get("mode_frequency_Hz") or 20.0)
+    plant, ref = None, None
+    if loop is not None:
+        _pt, plant, ref = _plant_point(b)
     rows = []
     for fsw in [float(x) * 1e3 for x in (b.get("fsw_sweep_kHz") or [4, 5, 6, 8, 10, 12, 16, 20, 25, 30, 40])]:
         led = delay_ledger(fsw, tc)
@@ -1428,13 +1459,18 @@ def pwm_timing(body):
         if led["total_delay_s"] is not None:
             row["phase_at_mode_deg"] = phase_lag_deg(f_mode, led["total_delay_s"])
             if loop is not None:
-                mg = loop.margins(led["total_delay_s"], loop.effective_Ki(fsw, tc.updates_per_period))
-                row.update({"phase_margin_deg": mg["phase_margin_deg"], "crossover_Hz": mg["crossover_Hz"],
-                            "phase_at_crossover_deg": mg.get("delay_phase_at_crossover_deg")})
+                am = axis_margins(loop, led["total_delay_s"], fsw, plant, tc.updates_per_period)
+                bx = am["axes"][am["binding_axis"]] if am["binding_axis"] else {}
+                row.update({"phase_margin_deg": am["phase_margin_deg"], "binding_axis": am["binding_axis"],
+                            "crossover_Hz": bx.get("crossover_Hz"),
+                            "phase_at_crossover_deg": bx.get("delay_phase_at_crossover_deg"),
+                            "phase_margin_by_axis_deg": {a: v.get("phase_margin_deg") for a, v in am["axes"].items()}})
         rows.append(row)
     trn = b["transition"]
     out = {"rows": rows, "mode_frequency_Hz": f_mode, "timing": tc.__dict__,
-           "loop": None if loop is None else loop.__dict__}
+           "loop": None if loop is None else {a: lp.__dict__ for a, lp in axis_loops(loop).items()},
+           "plant_L_H": plant, "plant_point": None if ref is None else
+           {"speed_rpm": ref[0], "torque_Nm": ref[1], "Vdc_V": ref[2]}}
     for sh in (True, False):
         r = transition_check(float(trn["from_kHz"]) * 1e3, float(trn["to_kHz"]) * 1e3, float(trn["duty"]),
                              float(trn["deadtime_us"]) * 1e-6, tc.min_pulse_s, write_fraction=float(trn["write_fraction"]),

@@ -19,7 +19,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..errors import InputValidationError
-from ..models.flux import _finite
+from ..validation import finite as _finite
 
 LOSS_KEYS = ("inverter", "copper", "rotational")
 REFERENCES = ("inlet", "mean", "outlet")

@@ -33,7 +33,7 @@ import numpy as np
 
 from ..errors import InputValidationError, OutsideModelDomain
 from ..models.components import DriveModel
-from ..models.flux import _finite
+from ..validation import finite as _finite
 from ..physics import DriveKernel
 from ..scenario import DcSourceLimits, Scenario
 from ..settings import DEFAULT_SETTINGS, NumericalSettings
@@ -223,7 +223,7 @@ class OewTopology:
 
 # --------------------------------------------------------------------------------------------- switch-state geometry
 
-def _hull(points):
+def hull(points):
     pts = sorted(set(points))
     if len(pts) <= 2:
         return pts
@@ -244,7 +244,7 @@ def _hull(points):
 
 def _radii(points) -> tuple[float, float]:
     """(circumradius, inradius about the origin) of the convex hull of alpha-beta points."""
-    h = _hull(points)
+    h = hull(points)
     rc = max(math.hypot(x, y) for x, y in h)
     ri = math.inf
     for (x1, y1), (x2, y2) in zip(h, h[1:] + h[:1]):
@@ -409,14 +409,14 @@ def _bridge_losses(drive: DriveModel, legs_i: np.ndarray, duties: np.ndarray, V:
     quadratic surrogate per bridge as a screening value (not established)."""
     inv = drive.inverter
     if inv.module_loss is not None:
-        from .module_loss import _positions, leg_losses_trajectory
+        from .module_loss import positions, leg_losses_trajectory
         mdl = inv.module_loss
         tot, problems, pos_all = 0.0, [], {}
         cond = sw = 0.0
         for k in range(3):
             leg = leg_losses_trajectory(mdl, legs_i[k] / mdl.parallel, duties[k], V, inv.module_Tj_C)
             problems += [f"leg {'abc'[k]}: {p}" for p in leg["problems"]]
-            pos = _positions(leg)
+            pos = positions(leg)
             tot += mdl.parallel * sum(pos.values())
             cond += mdl.parallel * sum(leg["conduction_W"].values())
             sw += mdl.parallel * sum(leg["switching_W"].values())
@@ -1053,3 +1053,6 @@ def two_sensor_reconstruction(ia, ib, ic) -> dict:
     return {"i0_true_rms_A": float(np.sqrt(np.mean(i0_true ** 2))), "i0_reconstructed_rms_A": float(np.sqrt(np.mean(i0_rec ** 2))),
             "ic_error_rms_A": float(np.sqrt(np.mean((ic - ic_rec) ** 2))),
             "note": "three independent phase sensors (or a validated residual measurement) are needed to observe i0"}
+
+
+_hull = hull          # former private name (compatibility)

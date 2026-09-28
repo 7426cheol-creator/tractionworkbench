@@ -31,7 +31,8 @@ from scipy.optimize import fsolve
 
 from ..errors import InputValidationError
 from ..models.components import DriveModel
-from ..models.flux import ConstantFluxModel, _finite
+from ..models.flux import ConstantFluxModel
+from ..validation import finite as _finite
 from ..physics import DriveKernel
 from ..scenario import DcSourceLimits, Scenario
 from ..status import Claim, Evidence, EvidenceKind, Reason, Status

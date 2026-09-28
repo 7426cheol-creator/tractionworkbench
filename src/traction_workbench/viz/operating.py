@@ -21,6 +21,7 @@ import numpy as np
 
 from ..i18n import tr
 from ..models.components import DriveModel
+from ..modulation import zero_sequence
 from ..physics import ACTIVE, NOT_EVALUATED, VIOLATED, DriveKernel, OperatingPoint, evaluate_point
 from ..scenario import Scenario
 
@@ -61,7 +62,7 @@ def command_voltage(pv: PointView) -> tuple[float, float]:
 
 def svpwm_duty(vc_abc: np.ndarray, Vdc: float) -> tuple[np.ndarray, np.ndarray]:
     """Average phase-leg duty cycles with min-max zero-sequence injection."""
-    v0 = -0.5 * (vc_abc.max(axis=0) + vc_abc.min(axis=0))
+    v0 = zero_sequence(vc_abc, "svpwm")                    # the shared modulation law
     return 0.5 + (vc_abc + v0) / Vdc, v0
 
 

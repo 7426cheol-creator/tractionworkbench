@@ -10,7 +10,7 @@ import math
 import numpy as np
 from matplotlib.patches import Circle, Patch, Polygon, Rectangle
 
-from ..extensions.oew import _hull
+from ..extensions.oew import hull
 from ..i18n import tr
 from . import style as S
 from .figures import _note, _reset
@@ -41,8 +41,8 @@ def fig_oew_voltage_sets(fig, res: dict, title: str | None = None):
     adm = np.array(g["admissible_points"])
     ax.plot(allp[:, 0], allp[:, 1], ls="none", marker="o", ms=4, color=t["muted"], alpha=0.6,
             label=tr(f"64 상태쌍 투영 ({len(allp)}점)", f"64 state pairs projected ({len(allp)} points)"))
-    h_all = np.array(_hull([tuple(p) for p in allp]) + [tuple(_hull([tuple(p) for p in allp])[0])])
-    h_adm = np.array(_hull([tuple(p) for p in adm]) + [tuple(_hull([tuple(p) for p in adm])[0])])
+    h_all = np.array(hull([tuple(p) for p in allp]) + [tuple(hull([tuple(p) for p in allp])[0])])
+    h_adm = np.array(hull([tuple(p) for p in adm]) + [tuple(hull([tuple(p) for p in adm])[0])])
     if g["kind"] == "common_bus":
         ax.plot(h_all[:, 0], h_all[:, 1], color=t["muted"], ls="--", lw=1,
                 label=tr("전체 투영 (허용 안 된 u0를 숨김)", "full projection (hides a disallowed u0)"))

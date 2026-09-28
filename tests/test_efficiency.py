@@ -261,3 +261,19 @@ def test_module_comparison_protocol():
     assert r3["rows"][0]["compare"]["verdict"] == "NOT_COMPARABLE"
     with pytest.raises(InputValidationError):
         E.ModuleCandidate("x", None, 0.1, 0.1, "")                      # a budget needs its basis
+
+
+def test_mission_direction_efficiency_is_withheld_when_part_of_the_mission_is_unknown():
+    """A ratio over the known segments only is not the mission's direction efficiency (review finding)."""
+    h = 3600.0
+    segs = [{"duration_s": h, "P_dc": 10e3, "P_ac": 9.6e3, "P_m": 9.3e3, "P_o": 9e3},
+            {"duration_s": h, "P_dc": None, "P_ac": None, "P_m": None, "P_o": None},       # port powers not known
+            {"duration_s": h, "P_dc": -4e3, "P_ac": -4.3e3, "P_m": -4.7e3, "P_o": -5e3}]
+    r = E.mission_energy(segs)
+    assert r["eta_traction"] is None and r["eta_regeneration"] is None and not r["complete"]
+    assert r["output_port"] == "P_m"                              # P_o not known everywhere: labelled fallback
+    assert r["partial"]["eta_traction_partial"] == pytest.approx(0.93)
+    assert r["partial"]["undetermined_s"] == pytest.approx(h)
+    assert all(v is None for v in r["boundary_direction_eta"]["edrive"].values())
+    full = E.mission_energy([segs[0], segs[2]])
+    assert full["complete"] and full["partial"] is None and full["eta_traction"] == pytest.approx(0.9)

@@ -26,7 +26,7 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 
 from ..errors import InputValidationError
-from ..models.flux import _finite, _interval
+from ..validation import finite as _finite, interval as _interval
 
 BOUNDARIES = (
     ("inverter", "P_dc", "P_ac", "HV DC terminal <-> motor AC terminal"),
@@ -406,6 +406,7 @@ def mission_energy(segments: list[dict], tol_W: float = 1e-6, storage_change_J: 
            "dissipative_braking": {"mech_in": 0.0, "dc_in": 0.0, "t": 0.0}, "idle": {"dc_in": 0.0, "t": 0.0},
            "undetermined": {"t": 0.0}}
     per_boundary = {name: {"forward": [0.0, 0.0], "reverse": [0.0, 0.0]} for name, *_ in BOUNDARIES}
+    missing_s = {name: 0.0 for name, *_ in BOUNDARIES}                # segments whose port powers are not known
     for s in segments:
         dt = _finite("duration_s", s["duration_s"])
         if dt < 0:
@@ -439,6 +440,7 @@ def mission_energy(segments: list[dict], tol_W: float = 1e-6, storage_change_J: 
         for name, a, b, _lab in BOUNDARIES:
             pa, pb = s.get(a), s.get(b)
             if pa is None or pb is None:
+                missing_s[name] += dt
                 continue
             if pa > tol_W and pb > tol_W:
                 per_boundary[name]["forward"][0] += pa * dt
@@ -447,17 +449,30 @@ def mission_energy(segments: list[dict], tol_W: float = 1e-6, storage_change_J: 
                 per_boundary[name]["reverse"][0] += -pb * dt
                 per_boundary[name]["reverse"][1] += -pa * dt
     tr, rg = cls["traction"], cls["regeneration"]
-    eta_tr = tr["out"] / tr["in"] if tr["in"] > 0 else None
-    eta_rg = rg["out"] / rg["in"] if rg["in"] > 0 else None
-    pb_out = {}
+    part_tr = tr["out"] / tr["in"] if tr["in"] > 0 else None
+    part_rg = rg["out"] / rg["in"] if rg["in"] > 0 else None
+    undet = cls["undetermined"]["t"]
+    # a ratio over part of the mission is not the mission's direction efficiency: withheld (UNKNOWN), partial shown
+    eta_tr = part_tr if undet <= 0 else None
+    eta_rg = part_rg if undet <= 0 else None
+    pb_out, pb_partial = {}, {}
     for name, d in per_boundary.items():
-        pb_out[name] = {dirn: (v[1] / v[0] if v[0] > 0 else None) for dirn, v in d.items()}
+        ratios = {dirn: (v[1] / v[0] if v[0] > 0 else None) for dirn, v in d.items()}
+        pb_out[name] = ratios if missing_s[name] <= 0 else {dirn: None for dirn in ratios}
+        if missing_s[name] > 0:
+            pb_partial[name] = {**ratios, "missing_s": missing_s[name]}
     net_dc = E["P_dc"][0] - E["P_dc"][1]
     net_out = E[out_port][0] - E[out_port][1]
     res = {"output_port": out_port, "E_pos_J": {k: v[0] for k, v in E.items()},
            "E_neg_J": {k: v[1] for k, v in E.items()}, "unknown_duration_s": unknown,
            "segments": cls, "eta_traction": eta_tr, "eta_regeneration": eta_rg,
            "boundary_direction_eta": pb_out, "E_dc_net_J": net_dc, "E_out_net_J": net_out,
+           "complete": undet <= 0 and not pb_partial,
+           "partial": None if (undet <= 0 and not pb_partial) else {
+               "undetermined_s": undet, "eta_traction_partial": part_tr, "eta_regeneration_partial": part_rg,
+               "boundary_direction_eta_partial": pb_partial,
+               "meaning": "segments with a missing port power: the direction efficiencies of the MISSION are UNKNOWN; "
+                          "the partial ratios cover the known segments only"},
            "storage_change_J": storage_change_J,
            "note": "net output / net DC is not a conversion efficiency (drive and regeneration cancel); direction "
                    "efficiencies are energy ratios of their own segments"}
@@ -489,7 +504,7 @@ class ModuleCandidate:
                                            field="error_basis")
 
 
-def _module_point(base_drive, cand: ModuleCandidate, sc, T: float, coolant_C: float, fsw_Hz: float | None,
+def module_point(base_drive, cand: ModuleCandidate, sc, T: float, coolant_C: float, fsw_Hz: float | None,
                   reducer, oil_C, max_iter: int = 60, tol_K: float = 1e-3) -> dict:
     """Coupled electrothermal point through the drive's OWN module evaluation (one physics for every result):
     policy solve at Tj -> hottest-position loss (worst electrical angle at standstill) -> Tj = T_coolant + Rth P_hot
@@ -575,8 +590,8 @@ def compare_modules(base_drive, candidates: list, requests: list, limits, coolan
     rows = []
     for (n, T, vdc) in requests:
         sc = Scenario("ab", float(n), float(vdc), limits, coolant_temp_C=coolant_C)
-        ra = _module_point(base_drive, A, sc, float(T), coolant_C, fsw, reducer, oil_temp_C)
-        rb = _module_point(base_drive, B, sc, float(T), coolant_C, fsw, reducer, oil_temp_C)
+        ra = module_point(base_drive, A, sc, float(T), coolant_C, fsw, reducer, oil_temp_C)
+        rb = module_point(base_drive, B, sc, float(T), coolant_C, fsw, reducer, oil_temp_C)
         row = {"speed_rpm": n, "torque_Nm": T, "Vdc_V": vdc, "A": ra, "B": rb}
         if ra.get("point") and rb.get("point") and ra["status"] == rb["status"] == "FEASIBLE":
             pa, pb = ra["point"], rb["point"]
@@ -618,7 +633,7 @@ def _mission_compare(base_drive, candidates, mission, limits, coolant_C, fsw, re
         why, mpts = [], []
         for (dt, n, T, vdc) in mission:
             sc = Scenario("mission", float(n), float(vdc), limits, coolant_temp_C=coolant_C)
-            r = _module_point(base_drive, c, sc, float(T), coolant_C, fsw, reducer, oil_C)
+            r = module_point(base_drive, c, sc, float(T), coolant_C, fsw, reducer, oil_C)
             if r["status"] != "FEASIBLE" or r.get("point") is None:
                 delivered = False
                 why.append(f"{n:g} rpm / {T:g} N m: {r['status']} ({r.get('reason', '')[:80]})")
@@ -640,3 +655,6 @@ def _mission_compare(base_drive, candidates, mission, limits, coolant_C, fsw, re
         v = {"verdict": "NOT_COMPARABLE", "reason": "a candidate does not deliver the whole trajectory: lower consumption "
                                                     "is not ranked as an improvement"}
     return {"per_candidate": res, "compare": v}
+
+
+_module_point = module_point          # former private name (compatibility)

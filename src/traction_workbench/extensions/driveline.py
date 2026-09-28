@@ -25,7 +25,7 @@ import numpy as np
 from scipy.linalg import expm
 
 from ..errors import InputValidationError
-from ..models.flux import _finite
+from ..validation import finite as _finite
 
 TWO_PI = 2.0 * math.pi
 

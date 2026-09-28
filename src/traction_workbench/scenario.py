@@ -12,7 +12,7 @@ import math
 from dataclasses import dataclass, replace
 
 from .errors import InputValidationError
-from .models.flux import _finite
+from .validation import finite as _finite
 
 
 def _opt_nonneg(name: str, value):

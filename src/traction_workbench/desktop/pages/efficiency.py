@@ -297,6 +297,18 @@ class EfficiencyPage(QWidget):
                  fmt(e["eta_regeneration"] and 100 * e["eta_regeneration"], 5) + " %"),
                 (tr("순 DC / 순 출력", "net DC / net output"),
                  f"{e['E_dc_net_J'] / kwh * 1e3:.2f} Wh / {e['E_out_net_J'] / kwh * 1e3:.2f} Wh ({tr('비율은 효율 아님', 'ratio is not an efficiency')})")]
+        rows.append((tr("출력 포트", "output port"), e.get("output_port", "P_o") +
+                     ("" if e.get("output_port", "P_o") == "P_o" else
+                      tr(" (P_o가 모든 구간에 없음: 모터 축 경계로 대체)", " (P_o not known in every segment: motor-shaft boundary)"))))
+        pt = e.get("partial")
+        if pt:
+            rows.append((tr("미션 방향 효율", "mission direction efficiency"),
+                         tr(f"UNKNOWN — {pt['undetermined_s']:.1f} s 구간의 포트 전력 미상 (알려진 구간만: 구동 "
+                            f"{fmt(pt['eta_traction_partial'] and 100 * pt['eta_traction_partial'], 5)} %, 회생 "
+                            f"{fmt(pt['eta_regeneration_partial'] and 100 * pt['eta_regeneration_partial'], 5)} %)",
+                            f"UNKNOWN - port powers missing for {pt['undetermined_s']:.1f} s (known segments only: traction "
+                            f"{fmt(pt['eta_traction_partial'] and 100 * pt['eta_traction_partial'], 5)} %, regeneration "
+                            f"{fmt(pt['eta_regeneration_partial'] and 100 * pt['eta_regeneration_partial'], 5)} %)")))
         for k in ("P_dc", "P_ac", "P_m", "P_o"):
             rows.append((f"{k} E+ / E−", f"{e['E_pos_J'][k] / kwh * 1e3:.3f} / {e['E_neg_J'][k] / kwh * 1e3:.3f} Wh"))
         rows.append((tr("구간 분류", "segment classes"), str({k: round(v.get("t", 0.0), 2) for k, v in e["segments"].items()})))

@@ -119,7 +119,7 @@ class VerificationPage(QWidget):
 
     def export_exchange(self, path: str | None = None):
         import json
-        from ...decision import _jsonable
+        from ...decision import jsonable as _jsonable
         from ...exchange import build_package
         if path is None:
             path, _ = QFileDialog.getSaveFileName(self, tr("교환 패키지 저장", "save exchange package"),

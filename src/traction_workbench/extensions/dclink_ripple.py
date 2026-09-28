@@ -36,27 +36,19 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..errors import InputValidationError
-from ..models.flux import _finite
+from ..modulation import MODULATIONS, duties, overmodulated
+from ..validation import finite as _finite
 from ..status import Claim, Evidence, EvidenceKind, Reason, Status
 
 TWO_PI = 2.0 * math.pi
 
 
 def _duty_set(theta: np.ndarray, m: float, modulation: str) -> np.ndarray:
-    """Duties (3 x N) for the phase references m*cos(theta - 2pi k/3) (m = V_pk / (Vdc/2))."""
-    v = np.vstack([m * np.cos(theta - TWO_PI * k / 3) for k in range(3)])     # in units of Vdc/2
-    if modulation == "spwm":
-        v0 = 0.0 * theta
-    elif modulation == "svpwm":
-        v0 = -0.5 * (v.max(axis=0) + v.min(axis=0))
-    elif modulation == "dpwm1":
-        k = np.argmax(np.abs(v), axis=0)
-        vm = v[k, np.arange(v.shape[1])]
-        v0 = np.sign(vm) * 1.0 - vm
-    else:
+    """Duties (3 x N) for the phase references m*cos(theta - 2pi k/3) (m = V_pk / (Vdc/2)), from the shared law."""
+    if modulation not in MODULATIONS:
         raise InputValidationError("modulation must be spwm, svpwm or dpwm1", field="modulation")
-    d = 0.5 * (1.0 + v + v0)
-    if np.any(d < -1e-9) or np.any(d > 1 + 1e-9):
+    d = duties(theta, m, 0.0, modulation)
+    if overmodulated(d):
         raise InputValidationError(f"overmodulation (m = {m:.4g} for {modulation}): the linear PWM model does not "
                                    f"apply", field="modulation_index")
     return np.clip(d, 0.0, 1.0)

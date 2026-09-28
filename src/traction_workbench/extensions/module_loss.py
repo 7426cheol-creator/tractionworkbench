@@ -36,7 +36,8 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ..errors import InputValidationError
-from ..models.flux import _finite
+from ..modulation import duties, overmodulated
+from ..validation import finite as _finite
 from ..status import Claim, Evidence, EvidenceKind, Reason, Status
 
 TWO_PI = 2.0 * math.pi
@@ -195,20 +196,8 @@ class ModuleLossModel:
 
 def _duties(theta: np.ndarray, V_pk: float, Vdc: float, modulation: str):
     """Leg-a duty, a 'switching' mask and an overmodulation flag for the declared zero-sequence."""
-    va = V_pk * np.cos(theta)
-    vb = V_pk * np.cos(theta - TWO_PI / 3)
-    vc = V_pk * np.cos(theta + TWO_PI / 3)
-    stack = np.vstack([va, vb, vc])
-    if modulation == "spwm":
-        v0 = np.zeros_like(va)
-    elif modulation == "svpwm":
-        v0 = -0.5 * (stack.max(axis=0) + stack.min(axis=0))
-    else:   # dpwm1: clamp the phase with the largest magnitude to its rail
-        k = np.argmax(np.abs(stack), axis=0)
-        vmax = stack[k, np.arange(stack.shape[1])]
-        v0 = np.sign(vmax) * 0.5 * Vdc - vmax
-    d = 0.5 + (va + v0) / Vdc
-    over = bool(np.any(d < -1e-9) or np.any(d > 1 + 1e-9))
+    d = duties(theta, V_pk / (0.5 * Vdc), 0.0, modulation)[0]            # the shared modulation law
+    over = overmodulated(d)
     clamped = (d <= 1e-12) | (d >= 1 - 1e-12)
     return np.clip(d, 0.0, 1.0), ~clamped, over
 
@@ -293,7 +282,7 @@ def leg_losses_trajectory(model: ModuleLossModel, i: np.ndarray, d: np.ndarray, 
             "switching_fraction": float(np.mean(sw)), "deadtime_fraction": td_frac}
 
 
-def _positions(leg: dict) -> dict:
+def positions(leg: dict) -> dict:
     c, s = leg["conduction_W"], leg["switching_W"]
     return {"upper_switch": c["upper_switch"] + s["upper_switch"],
             "upper_diode_or_reverse": c["upper_reverse"] + s["upper_recovery"],
@@ -309,7 +298,7 @@ def inverter_losses(model: ModuleLossModel, id_A: float, iq_A: float, vd_V: floa
     phi = (math.atan2(vq_V, vd_V) - math.atan2(iq_A, id_A)) if (I_pk > 0 and V_pk > 0) else 0.0
     m = V_pk / (0.5 * Vdc_V)
     leg = leg_losses(model, I_pk, phi, V_pk, Vdc_V, Tj_C)
-    pos = _positions(leg)
+    pos = positions(leg)
     per_leg = sum(pos.values())
     total_semis = 3.0 * model.parallel * per_leg
     cond_total = 3.0 * model.parallel * sum(leg["conduction_W"].values())
@@ -321,7 +310,7 @@ def inverter_losses(model: ModuleLossModel, id_A: float, iq_A: float, vd_V: floa
     hot = None
     if model.sharing_error > 0 and established:
         lh = leg_losses(model, I_pk * share, phi, V_pk, Vdc_V, Tj_C)
-        hot = max(_positions(lh).values())
+        hot = max(positions(lh).values())
     out = {"I_pk_A": I_pk, "V_pk_V": V_pk, "modulation_index": m, "phi_deg": math.degrees(phi),
            "power_factor": math.cos(phi), "Tj_eval_C": Tj_C, "fsw_Hz": model.fsw_Hz, "modulation": model.modulation,
            "per_position_W": pos, "leg": leg, "conduction_W": cond_total, "switching_W": sw_total,
@@ -334,7 +323,7 @@ def inverter_losses(model: ModuleLossModel, id_A: float, iq_A: float, vd_V: floa
                             "ringing, C_oss hard-commutation at zero current", "die-level sharing inside a module"]}
     if refine_check and established:
         coarse = leg_losses(model, I_pk, phi, V_pk, Vdc_V, Tj_C, n_angle=max(36, model.n_angle // 2))
-        c_tot = 3.0 * model.parallel * sum(_positions(coarse).values())
+        c_tot = 3.0 * model.parallel * sum(positions(coarse).values())
         out["angle_refinement_rel_diff"] = abs(c_tot - total_semis) / max(total_semis, 1e-12)
     return out
 
@@ -420,3 +409,6 @@ def loss_claim(result: dict, P_allow_W: float | None = None) -> dict:
                  reasons=() if st is Status.FEASIBLE else ((Reason.CONSTRAINT_VIOLATION,) if st is Status.INFEASIBLE
                                                           else (Reason.UNCERTAINTY_OVERLAP,)),
                  evidence=(ev,), qualifiers=quals, detail=f"{result['semiconductor_W']:.4g} W vs {P_allow_W:g} W").to_dict()
+
+
+_positions = positions          # former private name (compatibility)

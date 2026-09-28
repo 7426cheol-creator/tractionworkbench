@@ -16,7 +16,7 @@ from . import spec_fixtures as sf
 from .analysis.compare import compare_scenarios
 from .analysis.dominance import capability_dominance, requirement_relaxation
 from .analysis.sizing import size_parameter
-from .decision import _jsonable, evaluate_requirement
+from .decision import evaluate_requirement, jsonable as _jsonable
 from .errors import InputValidationError, OutsideModelDomain
 from .io import case_from_dict, drive_from_dict, limits_from_dict
 from .models.components import DriveModel

@@ -38,7 +38,7 @@ from scipy.linalg import eigh
 
 from ..errors import InputValidationError
 from ..models.components import DriveModel
-from ..models.flux import _finite
+from ..validation import finite as _finite
 from ..models.provenance import Provenance
 from ..scenario import Scenario
 from ..settings import DEFAULT_SETTINGS, NumericalSettings

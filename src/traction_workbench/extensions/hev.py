@@ -26,7 +26,7 @@ import numpy as np
 
 from ..errors import InputValidationError
 from ..models.components import DriveModel
-from ..models.flux import _finite
+from ..validation import finite as _finite
 from ..scenario import DcSourceLimits, Scenario
 from ..solvers.capability import policy_capability
 from ..solvers.policy import PolicyEvaluator

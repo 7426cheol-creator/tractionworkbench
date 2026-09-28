@@ -44,7 +44,7 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 
 from ..errors import InputValidationError
-from ..models.flux import _finite
+from ..validation import finite as _finite
 from ..status import Claim, Evidence, EvidenceKind, Reason, Status
 
 

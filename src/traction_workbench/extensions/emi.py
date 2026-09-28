@@ -33,7 +33,8 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ..errors import InputValidationError
-from ..models.flux import _finite
+from ..modulation import duties
+from ..validation import finite as _finite
 from ..status import Claim, Evidence, EvidenceKind, Reason, Status
 
 TWO_PI = 2.0 * math.pi
@@ -145,10 +146,8 @@ class SwitchingSource:
 
 
 def _duties(theta, m, alpha, modulation):
-    v = np.vstack([0.5 * m * np.cos(theta + alpha - TWO_PI * k / 3.0) for k in range(3)])
-    if modulation == "svpwm":
-        v = v - 0.5 * (v.max(axis=0) + v.min(axis=0))
-    return 0.5 + v
+    """Leg duty cycles (3 x N, unclipped) from the shared modulation law."""
+    return duties(theta, m, alpha, modulation)
 
 
 def pwm_edges(src: SwitchingSource) -> dict:
@@ -180,7 +179,7 @@ def pwm_edges(src: SwitchingSource) -> dict:
             "overmodulation": over}
 
 
-def _edge_lines(t0, tau, dv, freqs, T):
+def edge_lines(t0, tau, dv, freqs, T):
     """One-sided complex line amplitudes (peak) of a periodic piecewise-linear signal made of ramps.
 
     c_n = 1/(j 2 pi f_n T) * sum dv_e exp(-j 2 pi f_n (t_e + tau_e/2)) sinc(f_n tau_e); line amplitude = 2 c_n.
@@ -205,8 +204,8 @@ def source_lines(src: SwitchingSource, freqs) -> dict:
         z = np.zeros(len(freqs), dtype=complex)
         return {"v_cm": z, "i_dm": z, **{k: e[k] for k in ("carrier_ratio", "fsw_used_Hz", "overmodulation")}}
     k, t0, sgn, tau, cur = (np.array(x) for x in zip(*e["edges"]))
-    v_cm = _edge_lines(t0, tau, sgn * src.Vdc_V / 3.0, freqs, T)
-    i_dm = _edge_lines(t0, tau, sgn * cur, freqs, T)
+    v_cm = edge_lines(t0, tau, sgn * src.Vdc_V / 3.0, freqs, T)
+    i_dm = edge_lines(t0, tau, sgn * cur, freqs, T)
     return {"v_cm": v_cm, "i_dm": i_dm, "carrier_ratio": e["carrier_ratio"], "fsw_used_Hz": e["fsw_used_Hz"],
             "overmodulation": e["overmodulation"], "edges": len(t0)}
 
@@ -577,7 +576,7 @@ def oew_common_mode(V: float, U_pk: float, alpha_rad: float, fe_Hz: float, fsw_H
     for tag in ("A", "B"):
         if edges[tag]:
             k, t0, sg = (np.array(x) for x in zip(*edges[tag]))
-            lines[tag] = _edge_lines(t0, np.full(t0.size, tau), sg * V / 3.0, freqs, T)
+            lines[tag] = edge_lines(t0, np.full(t0.size, tau), sg * V / 3.0, freqs, T)
         else:
             lines[tag] = np.zeros(freqs.size, dtype=complex)
     u0 = lines["A"] - lines["B"]
@@ -593,7 +592,7 @@ def oew_common_mode(V: float, U_pk: float, alpha_rad: float, fe_Hz: float, fsw_H
                 k, t0, sg = (np.array(x) for x in zip(*edges[tag]))
                 ik = np.array([i_pk_A * math.cos(TWO_PI * fe_Hz * t + beta_rad - TWO_PI * kk / 3.0)
                                for kk, t in zip(k, t0)])
-                cur[tag] = _edge_lines(t0, np.full(t0.size, tau), sg * sgn_i * ik, freqs, T)
+                cur[tag] = edge_lines(t0, np.full(t0.size, tau), sg * sgn_i * ik, freqs, T)
             else:
                 cur[tag] = np.zeros(freqs.size, dtype=complex)
         S_AA, S_BB = np.abs(cur["A"]) ** 2, np.abs(cur["B"]) ** 2
@@ -627,3 +626,6 @@ def zsv_free_sequence_example(V: float) -> dict:
             "v_cm6_steps_V": sorted({round(r["v_cm6_V"], 9) for r in rows}),
             "note": "zero-sequence suppression (u0 = 0) is not chassis common-mode suppression: EMC, bearing and "
                     "insulation stress need the chassis network and their own evidence"}
+
+
+_edge_lines = edge_lines          # former private name (compatibility)

@@ -10,7 +10,8 @@ import math
 from dataclasses import dataclass, field
 
 from ..errors import InputValidationError
-from .flux import ConstantFluxModel, CurrentBox, FluxMapModel, _finite, _interval
+from .flux import ConstantFluxModel, CurrentBox, FluxMapModel
+from ..validation import finite as _finite, interval as _interval
 from .provenance import DataOrigin, Fidelity, Provenance
 
 SQRT3 = math.sqrt(3.0)

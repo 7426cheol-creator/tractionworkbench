@@ -154,7 +154,12 @@
 | FTTI endpoint | 안전 스크리닝: 안전 종점 이벤트, 종점 종류(물리적 안전 상태 / 명령 발행 → UNKNOWN), 최댓값 동시 발생 선언, 보장 상한 경로·FDTI/FRTI 최악값 | implemented |
 | 정류 위험 | 안전 스크리닝: 능동·패시브 방전 결과 표(정류 위험, 역기전력 근거, 목표 이하 최고 속도, 정류 링크 전압 스크리닝 추정과 방법), 과전압 결과 표 | implemented |
 
-## 9. 비목표 (handoff §15, 추가 명세 비목표)
+## 9. 시스템 검토 (기능 간 의존성·영향·성숙도)
+
+기능 사이의 의존성, 변경 영향, 성숙도, 교차 모듈 일관성은 [`SYSTEM_REVIEW.md`](SYSTEM_REVIEW.md)에 있습니다. 검토에서 찾아 고친 결함:
+전류 루프의 축별 판정(기계 차동 인덕턴스), 한 평가 한 변조, 미션 효율 부분 비율의 UNKNOWN 처리, 예시 모듈 열 경로 통일, 변조 법칙 통합.
+
+## 10. 비목표 (handoff §15, 추가 명세 비목표)
 
 generic motor CAD/FEA 복제, 정적 ASC로 demag/SOA 승인, 일반 IGBT 식으로 SiC 수명 보증, 드라이버 typical delay로 ASIL 승인,
 class 번호로 EMC 합격률, 평균 dq로 NVH/베어링/MHz 임피던스, 생산 anti-jerk 제어기 자동 납품, 보편 안정성 인증서,

@@ -28,7 +28,7 @@ import numpy as np
 
 from ..errors import InputValidationError, OutsideModelDomain
 from ..models.components import DriveModel
-from ..models.flux import _axis, _finite, _interval
+from ..validation import axis as _axis, finite as _finite, interval as _interval
 from ..models.provenance import Provenance
 from ..physics import DriveKernel, evaluate_point
 from ..scenario import Scenario

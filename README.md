@@ -120,6 +120,8 @@ src/traction_workbench/
     extensions/            timing·dclink·safe_state·thermal·coolant (스크리닝), module_loss·dclink_ripple·lifetime (P1-A),
                            protection·asc_transient (P1-B), emi (P1-C), oew·hev, pwm_policy (가변 PWM), driveline (anti-jerk)
   exchange.py    MathWorks 이식용 교환 패키지 (규약·fixture)
+  modulation.py  변조 법칙 하나 (SVPWM·SPWM·DPWM1 듀티·영상분) — 손실·EMI·리플·샘플링·그림이 공유
+  validation.py  입력 숫자·구간·축 검증 (모든 층이 공유)
   viz/           그래프 데이터: 파형·벡터도·육각형·전력 흐름 / 스윕·곡선 / 맵·기저속도 / 설계 / 스크리닝·Z_th 곡선
   plots/         matplotlib 그림과 회로 개요도·열 회로도 (앱과 PDF 보고서 공용)
   desktop/       PySide6 앱: main_window, pages/, 열 모델 표 편집기, 백그라운드 작업, self-test
@@ -142,4 +144,5 @@ docs/            RELEASE_NOTES.md (모델 계약·한계), TRACEABILITY.md (리�
 
 - [`docs/RELEASE_NOTES.md`](docs/RELEASE_NOTES.md) — 변경 사항, 실행 방법, model contract, 제약 목록, 판정 의미론, 수치 방법, 알려진 한계, 미구현 항목, data provenance, 재현 조건, 스펙 조항 ↔ 구현 ↔ 테스트 추적표
 - [`docs/TRACEABILITY.md`](docs/TRACEABILITY.md) — 독립 리뷰(F01–F13, P0-B/C, P1, §10–§14)·감사 재현·추가 명세(OEW/HEV, 모듈 효율, 가변 PWM·anti-jerk) 항목별 구현·확인·상태(implemented / partial / missing / evidence_missing)
+- [`docs/SYSTEM_REVIEW.md`](docs/SYSTEM_REVIEW.md) — 기능 간 의존성·변경 영향·성숙도(V0–V6)·전체 맥락 검토, 교차 모듈 일관성 규칙, 남은 위험과 권고
 - [`docs/VERIFICATION_REPORT.md`](docs/VERIFICATION_REPORT.md) — 자동 생성 검증 보고서

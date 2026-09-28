@@ -210,10 +210,21 @@ def fig_efficiency_mission(fig, ms: dict, title: str | None = None):
     ax2.set_ylabel("[Wh]")
     ax2.legend(fontsize=7, loc="upper right")
     et, er = e.get("eta_traction"), e.get("eta_regeneration")
-    lines = [tr(f"구동 η (출력/입력 에너지) = {100 * et:.2f}%" if et else "구동 η: 구간 없음",
-                f"traction η (output/input energy) = {100 * et:.2f}%" if et else "traction η: no segment"),
-             tr(f"회생 η (DC 회수/기계 입력) = {100 * er:.2f}%" if er else "회생 η: 구간 없음",
-                f"regen η (DC recovered/mech. input) = {100 * er:.2f}%" if er else "regen η: no segment"),
+    part = e.get("partial") or {}
+
+    def _eta_line(v, key, ko, en):
+        if v:
+            return tr(f"{ko} = {100 * v:.2f}%", f"{en} = {100 * v:.2f}%")
+        pv = part.get(key)
+        if part:
+            ptxt = "—" if pv is None else f"{100 * pv:.2f}%"
+            return tr(f"{ko}: UNKNOWN ({part['undetermined_s']:.0f} s 미확정; 알려진 구간만 {ptxt})",
+                      f"{en}: UNKNOWN ({part['undetermined_s']:.0f} s undetermined; known segments only {ptxt})")
+        return tr(f"{ko}: 구간 없음", f"{en}: no segment")
+    port = e.get("output_port", "P_o")
+    lines = [_eta_line(et, "eta_traction_partial", f"구동 η ({port}/P_dc 에너지)", f"traction η ({port}/P_dc energy)"),
+             _eta_line(er, "eta_regeneration_partial", f"회생 η (P_dc 회수/{port} 입력)",
+                       f"regen η (P_dc recovered/{port} input)"),
              tr(f"순 DC {e['E_dc_net_J'] / kwh * 1e3:.1f} Wh, 순 출력 {e['E_out_net_J'] / kwh * 1e3:.1f} Wh (비율은 효율 아님)",
                 f"net DC {e['E_dc_net_J'] / kwh * 1e3:.1f} Wh, net output {e['E_out_net_J'] / kwh * 1e3:.1f} Wh (ratio is not an efficiency)"),
              tr(f"대기 입력 {e['segments']['idle']['dc_in'] / kwh * 1e3:.2f} Wh", f"idle input {e['segments']['idle']['dc_in'] / kwh * 1e3:.2f} Wh")]

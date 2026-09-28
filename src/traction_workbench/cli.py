@@ -23,7 +23,7 @@ from pathlib import Path
 from . import __version__
 from . import service as S
 from . import spec_fixtures as sf
-from .decision import _jsonable
+from .decision import jsonable as _jsonable
 from .errors import InputValidationError
 
 

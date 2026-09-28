@@ -29,11 +29,11 @@ from .solvers.policy import POLICY_TEXT, PolicyEvaluator, PolicySolution
 from .status import Aggregate, Claim, Evidence, EvidenceKind, Reason, Status, aggregate_and
 
 
-def _jsonable(x):
+def jsonable(x):
     if isinstance(x, dict):
-        return {str(k): _jsonable(v) for k, v in x.items()}
+        return {str(k): jsonable(v) for k, v in x.items()}
     if isinstance(x, (list, tuple)):
-        return [_jsonable(v) for v in x]
+        return [jsonable(v) for v in x]
     if isinstance(x, (np.floating,)):
         x = float(x)
     if isinstance(x, (np.integer,)):
@@ -49,7 +49,7 @@ def _jsonable(x):
 
 
 def canonical_json(obj) -> str:
-    return json.dumps(_jsonable(obj), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return json.dumps(jsonable(obj), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
 def sha256_of(obj) -> str:
@@ -110,7 +110,7 @@ class DecisionRecord:
         return claim_layers(self.requirement, self.drive, self.conditions, self.verdict)
 
     def to_dict(self) -> dict:
-        return _jsonable({
+        return jsonable({
             "record_type": "EngineeringDecisionRecord",
             "record_id": self.record_id,
             "software": {"name": "traction-workbench", "version": __version__},
@@ -502,4 +502,7 @@ def evaluate_requirement(req: Requirement, drive: DriveModel, *, scenario: Scena
         record_id=f"DR-{req.req_id}-{digest[:12]}", requirement=req, drive=drive, conditions=tuple(results),
         verdict=agg, verdict_scope=scope, qualifiers=tuple(qualifiers), limiting_factors=tuple(limiting),
         next_actions=tuple(actions), unevaluated=tuple(unevaluated), assumptions=tuple(assumptions),
-        snapshot=_jsonable(snapshot), input_sha256=digest, settings=settings)
+        snapshot=jsonable(snapshot), input_sha256=digest, settings=settings)
+
+
+_jsonable = jsonable          # former private name (compatibility)
