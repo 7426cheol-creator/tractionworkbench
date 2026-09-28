@@ -33,6 +33,7 @@ import numpy as np
 
 from ..errors import InputValidationError, OutsideModelDomain
 from ..models.components import DriveModel
+from ..models.module_loss import leg_losses_trajectory, positions
 from ..validation import finite as _finite
 from ..physics import DriveKernel
 from ..scenario import DcSourceLimits, Scenario
@@ -409,7 +410,6 @@ def _bridge_losses(drive: DriveModel, legs_i: np.ndarray, duties: np.ndarray, V:
     quadratic surrogate per bridge as a screening value (not established)."""
     inv = drive.inverter
     if inv.module_loss is not None:
-        from .module_loss import positions, leg_losses_trajectory
         mdl = inv.module_loss
         tot, problems, pos_all = 0.0, [], {}
         cond = sw = 0.0

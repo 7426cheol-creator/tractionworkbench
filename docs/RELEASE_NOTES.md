@@ -64,6 +64,10 @@ fsw 전환 과도(이득 매핑·적분기 저장·리셋·포화), 임계 채�
 **시스템 검토** ([`SYSTEM_REVIEW.md`](SYSTEM_REVIEW.md)): 정적 import 그래프·중복 물리·의미론·예시 데이터 교차 검사로 찾은 결함 수정 —
 전류 루프를 두 기계 축(운전점의 차동 인덕턴스)으로 판정(단일 평균 L은 d축에서 낙관적), 한 평가 한 변조, 미션 효율의 부분 비율을
 UNKNOWN으로, 예시 모듈 열 경로 통일, 변조 법칙 통합(`modulation.py`), 숫자 검증 분리(`validation.py`), 패키지 경계를 넘는 비공개 결합 0.
+R1 이행: 데이터시트 모듈 손실 모델을 **드라이브 모델 층**(`models/module_loss.py`, 타입 계약)으로 옮기고, 커널의 **손실 계약**
+(`loss_kind`·`i2_dc`·`pointwise_loss`) 한 곳에서 DC 논증을 분기합니다(2차 항등식 7벌 → 1벌). 모듈 모델이 켜진 코어 경로에 회귀 기준을 두었고,
+그 과정에서 찾은 두 결함을 고쳤습니다 — 모듈 데이터가 점을 덮지 못할 때 DC claim이 "손실 모델 없음"이라 하던 사유, 모듈 모델에서 id–iq 지도와
+격자 envelope가 격자 P_dc(NaN)를 위반으로 비교하던 것(이제 '격자 미평가'와 사유). 층 규칙·비공개 결합·순환은 아키텍처 테스트가 강제합니다.
 
 **데스크톱**
 - 새 페이지 7개: 보호·고장, 전력변환·수명, 효율·모듈 비교, 가변 PWM·Anti-jerk, OEW·HEV, EMI(전도성), 모터 설계.
@@ -358,7 +362,7 @@ fixture E01(1-node 열) 값 77.6424 °C / 138.6294 s를 재현합니다.
 | 배포 | `packaging/` (PyInstaller spec, 빌드·동결 self-test), `.github/workflows/build.yml` | CI Windows job |
 | 리뷰 P0-A F01–F13, 감사 재현 | `solvers/gate.py`, `requirement.py`, `extensions/timing.py`·`thermal.py`·`dclink.py`, `io.py`, `models/flux.py`, `analysis/sizing.py`·`uncertainty.py`·`rating.py`, `decision.py`(claim 층) | `test_review_p0a.py` |
 | 리뷰 P0-B 데이터 계약·data audit | `io.py`, `models/`, `service.data_audit` | `test_review_p0b.py` |
-| P1: 모듈 손실·DC-link 리플·수명·보호·ASC 과도·전도 EMI | `extensions/module_loss.py`·`dclink_ripple.py`·`lifetime.py`·`protection.py`·`asc_transient.py`·`emi.py` | `test_module_loss.py`, `test_dclink_ripple.py`, `test_lifetime.py`, `test_protection.py`, `test_asc_transient.py`, `test_emi.py` |
+| P1: 모듈 손실·DC-link 리플·수명·보호·ASC 과도·전도 EMI | `models/module_loss.py`, `extensions/dclink_ripple.py`·`lifetime.py`·`protection.py`·`asc_transient.py`·`emi.py` | `test_module_loss.py`, `test_dclink_ripple.py`, `test_lifetime.py`, `test_protection.py`, `test_asc_transient.py`, `test_emi.py` |
 | 모터 설계 (§10) | `analysis/machine_design.py` | `test_machine_design.py` (권선계수 교과서 값, dq 스케일링 항등식) |
 | OEW·HEV | `extensions/oew.py`, `extensions/hev.py` | `test_oew.py`, `test_hev.py` |
 | 경계별 효율·감속기·미션·모듈 A/B | `analysis/efficiency.py` | `test_efficiency.py` (E-01..E-06) |

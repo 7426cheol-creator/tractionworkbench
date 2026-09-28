@@ -169,7 +169,7 @@ def idiq_plane(drive: DriveModel, limits: DcSourceLimits, speed_rpm: float, Vdc_
         "V": nan(np.sqrt(e["vcmd2"])), "I": np.sqrt(e["i2"]),
         "T": nan(e["tsh"] if k.tau_rot is not None else e["tem"]),
         "T_is_shaft": k.tau_rot is not None,
-        "Pdc": nan(e["pdc"]) if k.inv_loss is not None else None,
+        "Pdc": nan(e["pdc"]) if k.i2_dc is not None else None,
         "covered": ok,
         "electrical_ok": electrical_ok(k, X, Y, e),
         "budget_V": k.Vb, "ceiling_V": k.V_ceiling, "Imax_A": k.Imax,
@@ -178,7 +178,11 @@ def idiq_plane(drive: DriveModel, limits: DcSourceLimits, speed_rpm: float, Vdc_
         "speed_rpm": float(speed_rpm), "Vdc_V": float(Vdc_V), "T_request_Nm": T_request,
         "mtpa": mtpa_locus(k), "mtpv": mtpv_locus(k),
     }
-    out["all_ok"] = out["electrical_ok"] & dc_ok(k, e["pdc"]) if k.dc_defined else None
+    # grid P_dc exists only through the surrogate's I^2 identity; with a pointwise loss model the DC limits are not
+    # evaluated on the grid (None = not evaluated, never 'violated') and are judged at the policy point instead
+    out["all_ok"] = out["electrical_ok"] & dc_ok(k, e["pdc"]) if (k.dc_defined and k.i2_dc is not None) else None
+    out["dc_grid_note"] = (f"DC limits not evaluated on the grid: the {k.loss_label} is evaluated point by point; "
+                           f"they are judged at the policy point" if k.pointwise_loss else None)
     if k.kind == "constant_dq":
         out["characteristic_current_A"] = (-k.psi / k.Ld, 0.0) if k.Ld else None
     out["policy_point"] = None

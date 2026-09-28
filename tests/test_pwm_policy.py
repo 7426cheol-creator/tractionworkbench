@@ -14,7 +14,7 @@ from traction_workbench import api
 from traction_workbench.errors import InputValidationError
 from traction_workbench.extensions import pwm_policy as P
 from traction_workbench.extensions.emi import SwitchingSource, pwm_edges
-from traction_workbench.extensions.module_loss import inverter_losses
+from traction_workbench.models.module_loss import inverter_losses
 
 
 @pytest.mark.parametrize("fsw", [5e3, 10e3, 20e3])

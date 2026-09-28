@@ -24,8 +24,9 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .errors import InputValidationError, OutsideModelDomain
-from .models.components import DriveModel
+from .models.components import LOSS_MODULE, LOSS_QUADRATIC, DriveModel
 from .models.flux import ConstantFluxModel, FluxMapModel
+from .models.module_loss import inverter_losses, standstill_hotspot
 from .validation import finite as _finite
 from .scenario import Scenario
 from .settings import DEFAULT_SETTINGS, NumericalSettings
@@ -47,8 +48,32 @@ class ModelIssue:
         return {"reason": self.reason.value, "message": self.message}
 
 
+@dataclass(frozen=True)
+class QuadraticDC:
+    """The closed-form DC identity of the quadratic loss surrogate: P_dc = T_em*omega_m + c2*I^2 + a0.
+
+    P_ac = T_em*omega_m + P_cu holds for every flux model and P_cu = 1.5*Rs*I^2, so with P_inv = a0 + a2*I^2 the
+    DC power depends on (T_em, I^2) only, with c2 = 1.5*Rs + a2 >= 0 (monotone in I^2 along a torque curve).  The
+    I^2 band, the Lagrangian DC constraints, the cell bounds, the maximum-loss screen and the grid P_dc all rest on
+    this identity.  A pointwise loss model (datasheet module) has none: its DC claims rest on directly evaluated
+    witnesses, and a DC check on a grid is not available there (unknown - never 'violated').
+    """
+
+    c2_W_per_A2: float
+    a0_W: float
+
+    def pdc(self, tem, omega_m, i2):
+        return tem * omega_m + self.c2_W_per_A2 * i2 + self.a0_W
+
+
 class DriveKernel:
-    """Vectorised model of one drive at one scenario boundary (n, Vdc, temperatures)."""
+    """Vectorised model of one drive at one scenario boundary (n, Vdc, temperatures).
+
+    Loss contract (one place for every consumer): ``loss_kind`` names the declared inverter loss model;
+    ``i2_dc`` is the closed-form identity of the quadratic surrogate (None otherwise) - the only basis of I^2
+    arguments and of P_dc on grids; ``pointwise_loss`` marks the datasheet module model, whose P_dc exists only
+    at directly evaluated points; ``dc_defined`` needs a loss model and the rotational-loss model.
+    """
 
     def __init__(self, drive: DriveModel, scenario: Scenario, settings: NumericalSettings = DEFAULT_SETTINGS):
         self.drive = drive
@@ -97,6 +122,9 @@ class DriveKernel:
         self.inv_loss = inv.loss
         self.module = inv.module_loss
         self.module_Tj = inv.module_Tj_C
+        self.loss_kind = inv.loss_kind
+        self.i2_dc = (None if self.loss_kind != LOSS_QUADRATIC else
+                      QuadraticDC(1.5 * self.Rs + self.inv_loss.ipk2_coeff_W_per_A2, self.inv_loss.offset_W))
         if self.inv_loss is not None and self.inv_loss.valid_Vdc_V is not None:
             lo, hi = self.inv_loss.valid_Vdc_V
             if not (lo <= self.Vdc <= hi):
@@ -176,15 +204,28 @@ class DriveKernel:
         return self.tau_rot is not None
 
     @property
+    def has_inverter_loss(self) -> bool:
+        return self.loss_kind is not None
+
+    @property
+    def pointwise_loss(self) -> bool:
+        """The loss model is evaluated point by point (datasheet module): no I^2 identity, no grid P_dc."""
+        return self.loss_kind == LOSS_MODULE
+
+    @property
+    def loss_label(self) -> str:
+        return {LOSS_QUADRATIC: "quadratic inverter-loss surrogate",
+                LOSS_MODULE: "datasheet module loss"}.get(self.loss_kind, "inverter loss model")
+
+    @property
     def dc_defined(self) -> bool:
-        return (self.inv_loss is not None or self.module is not None) and self.tau_rot is not None
+        return self.has_inverter_loss and self.tau_rot is not None
 
     def module_loss_at(self, id_A, iq_A, vd, vq) -> dict | None:
         """Datasheet module losses at one point (scalar); None without a module model."""
-        if self.module is None:
+        if not self.pointwise_loss:
             return None
         from dataclasses import replace as _rep
-        from .extensions.module_loss import inverter_losses, standstill_hotspot
         fsw = self.scenario.switching_frequency_Hz
         mod = self.module if fsw is None else _rep(self.module, fsw_Hz=fsw)
         if abs(self.omega_e) <= self.settings.speed_zero_tol_rad_s:
@@ -591,9 +632,9 @@ def evaluate_point(kernel: DriveKernel, id_A: float, iq_A: float) -> OperatingPo
     tsh = f["tsh"] if k.shaft_defined else None
     p_shaft = tsh * wm if tsh is not None else None
     p_rot = k.P_rot
-    p_inv = f["pinv"] if k.inv_loss is not None else None
+    p_inv = f["pinv"] if k.loss_kind == LOSS_QUADRATIC else None
     ml = None
-    if k.module is not None:
+    if k.pointwise_loss:
         ml = k.module_loss_at(d, q, f["vd"], f["vq"])
         p_inv = ml["dc_side_W"] if ml["established"] else None
     p_dc = (f["pac"] + p_inv) if (p_inv is not None) else None
@@ -616,7 +657,7 @@ def evaluate_point(kernel: DriveKernel, id_A: float, iq_A: float) -> OperatingPo
     notes = list(k.notes)
     if not k.shaft_defined:
         notes.append("rotational loss model missing: shaft torque/power undefined (electromagnetic values only)")
-    if k.inv_loss is None and k.module is None:
+    if not k.has_inverter_loss:
         notes.append("inverter loss model missing: DC power/current undefined")
     if ml is not None:
         if ml["established"]:

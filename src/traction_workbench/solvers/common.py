@@ -68,13 +68,14 @@ def dc_band_I2(k: DriveKernel, tem_target: float) -> tuple[float, float] | None:
     """I^2 band compatible with the DC limits along a torque curve.
 
     Along any torque-matching curve P_dc = T_em*omega_m + (1.5*Rs + a2)*I^2 + a0
-    (P_ac = T_em*omega_m + P_cu holds for every flux model), so the DC limits
-    become an interval of I^2.  Returns None when the DC side is undefined.
+    (``DriveKernel.i2_dc``), so the DC limits become an interval of I^2.  Returns
+    None without that identity (no loss model, or a pointwise loss model).
     """
-    if k.inv_loss is None:
+    q = k.i2_dc
+    if q is None:
         return None
-    c2 = 1.5 * k.Rs + k.inv_loss.ipk2_coeff_W_per_A2
-    base = tem_target * k.omega_m + k.inv_loss.offset_W
+    c2 = q.c2_W_per_A2
+    base = tem_target * k.omega_m + q.a0_W
     hi = k.P_dis_eff
     lo = None if k.P_chg_eff is None else -k.P_chg_eff
     if c2 <= 0:

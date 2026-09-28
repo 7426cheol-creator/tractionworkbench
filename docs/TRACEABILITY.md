@@ -47,7 +47,7 @@
 |---|---|---|---|
 | P0-B | 단위·축 순서·provenance·정적/동적 qualification, data audit | `io.py`, `models/`, `service.data_audit`, 모델·데이터 페이지 감사 표 | implemented |
 | P0-C | 실제 모터–인버터 한 조합의 정적 release evidence | — | **evidence_missing** (공급사·시험 데이터 필요; 합성 suite를 qualified baseline이라 부르지 않음) |
-| §8.8 P1-A | 데이터시트 모듈 손실 (소자별 도통·스위칭, 소유권, 외삽 금지) → P_dc·열·claim | `extensions/module_loss.py` | implemented / evidence_missing (DPT·공급사 도구) |
+| §8.8 P1-A | 데이터시트 모듈 손실 (소자별 도통·스위칭, 소유권, 외삽 금지) → P_dc·열·claim | `models/module_loss.py` (드라이브 모델의 일부; 구 경로 재수출) | implemented / evidence_missing (DPT·공급사 도구) |
 | §8.9 P1-A | DC-link 리플·커패시터 전류·ESR·수명 게이트 | `extensions/dclink_ripple.py` | implemented / evidence_missing |
 | §12 | 모듈 열 사이클 rainflow·조건부 손상 | `extensions/lifetime.py` | implemented (screening) |
 | §9 P1-B | 보호 임계값·derating·fault 검증 | `extensions/protection.py` | implemented / evidence_missing (HIL) |
@@ -158,6 +158,13 @@
 
 기능 사이의 의존성, 변경 영향, 성숙도, 교차 모듈 일관성은 [`SYSTEM_REVIEW.md`](SYSTEM_REVIEW.md)에 있습니다. 검토에서 찾아 고친 결함:
 전류 루프의 축별 판정(기계 차동 인덕턴스), 한 평가 한 변조, 미션 효율 부분 비율의 UNKNOWN 처리, 예시 모듈 열 경로 통일, 변조 법칙 통합.
+
+| 권고 | 내용 | 상태 |
+|---|---|---|
+| R1-1 | 모듈 모델이 켜진 코어 경로의 회귀 기준(`module_core_anchor`); 모듈 데이터가 점을 덮지 못할 때의 DC claim 사유(OUTSIDE_MODEL_DOMAIN) | implemented |
+| R1-2 | `module_loss`를 모델 층으로(타입 계약), 커널 손실 계약(`loss_kind`·`i2_dc`·`pointwise_loss`)으로 DC 논증 분기 일원화; 격자 DC를 '미평가'로(모듈 모델에서 위반으로 보이던 지도·envelope) | implemented |
+| 아키텍처 | 층 규칙·패키지 경계 비공개 이름 0·모듈 수준 순환 0을 테스트로 강제 (`tests/test_architecture.py`) | implemented |
+| R2 | 프로젝트 데이터 패키지 (모든 페이지가 같은 제품 데이터를 참조) | 진행 |
 
 ## 10. 비목표 (handoff §15, 추가 명세 비목표)
 

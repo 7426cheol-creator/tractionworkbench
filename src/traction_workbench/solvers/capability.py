@@ -146,9 +146,9 @@ def _iq_sets_constant(k: DriveKernel, d: float, include_dc: bool):
     B = 2 * rv * we * kd
     C = rv * rv * d * d + (we * (k.psi + k.Ld * d)) ** 2 - k.Vb ** 2
     ivs = _intersect(ivs, _quad_interval(A, B, C, 1e-12))
-    if include_dc and k.inv_loss is not None and ivs:
-        c2 = 1.5 * k.Rs + k.inv_loss.ipk2_coeff_W_per_A2
-        base = c2 * d * d + k.inv_loss.offset_W
+    if include_dc and k.i2_dc is not None and ivs:
+        c2 = k.i2_dc.c2_W_per_A2
+        base = c2 * d * d + k.i2_dc.a0_W
         Bp = 1.5 * we * kd
         if k.P_dis_eff is not None:
             ivs = _intersect(ivs, _quad_interval(c2, Bp, base - k.P_dis_eff, 1e-12))
@@ -256,7 +256,7 @@ def _physical_map(ev: PolicyEvaluator, direction: int, include_dc: bool):
     D, Q = np.meshgrid(tr.ids, tr.iqs, indexing="ij")
     e = k.evaluate(D, Q)
     ok = electrical_ok(k, D, Q, e)
-    if include_dc and k.inv_loss is not None:
+    if include_dc and k.i2_dc is not None:
         ok &= dc_ok(k, e["pdc"])
     if not np.any(ok):
         return None, "no feasible grid node"
@@ -310,6 +310,10 @@ def physical_capability(ev: PolicyEvaluator, direction: int, include_dc: bool = 
         wit, how = _physical_map(ev, direction, include_dc)
     evidence = []
     notes = [how]
+    if include_dc and k.pointwise_loss:
+        notes.append(f"the {k.loss_label} is evaluated point by point: the witness search and the upper bound do "
+                     "not contain the DC limits (the bound is the electrical one, still an upper bound); the witness "
+                     "itself is checked against them directly")
     bound = None
     certified = False
     if wit is None:
