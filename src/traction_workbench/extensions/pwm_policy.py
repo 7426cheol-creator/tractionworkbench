@@ -1166,9 +1166,16 @@ def evaluate_policies(base_drive, cand, segments: list[dict], policies: list, co
     best = min(adm, key=lambda o: o["E_inv_J"]) if adm and all(o["E_inv_J"] is not None for o in adm) else None
     known = [o for o in adm if o.get("E_known_policy_sensitive_J") is not None]
     best_known = min(known, key=lambda o: o["E_known_policy_sensitive_J"]) if known else None
+    pareto_energy = bool(adm) and len(known) == len(adm)
+    pareto_scope = (
+        "known policy-sensitive loss (inverter + PWM copper) plus mandatory stress/margin metrics; "
+        "the Fe+PM HF upper bound is shown as an interval, not treated as an estimate"
+        if pareto_energy else
+        "mandatory stress/margin metrics only: the PWM-copper energy objective is omitted because it is not "
+        "established for every admissible candidate"
+    )
     return {"policies": out, "pareto": [o["policy"]["name"] for o in pareto],
-            "pareto_scope": "known policy-sensitive loss (inverter + PWM copper) plus mandatory stress/margin metrics; "
-                            "the Fe+PM HF upper bound is shown as an interval, not treated as an estimate",
+            "pareto_scope": pareto_scope,
             "best_inverter_energy_among_evaluated": None if best is None else best["policy"]["name"],
             "best_known_policy_sensitive_energy_among_evaluated": None if best_known is None else best_known["policy"]["name"],
             "limits": lim.__dict__, "coolant_C": coolant_C, "modulation": modulation,
@@ -1351,8 +1358,9 @@ def _versus(base: dict, o: dict) -> dict:
 
 
 def _pareto(rows: list) -> list:
-    """Non-dominated admissible policies on (inverter energy, peak Tj, peak current incl. ripple, capacitor current,
-    -phase margin); objectives that are None for any policy are left out."""
+    """Non-dominated admissible policies on known policy-sensitive loss (inverter + PWM copper), peak Tj,
+    conservative peak-current bound, capacitor current and -phase margin.  An objective that is not established for
+    every admissible policy is left out rather than silently filled with zero."""
     keys = [("E_known_policy_sensitive_J", 1), ("Tj_max_C", 1), ("i_peak_incl_ripple_max_A", 1),
             ("I_cap_rms_max_A", 1), ("phase_margin_min_deg", -1)]
     keys = [(k, s) for k, s in keys if all(r.get(k) is not None for r in rows)]
