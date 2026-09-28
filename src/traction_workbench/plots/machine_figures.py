@@ -8,6 +8,7 @@ slots, the slot layout and the three-phase MMF spectrum, the concept sizing as a
 from __future__ import annotations
 
 import math
+import textwrap
 
 import numpy as np
 from matplotlib.patches import Patch, Rectangle
@@ -82,7 +83,8 @@ def fig_machine_trade(fig, res: dict, title: str | None = None):
             if r.get("binding") == n:
                 ax2.add_patch(Rectangle((j + 0.03, i + 0.05), 0.94, 0.9, fill=False, ec=t["fg"], lw=2.0))
     ax2.set_xticks(np.arange(nc) + 0.5)
-    ax2.set_xticklabels([n.replace(" @ ", "\n@ ") for n in names], fontsize=6.6, rotation=0)
+    # column names wrapped to the cell width (six long names on one line ran into each other)
+    ax2.set_xticklabels(["\n".join(textwrap.wrap(n, 13)) for n in names], fontsize=6.4, rotation=0)
     ax2.set_yticks(np.arange(nr) + 0.5)
     ax2.set_yticklabels([r["candidate"] + ("" if r["all_feasible"] else " ✗") for r in rows], fontsize=7.5)
     ax2.tick_params(length=0)
@@ -92,7 +94,7 @@ def fig_machine_trade(fig, res: dict, title: str | None = None):
                      "coupled requirement margins, same requirements / temperatures / sources (bold = binding)"),
                   fontsize=9)
     ax2.legend(handles=[Patch(fc=S.CLAIM[k], alpha=0.35, label=k) for k in ("FEASIBLE", "INFEASIBLE", "UNKNOWN")],
-               fontsize=6.5, loc="upper center", bbox_to_anchor=(0.5, -0.1), ncol=3, frameon=False)
+               fontsize=6.5, loc="upper center", bbox_to_anchor=(0.5, -0.2), ncol=3, frameon=False)
     _note(ax, tr("파생 후보 = 기준의 스케일링 (검증 안 됨)\n무효화 데이터는 표 참조",
                  "derived candidates = scaled reference (not validated)\ninvalidated data listed in the table"),
           loc="lower left", fontsize=6.5)

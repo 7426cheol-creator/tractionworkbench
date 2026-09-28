@@ -6,13 +6,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QFileDialog, QHBoxLayout, QInputDialog, QLabel, QPushButton, QTabWidget, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (QFileDialog, QHBoxLayout, QInputDialog, QLabel, QPushButton, QSplitter, QTabWidget,
+                               QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from ...i18n import tr
 from ...project import (SECTIONS, builtin_project, check_project, diff_projects, load_project, save_project,
                         short)
-from ..widgets import ConceptNote, KeyValueTable, error_box
+from ..widgets import ConceptNote, KeyValueTable, error_box, fmt
 
 NOTE_PROJECT = lambda: tr(  # noqa: E731
     "<b>프로젝트 데이터 패키지</b>는 한 제품(한 구동 시스템)의 제품 데이터 — 드라이브, DC 전원, 파워 모듈과 열 경로, DC-link 커패시터, "
@@ -32,6 +32,12 @@ NOTE_PROJECT = lambda: tr(  # noqa: E731
     "stated side by side (NOTE).")
 
 
+def _selftest() -> bool:
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance()
+    return bool(app and app.property("twb_selftest"))
+
+
 class ProjectPage(QWidget):
     def __init__(self, win):
         super().__init__()
@@ -48,6 +54,7 @@ class ProjectPage(QWidget):
                           (tr("다른 이름으로 저장…", "save as…"), self.save_project),
                           (tr("새 개정…", "new revision…"), self.new_revision),
                           (tr("파일과 비교…", "compare with file…"), self.diff_with),
+                          (tr("데이터시트 가져오기…", "import datasheet…"), self.import_datasheet),
                           (tr("내장 합성 프로젝트", "built-in synthetic project"), self.reset_builtin)):
             b = QPushButton(label)
             b.clicked.connect(lambda _=False, f=fn: f())
@@ -61,7 +68,16 @@ class ProjectPage(QWidget):
                                               tr("내용", "detail")])
         self.t_log = KeyValueTable(headers=[tr("개정", "revision"), tr("변경", "change"), tr("이전", "from")])
         self.t_diff = KeyValueTable()
-        self.tabs.addTab(self.t_sections, tr("섹션", "sections"))
+        self.t_data = QTreeWidget()                     # the selected section's content (what the analyses read)
+        self.t_data.setHeaderLabels([tr("항목", "item"), tr("값", "value")])
+        self.t_data.setColumnWidth(0, 300)
+        self.t_data.setAlternatingRowColors(True)
+        self.t_sections.itemSelectionChanged.connect(self._show_selected)
+        sec = QSplitter(Qt.Vertical)
+        sec.addWidget(self.t_sections)
+        sec.addWidget(self.t_data)
+        sec.setSizes([330, 380])
+        self.tabs.addTab(sec, tr("섹션", "sections"))
         self.tabs.addTab(self.t_check, tr("일관성 검사", "consistency"))
         self.tabs.addTab(self.t_log, tr("개정 이력", "change log"))
         self.tabs.addTab(self.t_diff, tr("개정 비교", "revision diff"))
@@ -92,9 +108,47 @@ class ProjectPage(QWidget):
         self.t_sections.set_rows(rows)
         for r, text in enumerate(meaning):              # what the section holds: on the section name
             self.t_sections.item(r, 0).setToolTip(text)
+        self._section_names = list(p.sections) + [n for n in SECTIONS if n not in p.sections]
+        self._show_selected()
         self.t_check.set_rows([[f["status"], f["rule"], f["title"], f["detail"]] for f in chk["findings"]])
         self.t_log.set_rows([[str(c.get("revision", "")), str(c.get("change", "")), str(c.get("from", ""))]
                              for c in p.change_log])
+
+    def _show_selected(self):
+        """The selected section as a tree: provenance first, then the data exactly as the analyses read it."""
+        self.t_data.clear()
+        rows = self.t_sections.selectionModel().selectedRows() if self.t_sections.selectionModel() else []
+        names = getattr(self, "_section_names", [])
+        name = names[rows[0].row()] if rows and rows[0].row() < len(names) else None
+        p = self.win.state.project
+        if name is None or name not in p.sections:
+            QTreeWidgetItem(self.t_data, [tr("섹션을 선택하면 내용이 여기에 표시됩니다", "select a section to see its data"),
+                                          ""])
+            return
+        s = p.sections[name]
+        head = QTreeWidgetItem(self.t_data, [f"{name} — {SECTIONS[name].title}", f"digest {short(s.digest)}"])
+        prov = QTreeWidgetItem(head, [tr("출처 (provenance)", "provenance"), ""])
+        self._fill(prov, s.provenance)
+        data = QTreeWidgetItem(head, [tr("데이터", "data"), ""])
+        self._fill(data, s.data)
+        head.setExpanded(True)
+        prov.setExpanded(True)
+        data.setExpanded(True)
+
+    def _fill(self, parent, value):
+        if isinstance(value, dict):
+            for k, v in value.items():
+                it = QTreeWidgetItem(parent, [str(k), "" if isinstance(v, (dict, list)) and v else fmt(v)])
+                if isinstance(v, (dict, list)) and v:
+                    self._fill(it, v)
+        elif isinstance(value, list):
+            if value and all(not isinstance(x, (dict, list)) for x in value):
+                parent.setText(1, fmt(value) if len(value) <= 12 else fmt(value[:12]) + f", … ({len(value)})")
+                return
+            for i, v in enumerate(value):
+                it = QTreeWidgetItem(parent, [f"[{i}]", "" if isinstance(v, (dict, list)) and v else fmt(v)])
+                if isinstance(v, (dict, list)) and v:
+                    self._fill(it, v)
 
     # ------------------------------------------------------------------ actions
     def open_project(self, path: str | None = None):
@@ -164,6 +218,17 @@ class ProjectPage(QWidget):
         rows.append((tr("영향 없는 분석", "unaffected analyses"), ", ".join(d["unaffected_analyses"]) or tr("없음", "none")))
         self.t_diff.set_rows(rows)
         self.tabs.setCurrentWidget(self.t_diff)
+
+    def import_datasheet(self, path: str | None = None, apply: bool = False):
+        """The datasheet import dialog; with ``path`` (and ``apply``) it loads (and applies) without waiting for the
+        user - the self-test path."""
+        from ..datasheet_dialog import DatasheetDialog
+        dlg = DatasheetDialog(self.win, path)
+        if apply:
+            dlg.apply()
+        elif not _selftest():
+            dlg.exec()
+        return dlg
 
     def reset_builtin(self):
         self.win.state.set_project(builtin_project())

@@ -311,7 +311,7 @@ class EfficiencyPage(QWidget):
                             f"{fmt(pt['eta_regeneration_partial'] and 100 * pt['eta_regeneration_partial'], 5)} %)")))
         for k in ("P_dc", "P_ac", "P_m", "P_o"):
             rows.append((f"{k} E+ / E−", f"{e['E_pos_J'][k] / kwh * 1e3:.3f} / {e['E_neg_J'][k] / kwh * 1e3:.3f} Wh"))
-        rows.append((tr("구간 분류", "segment classes"), str({k: round(v.get("t", 0.0), 2) for k, v in e["segments"].items()})))
+        rows.append((tr("구간 분류", "segment classes"), {k: round(v.get("t", 0.0), 2) for k, v in e["segments"].items()}))
         self.k_eff.set_rows(rows)
 
     # ================================================================== module A/B

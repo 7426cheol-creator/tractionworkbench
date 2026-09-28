@@ -594,12 +594,21 @@ class PwmDrivelinePage(QWidget):
                           fb["damping"]["kind"])
         self.c_kd = number(fb["damping"]["Kd_Nms_per_rad"], 0, 1e4, "N·m·s/rad", 3, 0.1)
         self.c_hpf = number(fb["damping"]["hpf_Hz"], 0.01, 1000, "Hz", 2, 0.5)
+        self.c_hpf_order = combo([(tr("2차 washout (가속 중 정상 편차 없음)", "2nd-order washout (no steady offset)"), 2),
+                                  (tr("1차 HPF (가속 중 −Kd·a/ω_c 편차)", "1st-order HPF (−Kd·a/ω_c offset)"), 1)],
+                                 int(fb["damping"].get("hpf_order", 1)))
+        self.c_hpf_order.setToolTip(tr("차량이 가속하는 동안 모터 속도는 램프입니다. 1차 고역통과는 램프에서 a/ω_c로 수렴해 토크를 "
+                                       "계속 빼앗고(요구 토크 미달), 2차 washout은 0으로 돌아갑니다.",
+                                       "While the vehicle accelerates the motor speed is a ramp: a first-order high-pass "
+                                       "settles at a/ω_c and keeps taking torque (a deficit on the request); the "
+                                       "second-order washout returns to zero."))
         self.c_slew = check(tr("전압 여유로 토크 slew 확인 (FW)", "check the torque slew against the voltage headroom (FW)"),
                             bool(ex.get("check_slew", True)))
         for lab, w in ((tr("샘플 주기", "sample period"), self.c_ts), (tr("샘플→인가 지연", "sample→applied delay"), self.c_dl),
                        (tr("토크 응답 τ (ROM)", "torque response τ (ROM)"), self.c_act), (tr("성형", "shaping"), self.c_sh),
                        ("rate", self.c_rate), ("τ prefilter", self.c_tau), (tr("감쇠", "damping"), self.c_dp),
-                       ("Kd", self.c_kd), ("HPF", self.c_hpf), ("", self.c_slew)):
+                       ("Kd", self.c_kd), ("HPF", self.c_hpf), (tr("HPF 차수", "HPF order"), self.c_hpf_order),
+                       ("", self.c_slew)):
             f.addRow(lab, w)
         v.addWidget(g)
         sg = ex["sensing"]
@@ -683,7 +692,8 @@ class PwmDrivelinePage(QWidget):
         if kind == "zv":
             md = api.driveline_from_dict(b["driveline"]).modal()
             sh.update({"zv_f_Hz": md["f_n_Hz"], "zv_zeta": md["zeta"]})
-        dp = {"kind": self.c_dp.currentData(), "Kd_Nms_per_rad": self.c_kd.value(), "hpf_Hz": self.c_hpf.value()}
+        dp = {"kind": self.c_dp.currentData(), "Kd_Nms_per_rad": self.c_kd.value(), "hpf_Hz": self.c_hpf.value(),
+              "hpf_order": int(self.c_hpf_order.currentData())}
         b["variants"] = {"off": {}, "shaping": {"shaper": sh}, "feedback": {"damping": dp},
                          "combined": {"shaper": sh, "damping": dp}}
         b["requirement"] = {"t_to_90_max_s": self.q_t90.value(), "peak_vehicle_jerk_max_m_s3": self.q_j.value(),

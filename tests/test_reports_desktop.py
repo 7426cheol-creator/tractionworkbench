@@ -222,6 +222,23 @@ def test_pdf_report(tmp_path):
     assert data.count(b"/Type /Page\n") + data.count(b"/Type /Page ") + data.count(b"/Type /Page/") >= 5
 
 
+def test_pdf_report_gives_the_callers_plot_theme_back(tmp_path):
+    """The report is light, but building it must not restyle the application's plots (a dark-theme user who saved
+    a PDF got white figures on every page afterwards)."""
+    import matplotlib as mpl
+    from traction_workbench.report_pdf import build_pdf
+    case = json.loads((EX / "cases" / "req_ts_012_600V.json").read_text(encoding="utf-8"))
+    rec, obj, c = S.evaluate_case_full(case)
+    style.apply("dark")
+    try:
+        build_pdf(tmp_path / "r.pdf", rec, obj, c, envelope=False)
+        assert style.theme_name() == "dark"
+        assert mpl.rcParams["axes.facecolor"] == style.THEMES["dark"]["bg"]
+        assert mpl.rcParams["text.color"] == style.THEMES["dark"]["fg"]
+    finally:
+        style.apply("light")
+
+
 def test_cli_report(tmp_path, capsys):
     out = tmp_path / "rep.pdf"
     assert main(["report", str(EX / "cases" / "req_ts_012_600V.json"), "--pdf", str(out), "--no-envelope"]) == 0
@@ -375,8 +392,8 @@ def test_desktop_smoke(tmp_path):
         assert mp.last_wind["balanced"] and mp.w_send.isEnabled()
         mp.run_size()
         assert mp.last_size is not None
-        win.set_theme("dark")
-        win.set_theme("light")
+        win.set_theme("dark", persist=False)          # never write the test machine's user settings
+        win.set_theme("light", persist=False)
         assert not (app.property("twb_errors") or [])
         win.close()
     finally:

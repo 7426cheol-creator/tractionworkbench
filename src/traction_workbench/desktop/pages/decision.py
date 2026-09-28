@@ -16,6 +16,7 @@ from ... import service as S
 from ...analysis.variation import PARAMETERS
 from ...i18n import language, tr
 from ...plots import figures as F
+from ...plots.labels import change_kind_label, param_label
 from ...viz import design as DS
 from ...viz import maps as M
 from ...viz import operating as O
@@ -264,9 +265,6 @@ class DecisionPage(QWidget):
         # summary
         summ = QSplitter(Qt.Horizontal)
         self.claims = ClaimTree()
-        right = QWidget()
-        rv = QVBoxLayout(right)
-        rv.setContentsMargins(0, 0, 0, 0)
         self.key_table = KeyValueTable()
         self.layers_table = KeyValueTable(headers=[tr("층", "layer"), tr("상태", "status"), tr("의미", "meaning")])
         self.layers_table.setToolTip(tr("서로 다른 진술을 하나의 판정으로 합치지 않습니다: 수치 증거 / 이 모델의 요구 판정 / "
@@ -278,18 +276,27 @@ class DecisionPage(QWidget):
         for lw in (self.limiting, self.actions):
             lw.setWordWrap(True)
             lw.setAlternatingRowColors(True)
-        rv.addWidget(QLabel(tr("<b>판정 층</b> (수학 · 모델 · 요구 · qualification — 서로 다른 진술)",
-                               "<b>claim layers</b> (mathematical · model · requirement · qualification — separate)")))
-        rv.addWidget(self.layers_table, 2)
-        rv.addWidget(QLabel(tr("<b>핵심 수치</b>", "<b>key numbers</b>")))
-        rv.addWidget(self.key_table, 3)
-        rv.addWidget(QLabel(tr("<b>제한 요인</b>", "<b>limiting factors</b>")))
-        rv.addWidget(self.limiting, 1)
-        rv.addWidget(QLabel(tr("<b>다음 조치 · 결론을 바꿀 자료</b>", "<b>next actions · data that would change the decision</b>")))
-        rv.addWidget(self.actions, 2)
+        right = QSplitter(Qt.Vertical)                 # four titled sections the user can resize
+        for title, body in ((tr("<b>판정 층</b> (수학 · 모델 · 요구 · qualification — 서로 다른 진술)",
+                             "<b>claim layers</b> (mathematical · model · requirement · qualification — separate)"),
+                          self.layers_table),
+                         (tr("<b>핵심 수치</b>", "<b>key numbers</b>"), self.key_table),
+                         (tr("<b>제한 요인</b>", "<b>limiting factors</b>"), self.limiting),
+                         (tr("<b>다음 조치 · 결론을 바꿀 자료</b>", "<b>next actions · data that would change the decision</b>"),
+                          self.actions)):
+            box = QWidget()
+            bl = QVBoxLayout(box)
+            bl.setContentsMargins(0, 0, 0, 0)
+            bl.setSpacing(2)
+            head = QLabel(title)
+            head.setWordWrap(True)
+            bl.addWidget(head)
+            bl.addWidget(body, 1)
+            right.addWidget(box)
+        right.setSizes([170, 250, 150, 230])
         summ.addWidget(self.claims)
         summ.addWidget(right)
-        summ.setSizes([640, 460])
+        summ.setSizes([560, 560])
         self.tabs.addTab(summ, tr("요약·근거", "summary · evidence"))
         self.views = OperatingViews()
         self.tabs.addTab(self.views, tr("운전점 그래프", "operating point"))
@@ -423,7 +430,7 @@ class DecisionPage(QWidget):
             p.draw(F.fig_capability_vs_parameter, cv, sizing.get(name), name=f"capability_vs_{name}",
                    csv=lambda cv=cv: {name: cv["values"], "policy_capability_Nm": cv["capability_Nm"],
                                       "status_at_request": cv["status"]})
-            self.an_tabs.addTab(p, f"{tr('역설계', 'sizing')}: {name}")
+            self.an_tabs.addTab(p, f"{tr('역설계', 'sizing')}: {param_label(name)}")
         if an.get("dominance") or an.get("relaxation"):
             p = PlotPanel()
             dom = an.get("dominance") or {"single": [], "base_policy_capability_Nm": None}
@@ -503,7 +510,12 @@ class DecisionPage(QWidget):
             res = self.result
             self.win.runner.run("pdf", tr("PDF 보고서", "PDF report"),
                                 lambda progress: build_pdf(path, res["record"], res["rec"], res["case"], progress=progress),
-                                lambda p: self.win.statusBar().showMessage(tr(f"보고서 저장: {p}", f"report saved: {p}"), 8000))
+                                self._pdf_done)
+
+    def _pdf_done(self, p):
+        # the report is built in light theme on a worker thread: a figure the user drew meanwhile may carry it
+        self.win.redraw_all()
+        self.win.statusBar().showMessage(tr(f"보고서 저장: {p}", f"report saved: {p}"), 8000)
 
     def redraw(self):
         self.banner.restyle()
@@ -516,4 +528,4 @@ class DecisionPage(QWidget):
 
 
 def parameter_choices():
-    return [(f"{k} · {v[0]} [{v[1]}]", k) for k, v in PARAMETERS.items()]
+    return [(f"{param_label(k)} [{v[1]}] · {change_kind_label(v[0])}", k) for k, v in PARAMETERS.items()]

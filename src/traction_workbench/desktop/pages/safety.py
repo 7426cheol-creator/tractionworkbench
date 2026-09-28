@@ -607,8 +607,8 @@ class SafetyPage(QWidget):
         self.s_vdc = number(600, 1, 5000, "V", 1, 10)
         self.s_hv = combo([(tr("배터리 연결", "battery connected"), "battery_connected"),
                            (tr("배터리 분리", "battery disconnected"), "battery_disconnected")])
-        self.s_dev = number(0, 0, 1e5, "V", 0, 50, tr("0 = 미지정", "0 = not given"))
-        self.s_link = number(0, 0, 1e5, "V", 0, 50, tr("0 = 미지정", "0 = not given"))
+        self.s_dev = number(0, 0, 1e5, "V", 0, 50, tr("0 = 미지정", "0 = not given"), special=tr("미지정", "not given"))
+        self.s_link = number(0, 0, 1e5, "V", 0, 50, tr("0 = 미지정", "0 = not given"), special=tr("미지정", "not given"))
         for lab, wd in ((tr("속도", "speed"), self.s_n), ("Vdc", self.s_vdc), (tr("HV 상태", "HV state"), self.s_hv),
                         (tr("소자 정격 전압", "device rating"), self.s_dev), (tr("DC 링크 한계", "DC-link limit"), self.s_link)):
             f.addRow(lab, wd)

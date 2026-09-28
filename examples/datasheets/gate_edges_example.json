@@ -1,0 +1,14 @@
+{
+ "kind": "gate_edges",
+ "note": "FORMAT EXAMPLE with synthetic values of a fictitious part - not a product; replace with your datasheet",
+ "part": {
+  "manufacturer": "Example Semiconductor (fictitious)",
+  "part_number": "EXM-750-820",
+  "revision": "0.1"
+ },
+ "dv_dt_on_V_per_ns": 9.0,
+ "dv_dt_off_V_per_ns": 12.0,
+ "condition": "Vcc = 400 V, Ic = 820 A, Rg = 1.8 ohm, Tj = 25 C (double-pulse, 10-90 %)",
+ "Rg_on_ohm": 1.8,
+ "Rg_off_ohm": 1.8
+}

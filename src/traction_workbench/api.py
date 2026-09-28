@@ -1368,9 +1368,13 @@ EXAMPLE_DRIVELINE = {
     "controller": PROJECT.torque_path(),
     "variants": {"off": {},
                  "shaping": {"shaper": {"kind": "rate", "rate_Nm_per_s": 1500.0}},
-                 "feedback": {"damping": {"kind": "motor_speed_hpf", "Kd_Nms_per_rad": 1.5, "hpf_Hz": 2.0}},
+                 # motor-speed feedback through a second-order washout: no steady correction while the vehicle
+                 # accelerates (a first-order high-pass keeps -Kd a / omega_c: hpf_order 1 shows that deficit)
+                 "feedback": {"damping": {"kind": "motor_speed_hpf", "Kd_Nms_per_rad": 1.5, "hpf_Hz": 2.0,
+                                          "hpf_order": 2}},
                  "combined": {"shaper": {"kind": "rate", "rate_Nm_per_s": 1500.0},
-                              "damping": {"kind": "motor_speed_hpf", "Kd_Nms_per_rad": 1.5, "hpf_Hz": 2.0}}},
+                              "damping": {"kind": "motor_speed_hpf", "Kd_Nms_per_rad": 1.5, "hpf_Hz": 2.0,
+                                          "hpf_order": 2}}},
     "requirement": {"t_to_90_max_s": 0.25, "peak_vehicle_jerk_max_m_s3": 35.0, "settle_max_s": 0.6,
                     "safety_reaction_max_s": 0.02, "safety_band_Nm": 2.0,
                     "basis": "example comfort / response targets (declare the program's definitions)"},
@@ -1397,7 +1401,14 @@ def _controller(c: dict, v: dict, sensing: dict | None = None):
                               float(sn.get("load_speed_skew_ms") or 0.0) * 1e-3,
                               tuple((float(a) * 1e-3, float(b) * 1e-3) for a, b in (sn.get("dropouts_ms") or [])),
                               str(sn.get("dropout_signal") or "load"), _opt(sn, "stale_limit_ms", 1e-3),
-                              float(sn.get("fade_ms") or 0.0) * 1e-3))
+                              float(sn.get("fade_ms") or 0.0) * 1e-3, _hpf_order(dp)))
+
+
+def _hpf_order(dp: dict) -> int:
+    v = dp.get("hpf_order", 1)
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or float(v) not in (1.0, 2.0):
+        raise InputValidationError("damping.hpf_order must be 1 or 2", field="damping.hpf_order")
+    return int(v)
 
 
 def _torque_window(d, n, vdc, lim):
@@ -1485,14 +1496,16 @@ def driveline_stability(body):
     dl = driveline_from_dict(b["driveline"])
     c = b["controller"]
     st = b["stability"]
-    kind = (b["variants"].get("feedback") or {}).get("damping", {}).get("kind", "relative_speed")
-    hpf = (b["variants"].get("feedback") or {}).get("damping", {}).get("hpf_Hz")
+    fbd = (b["variants"].get("feedback") or {}).get("damping", {})
+    kind = fbd.get("kind", "relative_speed")
+    hpf = fbd.get("hpf_Hz")
+    order = _hpf_order(fbd)
     base = Controller(float(c["sample_ms"]) * 1e-3, 0.0, float(c.get("actuator_tau_ms") or 0.0) * 1e-3)
     grid = []
     for Kd in st["Kd_list"]:
         row = []
         for dms in st["delay_ms_list"]:
-            ctl = _rep(base, delay_s=float(dms) * 1e-3, damping=Damping(kind, float(Kd), hpf))
+            ctl = _rep(base, delay_s=float(dms) * 1e-3, damping=Damping(kind, float(Kd), hpf, hpf_order=order))
             e = sampled_eigenvalues(dl, ctl)
             row.append({"Kd": Kd, "delay_ms": dms, "stable": e["stable"], "rho": e["spectral_radius_excl_rigid"],
                         "zeta": e["dominant_zeta"]})

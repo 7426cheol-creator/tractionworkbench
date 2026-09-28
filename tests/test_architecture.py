@@ -28,7 +28,7 @@ LAYERS = {
     **{m: (2, "kernel") for m in ("physics", "solvers")},
     **{m: (3, "engines") for m in ("analysis", "extensions")},
     **{m: (4, "services") for m in ("io", "parsers", "examples", "project", "exchange", "service", "decision", "report",
-                                    "api")},
+                                    "api", "datasheet")},
     **{m: (5, "presentation") for m in ("plots", "viz", "report_pdf", "desktop", "cli", "__main__")},
 }
 UPWARD_ALLOWED: dict[tuple[str, str], str] = {}       # (importer, imported) -> reason

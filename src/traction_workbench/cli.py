@@ -240,6 +240,28 @@ def cmd_project(args):
     return {"OK": 0, "WARNING": 1}.get(res["status"], 2)
 
 
+def cmd_datasheet(args):
+    """Import a datasheet spec (module curves, capacitor, gate dv/dt) into a project: findings, the new section's
+    digest and - with --out - the modified project file (a new revision stays the user's decision)."""
+    from . import datasheet as DS
+    from .project import save_project, short
+    spec, base_dir = DS.load_spec(args.spec)
+    prj = _project(args.project)
+    new, res = DS.apply(prj, spec, base_dir)
+    if args.json:
+        _print_json({"section": res["section"], "digest": new.sections[res["section"]].digest,
+                     "provenance": res["provenance"], "findings": res["findings"], "project": new.identity()})
+    else:
+        print(f"{res['section']}: {res['provenance']['source']} -> digest {short(new.sections[res['section']].digest)}")
+        for f in res["findings"]:
+            print(f"  {f['level']:<8} {f['item']}: {f['detail']}")
+    if args.out:
+        if args.revision:
+            new = new.as_revision(args.revision, args.change or f"datasheet import: {res['provenance']['source']}")
+        print(f"project written to {save_project(new, args.out)} ({new.label})")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="twb", description="Traction engineering feasibility workbench")
     ap.add_argument("--version", action="version", version=f"traction-workbench {__version__}")
@@ -302,6 +324,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("files", nargs="*", help="project file(s); none = the built-in synthetic project")
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_project)
+    p = sub.add_parser("datasheet", help="import a datasheet spec (module curves, capacitor, dv/dt) into a project")
+    p.add_argument("spec", help="datasheet spec JSON (kind: module | capacitor | gate_edges); CSV paths relative to it")
+    p.add_argument("--project", help="project file to import into (default: the built-in synthetic project)")
+    p.add_argument("--out", help="write the modified project here")
+    p.add_argument("--revision", help="make the result a new revision with this name (needs --out)")
+    p.add_argument("--change", help="change note of that revision")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_datasheet)
     p = sub.add_parser("acceptance", help="compare with the golden fixtures")
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_acceptance)

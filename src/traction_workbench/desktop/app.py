@@ -41,7 +41,8 @@ def main(argv=None) -> int:
     app.setOrganizationName("TractionWorkbench")
     settings = QSettings("TractionWorkbench", "TractionWorkbench")
     set_language(args.lang or settings.value("language", "ko"))
-    theme.apply(app, args.theme or settings.value("theme", "light"))
+    # the self-test starts light (deterministic screenshots) and never reads or writes the user's theme
+    theme.apply(app, args.theme or ("light" if args.self_test else settings.value("theme", "light")))
     icon = _icon_path()
     if icon:
         app.setWindowIcon(QIcon(str(icon)))

@@ -20,7 +20,7 @@ EXPECTED = {"ts012_600": "PASS", "ts012_450": "FAIL", "ts012_10s": "UNKNOWN", "r
 
 
 def run_self_test(app, out_dir) -> int:
-    from .main_window import MainWindow
+    from .main_window import PAGE_INFO, MainWindow
     from .worker import TaskRunner
 
     out = Path(out_dir)
@@ -67,11 +67,8 @@ def run_self_test(app, out_dir) -> int:
                 check("pdf_report", pdf.is_file() and pdf.stat().st_size > 50_000, f"{pdf.stat().st_size} bytes")
                 page.tabs.setCurrentIndex(0)
 
-        from .main_window import PAGES
-        rows = {k: i for i, (k, *_rest) in enumerate(PAGES)}
-
         def visit(key, _row, actions, shots):
-            win.nav.setCurrentRow(rows[key])            # rows follow PAGES (pages can be inserted)
+            win.show_page(key)
             pg = win.pages[key]
             for a in actions:
                 getattr(pg, a)() if isinstance(a, str) else a(pg)
@@ -227,7 +224,8 @@ def run_self_test(app, out_dir) -> int:
         shot(win, "49_antijerk_variants")
         dv = (pw_.last_dl or {}).get("variants", {})
         check("antijerk:variants", set(dv) == {"off", "shaping", "feedback", "combined"}
-              and dv["off"]["metrics"]["peak_vehicle_jerk_m_s3"] > dv["combined"]["metrics"]["peak_vehicle_jerk_m_s3"],
+              and dv["off"]["metrics"]["peak_vehicle_jerk_m_s3"] > dv["combined"]["metrics"]["peak_vehicle_jerk_m_s3"]
+              and dv["combined"]["status"] == "FEASIBLE",           # shaping + washout feedback meets the targets
               str({k: v["status"] for k, v in dv.items()}))
         pw_.run_stability()
         shot(win, "50_antijerk_stability")
@@ -274,6 +272,26 @@ def run_self_test(app, out_dir) -> int:
               and win.banners["protection"].property("state") != "stale", win.banners["emi"].text())
         win.state.set_project(builtin_project())
         check("project:restore", win.banners["emi"].property("state") != "stale" and emi_pg.e_td.value() == 1.5)
+        # datasheet import (the example spec: WebPlotDigitizer + long-format CSV) -> the project's module section
+        from .pages.model import examples_dir
+        exd = examples_dir()
+        ds_path = exd / "datasheets" / "module_example.json" if exd else None
+        if ds_path is not None and ds_path.is_file():
+            dlg = pj.import_datasheet(str(ds_path))
+            dlg.resize(1100, 720)
+            dlg.show()
+            app.processEvents()
+            dlg.grab().save(str(out / "18d_datasheet_import.png"))
+            dlg.apply()
+            prov = win.state.project.sections["module"].provenance
+            pw_pg = visit("power", 0, [], [])
+            check("datasheet:module", win.state.project.modified and prov["origin"] == "supplier"
+                  and "EXM-750-820" in pw_pg.m_src.text() and not prov["qualified"], prov.get("source"))
+        else:
+            check("datasheet:module", False, "examples/datasheets not found")
+        win.state.set_project(builtin_project())
+        html = win.page_guide_html()
+        check("guide", all(PAGE_INFO[k]() in html for k in PAGE_INFO) and win.current_page() in PAGE_INFO)
         vv = visit("verification", 8, ["run"], [(None, "19_verification")])
         check("acceptance", "PASS" in vv.summary.text() and "MISMATCH" not in vv.summary.text(), vv.summary.text())
         xp = vv.export_exchange(str(out / "twb_exchange.json"))
@@ -281,7 +299,7 @@ def run_self_test(app, out_dir) -> int:
         check("exchange:package", xj.get("schema") == "twb-exchange/1" and len(xj.get("fixtures", {})) >= 12)
         # flux-map drive: model switch + a decision on the D2 test drive
         win.state.set_drive({"builtin": "MANUFACTURED_FLUX_MAP_TEST_DRIVE"}, "flux map", "builtin")
-        win.nav.setCurrentRow(0)
+        win.show_page("decision")
         page.req_id.setText("FM-20")
         page.torque.setValue(20.0)
         page.speed.setValue(3000.0)
@@ -295,7 +313,7 @@ def run_self_test(app, out_dir) -> int:
         check("decision:flux_map", got in ("PASS", "FAIL", "UNKNOWN") and page.result["record"]["model"]["fidelity"] == "D2", got)
         page.tabs.setCurrentIndex(1)
         shot(win, "20_flux_map_decision")
-        win.set_theme("dark")
+        win.set_theme("dark", persist=False)
         shot(win, "21_dark_theme")
         errs = app.property("twb_errors") or []
         check("no_error_dialogs", not errs, "; ".join(errs))

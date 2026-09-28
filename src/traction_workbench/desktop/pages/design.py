@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QFormLayout, QGroupBox, QScrollArea, QSplitter, QT
 from ...analysis.dominance import capability_dominance, requirement_relaxation
 from ...analysis.sizing import size_parameter
 from ...analysis.variation import PARAMETERS, get_value
+from ...plots.labels import change_kind_label, param_label
 from ...i18n import tr
 from ...plots import figures as F
 from ...scenario import Scenario
@@ -53,7 +54,8 @@ class DesignPage(QWidget):
         v.addWidget(g)
         g = QGroupBox(tr("1-파라미터 역설계", "one-parameter sizing"))
         f = QFormLayout(g)
-        self.param = combo([(f"{k}  ({v[0]}, {v[1]})", k) for k, v in PARAMETERS.items()], "Vdc_V")
+        self.param = combo([(f"{param_label(k)} [{v[1]}] · {change_kind_label(v[0])}", k) for k, v in PARAMETERS.items()],
+                           "Vdc_V")
         self.param.currentIndexChanged.connect(self._param_changed)
         self.lo = number(400, -1e9, 1e9, "", 6, 10)
         self.hi = number(800, -1e9, 1e9, "", 6, 10)
@@ -118,7 +120,7 @@ class DesignPage(QWidget):
     def _param_changed(self, *_):
         key = self.param.currentData()
         kind, unit, text = PARAMETERS[key]
-        self.kind_hint.setText(f"{kind} · {unit} · {text}")
+        self.kind_hint.setText(f"{change_kind_label(kind)} · {unit} · {text}")
         s = self.win.state
         try:
             base = get_value(s.drive, Scenario("p", self.n.value(), self.vdc.value(), s.limits), key)

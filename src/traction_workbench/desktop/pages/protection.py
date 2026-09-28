@@ -130,7 +130,10 @@ class ProtectionPage(QWidget):
                        (tr("정상 리플 주파수", "normal ripple frequency"), self.rip_f),
                        (tr("경고 후 필요 시간", "time needed after warning"), self.warn_need),
                        ("", self.tight), (tr("독립 HW 경로 (선언)", "independent HW path (declared)"), self.hw)):
-            f.addRow(lab, w)
+            if lab:
+                f.addRow(lab, w)
+            else:
+                f.addRow(w)                          # a label-less check box spans the form (never widens the panel)
         v.addWidget(g)
         self.run_btn = primary_button(tr("보호 검토 실행", "run protection review"))
         self.run_btn.clicked.connect(self.run)
@@ -174,7 +177,10 @@ class ProtectionPage(QWidget):
         for lab, w, text, val in zip(self.plabels, (self.x0, self.p1, self.p2, self.p3, self.p4, self.p5), labels, vals):
             lab.setText(text)
             w.setValue(val)
-            w.setEnabled(text != "—")
+            used = text != "—"                         # a parameter this plant kind does not have: hidden, not "—"
+            w.setEnabled(used)
+            lab.setVisible(used)
+            w.setVisible(used)
         se, th = ex["sensor"], ex["thresholds"]
         self.gain.setValue(se["gain_error_pct"])
         self.offset.setValue(se["offset"])

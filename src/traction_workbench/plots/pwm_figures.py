@@ -78,10 +78,13 @@ def fig_pwm_policies(fig, res: dict, title: str | None = None):
                          fontsize=6.5, color=t["fg"])
         if not p["admissible"]:
             ax2.annotate("✗", (x[i], inv[i] / 2), ha="center", fontsize=14, color="#cf222e")
+    tops = [a + b + c for a, b, c in zip(inv, hcu, fe) if np.isfinite(a + b + c)]
+    if tops:                                         # head room: the per-bar notes stay inside the axes, under the title
+        ax2.set_ylim(0, max(tops) * 1.6)
     ax2.set_xticks(x)
     ax2.set_xticklabels([n.replace(" ", "\n", 1) for n in names], fontsize=7)
     ax2.set_ylabel(tr("궤적 에너지 [kJ]", "trajectory energy [kJ]"))
-    ax2.legend(fontsize=6.5, loc="lower right")
+    ax2.legend(fontsize=6.5, loc="upper left", framealpha=0.95)
     ax2.set_title(tr("에너지 (인버터 개선 ≠ 모터+인버터 개선)", "energy (inverter gain ≠ motor+inverter gain)"), fontsize=9)
     # utilisation of the mandatory limits
     lim = res["limits"]
@@ -98,7 +101,7 @@ def fig_pwm_policies(fig, res: dict, title: str | None = None):
         ax3.bar(np.arange(len(items)) + (i - (len(pols) - 1) / 2) * w, vals, w, color=_pc(i, t), alpha=0.8,
                 label=p["policy"]["name"])
     ax3.axhline(1.0, color="#cf222e", lw=1.2, ls="--")
-    ax3.set_ylim(0, max(1.2, ax3.get_ylim()[1] * 1.05))
+    ax3.set_ylim(0, max(1.2, ax3.get_ylim()[1] * 1.45))     # head room: legend and note above the tallest bar
     ax3.set_xticks(np.arange(len(items)))
     ax3.set_xticklabels([it[0] for it in items], fontsize=7.5)
     ax3.set_ylabel(tr("한도 사용률 (>1 위반)", "limit utilisation (>1 violates)"))

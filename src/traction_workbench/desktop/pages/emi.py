@@ -139,12 +139,13 @@ class EmiPage(QWidget):
                 ("R_y_mohm", "R_y", "mΩ", 1.0), ("C_par_nF", tr("스위치노드·모터·케이블→섀시 C", "switch node / motor / cable C"), "nF", 0.1),
                 ("R_par_ohm", "R_par", "Ω", 0.1), ("L_par_nH", "L_par", "nH", 10.0),
                 ("R_h_mohm", tr("하네스 R (라인당)", "harness R (per line)"), "mΩ", 1.0), ("L_h_uH", tr("하네스 L (라인당)", "harness L (per line)"), "µH", 0.1),
-                ("L_ch_uH", tr("CM 초크 L (0=없음)", "CM choke L (0 = none)"), "µH", 10.0), ("k_ch", tr("초크 결합 k", "choke coupling k"), "", 0.01),
+                ("L_ch_uH", tr("CM 초크 L", "CM choke L"), "µH", 10.0), ("k_ch", tr("초크 결합 k", "choke coupling k"), "", 0.01),
                 ("an_L_uH", "AN L", "µH", 1.0), ("an_R_meas_ohm", tr("AN 측정 R", "AN measuring R"), "Ω", 1.0),
                 ("an_C_coup_nF", tr("AN 결합 C", "AN coupling C"), "nF", 10.0), ("an_C_sup_uF", tr("AN 전원측 C", "AN supply C"), "µF", 0.1),
                 ("R_bat_mohm", tr("전원 R", "source R"), "mΩ", 1.0))
         for key, lab, unit, step in spec:
-            w = number(float(nw[key]), 0, 1e7, unit, 4 if step < 0.1 else 3, step)
+            w = number(float(nw[key]), 0, 1e7, unit, 4 if step < 0.1 else 3, step,
+                       special=tr("없음", "none") if key == "L_ch_uH" else None)
             self.net[key] = w
             f.addRow(lab, w)
         self.e_valid_on = check(tr("검증된 최고 주파수 선언", "declare the validated upper frequency"), False)
