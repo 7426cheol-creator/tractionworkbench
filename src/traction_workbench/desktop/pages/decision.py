@@ -488,7 +488,12 @@ class DecisionPage(QWidget):
         rec = self.result["record"]
         path, _ = QFileDialog.getSaveFileName(self, tr("Markdown 저장", "save Markdown"), f"{rec['record_id']}.md", "Markdown (*.md)")
         if path:
-            Path(path).write_text(rec["markdown"], encoding="utf-8")
+            md = rec["markdown"]
+            if rec.get("project_context"):                      # the product data it was computed from (R2)
+                from ...report_pdf import project_line
+                md += "\n\n## " + tr("프로젝트 (제품 데이터)", "Project (product data)") + "\n\n" + \
+                    project_line(rec["project_context"]) + "\n"
+            Path(path).write_text(md, encoding="utf-8")
 
     def _save_pdf(self):
         rec = self.result["record"]

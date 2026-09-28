@@ -364,6 +364,7 @@ class ThermalModelEditor(QWidget):
         for w in (self.validated, self.v_temp, self.v_flow):
             w.toggled.connect(self.changed)
         self.coolant_spec: dict | None = None
+        self.reset_source = None          # () -> spec of the active project (set by the thermal page)
         self.load(api.EXAMPLE_THERMAL)
 
     def _close_tab(self, i):
@@ -409,7 +410,7 @@ class ThermalModelEditor(QWidget):
         self.changed.emit()
 
     def reset(self):
-        self.load(api.EXAMPLE_THERMAL)
+        self.load(self.reset_source() if self.reset_source else api.EXAMPLE_THERMAL)
 
     def spec(self) -> dict:
         nodes = [self.tabs.widget(i).spec() for i in range(self.tabs.count())]

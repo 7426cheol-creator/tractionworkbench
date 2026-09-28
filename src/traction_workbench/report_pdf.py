@@ -82,6 +82,14 @@ def _fig(pdf, fn, *args, size=A4_L, **kwargs):
     pdf.savefig(fig)
 
 
+def project_line(pc: dict) -> str:
+    """The product data a record was computed from (project data package, R2), in one line."""
+    secs = ", ".join(f"{n} {(d or '-')[:12]}" for n, d in (pc.get("sections") or {}).items())
+    edits = ", ".join(pc.get("local_edits") or []) or tr("없음", "none")
+    return (f"{tr('프로젝트', 'project')} {pc.get('project_label')} (digest {(pc.get('project_digest') or '-')[:12]}) · "
+            f"{secs} · {tr('로컬 변경', 'local edits')}: {edits}")
+
+
 def build_pdf(path, record: dict, rec=None, case=None, progress=None, envelope: bool = True) -> Path:
     """Write the report; ``rec``/``case`` (objects from ``service.evaluate_case_full``) enable the graphs."""
     prog = progress or (lambda f, m="": None)
@@ -136,6 +144,9 @@ def build_pdf(path, record: dict, rec=None, case=None, progress=None, envelope: 
         pg.text(f"record {record['record_id']} · input SHA-256 {record['input_sha256']} · software "
                 f"{record['software']['version']} · {_dt.datetime.now().isoformat(timespec='seconds')}", size=7.5,
                 color="#57606a", width=130)
+        pc = record.get("project_context")
+        if pc:
+            pg.text(project_line(pc), size=7.5, color="#57606a", width=130)
         pg.flush()
 
         if rec is not None and case is not None:

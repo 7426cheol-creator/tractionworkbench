@@ -111,6 +111,8 @@ class ThermalPage(QWidget):
         self.p_net = PlotPanel(min_height=420)
         self.p_zth = PlotPanel()
         self.editor = ThermalModelEditor()
+        self.editor.reset_source = lambda: self.win.state.example("THERMAL")
+        self.editor.load(self.win.state.example("THERMAL"))
         self.tabs.addTab(res, tr("결과", "results"))
         net_scroll = QScrollArea()
         net_scroll.setWidgetResizable(True)
@@ -326,6 +328,11 @@ class ThermalPage(QWidget):
                          fmt(r["torque_Nm"]), r["limited_by"]))
         self.table.set_rows(rows)
         self._refresh_diagrams()
+
+    def apply_project(self, _project=None):
+        """Thermal networks and cooling system of the active project."""
+        self.editor.load(self.win.state.example("THERMAL"))
+        self._apply_coolant_spec(self.editor.coolant_spec)
 
     def redraw(self):
         for p in (self.plot, self.p_net, self.p_zth):

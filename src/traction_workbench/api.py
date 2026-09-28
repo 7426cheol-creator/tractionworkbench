@@ -33,6 +33,16 @@ from .status import Claim, Reason, Status
 from .solvers.policy import PolicyEvaluator
 from .analysis.dominance import capability_dominance, requirement_relaxation
 from .analysis.sizing import size_parameter
+from .project import builtin_project
+
+# ---------------------------------------------------------------------------------------------- product data (R2)
+# Every page example takes its PRODUCT data - the module and its thermal path, the DC-link capacitor, the controller
+# (switching frequency, modulation, dead time, gate edges, current loop, timing, sensing, torque path), the gearbox,
+# the thermal networks, the FTTI chain and the EMI set-up - from ONE built-in synthetic project
+# (examples.SYNTHETIC_PROJECT, validated by project.Project).  Only scenario inputs (operating points, missions,
+# requirements, study variants) are defined with each example below.
+PROJECT = builtin_project()
+_CTRL = PROJECT.data("controller")
 
 PRESETS = [
     {"key": "ts012_600", "title": {"ko": "REQ-TS-012 · 600 V", "en": "REQ-TS-012 · 600 V"},
@@ -67,39 +77,9 @@ PRESETS = [
      "req": {"id": "REQ-ST-300", "text": "정지 상태 300 N·m", "torque_Nm": 300, "speed_rpm": 0, "Vdc_V": 600}},
 ]
 
-EXAMPLE_TIMING = {
-    "chain_id": "FC-OC-01", "fault": "phase overcurrent", "ftti_ms": 30, "detection_event": "confirmed",
-    "fdti_budget_ms": 10, "frti_budget_ms": 15, "safe_event": "safe_state", "endpoint_kind": "physical_safe_state",
-    "worst_case_attainable": False,
-    "events": ["fault", "sensed", "filtered", "detected", "confirmed", "reaction_request", "gate_off", "safe_state"],
-    "items": [
-        {"id": "HW_SENSE", "from": "fault", "to": "sensed", "owner": "HW", "min_ms": 0.2, "max_ms": 0.5},
-        {"id": "ADC_FILTER", "from": "sensed", "to": "filtered", "owner": "SW", "min_ms": 0.5, "max_ms": 1.0, "period_ms": 0.1},
-        {"id": "DETECT", "from": "filtered", "to": "detected", "owner": "SW", "min_ms": 1.0, "max_ms": 2.0, "period_ms": 1.0},
-        {"id": "DEBOUNCE", "from": "detected", "to": "confirmed", "owner": "SW", "min_ms": 5.0, "max_ms": 5.0},
-        {"id": "SW_REACT", "from": "confirmed", "to": "reaction_request", "owner": "SW", "min_ms": 2.0, "max_ms": 10.0},
-        {"id": "SYS_FRTI", "from": "confirmed", "to": "safe_state", "owner": "System", "max_ms": 20.0},
-        {"id": "GATE", "from": "reaction_request", "to": "gate_off", "owner": "HW", "min_ms": 0.1, "max_ms": 0.2},
-        {"id": "DECAY", "from": "gate_off", "to": "safe_state", "owner": "HW", "min_ms": 1.0, "max_ms": 3.0},
-    ],
-}
+EXAMPLE_TIMING = PROJECT.ftti_chain(0)
 
-EXAMPLE_THERMAL = {
-    "model_id": "EXAMPLE_THERMAL_UNVALIDATED", "revision": "2", "validated": False, "origin": "synthetic",
-    "validation_evidence": "",
-    "source": "synthetic example networks for demonstration (not a product model)",
-    "coolant": {"glycol_vol_pct": 50.0, "flow_L_per_min": 10.0, "cp_J_per_kgK": None, "rho_kg_per_m3": None,
-                "reference": "mean", "loop": DEFAULT_LOOP},
-    "nodes": [
-        {"id": "inverter junction (1 of 6 switches)", "network": "foster",
-         "R_K_per_W": [0.010, 0.030, 0.080, 0.080], "tau_s": [0.002, 0.03, 0.4, 2.5],
-         "flow_dependent": [False, False, False, True], "flow_ref_L_per_min": 10.0, "flow_exponent": 0.8,
-         "limit_C": 150, "loss_share": {"inverter": 1 / 6}, "station": "inverter"},
-        {"id": "stator winding (hot spot)", "network": "cauer",
-         "R_K_per_W": [0.003, 0.005, 0.006], "C_J_per_K": [1500.0, 6000.0, 30000.0],
-         "limit_C": 180, "loss_share": {"copper": 1.0}, "station": "motor"},
-    ],
-}
+EXAMPLE_THERMAL = PROJECT.thermal_spec()
 
 
 def _drive(body):
@@ -272,7 +252,8 @@ def thermal(body):
 EXAMPLE_PROTECTION = {
     "name": "OV after battery disconnect during regeneration (synthetic toy values from the review, section 9.6.1)",
     "variable": "DC-link capacitor voltage", "unit": "V",
-    "plant": {"kind": "capacitor_energy", "x0": 700.0, "C_uF": 500.0, "P0_kW": 100.0, "t_ramp_ms": 0.0},
+    "plant": {"kind": "capacitor_energy", "x0": 700.0, "C_uF": PROJECT.data("dc_link")["C_uF"], "P0_kW": 100.0,
+              "t_ramp_ms": 0.0},
     "sensor": {"gain_error_pct": 0.0, "offset": 5.0, "tau_filter_ms": 0.0, "period_ms": 0.01, "phase_ms": 0.0,
                "confirm_samples": 2, "exec_delay_ms": 0.0, "comparator": ">="},
     "thresholds": {"warning": 725.0, "fault": 738.5, "release": 720.0, "E_theta": 3.0},
@@ -360,29 +341,7 @@ def protection(body):
                       "phase_rows": rv["phase_sweep"]["rows"], "trace": trace, "note": rv["note"]})
 
 
-def _lin_curve(unit, temps, i_max, a_by_t, b_by_t, n=9):
-    cur = [round(i_max * k / (n - 1), 6) for k in range(n)]
-    return {"unit": unit, "temps_C": list(temps), "currents_A": cur,
-            "values": [[round(a + b * i, 6) for i in cur] for a, b in zip(a_by_t, b_by_t)],
-            "source": "synthetic example curve (not a product datasheet)"}
-
-
-EXAMPLE_MODULE = {
-    "name": "synthetic 750 V / 800 A IGBT half-bridge example (NOT a real product - replace with datasheet curves)",
-    "technology": "IGBT", "value_kind": "typical", "energy_basis": "per_device", "v_test_V": 600.0,
-    "source": "synthetic example for demonstration; curves are linear stand-ins",
-    "test_conditions": {"Rg_on_ohm": 1.8, "Rg_off_ohm": 1.8, "Vge_V": 15.0, "deadtime_test_us": 1.5,
-                        "stray_L_nH": 20.0},
-    "curves": {
-        "v_on": _lin_curve("V", (25.0, 150.0), 800.0, (0.80, 0.70), (1.10e-3, 1.60e-3)),
-        "v_rev": _lin_curve("V", (25.0, 150.0), 800.0, (0.90, 0.80), (1.00e-3, 1.30e-3)),
-        "e_on": _lin_curve("mJ", (25.0, 150.0), 800.0, (0.3, 0.5), (0.034, 0.045)),
-        "e_off": _lin_curve("mJ", (25.0, 150.0), 800.0, (0.4, 0.6), (0.040, 0.050)),
-        "e_rr": _lin_curve("mJ", (25.0, 150.0), 800.0, (0.2, 0.3), (0.015, 0.022)),
-    },
-    "fsw_kHz": 10.0, "modulation": "svpwm", "deadtime_us": 1.5, "parallel": 1, "sharing_error_pct": 0.0,
-    "driver_aux_W": 12.0, "aux_from_hv_dc": False, "Tj_eval_C": 150.0, "Rth_K_per_W": 0.09, "T_ref_C": 65.0,
-}
+EXAMPLE_MODULE = PROJECT.module_spec()
 
 
 def module_losses(body):
@@ -456,12 +415,8 @@ def module_losses(body):
 
 
 EXAMPLE_RIPPLE = {
-    "capacitor": {"C_uF": 500.0, "ESL_nH": 15.0, "Rth_K_per_W": 0.35, "T_ref_C": 65.0, "T_valid_C": [-40.0, 105.0],
-                  "ESR_table": [[100.0, 3.0], [1e3, 2.0], [1e4, 1.6], [1e5, 1.8], [1e6, 3.0]],
-                  "ESR_unit": "mohm", "life_hours_table": [], "life_voltage_V": None, "life_basis": "",
-                  "source": "synthetic film-capacitor bank example (not a product)"},
-    "source": {"R_mohm": 25.0, "L_uH": 2.0, "basis": "example battery + harness impedance (not measured)"},
-    "fsw_kHz": 10.0, "modulation": "svpwm",
+    "capacitor": PROJECT.capacitor(), "source": PROJECT.source_impedance(),
+    "fsw_kHz": _CTRL["fsw_kHz"], "modulation": _CTRL["modulation"],
     "requirement": {"location": "dc_link_bus", "quantity": "voltage_pp", "limit": 15.0, "bandwidth_Hz": 50e3,
                     "note": "example requirement; a real one needs the customer's measurement definition"},
 }
@@ -540,11 +495,9 @@ EXAMPLE_MISSION = {
                  {"duration_s": 6.0, "speed_rpm": 1000.0, "torque_Nm": 300.0},
                  {"duration_s": 25.0, "speed_rpm": 8000.0, "torque_Nm": 40.0}],
     "repeat_in_trace": 3, "dt_s": 0.05, "Vdc_V": 600.0, "coolant_C": 65.0,
-    "junction_network": {"R_K_per_W": [f * EXAMPLE_MODULE["Rth_K_per_W"] for f in (0.12, 0.29, 0.35, 0.24)],
-                         "tau_s": [0.005, 0.08, 0.8, 6.0],
-                         "note": "synthetic junction-to-coolant Foster network of the example module: its steady "
-                                 "sum is the module's Rth (the same thermal path as the efficiency / PWM pages); "
-                                 "used for every die unless junction_networks names the die's role"},
+    "junction_network": {**PROJECT.junction_network(),
+                         "note": PROJECT.junction_network()["note"] + "; used for every die unless "
+                                                                      "junction_networks names the die's role"},
     "junction_networks": None,
     "mission_kind": "finite",
     "cycling_model": None, "D_allow": None, "mission_repeats": 1.0, "ton_rule": "none", "cutoff_K": 0.0,
@@ -744,7 +697,7 @@ EXAMPLE_OEW = {
                  "limits_A": {"discharge_power_max_W": 250e3, "charge_power_max_W": 150e3,
                               "discharge_current_max_A": INF, "charge_current_max_A": INF},
                  "limits_B": None, "basis": "synthetic OEW example: two bridges of the example module on one bus"},
-    "speed_rpm": 10000.0, "torque_Nm": 150.0, "use_module": True, "fsw_kHz": 10.0, "carrier_shift": 0.0,
+    "speed_rpm": 10000.0, "torque_Nm": 150.0, "use_module": True, "fsw_kHz": _CTRL["fsw_kHz"], "carrier_shift": 0.0,
     # the example module was characterised at 600 V: the 400 V bridges need a declared switching-energy scaling
     "module": {**EXAMPLE_MODULE, "vdc_scaling": {"exponent": 1.0, "valid_V": [300.0, 700.0],
                                                  "basis": "synthetic example assumption E ~ V (replace with measured "
@@ -914,14 +867,8 @@ def hev_planetary(body):
 
 EXAMPLE_EMI = {
     "speed_rpm": 6000.0, "torque_Nm": 150.0, "Vdc_V": 600.0,
-    "source": {"fsw_kHz": 10.0, "t_rise_ns": 50.0, "t_fall_ns": 50.0, "t_dead_us": 1.0, "modulation": "svpwm",
-               "carrier": "asynchronous", "min_pulse_us": 0.0, "min_pulse_policy": "none",
-               "basis": "example gate setting (not a measured switch-node waveform)"},
-    "network": {"C_dc_uF": 500.0, "ESR_dc_mohm": 1.0, "ESL_dc_nH": 15.0, "C_y_nF": 100.0, "L_y_nH": 10.0,
-                "R_y_mohm": 5.0, "C_par_nF": 2.0, "R_par_ohm": 1.0, "L_par_nH": 100.0, "R_h_mohm": 5.0, "L_h_uH": 1.0,
-                "L_ch_uH": 0.0, "k_ch": 0.0, "an_L_uH": 5.0, "an_C_coup_nF": 100.0, "an_R_meas_ohm": 50.0,
-                "an_R_par_ohm": 1000.0, "an_C_sup_uF": 1.0, "R_bat_mohm": 10.0, "L_bat_uH": 0.0,
-                "validated_up_to_MHz": None, "basis": "synthetic example network (not characterised)"},
+    "source": PROJECT.emi_source(),
+    "network": PROJECT.emi_network(),
     "profile": {"standard": "EXAMPLE (enter the standard)", "edition": "EXAMPLE", "customer_revision": "EXAMPLE",
                 "curve_id": "EXAMPLE-FLAT-70", "port": "HV+ / HV-", "method": "voltage_AN",
                 "detector": "peak", "rbw_Hz": 9000.0, "network": "AN 5 uH / 50 ohm (declare per your standard)",
@@ -1023,30 +970,9 @@ def emi_oew(body):
 
 # ------------------------------------------------------------------ efficiency by boundary (module-efficiency addendum)
 
-EXAMPLE_MODULE_SIC = {
-    "name": "synthetic 750 V / 800 A SiC MOSFET half-bridge example (NOT a real product - replace with datasheet curves)",
-    "technology": "SiC_MOSFET", "value_kind": "typical", "energy_basis": "per_device", "v_test_V": 600.0,
-    "source": "synthetic example for demonstration; curves are linear stand-ins",
-    "test_conditions": {"Rg_on_ohm": 2.5, "Rg_off_ohm": 1.0, "Vgs_on_V": 18.0, "Vgs_off_V": -4.0,
-                        "deadtime_test_us": 0.3, "stray_L_nH": 12.0},
-    "curves": {
-        "v_on": _lin_curve("V", (25.0, 150.0), 800.0, (0.0, 0.0), (1.60e-3, 2.60e-3)),
-        "v_channel_rev": _lin_curve("V", (25.0, 150.0), 800.0, (0.0, 0.0), (1.65e-3, 2.70e-3)),
-        "v_rev": _lin_curve("V", (25.0, 150.0), 800.0, (2.90, 2.60), (1.30e-3, 1.50e-3)),
-        "e_on": _lin_curve("mJ", (25.0, 150.0), 800.0, (0.05, 0.08), (0.012, 0.014)),
-        "e_off": _lin_curve("mJ", (25.0, 150.0), 800.0, (0.03, 0.04), (0.006, 0.007)),
-        "e_rr": _lin_curve("mJ", (25.0, 150.0), 800.0, (0.01, 0.02), (0.0008, 0.0012)),
-    },
-    "fsw_kHz": 10.0, "modulation": "svpwm", "deadtime_us": 0.3, "parallel": 1, "sharing_error_pct": 0.0,
-    "driver_aux_W": 14.0, "aux_from_hv_dc": False, "Tj_eval_C": 150.0, "Rth_K_per_W": 0.12, "T_ref_C": 65.0,
-}
+EXAMPLE_MODULE_SIC = PROJECT.module_spec("sic")
 
-EXAMPLE_REDUCER = {
-    "ratio": 9.0, "output_boundary": "single-speed gearbox output shaft (differential input)",
-    "speed_rpm": [0.0, 16000.0], "torque_Nm": [0.0, 400.0], "oil_temp_C": [20.0, 120.0],
-    "eta_forward": 0.975, "eta_reverse": 0.970, "drag_coeffs": [0.15, 2.0e-4, 0.0],
-    "basis": "synthetic example (declare supplier map / directional test data)",
-}
+EXAMPLE_REDUCER = PROJECT.reducer()
 
 EXAMPLE_EFFICIENCY = {
     "speed_rpm": 6000.0, "torque_Nm": 150.0, "Vdc_V": 600.0, "loss_model": "module", "module": EXAMPLE_MODULE,
@@ -1064,7 +990,7 @@ EXAMPLE_EFFICIENCY = {
                              {"duration_s": 6.0, "speed_rpm": 800.0, "torque_Nm": -40.0},
                              {"duration_s": 15.0, "speed_rpm": 0.0, "torque_Nm": 0.0},
                              {"duration_s": 30.0, "speed_rpm": 11000.0, "torque_Nm": 30.0}]},
-    "compare": {"mode": "fixed_policy", "common_fsw_kHz": 10.0, "coolant_C": 65.0,
+    "compare": {"mode": "fixed_policy", "common_fsw_kHz": _CTRL["fsw_kHz"], "coolant_C": 65.0,
                 "A": {"label": "IGBT design", "module": EXAMPLE_MODULE, "Rth_K_per_W": EXAMPLE_MODULE["Rth_K_per_W"],
                       "loss_error_rel": 0.10,
                       "error_basis": "example engineering budget - replace with DPT / holdout evidence "
@@ -1217,9 +1143,9 @@ def module_compare(body):
 # ------------------------------------------------------------------ variable PWM (variable-PWM / anti-jerk addendum)
 
 EXAMPLE_PWM = {
-    "module": EXAMPLE_MODULE, "Rth_K_per_W": EXAMPLE_MODULE["Rth_K_per_W"], "coolant_C": 65.0, "modulation": "svpwm",
-    "L_hf_uH": 200.0,
-    "baseline_fsw_kHz": 10.0,
+    "module": EXAMPLE_MODULE, "Rth_K_per_W": EXAMPLE_MODULE["Rth_K_per_W"], "coolant_C": 65.0,
+    "modulation": _CTRL["modulation"], "L_hf_uH": 200.0,
+    "baseline_fsw_kHz": _CTRL["fsw_kHz"],
     "min_dwell_s": 0.5, "hysteresis": {"speed_rpm": 300.0, "torque_abs_Nm": 10.0, "sensor_temp_C": 3.0},
     "schedules": [
         {"name": "light-load 8 kHz", "revision": "A", "basis": "example schedule (declare the target policy)",
@@ -1235,17 +1161,7 @@ EXAMPLE_PWM = {
                  {"duration_s": 30.0, "speed_rpm": 11000.0, "torque_Nm": 40.0, "Vdc_V": 600.0, "sensor_temp_C": 74.0},
                  {"duration_s": 10.0, "speed_rpm": 5000.0, "torque_Nm": -100.0, "Vdc_V": 600.0, "sensor_temp_C": 73.0},
                  {"duration_s": 15.0, "speed_rpm": 3000.0, "torque_Nm": 280.0, "Vdc_V": 600.0, "sensor_temp_C": 93.0}],
-    "timing": {"sample_to_latch_us": 25.0, "filter_delay_us": 5.0, "updates_per_period": 1,
-               "modulator_delay_fraction": 0.5, "min_pulse_us": 1.5, "wcet_source": "declared estimate",
-               "basis": "example target timing (replace with the measured delay chain of the ECU)"},
-    "loop": {"Ld_uH": 200.0, "Lq_uH": 400.0, "R_mohm": 15.0, "bandwidth_Hz": 450.0, "gain_mapping": "continuous",
-             "reference_fsw_kHz": 10.0, "integrator_storage": "output", "on_transition": "keep", "anti_windup": True,
-             "basis": "example PI per axis, pole-zero cancellation at the declared design L_d / L_q (the plant is the machine's differential inductance at each operating point); bandwidth chosen for >= 45 deg SAMPLED-loop margin at the lowest normal update rate (8 kHz)"},
-    "sensing": {"kind": "leg_shunt", "settle_us": 2.0, "aperture_us": 0.6, "sample_points": "valley",
-                "edge_noise": "own_leg", "reconstruct_from_two": True, "channel_skew_ns": 200.0,
-                "invalid_policy": "hold", "max_sample_age_us": 150.0, "current_error_max_A": 15.0,
-                "basis": "example: three Kelvin-connected low-side shunts, simultaneous sampling ADCs, the other legs' "
-                         "edges assumed outside the aperture - replace with the target trigger / ADC timing"},
+    "timing": _CTRL["timing"], "loop": _CTRL["current_loop"], "sensing": _CTRL["sensing"],
     "measurement_noise": {"speed_rpm": 20.0, "torque_abs_Nm": 4.0, "sensor_temp_C": 1.0, "Vdc_V": 10.0,
                           "basis": "example peak-to-peak noise of the schedule inputs (declare the measured values)"},
     "harmonic": {"f_Hz": [0.0, 1e3, 5e3, 10e3, 20e3, 50e3, 1e5, 3e5, 1e6, 3e6],
@@ -1256,7 +1172,8 @@ EXAMPLE_PWM = {
                    "phase_margin_min_deg": 45.0, "pulse_ratio_min": 10.0, "transition_excursion_max_A": 50.0,
                    "not_applicable": []},
     "use_capacitor": True,
-    "transition": {"from_kHz": 10.0, "to_kHz": 20.0, "duty": 0.9, "deadtime_us": 1.0, "write_fraction": 0.3},
+    "transition": {"from_kHz": _CTRL["fsw_kHz"], "to_kHz": 20.0, "duty": 0.9, "deadtime_us": _CTRL["deadtime_us"],
+                   "write_fraction": 0.3},
     "note": "example schedule, timing, harmonic data and limits are synthetic",
 }
 
@@ -1444,16 +1361,11 @@ def pwm_ripple(body):
 # ------------------------------------------------------------------ anti-jerk / active damping (P1-DAMP)
 
 EXAMPLE_DRIVELINE = {
-    "driveline": {"Jm_kgm2": 0.04, "J_out_kgm2": 200.0, "k_out_Nm_per_rad": 12000.0, "c_out_Nms_per_rad": 30.0,
-                  "ratio": 9.0, "wheel_radius_m": 0.33, "contact": "maintained", "backlash_out_rad": None,
-                  "basis": "synthetic two-inertia ROM (1800 kg, r 0.33 m, two half-shafts) - replace with an "
-                           "FRF-identified / validated torsional model"},
+    "driveline": PROJECT.driveline_rom(),
     "maneuver": {"T0_Nm": 20.0, "T1_Nm": 150.0, "t_step_s": 0.05, "t_end_s": 1.2, "speed_rpm": 2000.0,
                  "Vdc_V": 600.0, "TL_out_Nm": 0.0, "window": "capability", "emergency_t_s": None,
                  "emergency_T_Nm": None},
-    "controller": {"sample_ms": 1.0, "delay_ms": 2.0, "actuator_tau_ms": 1.5,
-                   "basis": "example timing / current-loop ROM (replace with the target delay chain and a "
-                            "validated torque response)"},
+    "controller": PROJECT.torque_path(),
     "variants": {"off": {},
                  "shaping": {"shaper": {"kind": "rate", "rate_Nm_per_s": 1500.0}},
                  "feedback": {"damping": {"kind": "motor_speed_hpf", "Kd_Nms_per_rad": 1.5, "hpf_Hz": 2.0}},
@@ -1714,6 +1626,69 @@ def concept_sizing(body):
            _opt(b, "n_max_rpm"), _opt(b, "tip_speed_limit_m_s"))
     r["basis"] = b.get("basis", "")
     return _jsonable(r)
+
+
+EXAMPLE_NAMES = ("TIMING", "THERMAL", "PROTECTION", "PROTECTION_OT", "MODULE", "MODULE_SIC", "RIPPLE", "ASC",
+                 "MISSION", "OEW", "HEV", "EMI", "REDUCER", "EFFICIENCY", "PWM", "DRIVELINE", "MACHINE", "WINDING",
+                 "SIZING")
+
+
+def _product(name: str, prj, ex: dict) -> dict:
+    """Example ``name`` with the product data of project ``prj`` (scenario inputs stay).  Raises
+    InputValidationError when the project lacks a section the example needs - the caller decides, never a silent mix
+    of two products."""
+    if name == "TIMING":
+        return prj.ftti_chain(0)
+    if name == "THERMAL":
+        return prj.thermal_spec()
+    if name == "MODULE":
+        return prj.module_spec()
+    if name == "MODULE_SIC":
+        return prj.module_spec(prj.first_alternative())
+    if name == "REDUCER":
+        return prj.reducer()
+    if name == "PROTECTION":
+        ex["plant"]["C_uF"] = prj.data("dc_link")["C_uF"]
+    elif name == "RIPPLE":
+        c = prj.data("controller")
+        ex.update(capacitor=prj.capacitor(), source=prj.source_impedance(), fsw_kHz=c["fsw_kHz"],
+                  modulation=c["modulation"])
+    elif name == "MISSION":
+        jn = prj.junction_network()
+        ex["junction_network"] = None if jn is None else {
+            **jn, "note": jn["note"] + "; used for every die unless junction_networks names the die's role"}
+    elif name == "OEW":
+        ex["fsw_kHz"] = prj.data("controller")["fsw_kHz"]
+        ex["module"] = {**prj.module_spec(), "vdc_scaling": ex["module"]["vdc_scaling"]}
+    elif name == "EMI":
+        ex["source"], ex["network"] = prj.emi_source(), prj.emi_network()
+    elif name == "EFFICIENCY":
+        c = prj.data("controller")
+        ex["module"], ex["reducer"] = prj.module_spec(), prj.reducer()
+        cmp = ex["compare"]
+        cmp["common_fsw_kHz"] = c["fsw_kHz"]
+        cmp["A"].update(module=ex["module"], Rth_K_per_W=ex["module"]["Rth_K_per_W"])
+        alt = prj.first_alternative()
+        b = prj.module_spec(alt)
+        cmp["B"].update(module=b, Rth_K_per_W=b["Rth_K_per_W"], label=dict(prj.alternative_keys())[alt])
+    elif name == "PWM":
+        c = prj.data("controller")
+        m = prj.module_spec()
+        ex.update(module=m, Rth_K_per_W=m["Rth_K_per_W"], modulation=c["modulation"], baseline_fsw_kHz=c["fsw_kHz"],
+                  timing=c["timing"], loop=c["current_loop"], sensing=c["sensing"])
+        ex["transition"].update(from_kHz=c["fsw_kHz"], deadtime_us=c["deadtime_us"])
+    elif name == "DRIVELINE":
+        ex["driveline"], ex["controller"] = prj.driveline_rom(), prj.torque_path()
+    return ex
+
+
+def example(name: str, project=None) -> dict:
+    """A copy of page example ``name`` (see EXAMPLE_NAMES), with the product data of ``project`` when given."""
+    import copy as _copy
+    if name not in EXAMPLE_NAMES:
+        raise InputValidationError(f"unknown example {name!r}", field="example")
+    ex = _copy.deepcopy(globals()[f"EXAMPLE_{name}"])
+    return ex if project is None else _product(name, project, ex)
 
 
 def acceptance(body):

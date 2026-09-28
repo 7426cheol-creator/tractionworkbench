@@ -315,6 +315,26 @@ def test_desktop_smoke(tmp_path):
         ep = win.pages["emi"]
         ep.run()
         assert ep.last is not None and ep.last["claim"]["status"] == "UNKNOWN"      # screening is never a pass
+        # project data package (R2): a result names its product data; a revision switch reloads the pages' product
+        # inputs and marks results that read a changed section stale; local edits are reported, never hidden
+        import copy as _copy
+        from traction_workbench.examples import SYNTHETIC_PROJECT
+        from traction_workbench.project import Project, builtin_project
+        assert ep.last["project_usage"]["local_edits"] == [] and win.banners["emi"].property("state") == "info"
+        d = _copy.deepcopy(SYNTHETIC_PROJECT)
+        d["project"]["revision"] = "T"
+        d["sections"]["controller"]["data"]["deadtime_us"] = 1.2
+        d["sections"]["dc_link"]["data"]["C_uF"] = 450.0
+        win.state.set_project(Project.from_dict(d))
+        assert ep.e_td.value() == 1.2 and win.pages["power"].r_C.value() == 450.0
+        assert win.pages["safety"].d_C.value() == 450.0 and win.pages["power"].m_dt.value() == 1.2
+        assert win.banners["emi"].property("state") == "stale"
+        ep.run()
+        assert ep.last["project_usage"]["project_label"].endswith("rev T") and win.banners["emi"].property("state") == "info"
+        ep.net["C_y_nF"].setValue(220.0)
+        ep.run()
+        assert ep.last["project_usage"]["local_edits"] == ["EMI network"] and win.banners["emi"].property("state") == "local"
+        win.state.set_project(builtin_project())
         efp = win.pages["efficiency"]
         efp.run_point()
         assert efp.last_point["ledger"]["boundaries"]["edrive"]["status"] == "DEFINED"

@@ -11,6 +11,10 @@
     twb acceptance                        production output vs the golden fixtures
     twb exchange [OUT.json]               MathWorks-port exchange package (conventions, identities, fixtures)
     twb selftest OUT_DIR                  headless check of the desktop application (screenshots + report)
+    twb project show|check [PROJECT.json] project data package: identity / cross-section consistency (default:
+                                          the built-in synthetic project)
+    twb project diff A.json B.json        changed sections, paths and the analyses they feed
+    twb project export OUT.json           write the built-in synthetic project (a template to edit)
 """
 
 from __future__ import annotations
@@ -181,6 +185,61 @@ def cmd_acceptance(args):
     return 0 if (a["all_pass"] and a["manifest_ok"]) else 1
 
 
+def _project(path):
+    from .project import builtin_project, load_project
+    return builtin_project() if not path else load_project(path)
+
+
+def cmd_project(args):
+    from .project import check_project, diff_projects, save_project, short
+    if args.action == "export":
+        if not args.files:
+            raise InputValidationError("project export needs the output file", field="files")
+        out = save_project(_project(None), args.files[0])
+        print(f"built-in project written to {out}")
+        return 0
+    if args.action == "diff":
+        if len(args.files) != 2:
+            raise InputValidationError("project diff needs two project files", field="files")
+        d = diff_projects(_project(args.files[0]), _project(args.files[1]))
+        if args.json:
+            _print_json(d)
+            return 0
+        f, t = d["from"], d["to"]
+        print(f"{f['project_id']} rev {f['revision']} -> {t['project_id']} rev {t['revision']}")
+        for name, c in d["changed_sections"].items():
+            print(f"  {name}: {c['change']}" + (f" ({c.get('n_paths', 0)} path(s))" if c.get("paths") else ""))
+            for p in c.get("paths", [])[:12]:
+                print(f"      {p['path']}: {p['from']} -> {p['to']}")
+        print("affected analyses: " + (", ".join(f"{k} ({', '.join(v['sections'])})"
+                                                 for k, v in d["affected_analyses"].items()) or "none"))
+        print("unaffected: " + (", ".join(d["unaffected_analyses"]) or "none"))
+        return 0
+    prj = _project(args.files[0] if args.files else None)
+    if args.action == "show":
+        ident = prj.identity()
+        if args.json:
+            _print_json({**ident, "title": prj.title, "origin": prj.origin, "note": prj.note,
+                         "change_log": list(prj.change_log),
+                         "provenance": {n: s.provenance for n, s in prj.sections.items()}})
+            return 0
+        print(f"{prj.label}: {prj.title}")
+        print(f"origin {prj.origin}; project digest {short(ident['project_digest'])}")
+        for n, s in prj.sections.items():
+            pv = s.provenance
+            print(f"  {n:<13} {short(s.digest)}  {pv.get('origin', '?'):<10} "
+                  f"{'qualified' if pv.get('qualified') else 'not qualified'}  {pv.get('source', '')}")
+        return 0
+    res = check_project(prj)
+    if args.json:
+        _print_json(res)
+    else:
+        for f in res["findings"]:
+            print(f"{f['status']:<13} {f['rule']:<7} {f['title']}: {f['detail']}")
+        print(f"\n{prj.label}: {res['status']} " + ", ".join(f"{k} {v}" for k, v in res["counts"].items() if v))
+    return {"OK": 0, "WARNING": 1}.get(res["status"], 2)
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="twb", description="Traction engineering feasibility workbench")
     ap.add_argument("--version", action="version", version=f"traction-workbench {__version__}")
@@ -238,6 +297,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = common(sub.add_parser("curve", help="torque-speed envelope"))
     p.add_argument("--vdc", type=float, required=True)
     p.set_defaults(fn=cmd_curve)
+    p = sub.add_parser("project", help="project data package: show, check, diff, export")
+    p.add_argument("action", choices=("show", "check", "diff", "export"))
+    p.add_argument("files", nargs="*", help="project file(s); none = the built-in synthetic project")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=cmd_project)
     p = sub.add_parser("acceptance", help="compare with the golden fixtures")
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=cmd_acceptance)

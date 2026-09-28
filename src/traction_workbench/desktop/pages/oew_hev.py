@@ -96,7 +96,7 @@ class OewHevPage(QWidget):
 
     # ================================================================== OEW
     def _oew_tab(self):
-        ex = api.EXAMPLE_OEW
+        ex = self.win.state.example("OEW")
         t = ex["topology"]
         split = QSplitter(Qt.Horizontal)
         form = QWidget()
@@ -203,8 +203,12 @@ class OewHevPage(QWidget):
         for w in (self.o_zs_pol,):
             w.setEnabled(not iso)
 
+    def apply_project(self, _project=None):
+        """The OEW bridges use the project's module and switching frequency."""
+        self.o_fsw.setValue(float(self.win.state.example("OEW")["fsw_kHz"]))
+
     def oew_body(self) -> dict:
-        b = copy.deepcopy(api.EXAMPLE_OEW)
+        b = self.win.state.example("OEW")            # the project's module (+ the declared 400 V scaling)
         iso = self.o_kind.currentData() == "isolated"
         lim = lambda d, c: {"discharge_power_max_W": d * 1e3, "charge_power_max_W": c * 1e3,
                             "discharge_current_max_A": INF, "charge_current_max_A": INF}

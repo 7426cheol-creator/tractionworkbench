@@ -80,6 +80,16 @@ def test_gate_event_checker_catches_overlap_duplicates_and_runts():
     assert not runt["ok"] and "shorter than the minimum" in runt["problems"][0]
 
 
+def test_a_pulse_cut_by_the_observation_window_is_not_a_runt():
+    # [0, 8 us] starts at the window start and [99.5 us, ...) is still on at the window end: both widths are unknown,
+    # neither is judged against the minimum (their dead-time gaps still are)
+    cut = P.check_gate_events([(10e-6, 1), (90e-6, -1)], [(0.0, 1), (8e-6, -1), (99.5e-6, 1)], 1e-6, 1e-6, 100e-6)
+    assert cut["ok"] and cut["open_pulses"] == 2
+    whole = P.check_gate_events([(10e-6, 1), (90e-6, -1)], [(0.0, 1), (8e-6, -1), (95e-6, 1), (95.5e-6, -1)],
+                                1e-6, 1e-6, 100e-6)
+    assert not whole["ok"] and "shorter than the minimum" in whole["problems"][0]
+
+
 def _noisy(mean, sigma, n, seed=1):
     rng = np.random.default_rng(seed)
     return [{"speed_rpm": mean + sigma * rng.standard_normal()} for _ in range(n)]

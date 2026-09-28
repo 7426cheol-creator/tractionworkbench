@@ -198,7 +198,7 @@ class SafetyPage(QWidget):
         left = QWidget()
         v = QVBoxLayout(left)
         v.setContentsMargins(0, 0, 6, 0)
-        ex = api.EXAMPLE_TIMING
+        ex = self.win.state.example("TIMING")
         g = QGroupBox(tr("체인 정의", "chain"))
         f = QFormLayout(g)
         self.f_id = QLineEdit(ex["chain_id"])
@@ -267,6 +267,41 @@ class SafetyPage(QWidget):
         lay.addWidget(split)
         return w
 
+    def _dc_link_uF(self) -> float:
+        p = self.win.state.project
+        return float(p.data("dc_link")["C_uF"]) if p.has("dc_link") else 500.0
+
+    def _project_rules(self) -> list:
+        p = self.win.state.project
+        return p.safe_state_rules() if p.has("safety") else EXAMPLE_RULES
+
+    def load_chain(self, ex: dict):
+        """An FTTI chain into the editor (the project's chain, or a file)."""
+        self.f_id.setText(str(ex["chain_id"]))
+        self.f_fault.setText(str(ex["fault"]))
+        self.f_ftti.setValue(float(ex["ftti_ms"]))
+        self.f_fdti.setValue(float(ex.get("fdti_budget_ms") or 0.0))
+        self.f_frti.setValue(float(ex.get("frti_budget_ms") or 0.0))
+        self.f_det.setText(str(ex.get("detection_event") or ""))
+        self.f_events.setText(", ".join(ex["events"]))
+        self.f_safe.setText(str(ex.get("safe_event") or ""))
+        i = self.f_endpoint.findData(ex.get("endpoint_kind", "physical_safe_state"))
+        if i >= 0:
+            self.f_endpoint.setCurrentIndex(i)
+        self.f_attain.setChecked(bool(ex.get("worst_case_attainable", False)))
+        self.items.setRowCount(0)
+        for it in ex["items"]:
+            self._add_item(it)
+
+    def apply_project(self, _project=None):
+        """FTTI chain, safe-state rules and the DC-link capacitance from the active project."""
+        self.load_chain(self.win.state.example("TIMING"))
+        self.s_rules.setRowCount(0)
+        for r in self._project_rules():
+            self.s_rules.add(r)
+        for w in (self.d_C, self.p_C, self.o_C):
+            w.setValue(self._dc_link_uF())
+
     def _add_item(self, it: dict):
         r = self.items.rowCount()
         self.items.insertRow(r)
@@ -295,10 +330,12 @@ class SafetyPage(QWidget):
 
     def run_ftti(self):
         try:
-            res = api.timing(self._timing_body())
+            body = self._timing_body()
+            res = api.timing(body)
         except Exception as exc:  # noqa: BLE001
             error_box(self, tr("FTTI 입력 오류", "FTTI input error"), str(exc))
             return
+        self.win.note_result("ftti", body, res)
         tl = SF.ftti_timeline(res)
         self.p_ftti.draw(F.fig_ftti, tl, title=f"{res['chain_id']} · {res['fault']}", name="ftti",
                          csv=lambda: {k: [b[k] for b in tl["bars"]] for k in ("id", "owner", "from", "to", "start_worst_s",
@@ -337,7 +374,7 @@ class SafetyPage(QWidget):
         v.setContentsMargins(0, 0, 6, 0)
         g = QGroupBox(tr("능동 방전 (배터리 분리 후 RC)", "active discharge (RC, battery disconnected)"))
         f = QFormLayout(g)
-        self.d_C = number(500, 0.1, 1e6, "µF", 1, 10)
+        self.d_C = number(self._dc_link_uF(), 0.1, 1e6, "µF", 1, 10)
         self.d_V0 = number(600, 1, 5000, "V", 1, 10)
         self.d_Vf = number(60, 0.1, 5000, "V", 1, 5)
         self.d_t = number(2, 0.0001, 1e5, "s", 4, 0.1)
@@ -355,7 +392,7 @@ class SafetyPage(QWidget):
         v.addWidget(ConceptNote(NOTE_DISCHARGE()))
         g = QGroupBox(tr("패시브 방전 (상시 연결 블리더 저항)", "passive discharge (always-connected bleeder)"))
         f = QFormLayout(g)
-        self.p_C = number(500, 0.1, 1e6, "µF", 1, 10)
+        self.p_C = number(self._dc_link_uF(), 0.1, 1e6, "µF", 1, 10)
         self.p_V0 = number(600, 1, 5000, "V", 1, 10)
         self.p_Vf = number(60, 0.1, 5000, "V", 1, 5)
         self.p_t = number(120, 0.001, 1e6, "s", 3, 5, tr("요구 방전 시간 (사내·고객 요구값을 입력)", "required discharge time"))
@@ -381,7 +418,7 @@ class SafetyPage(QWidget):
         v.addWidget(ConceptNote(NOTE_PASSIVE()))
         g = QGroupBox(tr("회생 중 배터리 차단 과전압", "battery disconnect during regen"))
         f = QFormLayout(g)
-        self.o_C = number(500, 0.1, 1e6, "µF", 1, 10)
+        self.o_C = number(self._dc_link_uF(), 0.1, 1e6, "µF", 1, 10)
         self.o_V1 = number(600, 1, 5000, "V", 1, 10)
         self.o_Vlim = number(850, 1, 5000, "V", 1, 10)
         self.o_n = number(12000, 0, 30000, "rpm", 0, 100)
@@ -440,6 +477,7 @@ class SafetyPage(QWidget):
         except Exception as exc:  # noqa: BLE001
             error_box(self, tr("입력 오류", "input error"), str(exc))
             return
+        self.win.note_result("passive", body, res)
         cur = SF.passive_curves(res)
         win = SF.passive_window(res)
         self.p_pas.draw(F.fig_passive_discharge, res, cur, win, title=tr("패시브 방전 (블리더)", "passive discharge (bleeder)"),
@@ -497,6 +535,7 @@ class SafetyPage(QWidget):
         except Exception as exc:  # noqa: BLE001
             error_box(self, tr("입력 오류", "input error"), str(exc))
             return
+        self.win.note_result("discharge", body, res)
         cur = SF.discharge_curve(res)
         self.p_dis.draw(F.fig_discharge, res, cur, title=tr("능동 방전", "active discharge"), name="discharge",
                         csv=lambda: {"t_s": cur["t_s"], "V": cur["V"], "i_A": cur["i_A"], "p_W": cur["p_W"]})
@@ -528,6 +567,7 @@ class SafetyPage(QWidget):
         except Exception as exc:  # noqa: BLE001
             error_box(self, tr("입력 오류", "input error"), str(exc))
             return
+        self.win.note_result("overvoltage", body, res)
         cur = SF.overvoltage_curve(res)
         op = res.get("regen_operating_point") or {}
         title = tr("회생 중 배터리 차단", "battery disconnect while regenerating")
@@ -575,7 +615,7 @@ class SafetyPage(QWidget):
         v.addWidget(g)
         g = QGroupBox(tr("프로젝트 규칙 (물리 법칙이 아닌 고객·프로젝트 규칙)", "project rules (customer/project rules, not physics)"))
         gl = QVBoxLayout(g)
-        self.s_rules = RulesTable(EXAMPLE_RULES)
+        self.s_rules = RulesTable(self._project_rules())
         gl.addWidget(self.s_rules)
         row = QHBoxLayout()
         b1 = QPushButton(tr("규칙 추가", "add rule"))
@@ -622,6 +662,7 @@ class SafetyPage(QWidget):
         except Exception as exc:  # noqa: BLE001
             error_box(self, tr("입력 오류", "input error"), str(exc))
             return
+        self.win.note_result("safe_state", body, res)
         asc = SF.asc_vs_speed(s.drive, self.s_vdc.value())
         n, vdc = self.s_n.value(), self.s_vdc.value()
         bemf = back_emf_ll_peak(s.drive, n)

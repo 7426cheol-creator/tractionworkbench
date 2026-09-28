@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel, Q
 from .. import __version__
 from ..i18n import language, tr
 from ..io import load_json_file
+from ..project import request_usage, short, stale_sections
 from . import theme
 from .pages.decision import DecisionPage
 from .pages.design import DesignPage
@@ -23,6 +24,7 @@ from .pages.model import ModelPage, examples_dir
 from .pages.oew_hev import OewHevPage
 from .pages.performance import PerformancePage
 from .pages.power import PowerPage
+from .pages.project import ProjectPage
 from .pages.protection import ProtectionPage
 from .pages.pwm_driveline import PwmDrivelinePage
 from .pages.safety import SafetyPage
@@ -48,9 +50,35 @@ PAGES = (
     ("oew_hev", lambda: tr("OEW·HEV", "OEW & HEV"), OewHevPage),
     ("emi", lambda: tr("EMI (전도성)", "EMI (conducted)"), EmiPage),
     ("machine", lambda: tr("모터 설계", "Machine design"), MachinePage),
+    ("project", lambda: tr("프로젝트", "Project"), ProjectPage),
     ("model", lambda: tr("모델·데이터", "Model & data"), ModelPage),
     ("verification", lambda: tr("검증 (V&V)", "Verification"), VerificationPage),
 )
+
+
+# runner task -> page that shows it (safety-page analyses run inline and report through ``note_result``)
+TASK_PAGE = {"decision": "decision", "decision-env": "decision", "explorer": "explorer", "trajectory": "trajectory",
+             "performance": "performance", "design-sweep": "design", "design-dom": "design", "thermal": "thermal",
+             "protection": "protection", "asc": "protection", "module": "power", "ripple": "power",
+             "lifetime": "power", "efficiency": "efficiency", "efficiency_map": "efficiency",
+             "efficiency_mission": "efficiency", "module_compare": "efficiency", "pwm_policies": "pwm_driveline",
+             "pwm_timing": "pwm_driveline", "pwm_ripple": "pwm_driveline", "pwm_transients": "pwm_driveline",
+             "driveline": "pwm_driveline", "driveline_stability": "pwm_driveline", "oew": "oew_hev",
+             "oew_compare": "oew_hev", "hev_joint": "oew_hev", "hev_crank": "oew_hev", "hev_rejection": "oew_hev",
+             "hev_planetary": "oew_hev", "emi": "emi", "emi_oew": "emi", "machine_trade": "machine",
+             "winding": "machine", "concept_sizing": "machine", "ftti": "safety", "passive": "safety",
+             "discharge": "safety", "overvoltage": "safety", "safe_state": "safety"}
+# tasks whose argument is not a request body: they run on the state's drive and limits
+STATE_TASKS = ("decision-env", "explorer", "trajectory", "performance", "design-sweep", "design-dom")
+LIMIT_PAIRS = (("discharge_power_max_W", "discharge_power_max"), ("charge_power_max_W", "charge_power_max"),
+               ("discharge_current_max_A", "discharge_current_max"), ("charge_current_max_A", "charge_current_max"))
+
+
+def _case_body(case: dict) -> dict:
+    """The drive and limits a decision case runs on, in request-body form."""
+    sl = ((case.get("scenario") or {}).get("source_limits") or {})
+    lim = {k1: (sl[k2]["value"] if isinstance(sl.get(k2), dict) else None) for k1, k2 in LIMIT_PAIRS}
+    return {"drive": case.get("drive"), "limits": lim}
 
 
 class MainWindow(QMainWindow):
@@ -75,10 +103,24 @@ class MainWindow(QMainWindow):
         self.nav.setFixedWidth(190)
         self.stack = QStackedWidget()
         self.pages = {}
+        self.banners = {}
+        self.usages: dict = {}                      # page -> task -> what the last result ran on
+        self.runner.result_hook = self._on_result
         for key, label, cls in PAGES:
             page = cls(self)
             self.pages[key] = page
-            self.stack.addWidget(page)
+            holder = QWidget()
+            hv = QVBoxLayout(holder)
+            hv.setContentsMargins(0, 0, 0, 0)
+            hv.setSpacing(0)
+            ban = QLabel()
+            ban.setObjectName("ProjectBanner")
+            ban.setWordWrap(True)
+            ban.hide()
+            self.banners[key] = ban
+            hv.addWidget(ban)
+            hv.addWidget(page, 1)
+            self.stack.addWidget(holder)
             self.nav.addItem(label())
         self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
         body.addWidget(self.nav)
@@ -88,6 +130,7 @@ class MainWindow(QMainWindow):
         self._status_bar()
         self._menus()
         self.state.drive_changed.connect(self._update_badges)
+        self.state.project_changed.connect(self._project_changed)
         self._update_badges()
         self.nav.setCurrentRow(0)
 
@@ -109,11 +152,13 @@ class MainWindow(QMainWindow):
         self.badge_model.setProperty("badge", "model")
         self.badge_data = QLabel()
         self.badge_data.setProperty("badge", "info")
+        self.badge_project = QLabel()
+        self.badge_project.setProperty("badge", "info")
         self.badge_hw = QLabel(tr("하드웨어 미검증", "not hardware-validated"))
         self.badge_hw.setProperty("badge", "warn")
         self.badge_hw.setToolTip(tr("합성 fixture에 대한 verification만 수행됨 (V4–V5 validation 미수행)",
                                     "verification against synthetic fixtures only (no V4–V5 validation)"))
-        for b in (self.badge_model, self.badge_data, self.badge_hw):
+        for b in (self.badge_project, self.badge_model, self.badge_data, self.badge_hw):
             lay.addWidget(b)
         return w
 
@@ -124,6 +169,9 @@ class MainWindow(QMainWindow):
         self.badge_model.setText(f"{info.get('drive_id')} · {info.get('fidelity')}")
         self.badge_model.setToolTip(prov.get("validation_status", ""))
         self.badge_data.setText(f"{tr('데이터', 'data')}: {prov.get('origin')}")
+        p = s.project
+        self.badge_project.setText(f"{tr('프로젝트', 'project')}: {p.label}")
+        self.badge_project.setToolTip(f"{p.title}\nproject digest {short(p.digest())}")
 
     def _status_bar(self):
         sb = self.statusBar()
@@ -166,6 +214,12 @@ class MainWindow(QMainWindow):
         a.setShortcut(QKeySequence.Open)
         a.triggered.connect(self.open_case)
         m.addAction(a)
+        a = QAction(tr("프로젝트 열기…", "Open project…"), self)
+        a.triggered.connect(lambda: self.open_project())
+        m.addAction(a)
+        a = QAction(tr("프로젝트 저장…", "Save project…"), self)
+        a.triggered.connect(lambda: self.save_project())
+        m.addAction(a)
         a = QAction(tr("예시 폴더 열기", "Open examples folder"), self)
         a.triggered.connect(self._open_examples)
         m.addAction(a)
@@ -191,6 +245,83 @@ class MainWindow(QMainWindow):
         a = QAction(tr("정보", "About"), self)
         a.triggered.connect(self._about)
         m.addAction(a)
+
+    # ----------------------------------------------------------------- project identity of results (R2)
+    def _on_result(self, key, args, res):
+        if key in STATE_TASKS or not args or not isinstance(args[0], dict):
+            body = self.state.body()
+        elif key == "decision":
+            body = _case_body(args[0])
+        else:
+            body = args[0]
+        self.note_result(key, body, res)
+
+    def note_result(self, key: str, body: dict, res=None) -> dict | None:
+        """Record what a result ran on (project identity for its sections, per component project data or a local
+        edit) on the result and in the page banner."""
+        use = request_usage(self.state.project, key, body)
+        if use.get("analysis") is None:
+            return None
+        use["project_label"] = self.state.project.label
+        for name, why in self.state.fallbacks.items():
+            use.setdefault("fallbacks", {})[name] = why
+        if isinstance(res, dict):
+            res["project_usage"] = use
+            if isinstance(res.get("record"), dict):
+                res["record"]["project_context"] = use     # annotation of the record, outside its input identity
+        page = TASK_PAGE.get(key)
+        if page:
+            self.usages.setdefault(page, {})[key] = use
+            self._refresh_banner(page)
+        return use
+
+    def _refresh_banner(self, page: str):
+        ban = self.banners.get(page)
+        uses = self.usages.get(page) or {}
+        if ban is None or not uses:
+            return
+        stale, local, parts = [], [], []
+        for task, use in uses.items():
+            st = stale_sections(use, self.state.project)
+            if st:
+                stale.append(f"{task}: {', '.join(st)}")
+            if use.get("local_edits"):
+                local.append(f"{task}: {', '.join(use['local_edits'])}")
+            parts.append(task)
+        first = next(iter(uses.values()))
+        if stale:
+            state = "stale"
+            text = tr(f"<b>stale</b> — 결과 계산 후 프로젝트가 바뀌었습니다 ({'; '.join(stale)}): 다시 계산하세요",
+                      f"<b>stale</b> — the project changed after these results ({'; '.join(stale)}): recompute")
+        elif local:
+            state = "local"
+            text = tr(f"프로젝트 {first['project_label']}의 제품 데이터 + <b>이 페이지의 로컬 변경</b> ({'; '.join(local)})",
+                      f"product data of project {first['project_label']} + <b>local edits on this page</b> "
+                      f"({'; '.join(local)})")
+        else:
+            state = "info"
+            text = tr(f"결과({', '.join(parts)})는 프로젝트 {first['project_label']}의 제품 데이터로 계산됨",
+                      f"results ({', '.join(parts)}) computed from the product data of project {first['project_label']}")
+        ban.setProperty("state", state)
+        ban.style().unpolish(ban)
+        ban.style().polish(ban)
+        ban.setText(text)
+        ban.show()
+
+    def _project_changed(self):
+        for page in self.pages.values():
+            fn = getattr(page, "apply_project", None)
+            if fn is not None:
+                fn(self.state.project)
+        for key in self.usages:
+            self._refresh_banner(key)
+        self._update_badges()
+
+    def open_project(self, path: str | None = None):
+        self.pages["project"].open_project(path)
+
+    def save_project(self, path: str | None = None):
+        self.pages["project"].save_project(path)
 
     # ----------------------------------------------------------------- actions
     def set_theme(self, name: str):

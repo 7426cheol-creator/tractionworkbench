@@ -9,7 +9,6 @@ delivered requirement, Tj as a result, ranking only beyond the declared error bu
 
 from __future__ import annotations
 
-import copy
 import json
 
 from PySide6.QtCore import Qt
@@ -58,7 +57,8 @@ NOTE_AB = lambda: tr(
     "only for the identical motor point). Without budgets the estimate is shown and the ranking reserved. Typical data "
     "do not rank a production population. Higher efficiency does not approve SOA, short circuit, life or EMC.")
 
-MODULE_SOURCES = [("example IGBT", "igbt"), ("example SiC", "sic"), ("power page module", "power"), ("JSON file", "file")]
+MODULE_SOURCES = [("project module", "igbt"), ("project alternative", "sic"), ("power page module", "power"),
+                  ("JSON file", "file")]
 
 
 def _task(fn):
@@ -91,8 +91,8 @@ class EfficiencyPage(QWidget):
 
     # ================================================================== efficiency by boundary
     def _eff_tab(self):
-        ex = api.EXAMPLE_EFFICIENCY
-        rd = api.EXAMPLE_REDUCER
+        ex = self.win.state.example("EFFICIENCY")
+        rd = self.win.state.example("REDUCER")
         split = QSplitter(Qt.Horizontal)
         form = QWidget()
         v = QVBoxLayout(form)
@@ -102,7 +102,7 @@ class EfficiencyPage(QWidget):
         self.e_n = number(ex["speed_rpm"], -30000, 30000, "rpm", 0, 500)
         self.e_T = number(ex["torque_Nm"], -5000, 5000, "N·m", 2, 10)
         self.e_vdc = number(ex["Vdc_V"], 1, 2000, "V", 1, 10)
-        self.e_loss = combo([(tr("데이터시트 모듈 (예시 IGBT)", "datasheet module (example IGBT)"), "module"),
+        self.e_loss = combo([(tr("데이터시트 모듈 (프로젝트)", "datasheet module (project)"), "module"),
                              (tr("전력변환 페이지의 모듈", "module of the power page"), "power"),
                              (tr("모델의 2차 대리모델 a0 + a2 I²", "model's quadratic surrogate a0 + a2 I²"), "surrogate")],
                             "module")
@@ -183,14 +183,14 @@ class EfficiencyPage(QWidget):
     def _reducer_spec(self):
         if not self.r_on.isChecked():
             return None
-        rd = copy.deepcopy(api.EXAMPLE_REDUCER)
+        rd = self.win.state.example("REDUCER")                  # fields without a widget pass through
         rd.update({"ratio": self.r_ratio.value(), "eta_forward": self.r_ef.value(), "eta_reverse": self.r_er.value(),
                    "drag_coeffs": [self.r_c0.value(), self.r_c1.value() * 1e-3, 0.0],
                    "output_boundary": self.r_bnd.text().strip(), "basis": self.r_basis.text().strip()})
         return rd
 
     def eff_body(self) -> dict:
-        b = copy.deepcopy(api.EXAMPLE_EFFICIENCY)
+        b = self.win.state.example("EFFICIENCY")
         src = self.e_loss.currentData()
         b.update({"speed_rpm": self.e_n.value(), "torque_Nm": self.e_T.value(), "Vdc_V": self.e_vdc.value(),
                   "loss_model": "surrogate" if src == "surrogate" else "module",
@@ -316,7 +316,7 @@ class EfficiencyPage(QWidget):
 
     # ================================================================== module A/B
     def _ab_tab(self):
-        c = api.EXAMPLE_EFFICIENCY["compare"]
+        c = self.win.state.example("EFFICIENCY")["compare"]
         split = QSplitter(Qt.Horizontal)
         form = QWidget()
         v = QVBoxLayout(form)
@@ -380,6 +380,23 @@ class EfficiencyPage(QWidget):
         split.setSizes([440, 1020])
         return split
 
+    def apply_project(self, _project=None):
+        """Reducer and A/B design data from the active project (operating points, maps, missions stay)."""
+        rd = self.win.state.example("REDUCER")
+        self.r_ratio.setValue(float(rd["ratio"]))
+        self.r_ef.setValue(float(rd["eta_forward"]))
+        self.r_er.setValue(float(rd["eta_reverse"]))
+        self.r_c0.setValue(float(rd["drag_coeffs"][0]))
+        self.r_c1.setValue(float(rd["drag_coeffs"][1]) * 1e3)
+        self.r_bnd.setText(str(rd.get("output_boundary", "")))
+        self.r_basis.setText(str(rd.get("basis", "")))
+        c = self.win.state.example("EFFICIENCY")["compare"]
+        self.ab_fsw.setValue(float(c["common_fsw_kHz"]))
+        for tag in ("A", "B"):
+            w, cc = self.ab[tag], c[tag]
+            w["label"].setText(str(cc["label"]))
+            w["rth"].setValue(float(cc["Rth_K_per_W"]))
+
     def _load_file(self, tag):
         path, _ = QFileDialog.getOpenFileName(self, tr("모듈 JSON 불러오기", "load module JSON"), "", "JSON (*.json)")
         if not path:
@@ -397,9 +414,9 @@ class EfficiencyPage(QWidget):
     def _module(self, tag):
         key = self.ab[tag]["src"].currentData()
         if key == "igbt":
-            return api.EXAMPLE_MODULE
+            return self.win.state.example("MODULE")
         if key == "sic":
-            return api.EXAMPLE_MODULE_SIC
+            return self.win.state.example("MODULE_SIC")
         if key == "power":
             return self.win.pages["power"].module_spec()
         if self._file_modules[tag] is None:
@@ -407,7 +424,7 @@ class EfficiencyPage(QWidget):
         return self._file_modules[tag]
 
     def ab_body(self) -> dict:
-        b = self.eff_body() if self.ab_mis.isChecked() else {**copy.deepcopy(api.EXAMPLE_EFFICIENCY), "mission": None,
+        b = self.eff_body() if self.ab_mis.isChecked() else {**self.win.state.example("EFFICIENCY"), "mission": None,
                                                               **self.win.state.body()}
         cmp = {"mode": self.ab_mode.currentData(), "common_fsw_kHz": self.ab_fsw.value(), "coolant_C": self.ab_cool.value(),
                "requests": self.t_req.values(), "include_mission": self.ab_mis.isChecked()}

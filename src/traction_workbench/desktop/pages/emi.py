@@ -98,7 +98,7 @@ class EmiPage(QWidget):
 
     # ------------------------------------------------------------------ main tab
     def _main_tab(self):
-        ex = api.EXAMPLE_EMI
+        ex = self.win.state.example("EMI")
         split = QSplitter(Qt.Horizontal)
         form = QWidget()
         v = QVBoxLayout(form)
@@ -370,15 +370,40 @@ class EmiPage(QWidget):
                                f"{c['setup']['method']} / {c['setup']['detector']} / RBW {c['setup']['rbw_Hz']}"
                                + tr(" — 입력이 바뀌면 적용되지 않습니다", " — any changed input makes it inapplicable"))
 
+    def apply_project(self, _project=None):
+        """Switching source (controller: fsw, gate edges, dead time, carrier, minimum pulse) and the HV network /
+        test set-up from the active project; operating point, profile, limit and traces stay."""
+        ex = self.win.state.example("EMI")
+        sc, nw = ex["source"], ex["network"]
+        self.e_fsw.setValue(float(sc["fsw_kHz"]))
+        self.e_tr.setValue(float(sc["t_rise_ns"]))
+        self.e_tf.setValue(float(sc["t_fall_ns"]))
+        self.e_td.setValue(float(sc.get("t_dead_us") or 0.0))
+        for w, v in ((self.e_carrier, sc.get("carrier", "asynchronous")),
+                     (self.e_minp_pol, sc.get("min_pulse_policy", "none"))):
+            i = w.findData(v)
+            if i >= 0:
+                w.setCurrentIndex(i)
+        self.e_minp.setValue(float(sc.get("min_pulse_us") or 0.0))
+        self.e_src_basis.setText(str(sc.get("basis", "")))
+        for k, w in self.net.items():
+            if nw.get(k) is not None:
+                w.setValue(float(nw[k]))
+        self.e_valid_on.setChecked(nw.get("validated_up_to_MHz") is not None)
+        if nw.get("validated_up_to_MHz") is not None:
+            self.e_valid.setValue(float(nw["validated_up_to_MHz"]))
+        self.e_net_basis.setText(str(nw.get("basis", "")))
+
     def body(self) -> dict:
-        b = copy.deepcopy(api.EXAMPLE_EMI)
+        b = self.win.state.example("EMI")            # product data of the active project; widgets overlay it
         b.update(self.win.state.body())
         b.update({"speed_rpm": self.e_n.value(), "torque_Nm": self.e_T.value(), "Vdc_V": self.e_vdc.value()})
-        b["source"] = {"fsw_kHz": self.e_fsw.value(), "t_rise_ns": self.e_tr.value(), "t_fall_ns": self.e_tf.value(),
-                       "t_dead_us": self.e_td.value(), "modulation": "svpwm", "carrier": self.e_carrier.currentData(),
+        b["source"] = {**b["source"], "fsw_kHz": self.e_fsw.value(), "t_rise_ns": self.e_tr.value(),
+                       "t_fall_ns": self.e_tf.value(),
+                       "t_dead_us": self.e_td.value(), "carrier": self.e_carrier.currentData(),
                        "min_pulse_us": self.e_minp.value(), "min_pulse_policy": self.e_minp_pol.currentData(),
                        "basis": self.e_src_basis.text().strip()}
-        b["network"] = {k: w.value() for k, w in self.net.items()}
+        b["network"] = {**b["network"], **{k: w.value() for k, w in self.net.items()}}
         b["network"]["basis"] = self.e_net_basis.text().strip()
         b["network"]["validated_up_to_MHz"] = self.e_valid.value() if self.e_valid_on.isChecked() else None
         b["profile"] = self._profile_fields()
@@ -493,7 +518,7 @@ class EmiPage(QWidget):
         form = QWidget()
         v = QVBoxLayout(form)
         v.setContentsMargins(0, 0, 6, 0)
-        ex = api.EXAMPLE_OEW
+        ex = self.win.state.example("OEW")
         g = QGroupBox(tr("공통 bus OEW (OEW 예시 토폴로지)", "common-bus OEW (OEW example topology)"))
         f = QFormLayout(g)
         self.o_V = number(ex["topology"]["VA_V"], 1, 2000, "V", 1, 10)
@@ -532,7 +557,7 @@ class EmiPage(QWidget):
         return split
 
     def run_oew(self):
-        b = copy.deepcopy(api.EXAMPLE_OEW)
+        b = self.win.state.example("OEW")
         b.update(self.win.state.body())
         b["topology"] = {**b["topology"], "VA_V": self.o_V.value()}
         b.update({"speed_rpm": self.o_n.value(), "torque_Nm": self.o_T.value(), "fsw_kHz": self.o_fsw.value(),

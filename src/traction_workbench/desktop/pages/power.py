@@ -275,7 +275,49 @@ class PowerPage(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
         lay.addWidget(self.tabs)
-        self.load_module(api.EXAMPLE_MODULE)
+        self.load_module(self.win.state.example("MODULE"))
+        self.load_ripple(self.win.state.example("RIPPLE"))
+
+    def apply_project(self, _project=None):
+        """Product inputs from the active project (module, capacitor, source impedance, switching, junction
+        network); operating points, missions and requirements stay."""
+        self.load_module(self.win.state.example("MODULE"))
+        self.load_ripple(self.win.state.example("RIPPLE"))
+        net = self.win.state.example("MISSION").get("junction_network")
+        self.l_net.load([] if not net else list(zip(net["R_K_per_W"], net["tau_s"])))
+
+    def load_ripple(self, ex: dict):
+        """Capacitor, source impedance and switching of the ripple analysis; fields without a widget (bank count,
+        layout, Rth basis, source text) pass through to the request unchanged."""
+        cap, src = ex["capacitor"], ex.get("source")
+        self._cap_base = dict(cap)
+        k = 1e3 if cap.get("ESR_unit") == "ohm" else 1.0                 # the table widget is in mOhm
+        self.r_fsw.setValue(float(ex["fsw_kHz"]))
+        i = self.r_mod.findData(ex["modulation"])
+        if i >= 0:
+            self.r_mod.setCurrentIndex(i)
+        self.r_C.setValue(float(cap["C_uF"]))
+        self.r_esl.setValue(float(cap.get("ESL_nH") or 0.0))
+        self.r_rth_on.setChecked(cap.get("Rth_K_per_W") is not None)
+        if cap.get("Rth_K_per_W") is not None:
+            self.r_rth.setValue(float(cap["Rth_K_per_W"]))
+        self.r_tref.setValue(float(cap.get("T_ref_C") or 65.0))
+        self.r_alpha.setValue(float(cap.get("ESR_temp_coeff_per_K") or 0.0))
+        self.r_tesr.setValue(float(cap["ESR_table_T_C"]) if cap.get("ESR_table_T_C") is not None else 25.0)
+        dom = cap.get("T_valid_C")
+        self.r_dom_on.setChecked(bool(dom))
+        if dom:
+            self.r_tmin.setValue(float(dom[0]))
+            self.r_tmax.setValue(float(dom[1]))
+        self.r_esr.load([[f, r * k] for f, r in cap["ESR_table"]])
+        self.r_life.load(cap.get("life_hours_table") or [])
+        self.r_life_v.setValue(float(cap.get("life_voltage_V") or 0.0))
+        self.r_life_basis.setText(str(cap.get("life_basis") or ""))
+        self.r_src_on.setChecked(src is not None)
+        if src:
+            self.r_srcR.setValue(float(src["R_mohm"]))
+            self.r_srcL.setValue(float(src["L_uH"]))
+            self.r_src_basis.setText(str(src.get("basis", "")))
 
     # ================================================================== module tab
     def _module_tab(self):
@@ -335,7 +377,7 @@ class PowerPage(QWidget):
         v.addWidget(g)
         g = QGroupBox(tr("곡선 (온도 × 전류)", "curves (temperature x current)"))
         gl = QVBoxLayout(g)
-        self.grid = CurveGrid(api.EXAMPLE_MODULE["curves"])
+        self.grid = CurveGrid(self.win.state.example("MODULE")["curves"])
         gl.addWidget(self.grid)
         v.addWidget(g)
         g = QGroupBox(tr("열·판정", "thermal · judgement"))
@@ -355,7 +397,8 @@ class PowerPage(QWidget):
         row = QHBoxLayout()
         for text, fn in ((tr("JSON 불러오기", "load JSON"), self.load_module_file),
                          (tr("JSON 저장", "save JSON"), self.save_module_file),
-                         (tr("예시로 초기화", "reset to example"), lambda: self.load_module(api.EXAMPLE_MODULE))):
+                         (tr("프로젝트 값으로 초기화", "reset to the project"),
+                          lambda: self.load_module(self.win.state.example("MODULE")))):
             b = QPushButton(text)
             b.clicked.connect(fn)
             row.addWidget(b)
@@ -520,7 +563,7 @@ class PowerPage(QWidget):
 
     # ================================================================== ripple tab
     def _ripple_tab(self):
-        ex = api.EXAMPLE_RIPPLE
+        ex = self.win.state.example("RIPPLE")
         split = QSplitter(Qt.Horizontal)
         form = QWidget()
         v = QVBoxLayout(form)
@@ -611,7 +654,7 @@ class PowerPage(QWidget):
         esr = self.r_esr.values()
         if len(esr) < 2 or any(len(r) != 2 for r in esr):
             raise ValueError(tr("ESR 표에는 (주파수, ESR) 두 행 이상이 필요합니다", "the ESR table needs at least two (f, ESR) rows"))
-        cap = {"C_uF": self.r_C.value(), "ESL_nH": self.r_esl.value(),
+        cap = {**getattr(self, "_cap_base", {}), "C_uF": self.r_C.value(), "ESL_nH": self.r_esl.value(),
                "Rth_K_per_W": self.r_rth.value() if self.r_rth_on.isChecked() else None, "T_ref_C": self.r_tref.value(),
                "ESR_temp_coeff_per_K": self.r_alpha.value(), "ESR_table_T_C": self.r_tesr.value(),
                "T_valid_C": [self.r_tmin.value(), self.r_tmax.value()] if self.r_dom_on.isChecked() else None,
@@ -695,7 +738,7 @@ class PowerPage(QWidget):
 
     # ================================================================== lifetime tab
     def _life_tab(self):
-        ex = api.EXAMPLE_MISSION
+        ex = self.win.state.example("MISSION")
         split = QSplitter(Qt.Horizontal)
         form = QWidget()
         v = QVBoxLayout(form)

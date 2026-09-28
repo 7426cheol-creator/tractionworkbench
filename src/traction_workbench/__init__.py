@@ -6,4 +6,4 @@ achievement, DC-source compatibility, duration and overall requirement
 satisfaction apart, with evidence for every claim.
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"

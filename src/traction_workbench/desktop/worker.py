@@ -70,6 +70,7 @@ class TaskRunner(QObject):
         super().__init__(parent)
         self.pool = QThreadPool.globalInstance()
         self.active: dict[str, Task] = {}
+        self.result_hook = None          # (key, args, result) -> None: called before the page shows a result
 
     def run(self, key: str, label: str, fn, on_result, *args, on_error=None, **kwargs) -> Task:
         old = self.active.get(key)
@@ -82,6 +83,8 @@ class TaskRunner(QObject):
         def _result(res):
             if self.active.get(key) is task:
                 ok["v"] = True
+                if self.result_hook is not None:
+                    self.result_hook(key, args, res)
                 on_result(res)
 
         def _error(msg, tb):

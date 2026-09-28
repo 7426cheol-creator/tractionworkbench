@@ -3,7 +3,6 @@ the ASC fault transient with the customer's two current-time requirements (revie
 
 from __future__ import annotations
 
-import copy
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QFormLayout, QGroupBox, QLabel, QLineEdit, QScrollArea, QSplitter, QTabWidget,
@@ -162,7 +161,7 @@ class ProtectionPage(QWidget):
         return split
 
     def _apply_preset(self, *_):
-        ex = api.EXAMPLE_PROTECTION if self.preset.currentData() == "ov" else api.EXAMPLE_PROTECTION_OT
+        ex = self.win.state.example("PROTECTION" if self.preset.currentData() == "ov" else "PROTECTION_OT")
         p = ex["plant"]
         if p["kind"] == "capacitor_energy":
             labels = [tr("초기 전압 V0 [V]", "initial voltage V0 [V]"), "C [µF]", tr("유입 전력 P0 [kW]", "injected P0 [kW]"),
@@ -198,9 +197,14 @@ class ProtectionPage(QWidget):
         self.rip_f.setValue(nm[0]["ripple_hz"] if nm else 0.0)
         self.warn_need.setValue(ex["warning_needed_ms"] or 0.0)
 
+    def apply_project(self, _project=None):
+        """The OV example's DC-link capacitance is the project's capacitor bank."""
+        if self.preset.currentData() == "ov":
+            self.p1.setValue(float(self.win.state.example("PROTECTION")["plant"]["C_uF"]))
+
     def body(self) -> dict:
         kind = self.preset.currentData()
-        ex = copy.deepcopy(api.EXAMPLE_PROTECTION if kind == "ov" else api.EXAMPLE_PROTECTION_OT)
+        ex = self.win.state.example("PROTECTION" if kind == "ov" else "PROTECTION_OT")
         if kind == "ov":
             ex["plant"] = {"kind": "capacitor_energy", "x0": self.x0.value(), "C_uF": self.p1.value(),
                            "P0_kW": self.p2.value(), "t_ramp_ms": self.p3.value()}

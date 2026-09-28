@@ -1,4 +1,4 @@
-# 요구 추적표 (Traceability) — 0.3.0
+# 요구 추적표 (Traceability) — 0.4.0
 
 이 문서는 독립 엔지니어링 리뷰(handoff), 감사 증거 패키지(dc7b338)의 재현 스크립트, 그리고 세 추가 명세
 (OEW/HEV, 파워모듈별 손실·단계별 효율, 가변 PWM·anti-jerk)의 각 항목이 **어디에 구현되었고 무엇으로 확인했는지**를
@@ -164,9 +164,61 @@
 | R1-1 | 모듈 모델이 켜진 코어 경로의 회귀 기준(`module_core_anchor`); 모듈 데이터가 점을 덮지 못할 때의 DC claim 사유(OUTSIDE_MODEL_DOMAIN) | implemented |
 | R1-2 | `module_loss`를 모델 층으로(타입 계약), 커널 손실 계약(`loss_kind`·`i2_dc`·`pointwise_loss`)으로 DC 논증 분기 일원화; 격자 DC를 '미평가'로(모듈 모델에서 위반으로 보이던 지도·envelope) | implemented |
 | 아키텍처 | 층 규칙·패키지 경계 비공개 이름 0·모듈 수준 순환 0을 테스트로 강제 (`tests/test_architecture.py`) | implemented |
-| R2 | 프로젝트 데이터 패키지 (모든 페이지가 같은 제품 데이터를 참조) | 진행 |
+| R2 | 프로젝트 데이터 패키지: `project.py`(twb-project/1 — 섹션별 parser 검증·digest·provenance, 섹션 간 일관성 규칙 PRJ-01…12, 개정 비교와 영향 분석, 결과의 사용 기록·stale 판정), 내장 합성 프로젝트(`examples.py`)가 모든 페이지 예시의 제품 데이터 출처(`api.example(name, project)`, 내장 예시와 동일함을 테스트), 데스크톱 프로젝트 페이지·배지·페이지별 결과 띠(프로젝트 데이터 / 로컬 변경 / stale), 페이지가 활성 프로젝트에서 제품 입력을 다시 읽음, 기록(JSON·Markdown·PDF)에 프로젝트 맥락, `twb project show/check/diff/export` | implemented (`tests/test_project.py`, 데스크톱 smoke·self-test의 프로젝트 전환) |
 
-## 10. 비목표 (handoff §15, 추가 명세 비목표)
+## 10. 두 번째 독립 리뷰 R2 (기준 main f6f166b)
+
+리뷰의 반례를 모두 재현한 뒤, 각 계약의 **올바른** 동작을 `tests/test_review_r2.py`에 수용 테스트로 고정했습니다
+(리뷰 증거 스크립트는 관찰된 결함을 단언하므로 테스트로 병합하지 않음). 수치는 리뷰 인계서의 값입니다.
+
+| ID | 결함 (요지) | 수정 | 확인 (`test_review_r2.py`) | 상태 |
+|---|---|---|---|---|
+| C01 | covered 영역의 DC 배제를 전체 control domain의 INFEASIBLE로 승격 | 배제 증명은 증명한 영역에만, 나머지 UNKNOWN | `test_c01_*` | implemented |
+| C02 | 1차원 control set을 면적 기준 full coverage로 오인 | 폭 0 집합·경계선·단일 점의 커버리지 | `test_c02_*` | implemented |
+| C03 | DC I² 대역과 witness gate의 수치 허용오차 불일치 | 하나의 acceptance 집합, 수치 allowance 별도 보고 | `test_c03_*` | implemented |
+| C04 | 온도 법칙이 음의 Rs를 만들어도 FEASIBLE | 비수동 법칙 입력 거부, gate의 에너지 상태 검사 | `test_c04_*` | implemented |
+| A1.4 | 모듈 손실 physical capability가 policy witness를 잃음 | accepted policy witness 상속 | `test_a1_*` | implemented |
+| D-R2-01 | REJECTED 정격을 승인된 공급사 증거로 수용 | typed approval + 근거, NaN 조건 불일치, 부호 사분면 | `test_d_r2_01_*` | implemented |
+| D-R2-02 | 다른 모듈 손실·반대 결정이 같은 입력 해시 | 모든 필드의 content hash (`identity.semantic`) | `test_d_r2_02_*` | implemented |
+| D-R2-03 | 통과한 band 요구를 실패한 중심점으로 표시·진단 | accepted band witness가 기본 출력 | `test_d_r2_03_*` | implemented |
+| D-R2-04 | sizing 차트가 미해결 경계를 최소값으로 재승격 | 데이터 경계는 최소 아님, UNKNOWN 사이 섬은 bracket 없음 | `test_d_r2_04_*` | implemented |
+| D-R2-05 | 충전 수용 0이 dominance 진단에서 사라짐 | 0 cap 유지 | `test_d_r2_05_*` | implemented |
+| PT-01 | SiC 열을 가상의 두 소자로 분할 | 물리 다이(채널+바디다이오드) 소유권 | `test_pt01_*` | implemented |
+| PT-02 | 정지 SiC 도통열 절반 손실, 결측 → 0 | 실제 듀티, 같은 데이터 gate | `test_pt02_*` | implemented |
+| PT-03 | 커패시터 열 반복이 발산해도 수렴 보고 | 한 온도 결합해(첫 상향 영점), 독립 잔차, 종료 종류 명시 | `test_pt03_*` | implemented |
+| PT-04 | ESR(T)가 전류 분배에 반영 안 됨 | 같은 온도에서 전류 분배·발열 동시 해 | `test_pt04_*` | implemented |
+| PT-05 | 리플 위치 매핑·도메인 gating으로 PASS/FAIL 반전 | location×quantity 맵, ESR 표 밖 수동성 경계, 주파수별 KCL, Nyquist, 샘플링 허용치 | `test_pt05_*` | implemented |
+| PT-06 | 최대 발열 소자를 하나의 물리 소자로 취급 | 물리 다이별 이력, 유한/주기 미션 | `test_pt06_*` | implemented |
+| PT-07 | 승인된 rise_time 입력이 실제로 냉각 시간 | 가열 구간 t_on | `test_pt07_*` | implemented |
+| PT-08 | 저제동·양측 소산에서 감속기 역변환 오류 | 맞물림 동력 Q 분기 | `test_pt08_*` | implemented |
+| PT-09 | 고정 정책 A/B가 변조를 고정 안 함 | 공통 변조 강제, 범위 표시 | `test_pt09_*` | implemented |
+| PD-01 | 적용 불가·부재 OV 경계를 보장 창으로 승격 | 경계 유효성, 필터 지연 경계 | `test_pd01_*` | implemented |
+| PD-02 | 경고 선행시간을 다른 샘플링 위상에서 조합 | 같은 궤적에서 측정 | `test_pd02_*` | implemented |
+| PD-03 | ASC 연산자와 상/소자 증거 불일치 | 하나의 전각 포괄(sup\|i_phase\| = \|i_dq\|, ∫i² 정확한 최대), 상별 time_above | `test_pd03_*` | implemented |
+| PD-04 | 타임라인 검증 없음; ASC 역적분 | 지평 내 사건 | `test_pd04_*` | implemented |
+| PD-05 | ASC 기계 동역학의 역속도 대칭 깨짐 | 부호 있는 역학, 에너지 원장 | `test_pd05_*` | implemented |
+| PD-06 | 디레이팅 효과를 즉시 냉각으로 오인 | 안전 평형으로의 유계 가열 = containment | `test_pd06_*` | implemented |
+| PD-07 | 반환 검출기 샘플이 무반응 궤적의 값 | 실제 궤적의 샘플 | `test_pd07_*` | implemented |
+| CT-01 | PWM 미검증 필수 제약을 ADMISSIBLE로 승인 | 필수/해당없음/권고, 열린 필수 검사는 UNKNOWN | `test_ct01_*` | implemented |
+| CT-02 | HEV 공유 DC 전압을 동시에 풀지 않음 | 비조정 bus V = OCV − R·I와 기계를 함께 해, 수동성 상한 증명; boost 배터리측 | `test_ct02_*` | implemented |
+| CT-03 | anti-jerk 요구량 절반만 전달해도 PASS | 요청 목표 기준 응답 | `test_ct03_*` | implemented |
+| CT-04 | 안전 반응 완료를 마지막 위반 샘플로 계산 | 정확한 액추에이터 지수 반응 시각 | `test_ct04_*` | implemented |
+| CT-05 | HEV 발전기 ramp 에너지 적분 오류 | 정확한 원장 E_peak = (G−S)td + tr(G−S)²/(2G) | `test_ct05_*` | implemented |
+| CT-06 | 연속 여유와 실제 샘플 루프 불일치 | 샘플 루프 스펙트럼 반경·이산 PM이 판정 | `test_ct06_*` | implemented |
+| CT-07 | OEW 인증 각도 경계의 부호 오류 | 고조파 표현 정규화, \|a\| 경계, 정확한 상 피크 | `test_ct07_*` | implemented |
+| EMC-01 | 표본/보정 EMI를 대역 전체 판정으로 승격 | 연속 수신 대역의 정확 열거(창 변화점·한계 꼭짓점; 표시 격자 무관), claim 영역 = 대역 ∩ 보정 구간 ∩ 망 유효 ∩ RBW ∩ 한계(선언 공백 제외), 완전한 보정 기록(근거·holdout·취득·오차 모델·유한 한계·구간·set-up·망 식별자·소스 범위)과 매 실행 적용성 재검사, 방법·단위 게이트, RBW 구간 | `test_emc01_*` | implemented |
+| EMC-02 | 측정 trace coverage가 협대역 피크를 놓쳐도 PASS | trace 자체 메타데이터(표현·검출기·RBW·IF 형상·dwell·보정·set-up), 읽음값 사이 손실 경계, 검출기 순위 peak ≥ QP ≥ AV, 적합·여유 분리, 판정 규칙 저장 | `test_emc02_*` | implemented |
+| EMC-03 | 상한 초과를 INFEASIBLE 증인으로 사용 | 하한(E − U−) 초과 주파수만 증인, 중첩은 UNKNOWN | `test_emc03_*` | implemented |
+| EMC-04 | 데드타임 펄스 붕괴로 비물리 스펙트럼 | 게이트 명령 + 턴온 지연 데드타임 + 다이오드 클램프의 스위칭 순서, 최소 펄스 정책, 모순 시간 거부, 요청/평가 fsw, 비정수 비동기 캐리어는 유효 범위 밖; 독립 스위칭 시뮬레이션과 일치 | `test_emc04_*` | implemented |
+| MD-01 | 권선 가능성·기준 식별이 스케일링 인계를 막지 않음 | 두 배치 모두 유효 + 극쌍수 일치 + (선언 시) 기준 = 선언 권선(`WindingDefinition`); 계보가 파생 기계 권선으로; 미선언은 '일반 k_N 사고 실험' — core·API·UI 같은 gate | `test_md01_*` | implemented |
+| MD-02 | 0을 기본값으로, 분수 Q/p 절삭 | 빈칸만 기본값, 0 거부, 정수는 절삭 없이 검증, 상 없는 배치는 구조화된 무효 결과 | `test_md02_*` | implemented |
+| P1-A/B | EMI 파라미터·기계 데이터의 검증된 import (다음 fidelity 권고) | — | — | missing (로드맵: 측정 DPT 에지 family, 측정 부품 임피던스·다중 포트 import, FEA/공급사 dq·손실 데이터 정규화와 holdout 비교) |
+
+이 과정에서 함께 찾아 고친 것: 게이트 이벤트 검사가 관측 창이 자른 펄스를 최소 펄스 위반으로 판정하던 결함
+(`check_gate_events`, 창 경계 펄스는 폭을 판정하지 않고 open으로 계수 — `test_a_pulse_cut_by_the_observation_window_is_not_a_runt`),
+EMI·PWM 예시의 데드타임 불일치(1.0 µs vs 손실 1.5 µs — 프로젝트의 제어기 한 값으로 통일).
+
+## 11. 비목표 (handoff §15, 추가 명세 비목표)
 
 generic motor CAD/FEA 복제, 정적 ASC로 demag/SOA 승인, 일반 IGBT 식으로 SiC 수명 보증, 드라이버 typical delay로 ASIL 승인,
 class 번호로 EMC 합격률, 평균 dq로 NVH/베어링/MHz 임피던스, 생산 anti-jerk 제어기 자동 납품, 보편 안정성 인증서,

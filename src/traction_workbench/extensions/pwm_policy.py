@@ -779,14 +779,19 @@ def minimum_pulse(m: float, modulation: str, fsw_Hz: float, min_pulse_s: float, 
                     "voltage and current leave the linear averaged model"}
 
 
-def check_gate_events(edges_hi: list, edges_lo: list, min_pulse_s: float, deadtime_s: float, t_end_s: float) -> dict:
+def check_gate_events(edges_hi: list, edges_lo: list, min_pulse_s: float, deadtime_s: float, t_end_s: float,
+                      t_start_s: float = 0.0) -> dict:
     """Legality of complementary gate signals of one leg (imported or generated): edges are (t, +1/-1).
 
     Detects missing / duplicate edges (two rises in a row), pulses shorter than the minimum and dead-time
-    violations (upper on while lower on, or less than the dead time between them)."""
+    violations (upper on while lower on, or less than the dead time between them).  A pulse the observation window
+    cuts (still on at t_end, or on from t_start) is not a complete pulse: its width is not judged against the
+    minimum (it is counted as open), its overlap with the other switch still is."""
     problems = []
+    open_pulses = 0
 
     def pulses(edges, name):
+        nonlocal open_pulses
         out, level, t_on = [], 0, None
         for t, s in sorted(edges):
             if s == +1:
@@ -797,24 +802,26 @@ def check_gate_events(edges_hi: list, edges_lo: list, min_pulse_s: float, deadti
                 if level == 0:
                     problems.append(f"{name}: falling edge without a rising edge at {t:.9g} s")
                 else:
-                    out.append((t_on, t))
+                    out.append((t_on, t, t_on <= t_start_s + 1e-15))
                 level = 0
         if level == 1:
-            out.append((t_on, t_end_s))
+            out.append((t_on, t_end_s, True))
+        open_pulses += sum(1 for p in out if p[2])
         return out
     hi, lo = pulses(edges_hi, "upper"), pulses(edges_lo, "lower")
     for name, ps in (("upper", hi), ("lower", lo)):
-        for a, b in ps:
-            if b - a < min_pulse_s - 1e-15:
+        for a, b, cut in ps:
+            if not cut and b - a < min_pulse_s - 1e-15:
                 problems.append(f"{name}: pulse {1e9 * (b - a):.1f} ns shorter than the minimum {1e9 * min_pulse_s:.1f} ns "
                                 f"at {a:.9g} s")
-    for a, b in hi:
-        for c, d in lo:
+    for a, b, _ in hi:
+        for c, d, _ in lo:
             gap = max(c - b, a - d)                 # < 0: overlap (shoot-through); < dead time: violation
             if gap < deadtime_s - 1e-15:
                 problems.append(f"dead time {1e9 * gap:.1f} ns < {1e9 * deadtime_s:.1f} ns between upper "
                                 f"[{a:.9g}, {b:.9g}] and lower [{c:.9g}, {d:.9g}]")
-    return {"ok": not problems, "problems": problems, "pulses_upper": len(hi), "pulses_lower": len(lo)}
+    return {"ok": not problems, "problems": problems, "pulses_upper": len(hi), "pulses_lower": len(lo),
+            "open_pulses": open_pulses}
 
 
 def counter_pwm(writes: list, t_end_s: float, f_clk_Hz: float, deadtime_s: float, shadow: bool = True,

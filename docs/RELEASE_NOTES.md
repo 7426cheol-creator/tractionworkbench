@@ -1,7 +1,39 @@
-# Traction Workbench v0.3.0 — Release / Handback Notes
+# Traction Workbench v0.4.0 — Release / Handback Notes
 
 기준선: `reference/traction_workbench_spec_v1` (Blueprint, Implementation Handoff, Reference Cases, golden JSON; manifest SHA-256 일치 확인).
 이 문서는 Handoff H12가 요구한 실행 방법, model contract, 제약 목록, 알려진 한계, 검증 실행 결과, 실패/미구현 항목, data provenance, 재현 조건을 담습니다.
+
+## 0.4.0 변경 사항 (v0.3.0 대비)
+
+두 번째 독립 리뷰(기준 main f6f166b)의 결함 45건을 모두 재현하고 고쳤으며, 권고 R2(프로젝트 데이터 패키지)를 이행했습니다.
+항목별 수정·확인 테스트는 [`TRACEABILITY.md`](TRACEABILITY.md) 10절, R2 이행은 [`SYSTEM_REVIEW.md`](SYSTEM_REVIEW.md) 8절에 있습니다.
+모든 수치 fixture는 여전히 구현 검증(V0–V3)입니다.
+
+**정확성 (리뷰 R2)**
+- 코어·결정 기록: 배제 증명은 증명한 영역에만, 폭 0 제어 집합의 커버리지, DC 대역과 gate의 한 허용오차, 비수동 온도 법칙 거부, typed 정격 승인,
+  모든 필드의 content hash, band 요구의 accepted witness, 데이터 경계를 최소 sizing으로 표시하지 않음, 0 cap 유지.
+- 전력·열: SiC 물리 다이 소유권, 정지 시 실제 듀티, 커패시터의 한 온도 결합해(발산을 수렴으로 보고하지 않음, 종료 종류 명시), ESR(T)와
+  전류 분배의 동시 해, 리플 위치 매핑·수동성 경계, 다이별 열 사이클, 가열 구간 t_on, 감속기 맞물림 동력 분기, A/B의 공통 변조.
+- 보호·ASC: 경계 유효성, 같은 궤적의 경고 선행시간, 지평 안의 사건, 전각 포괄 하나(상·소자 증거 공통), 부호 있는 기계 동역학, 안전 평형 containment,
+  실제 궤적의 샘플.
+- 제어: 열린 필수 검사는 UNKNOWN(승인 아님), 비조정 공유 DC 버스 전압을 기계와 동시 해, 요청 목표 기준 anti-jerk 응답, 격자와 무관한 안전 반응 시각,
+  실제 샘플 전류 루프의 안정성, OEW 고조파 표현 불변.
+- **EMI**: 연속 수신 대역의 정확 열거(창 변화점·한계 꼭짓점 — 표시 격자와 무관, 조밀 스윕과 1e-6 dB 일치), claim 영역 = 대역 ∩ 보정 구간 ∩
+  망 유효 ∩ RBW ∩ 한계(승인된 공백만 제외), **보정 기록**의 완전성(근거·holdout·취득·오차 모델·유한 한계·구간·set-up·망 식별자·소스 범위)과
+  매 실행 적용성 재검사, 방법·단위 게이트, 하한 초과 증인만 INFEASIBLE, 측정 trace의 자체 메타데이터·읽음값 사이 손실·검출기 순위·적합/여유
+  분리, 데드타임 턴온 지연·다이오드 클램프의 **스위칭 순서 소스**(독립 스위칭 시뮬레이션과 일치; 요청/평가 fsw 표시).
+- **모터 설계**: k_N 인계는 두 권선 배치 모두 유효하고 극쌍수가 기계와 같을 때만; 선택적 `WindingDefinition`으로 기준 권선을 선언하면 계보가 파생
+  기계로 이어지고, 선언이 없으면 '일반 k_N 사고 실험'으로 표시. 입력한 0은 기본값 1로 바뀌지 않고, 정수는 절삭 없이 검증.
+- 함께 찾은 결함: PWM 게이트 이벤트 검사가 관측 창이 자른 펄스를 최소 펄스 위반으로 판정하던 것.
+
+**프로젝트 데이터 패키지 (R2)**
+- `twb-project/1`: 한 제품의 제품 데이터를 섹션(드라이브·DC 전원·모듈·대안·DC-link·제어기·열망·감속기·안전·EMI set-up)으로 한 번만 보관,
+  섹션별 parser 검증·digest·provenance, 섹션 간 일관성 규칙(PRJ-01…12), 개정과 영향 분석.
+- 내장 합성 프로젝트가 **모든 페이지 예시의 제품 데이터 출처**입니다(`api.example(name, project)`). 통합하며 데드타임(EMI·PWM 전환 1.0 µs ↔
+  손실 1.5 µs)과 EMI 소스의 최소 펄스를 제어기의 한 값으로 맞췄습니다.
+- 데스크톱: 프로젝트 페이지(섹션·일관성·이력·개정 비교, 열기·저장·새 개정), 헤더 배지, 결과가 있는 페이지의 띠 — 프로젝트 데이터 / **로컬 변경** /
+  **stale**(결과 뒤에 그 섹션이 바뀜). 프로젝트를 바꾸면 페이지가 제품 입력을 다시 읽습니다. 의사결정 기록(JSON·Markdown·PDF)에 프로젝트 맥락.
+- CLI: `twb project show | check | diff | export`.
 
 ## 0.3.0 변경 사항 (v0.2.0 대비)
 
@@ -323,6 +355,8 @@ fixture E01(1-node 열) 값 77.6424 °C / 138.6294 s를 재현합니다.
 - 추가 명세의 missing/partial 항목(OEW R-02/R-03, 측정 파형 ⟨v·i⟩, 저장에너지 자동 계산, 동기 PWM·random PWM, 샘플 유효창·stale 샘플,
   차동 인덕턴스 기반 동적 전압 여유, 센서 dropout·wheel slip, 다관성 협조)과 §14 디스커넥터(P2 보류) — [`TRACEABILITY.md`](TRACEABILITY.md).
 - 물리 검증 증거(DPT·열량계·동력계, HIL, EMC 측정 보정, 차량 FRF) 없음: 해당 항목은 evidence_missing으로 표시됩니다.
+- 리뷰 R2의 다음 fidelity 권고(P1-A/B): 측정 DPT 에지 family(전류·Vdc·Tj별 tr/tf), 측정 부품 임피던스·다중 포트 망 import, FEA/공급사 dq 자속·손실
+  데이터 정규화와 holdout 비교 — 미구현(현재 판정은 선언 모델 + 보정 기록의 범위 안에서만).
 - 모든 실패 항목: 없음(검증 실행에서 FAIL 0).
 
 ## 12. 재현 조건

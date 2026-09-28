@@ -1,4 +1,4 @@
-# 시스템 검토 — 의존성·영향·성숙도·전체 맥락 (0.3.0)
+# 시스템 검토 — 의존성·영향·성숙도·전체 맥락 (0.3.0 검토, 0.4.0 이행)
 
 구현한 기능이 많아져서, 기능 **사이의** 의존성과 영향, 각 기능의 성숙도, 전체가 하나의 도구로서 일관된지를
 한 번에 검토했습니다. 방법은 추측이 아니라 측정입니다:
@@ -9,7 +9,8 @@
 - 판정 어휘와 "결측 ≠ 무제한" 규칙이 모든 분석에서 지켜지는지 **감사**했습니다(결측 입력이 조용히 통과로 바뀌는 곳 탐색).
 - 페이지마다 따로 있는 **예시 데이터**가 서로 모순되지 않는지 교차 확인했습니다.
 
-발견한 결함은 이번 검토에서 고쳤고(6절), 구조 문제는 영향 범위와 함께 권고로 남겼습니다(5절). 권고 R1은 이행했습니다(7절).
+발견한 결함은 이번 검토에서 고쳤고(6절), 구조 문제는 영향 범위와 함께 권고로 남겼습니다(5절). 권고 R1(7절)과 R2(8절)는
+이행했습니다. 그 뒤 두 번째 독립 리뷰(기준 f6f166b)의 결함은 [`TRACEABILITY.md`](TRACEABILITY.md) 10절에서 항목별로 닫았습니다.
 
 ## 0. 요약
 
@@ -22,7 +23,7 @@
 | 5 | 변조(듀티) 법칙이 엔진에 **3벌**(+ 그림 1벌) — DPWM1은 섹터 경계 동점 처리까지 서로 다름 | 중복 물리 | **수정**: `modulation.py` 하나로 통합(구 구현과 1e-16 일치 확인) |
 | 6 | 다른 모듈의 비공개 함수 사용 **51곳**(패키지 경계를 넘는 것 33곳); 모든 확장이 숫자 검증 하나 때문에 **자속 모델 모듈**에 의존 | 숨은 결합 | **수정**: `validation.py`, 공개 이름 — 51 → 13(패키지 경계 넘는 것 **0**), 자속 모듈 의존 29 → 11 |
 | 7 | 코어 `physics`가 `extensions.module_loss`를 import — **"확장"이 사실상 코어**: 변경 시 영향이 physics와 같은 30개 엔진 모듈 | 층 위반·숨은 허브 | **수정 (R1, 7절)**: 모델 층·타입 계약·커널 손실 계약, 회귀 기준, 아키텍처 테스트 |
-| 8 | 프로젝트 단위 데이터셋이 없음 — 드라이브·모듈·열·제어기·구동계 예시가 페이지마다 독립 | 맥락 일관성 | 권고 R2 |
+| 8 | 프로젝트 단위 데이터셋이 없음 — 드라이브·모듈·열·제어기·구동계 예시가 페이지마다 독립 | 맥락 일관성 | **이행 (R2, 8절)**: 프로젝트 데이터 패키지, 결과의 사용 기록·stale |
 | 9 | 모든 수치 fixture는 구현 검증(V0–V3); 물리 검증(V4–V6)은 전 영역에서 없음 | 성숙도 | 4절 매트릭스, 권고 R8 |
 
 ## 1. 전체 맥락
@@ -214,7 +215,7 @@ flowchart TB
 | `analysis.efficiency.module_point` | `test_efficiency`, `test_pwm_policy` |
 | `api.EXAMPLE_*` | self-test의 예시 기준값(정책 순위, A/B 판정 등) |
 
-### 5.2 R2 — 프로젝트 데이터셋 (높음)
+### 5.2 R2 — 프로젝트 데이터셋 (완료, 8절)
 
 페이지마다 예시가 독립이라, 페이지를 오가며 얻은 결론이 같은 제품 데이터에서 나온 것이라는 보장이 없습니다.
 남은 예: 열 페이지의 "스위치 1개 평균" 열망(0.20 K/W)과 모듈 경로(0.09 K/W)는 다른 추상화이고, 드라이브라인 액추에이터 τ(1.5 ms)는
@@ -258,3 +259,25 @@ flowchart TB
 | R1-2 발견 | 모듈 모델에서 id–iq 지도의 '모든 한계 만족' 영역이 항상 비고 격자 envelope가 DC 가능 점을 찾지 못함(격자 P_dc NaN을 위반으로 비교) → '격자 미평가'와 사유(그림 범례 포함). capability는 DC 한계가 witness 직접 검사로만 들어간다고 표시(경계는 전기적 상한 — 여전히 상한). 최대 손실 screen은 적용 불가 사유를 모델 이름으로 | `test_grid_dc_is_not_evaluated_with_a_pointwise_model`, `test_module_model_is_pointwise_everywhere` |
 | 아키텍처 테스트 | 층 규칙(지연 import 포함), 패키지 경계 비공개 이름 0(import와 속성 사용), 모듈 수준 순환 0, 모든 모듈의 층 배정 | `tests/test_architecture.py` |
 
+## 8. R2 이행 — 프로젝트 데이터 패키지
+
+목표는 "페이지를 오가며 얻은 결론이 같은 제품 데이터에서 나왔다"를 **보장하고 기록하는 것**입니다. 순서는 "같은 예시가 그대로인지
+먼저 고정하고, 출처를 한 곳으로 옮기고, 결과가 출처를 이름으로 말하게" 입니다.
+
+| 단계 | 내용 | 확인 |
+|---|---|---|
+| 패키지 | `project.py` (`twb-project/1`): 제품 데이터만 담는 섹션(drive, dc_source, module, alternatives, dc_link, controller, thermal, driveline, safety, emi_setup) — 각 섹션은 그 분석의 parser로 검증, 정준 JSON의 SHA-256 digest, provenance(origin·source·revision·qualified·evidence). 시나리오(운전점·미션·요구)는 분석에 남음 | `test_builtin_project_is_valid_and_identified`, `test_sections_are_validated_by_their_parsers`, `test_limits_null_is_not_declared_and_unlimited_is_explicit` |
+| 한 출처 | 내장 합성 프로젝트(`examples.py`)가 모든 페이지 예시의 제품 데이터 출처: `api.example(name, project)`가 시나리오 + 프로젝트 합성, 내장 예시는 그 합성 자체(19개 예시가 동일함을 테스트). 통합하며 드러난 불일치: EMI·PWM 전환 예시의 데드타임 1.0 µs ↔ 손실 1.5 µs, EMI 소스에 없던 제어기 최소 펄스 → 한 값 | `test_page_examples_take_their_product_data_from_the_project`, `test_another_project_changes_every_example_that_reads_it` |
+| 일관성 규칙 | PRJ-01…12: 같은 물리량의 두 값(Foster 합 ≠ Rth, 감속기 비 ≠ 비틀림 모델 비 → INCONSISTENT), 분석을 UNKNOWN/낙관적으로 만드는 조합(시험 데드타임·게이트·전압, 토크 경로가 전류 루프보다 빠름 → WARNING), 다른 추상화 병기(NOTE) | `test_consistency_rules_catch_two_values_for_one_quantity` |
+| 개정·영향 | `with_section`(수정된 작업 사본), `as_revision`(변경 기록 필수), `diff_projects`(바뀐 섹션·경로, 그 섹션을 읽는 분석) — 섹션 단위라 보수적(같은 섹션의 무관한 경로도 영향으로 표시) | `test_revision_diff_names_sections_paths_and_affected_analyses`, `test_working_copy_revision_and_stale_results` |
+| 결과의 출처 | `request_usage`: 결과가 읽은 섹션의 digest와, 구성 요소별로 **프로젝트 데이터인지 로컬 변경인지** — 엔진이 실제로 쓰는 내용(같은 parser로 읽은 객체, 설명 문구 제외, 표 반올림 1e-12)으로 비교. 프로젝트에 없는 섹션은 '프로젝트에 없음'으로 표시(두 제품을 섞지 않음) | `test_request_usage_tells_project_data_from_local_edits` |
+| 데스크톱 | 활성 프로젝트가 드라이브·DC 한계의 출처(모델 페이지 편집은 수정된 작업 사본), 프로젝트 페이지(섹션·일관성·이력·개정 비교, 열기·저장·새 개정), 헤더 배지, 결과가 있는 페이지의 띠(프로젝트 데이터 / 로컬 변경 / **stale** — 결과 뒤에 그 섹션이 바뀜), 프로젝트 전환 시 페이지가 제품 입력을 다시 읽음, 위젯이 없는 필드는 요청으로 그대로 전달. 기록(JSON·Markdown·PDF)에 프로젝트 맥락 | 데스크톱 smoke(전환·stale·로컬 변경), self-test `project:*` |
+| CLI | `twb project show / check / diff / export` | `test_cli_project_commands` |
+
+변경 시 다시 돌릴 것:
+
+| 바꾸는 것 | 재검증 |
+|---|---|
+| `examples.SYNTHETIC_PROJECT` | `test_project`, self-test 예시 기준값(정책 순위, A/B 판정 등), `test_review_r2` |
+| `project.COMPONENTS` / 페이지 요청 형태 | 데스크톱 smoke(기본 페이지 요청은 로컬 변경 없음), self-test `project:usage` |
+| 섹션 parser (`parsers.py`) | `test_project` (섹션 검증), 해당 분석 테스트 |
