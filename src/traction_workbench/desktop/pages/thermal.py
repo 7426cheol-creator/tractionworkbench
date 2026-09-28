@@ -6,7 +6,7 @@ import math
 
 import numpy as np
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import (QFormLayout, QGroupBox, QHBoxLayout, QLabel, QScrollArea, QSplitter, QTabWidget,
+from PySide6.QtWidgets import (QFormLayout, QGroupBox, QLabel, QScrollArea, QSplitter, QTabWidget,
                                QVBoxLayout, QWidget)
 
 from ... import api
@@ -68,8 +68,17 @@ class ThermalPage(QWidget):
         self.vdc = number(600, 1, 2000, "V", 1, 10)
         self.T = number(450, -5000, 5000, "N·m", 2, 5)
         self.dur = number(10, 0.01, 1e6, "s", 2, 1)
+        self.init = combo([(tr("냉각수 온도 평형에서 시작 (모델링된 유일한 시작)", "start at equilibrium with the coolant "
+                               "(the only modelled start)"), "equilibrium_at_coolant"),
+                           (tr("고온 시작 / 이전 부하 직후 (모델 밖 → UNKNOWN)", "hot start / right after a previous load "
+                               "(outside the model → UNKNOWN)"), "hot_start_after_load"),
+                           (tr("미선언 (UNKNOWN)", "not stated (UNKNOWN)"), "")], "equilibrium_at_coolant")
+        self.init.setToolTip(tr("지속시간 판정은 초기 열 상태에 의존합니다. 선언하지 않거나 모델이 표현하지 못하는 시작 상태는 "
+                                "냉간 시작으로 가정하지 않고 UNKNOWN입니다.",
+                                "A duration verdict depends on the initial thermal state; an undeclared start or one the "
+                                "model cannot represent is UNKNOWN, never assumed cold."))
         for lab, wd in ((tr("속도", "speed"), self.n), ("Vdc", self.vdc), (tr("요구 토크", "requested torque"), self.T),
-                        (tr("요구 지속시간", "requested duration"), self.dur)):
+                        (tr("요구 지속시간", "requested duration"), self.dur), (tr("초기 열 상태", "initial thermal state"), self.init)):
             f.addRow(lab, wd)
         v.addWidget(g)
         v.addWidget(self._coolant_box())
@@ -266,7 +275,7 @@ class ThermalPage(QWidget):
         s = self.win.state
         body = s.body(speed_rpm=self.n.value(), Vdc_V=self.vdc.value(), coolant_temp_C=self.c_in.value(),
                       torque_Nm=self.T.value(), duration_s=self.dur.value(), model=spec, durations_s=DURATIONS,
-                      direction=1 if self.T.value() >= 0 else -1)
+                      direction=1 if self.T.value() >= 0 else -1, initial_state=self.init.currentData() or None)
         self.run_btn.setEnabled(False)
         self.win.runner.run("thermal", tr("열 가용성", "thermal"), _task, self._show, body, spec, on_error=self._err)
 

@@ -97,6 +97,15 @@ def decision_markdown(rec) -> str:
         L.append(f"> Reasons: {', '.join(r.value for r in v.reasons)}")
     for q in rec.qualifiers:
         L.append(f"> Qualifier: {q}")
+    lay = rec.layers
+    L += ["", "## Claim layers (not one boolean)", "",
+          "| layer | status | meaning |", "|---|---|---|",
+          f"| mathematical | {lay['mathematical']['status']} | {lay['mathematical']['meaning']} |",
+          f"| model | {lay['model']['verdict']} ({lay['model']['status']}) | {lay['model']['meaning']} |",
+          f"| requirement | {lay['requirement']['status']} | "
+          + ("; ".join(lay['requirement']['open_items']) or "complete for this question") + " |",
+          f"| qualification | {lay['qualification']['status']} | {lay['qualification']['meaning']} |",
+          "", "Simplified sub-models: " + "; ".join(lay["qualification"]["sub_models"])]
     r = rec.requirement
     L += ["", "## Requirement (original wording, unchanged)", "", f"> {r.text}", "",
           "| item | interpretation |", "|---|---|",
@@ -120,8 +129,15 @@ def decision_markdown(rec) -> str:
             a = cr.solution.active_loss_candidate
             L += ["", f"_Active-loss candidate (outside the default policy, not adopted): id = {fmt(a.id_A, 7, 'A')}, "
                       f"iq = {fmt(a.iq_A, 7, 'A')}, P_dc = {fmt(a.Pdc_W, 7, 'W')}._"]
+        if cr.witness_torque_Nm is not None and cr.witness_solution is not None \
+                and cr.witness_solution is not cr.solution:
+            L += ["", f"_Band witness: {fmt(cr.witness_torque_Nm, 6, 'N·m')} - the static, DC and duration parts are "
+                      f"evaluated at this one witness._"]
         cap = cr.capability
-        if cap is not None and cap.value_Nm is not None:
+        if cap is not None and cap.value_Nm is not None and not cap.accepted:
+            L += ["", "### Capability at this condition", "",
+                  "- Policy capability not established (diagnostic only): " + "; ".join(cap.gate_messages)]
+        elif cap is not None and cap.value_Nm is not None:
             L += ["", "### Capability at this condition", "",
                   f"- Policy capability ({'max' if cap.direction > 0 else 'min'}): **{fmt(cap.value_Nm, 7, 'N·m')}** "
                   f"({'certified, bound ' + fmt(cap.bound_Nm, 7, 'N·m') if cap.certified else 'sampled scan'}; "

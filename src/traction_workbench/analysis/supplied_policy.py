@@ -7,6 +7,16 @@ outside the table or a Vdc the table was not calibrated for gives UNKNOWN
 reported as a policy gap and never substituted, so an existing policy's
 failure is not overwritten by another policy's success.  Static success is
 not a proof of closed-loop dynamics, estimation or transient behaviour.
+
+Independent review F06: the commanded point passes the same witness gate as
+every other result - a model-validity issue, a constraint that could not be
+evaluated (e.g. DC power without a loss model) or a DC limit that can bind but
+was not declared gives UNKNOWN, never a pass.  The numerical torque residual is
+not a customer torque-accuracy requirement: a torque error larger than the
+numerical budget is judged only against an explicitly stated accuracy
+(``accuracy_Nm``); without one the claim is UNKNOWN (REQUIREMENT_INCOMPLETE).
+The table's own ``torque_tolerance_Nm`` is reported as the supplier's declared
+table accuracy, not used as the pass criterion.
 """
 
 from __future__ import annotations
@@ -18,11 +28,12 @@ import numpy as np
 
 from ..errors import InputValidationError, OutsideModelDomain
 from ..models.components import DriveModel
-from ..models.flux import _axis, _finite, _interval
+from ..validation import axis as _axis, finite as _finite, interval as _interval
 from ..models.provenance import Provenance
 from ..physics import DriveKernel, evaluate_point
 from ..scenario import Scenario
 from ..settings import DEFAULT_SETTINGS, NumericalSettings
+from ..solvers.gate import DC_GROUPS, HARD_GROUPS, check_witness
 from ..solvers.policy import PolicyEvaluator
 from ..status import Claim, Evidence, EvidenceKind, Reason, Status
 
@@ -95,10 +106,22 @@ class CurrentPolicyTable:
 
 
 def evaluate_supplied_policy(table: CurrentPolicyTable, drive: DriveModel, scenario: Scenario, T_request: float,
-                             settings: NumericalSettings = DEFAULT_SETTINGS, compare_min_current: bool = True) -> dict:
+                             settings: NumericalSettings = DEFAULT_SETTINGS, compare_min_current: bool = True,
+                             accuracy_Nm: float | None = None) -> dict:
+    """``accuracy_Nm``: the customer's torque-accuracy requirement (None = not stated)."""
     k = DriveKernel(drive, scenario, settings)
     scope = f"supplied static policy {table.policy_id} rev {table.revision}; static fundamental steady state"
     q = f"static achievement of {T_request:g} N*m at {scenario.speed_rpm:g} rpm by the supplied current map"
+    if accuracy_Nm is not None:
+        accuracy_Nm = _finite("accuracy_Nm", accuracy_Nm)
+        if accuracy_Nm < 0:
+            raise InputValidationError("torque accuracy must be >= 0", field="accuracy_Nm")
+    if k.issues:
+        claim = Claim("supplied_policy", Status.UNKNOWN, q, scope, table.policy_id,
+                      reasons=tuple(dict.fromkeys(i.reason for i in k.issues)),
+                      evidence=tuple(Evidence.make(EvidenceKind.DIRECT_EVALUATION, i.message) for i in k.issues),
+                      detail="the motor model is not valid for this scenario (model-validity gate)")
+        return {"claim": claim.to_dict(), "operating_point": None, "policy_gap": None}
     cmd = T_request
     if table.torque_command_basis == "electromagnetic":
         if k.tau_rot is None:
@@ -124,16 +147,32 @@ def evaluate_supplied_policy(table: CurrentPolicyTable, drive: DriveModel, scena
         return {"claim": claim.to_dict(), "operating_point": None, "policy_gap": None}
     terr = None if pt.Tshaft_Nm is None else pt.Tshaft_Nm - T_request
     viol = [c.name for c in pt.violations()]
+    tshaft = "undefined" if pt.Tshaft_Nm is None else f"{pt.Tshaft_Nm:.6g} N*m"
     ev = [Evidence.make(EvidenceKind.DIRECT_EVALUATION,
-                        f"table command id = {idq[0]:.6g} A, iq = {idq[1]:.6g} A -> T_shaft = {pt.Tshaft_Nm:.6g} N*m")]
-    if terr is None:
-        st, reasons, detail = Status.UNKNOWN, (Reason.MISSING_INPUT,), "shaft torque undefined (rotational loss missing)"
-    elif abs(terr) > table.torque_tolerance_Nm:
-        st, reasons = Status.INFEASIBLE, (Reason.CONSTRAINT_VIOLATION,)
-        detail = f"the supplied policy delivers {pt.Tshaft_Nm:.6g} N*m (error {terr:+.4g} N*m > tolerance " \
-                 f"{table.torque_tolerance_Nm:g} N*m)"
-    elif viol:
+                        f"table command id = {idq[0]:.6g} A, iq = {idq[1]:.6g} A -> T_shaft = {tshaft}",
+                        table_declared_accuracy_Nm=table.torque_tolerance_Nm, customer_accuracy_Nm=accuracy_Nm)]
+    # the gate at the commanded point (torque is judged separately below: accuracy != numerical residual)
+    gate = check_witness(k, pt.id_A, pt.iq_A, point=pt, groups=HARD_GROUPS, require_dc=True, include_validity=False)
+    not_eval = [m for m in gate.messages if "not evaluated" in m or "not declared" in m or "undefined" in m]
+    from ..solvers.gate import torque_tolerance
+    num_tol = torque_tolerance(k)
+    if viol:
         st, reasons, detail = Status.INFEASIBLE, (Reason.CONSTRAINT_VIOLATION,), "violations: " + ", ".join(viol)
+    elif terr is None:
+        st, reasons, detail = Status.UNKNOWN, (Reason.MISSING_INPUT,), "shaft torque undefined (rotational loss missing)"
+    elif accuracy_Nm is not None and abs(terr) > accuracy_Nm:
+        st, reasons = Status.INFEASIBLE, (Reason.CONSTRAINT_VIOLATION,)
+        detail = (f"the supplied policy delivers {pt.Tshaft_Nm:.6g} N*m (error {terr:+.4g} N*m > stated torque "
+                  f"accuracy {accuracy_Nm:g} N*m)")
+    elif accuracy_Nm is None and abs(terr) > num_tol:
+        st, reasons = Status.UNKNOWN, (Reason.REQUIREMENT_INCOMPLETE,)
+        detail = (f"the supplied policy delivers {pt.Tshaft_Nm:.6g} N*m (error {terr:+.4g} N*m, above the numerical "
+                  f"residual budget {num_tol:.2g} N*m); no customer torque-accuracy requirement is stated, so this "
+                  f"error is neither accepted nor rejected (the table's declared accuracy "
+                  f"{table.torque_tolerance_Nm:g} N*m is not a requirement)")
+    elif not_eval:
+        st, reasons = Status.UNKNOWN, (Reason.MISSING_INPUT,)
+        detail = "not a pass - " + "; ".join(not_eval)
     else:
         st, reasons, detail = Status.FEASIBLE, (), "static command meets every constraint (not a dynamics proof)"
     claim = Claim("supplied_policy", st, q, scope, table.policy_id, reasons=reasons, evidence=tuple(ev), detail=detail)
@@ -154,4 +193,7 @@ def evaluate_supplied_policy(table: CurrentPolicyTable, drive: DriveModel, scena
                 "minimum_current_voltage_margin_V": mp.voltage_margin_V,
                 "supplied_id_A": pt.id_A, "minimum_current_id_A": mp.id_A,
             })
-    return {"claim": claim.to_dict(), "operating_point": pt.to_dict(), "torque_error_Nm": terr, "policy_gap": gap}
+    return {"claim": claim.to_dict(), "operating_point": pt.to_dict(), "torque_error_Nm": terr,
+            "torque_error_budget": {"numerical_residual_Nm": num_tol, "customer_accuracy_Nm": accuracy_Nm,
+                                    "table_declared_accuracy_Nm": table.torque_tolerance_Nm},
+            "gate": gate.to_dict(), "policy_gap": gap}

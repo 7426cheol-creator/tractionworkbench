@@ -49,6 +49,12 @@ class Reason(str, Enum):
     OUT_OF_SCOPE = "OUT_OF_SCOPE"
     CONSTRAINT_VIOLATION = "CONSTRAINT_VIOLATION"
     NECESSARY_CONDITION_VIOLATED = "NECESSARY_CONDITION_VIOLATED"
+    RATING_NOT_MET = "RATING_NOT_MET"                  # outside a validated rating: not rated, not "physically impossible"
+    CONFLICTING_EVIDENCE = "CONFLICTING_EVIDENCE"      # equally authoritative sources disagree
+    BOUND_INCONCLUSIVE = "BOUND_INCONCLUSIVE"          # a conservative bound exceeds the limit; no violation witness
+    REQUIREMENT_INCOMPLETE = "REQUIREMENT_INCOMPLETE"  # the requirement lacks a definition needed to decide
+    COUPLED_MODEL_REQUIRED = "COUPLED_MODEL_REQUIRED"  # the answer depends on a source/load coupling not modelled
+    SCREENING_ONLY = "SCREENING_ONLY"                  # unvalidated screening model: margins / needs, never a pass
 
 
 class EvidenceKind(str, Enum):

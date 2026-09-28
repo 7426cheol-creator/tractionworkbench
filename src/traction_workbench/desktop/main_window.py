@@ -15,9 +15,16 @@ from ..io import load_json_file
 from . import theme
 from .pages.decision import DecisionPage
 from .pages.design import DesignPage
+from .pages.efficiency import EfficiencyPage
+from .pages.emi import EmiPage
 from .pages.explorer import ExplorerPage
+from .pages.machine import MachinePage
 from .pages.model import ModelPage, examples_dir
+from .pages.oew_hev import OewHevPage
 from .pages.performance import PerformancePage
+from .pages.power import PowerPage
+from .pages.protection import ProtectionPage
+from .pages.pwm_driveline import PwmDrivelinePage
 from .pages.safety import SafetyPage
 from .pages.thermal import ThermalPage
 from .pages.trajectory import TrajectoryPage
@@ -33,7 +40,14 @@ PAGES = (
     ("performance", lambda: tr("성능 곡선·맵", "Envelope & maps"), PerformancePage),
     ("design", lambda: tr("설계·병목", "Design & bottleneck"), DesignPage),
     ("safety", lambda: tr("안전 스크리닝", "Safety screening"), SafetyPage),
+    ("protection", lambda: tr("보호·고장", "Protection & fault"), ProtectionPage),
     ("thermal", lambda: tr("열·지속시간", "Thermal & duration"), ThermalPage),
+    ("power", lambda: tr("전력변환·수명", "Power stage & life"), PowerPage),
+    ("efficiency", lambda: tr("효율·모듈 비교", "Efficiency & modules"), EfficiencyPage),
+    ("pwm_driveline", lambda: tr("가변 PWM·Anti-jerk", "Variable PWM & anti-jerk"), PwmDrivelinePage),
+    ("oew_hev", lambda: tr("OEW·HEV", "OEW & HEV"), OewHevPage),
+    ("emi", lambda: tr("EMI (전도성)", "EMI (conducted)"), EmiPage),
+    ("machine", lambda: tr("모터 설계", "Machine design"), MachinePage),
     ("model", lambda: tr("모델·데이터", "Model & data"), ModelPage),
     ("verification", lambda: tr("검증 (V&V)", "Verification"), VerificationPage),
 )

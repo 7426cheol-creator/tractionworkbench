@@ -9,6 +9,7 @@
     twb capability --n 12000 --vdc 600 [--direction -1] [--kind policy|physical|electrical]
     twb curve --vdc 600
     twb acceptance                        production output vs the golden fixtures
+    twb exchange [OUT.json]               MathWorks-port exchange package (conventions, identities, fixtures)
     twb selftest OUT_DIR                  headless check of the desktop application (screenshots + report)
 """
 
@@ -22,7 +23,7 @@ from pathlib import Path
 from . import __version__
 from . import service as S
 from . import spec_fixtures as sf
-from .decision import _jsonable
+from .decision import jsonable as _jsonable
 from .errors import InputValidationError
 
 
@@ -157,6 +158,15 @@ def cmd_curve(args):
               f"{f(row['policy_min_Nm']):>11} {f(row['electrical_min_Nm']):>10}  {', '.join(row['policy_max_limited_by'])}")
 
 
+def cmd_exchange(args):
+    from .exchange import build_package
+    pkg = build_package(include_examples=not args.no_examples)
+    out = Path(args.out)
+    out.write_text(json.dumps(_jsonable(pkg), indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"exchange package ({pkg['schema']}, {len(pkg['fixtures'])} fixtures) written to {out}")
+    return 0
+
+
 def cmd_acceptance(args):
     a = S.acceptance_summary()
     if args.json:
@@ -192,6 +202,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--lang", default="ko", choices=("ko", "en"))
     p.add_argument("--no-envelope", action="store_true", help="skip the T-n envelope page (faster)")
     p.set_defaults(fn=cmd_report)
+    p = sub.add_parser("exchange", help="MathWorks-port exchange package: conventions, identities, fixtures (JSON)")
+    p.add_argument("out", nargs="?", default="twb_exchange.json")
+    p.add_argument("--no-examples", action="store_true", help="omit the example inputs")
+    p.set_defaults(fn=cmd_exchange)
     p = sub.add_parser("selftest", help="headless check of the desktop application")
     p.add_argument("out", nargs="?", default="selftest_out")
     p.set_defaults(fn=cmd_selftest)

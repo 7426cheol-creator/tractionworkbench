@@ -324,6 +324,10 @@ class ThermalModelEditor(QWidget):
         self.source = QLineEdit()
         self.validated = QCheckBox(tr("검증된 모델 (조건이 일치할 때만 FEASIBLE/INFEASIBLE 판정)",
                                       "validated model (definite verdicts only at matching conditions)"))
+        self.evidence = QLineEdit()
+        self.evidence.setPlaceholderText(tr("검증 근거: 보고서 번호·개정·조건 (없으면 '검증'은 증거 없는 선언)",
+                                            "validation evidence: report id, revision, conditions (empty: a claim "
+                                            "without evidence)"))
         self.v_temp = QCheckBox(tr("유효 냉각수 온도", "valid coolant temp."))
         self.v_temp_lo, self.v_temp_hi = number(60, -40, 150, "°C", 1), number(70, -40, 150, "°C", 1)
         self.v_flow = QCheckBox(tr("유효 유량", "valid flow"))
@@ -333,14 +337,16 @@ class ThermalModelEditor(QWidget):
         g.addWidget(QLabel(tr("출처", "source")), 1, 0)
         g.addWidget(self.source, 1, 1, 1, 3)
         g.addWidget(self.validated, 2, 0, 1, 4)
-        g.addWidget(self.v_temp, 3, 0)
-        g.addWidget(self.v_temp_lo, 3, 1)
-        g.addWidget(QLabel("–"), 3, 2)
-        g.addWidget(self.v_temp_hi, 3, 3)
-        g.addWidget(self.v_flow, 4, 0)
-        g.addWidget(self.v_flow_lo, 4, 1)
+        g.addWidget(QLabel(tr("검증 근거", "evidence")), 3, 0)
+        g.addWidget(self.evidence, 3, 1, 1, 3)
+        g.addWidget(self.v_temp, 4, 0)
+        g.addWidget(self.v_temp_lo, 4, 1)
         g.addWidget(QLabel("–"), 4, 2)
-        g.addWidget(self.v_flow_hi, 4, 3)
+        g.addWidget(self.v_temp_hi, 4, 3)
+        g.addWidget(self.v_flow, 5, 0)
+        g.addWidget(self.v_flow_lo, 5, 1)
+        g.addWidget(QLabel("–"), 5, 2)
+        g.addWidget(self.v_flow_hi, 5, 3)
         buttons = QHBoxLayout()
         for text, fn in ((tr("+ 노드 추가", "+ node"), self.add_node), (tr("예시로 초기화", "reset to example"), self.reset),
                          (tr("JSON 불러오기…", "load JSON…"), self.load_file), (tr("JSON 저장…", "save JSON…"), self.save_file)):
@@ -353,7 +359,7 @@ class ThermalModelEditor(QWidget):
         lay.addLayout(buttons)
         lay.addWidget(self.tabs, 1)
         lay.addWidget(meta)
-        for w in (self.model_id, self.source):
+        for w in (self.model_id, self.source, self.evidence):
             w.textChanged.connect(self.changed)
         for w in (self.validated, self.v_temp, self.v_flow):
             w.toggled.connect(self.changed)
@@ -389,6 +395,7 @@ class ThermalModelEditor(QWidget):
         self.model_id.setText(spec.get("model_id", "UI_THERMAL"))
         self.source.setText(spec.get("source", ""))
         self.validated.setChecked(bool(spec.get("validated")))
+        self.evidence.setText(str(spec.get("validation_evidence") or ""))
         val = spec.get("validity") or {}
         self.v_temp.setChecked("coolant_temp_C" in val)
         if "coolant_temp_C" in val:
@@ -408,7 +415,7 @@ class ThermalModelEditor(QWidget):
         nodes = [self.tabs.widget(i).spec() for i in range(self.tabs.count())]
         out = {"model_id": self.model_id.text().strip() or "UI_THERMAL", "revision": "ui",
                "validated": self.validated.isChecked(), "source": self.source.text().strip() or "desktop editor",
-               "nodes": nodes}
+               "validation_evidence": self.evidence.text().strip(), "nodes": nodes}
         val = {}
         if self.v_temp.isChecked():
             val["coolant_temp_C"] = [self.v_temp_lo.value(), self.v_temp_hi.value()]

@@ -12,12 +12,19 @@ import math
 from dataclasses import dataclass, replace
 
 from .errors import InputValidationError
-from .models.flux import _finite
+from .validation import finite as _finite
 
 
 def _opt_nonneg(name: str, value):
+    """None = not declared (never read as unlimited); math.inf = explicitly declared unlimited."""
     if value is None:
         return None
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        raise InputValidationError(f"expected a number, got {value!r}", field=name) from None
+    if math.isinf(v) and v > 0:
+        return v
     v = _finite(name, value)
     if v < 0:
         raise InputValidationError("limit magnitudes must be >= 0", field=name)
@@ -41,16 +48,23 @@ class DcSourceLimits:
         return all(v is not None for v in (self.discharge_power_max_W, self.charge_power_max_W,
                                            self.discharge_current_max_A, self.charge_current_max_A))
 
+    @property
+    def any_declared(self) -> bool:
+        """At least one DC limit was declared (a finite value or an explicit math.inf)."""
+        return any(v is not None for v in (self.discharge_power_max_W, self.charge_power_max_W,
+                                           self.discharge_current_max_A, self.charge_current_max_A))
+
     def effective_discharge_W(self, vdc: float) -> float | None:
+        """Tightest finite discharge-side power bound; None when no finite limit binds."""
         vals = [v for v in (self.discharge_power_max_W,
                             None if self.discharge_current_max_A is None else vdc * self.discharge_current_max_A)
-                if v is not None]
+                if v is not None and math.isfinite(v)]
         return min(vals) if vals else None
 
     def effective_charge_W(self, vdc: float) -> float | None:
         vals = [v for v in (self.charge_power_max_W,
                             None if self.charge_current_max_A is None else vdc * self.charge_current_max_A)
-                if v is not None]
+                if v is not None and math.isfinite(v)]
         return min(vals) if vals else None
 
     def describe(self) -> dict:
@@ -59,7 +73,8 @@ class DcSourceLimits:
             "charge_power_max_W": self.charge_power_max_W,
             "discharge_average_current_max_A": self.discharge_current_max_A,
             "charge_average_current_max_A": self.charge_current_max_A,
-            "meaning": "average power/current at the inverter DC terminal (not ripple RMS or transient peak)",
+            "meaning": "average power/current at the inverter DC terminal (not ripple RMS or transient peak); "
+                       "null = not declared (never read as unlimited), Infinity = declared unlimited",
             "source": self.source,
         }
 

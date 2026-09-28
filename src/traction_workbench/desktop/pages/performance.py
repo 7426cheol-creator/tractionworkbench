@@ -144,8 +144,9 @@ class PerformancePage(QWidget):
             g = mp["grids"]
             st = {0: "OK", 1: "DC_LIMIT", 2: "NO_SOLUTION", 3: "UNKNOWN"}[int(mp["status"][i, j])]
             parts = [f"n = {sp[j]:.0f} rpm", f"T = {tq[i]:.1f} N·m", st]
-            for key, lab, sc in (("eta", "η", 100), ("I_rms_A", "I_rms", 1), ("id_A", "id", 1), ("iq_A", "iq", 1),
-                                 ("P_loss_W", "loss kW", 1e-3), ("m_linear", "m", 1), ("pf", "PF", 1)):
+            for key, lab, sc in (("eta", "η_inv+motor", 100), ("I_rms_A", "I_rms", 1), ("id_A", "id", 1), ("iq_A", "iq", 1),
+                                 ("P_loss_W", "loss kW", 1e-3), ("P_loss_known_W", "known loss kW", 1e-3),
+                                 ("m_linear", "m", 1), ("pf", "PF", 1)):
                 val = g[key][i, j]
                 if np.isfinite(val):
                     parts.append(f"{lab} = {val * sc:.4g}")

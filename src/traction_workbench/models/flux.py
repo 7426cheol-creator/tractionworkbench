@@ -19,29 +19,11 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ..errors import InputValidationError, OutsideModelDomain
+from ..validation import axis as _axis, finite as _finite, interval as _interval  # noqa: F401 (re-export)
 
 _INF = math.inf
 
 
-def _finite(name: str, value: float) -> float:
-    try:
-        v = float(value)
-    except (TypeError, ValueError):
-        raise InputValidationError(f"expected a number, got {value!r}", field=name) from None
-    if not math.isfinite(v):
-        raise InputValidationError(f"non-finite value {value!r}", field=name)
-    return v
-
-
-def _interval(name: str, pair) -> tuple[float, float]:
-    try:
-        lo, hi = pair
-    except (TypeError, ValueError):
-        raise InputValidationError(f"expected [lo, hi], got {pair!r}", field=name) from None
-    lo, hi = _finite(name, lo), _finite(name, hi)
-    if lo > hi:
-        raise InputValidationError(f"lower bound {lo} exceeds upper bound {hi}", field=name)
-    return lo, hi
 
 
 @dataclass(frozen=True)
@@ -154,22 +136,6 @@ class ConstantFluxModel:
         return out
 
 
-def _axis(name: str, values) -> np.ndarray:
-    try:
-        arr = np.array(values, dtype=float)
-    except (TypeError, ValueError):
-        raise InputValidationError("axis must be numeric", field=name) from None
-    if arr.ndim != 1 or arr.size < 2:
-        raise InputValidationError("axis must be one-dimensional with at least 2 points", field=name)
-    if not np.all(np.isfinite(arr)):
-        raise InputValidationError("axis contains non-finite values", field=name)
-    diffs = np.diff(arr)
-    if np.any(diffs == 0):
-        raise InputValidationError("axis contains duplicate values", field=name)
-    if np.any(diffs < 0):
-        raise InputValidationError("axis must be strictly increasing", field=name)
-    arr.setflags(write=False)
-    return arr
 
 
 @dataclass(frozen=True, eq=False)
@@ -319,25 +285,42 @@ class FluxMapPlane:
 
     # -- magnetic consistency --------------------------------------------
 
-    def reciprocity_report(self, rel_tol: float = 1e-3, abs_tol_H: float = 1e-12) -> dict:
-        """Cross-derivative reciprocity and differential-inductance plausibility.
+    def _node_derivatives(self):
+        """Second-order derivatives at interior nodes, valid on NON-uniform axes (independent review F10).
 
-        Uses central differences on interior nodes whose full stencil is valid.
-        Passing this check does not validate the saturation model itself.
+        f'(x_i) ~ [h-^2 f(i+1) - h+^2 f(i-1) + (h+^2 - h-^2) f(i)] / (h- h+ (h- + h+));
+        the plain secant (f(i+1) - f(i-1)) / (x(i+1) - x(i-1)) is only first order on a non-uniform grid.
         """
         ax_d, ax_q = self.id_axis_A, self.iq_axis_A
-        m = self.valid
         psd, psq = self.psi_d_Wb, self.psi_q_Wb
-        stencil = m[1:-1, 1:-1] & m[2:, 1:-1] & m[:-2, 1:-1] & m[1:-1, 2:] & m[1:-1, :-2]
-        hd = (ax_d[2:] - ax_d[:-2])[:, None]
-        hq = (ax_q[2:] - ax_q[:-2])[None, :]
+        hm_d = (ax_d[1:-1] - ax_d[:-2])[:, None]
+        hp_d = (ax_d[2:] - ax_d[1:-1])[:, None]
+        hm_q = (ax_q[1:-1] - ax_q[:-2])[None, :]
+        hp_q = (ax_q[2:] - ax_q[1:-1])[None, :]
+
+        def dd(f):
+            return (hm_d ** 2 * f[2:, 1:-1] - hp_d ** 2 * f[:-2, 1:-1] + (hp_d ** 2 - hm_d ** 2) * f[1:-1, 1:-1]) / \
+                (hm_d * hp_d * (hm_d + hp_d))
+
+        def dq(f):
+            return (hm_q ** 2 * f[1:-1, 2:] - hp_q ** 2 * f[1:-1, :-2] + (hp_q ** 2 - hm_q ** 2) * f[1:-1, 1:-1]) / \
+                (hm_q * hp_q * (hm_q + hp_q))
+
         with np.errstate(invalid="ignore"):
-            ldd = (psd[2:, 1:-1] - psd[:-2, 1:-1]) / hd
-            ldq = (psd[1:-1, 2:] - psd[1:-1, :-2]) / hq
-            lqd = (psq[2:, 1:-1] - psq[:-2, 1:-1]) / hd
-            lqq = (psq[1:-1, 2:] - psq[1:-1, :-2]) / hq
+            return dd(psd), dq(psd), dd(psq), dq(psq)
+
+    def reciprocity_report(self, rel_tol: float = 1e-3, abs_tol_H: float = 1e-12) -> dict:
+        """Node plausibility of the *data*: cross-derivative reciprocity and positive-definite differential inductance.
+
+        Second-order node derivatives on interior nodes whose full stencil is valid (non-uniform axes handled).
+        Passing this check is a static data-consistency statement at the nodes only; it does not qualify the
+        interpolant for dynamic use (see ``magnetic_qualification``) and does not validate the saturation model.
+        """
+        m = self.valid
+        stencil = m[1:-1, 1:-1] & m[2:, 1:-1] & m[:-2, 1:-1] & m[1:-1, 2:] & m[1:-1, :-2]
         if not np.any(stencil):
             return {"checked_nodes": 0, "passed": None, "note": "no interior node with a complete valid stencil"}
+        ldd, ldq, lqd, lqq = self._node_derivatives()
         mism = np.abs(ldq - lqd)[stencil]
         scale = np.maximum(np.abs(ldd), np.abs(lqq))[stencil]
         tol = np.maximum(rel_tol * scale, abs_tol_H)
@@ -346,7 +329,8 @@ class FluxMapPlane:
         pd = (ldd > 0) & (lqq > 0) & (ldd * lqq - lsym ** 2 > 0)
         pd_fail = int(np.sum(~pd[stencil]))
         return {
-            "method": "central differences on interior nodes with a complete valid stencil",
+            "method": "second-order node derivatives (non-uniform axes) on interior nodes with a complete valid stencil",
+            "scope": "static data plausibility at the nodes; not a dynamic (interpolant) qualification",
             "checked_nodes": int(stencil.sum()),
             "max_abs_mismatch_H": float(mism.max()),
             "max_rel_mismatch": float(np.max(mism / np.maximum(scale, 1e-300))),
@@ -360,10 +344,98 @@ class FluxMapPlane:
                     "this check does not validate the saturation model against hardware",
         }
 
+    def interpolant_consistency(self) -> dict:
+        """Off-grid properties of the bilinear interpolant actually used by the solvers.
+
+        * closed-path work W = contour integral of (psi_d did + psi_q diq) around every valid cell (exact for the
+          bilinear interpolant: psi is linear along each edge).  W = 0 for a conservative (energy-consistent)
+          model; the bilinear sampling of even a conservative map leaves W != 0;
+        * differential-inductance jumps across cell edges: the bilinear interpolant has a piecewise, discontinuous
+          Jacobian, which a dynamic (current-state) model must not use as L_diff;
+        * interior asymmetry d psi_q/d id - d psi_d/d iq of the interpolant: the cell-boundary work only measures
+          its cell average, which can vanish while the pointwise mismatch does not (audit evidence F10).  In a
+          bilinear cell d psi_q/d id is affine in the q-coordinate and d psi_d/d iq affine in the d-coordinate, so
+          the maximum |asymmetry| is attained at a cell corner - the value below is exact, not sampled.
+        """
+        ax_d, ax_q = self.id_axis_A, self.iq_axis_A
+        psd, psq = self.psi_d_Wb, self.psi_q_Wb
+        cv = self.cell_valid
+        dd = np.diff(ax_d)[:, None]
+        dq = np.diff(ax_q)[None, :]
+        with np.errstate(invalid="ignore"):
+            bottom = 0.5 * (psd[:-1, :-1] + psd[1:, :-1]) * dd
+            right = 0.5 * (psq[1:, :-1] + psq[1:, 1:]) * dq
+            top = -0.5 * (psd[1:, 1:] + psd[:-1, 1:]) * dd
+            left = -0.5 * (psq[:-1, 1:] + psq[:-1, :-1]) * dq
+            work = bottom + right + top + left
+            scale = (np.abs(psd[:-1, :-1]) + np.abs(psq[:-1, :-1]) + 1e-300) * (dd + dq)
+        w = np.abs(work[cv])
+        rel = (np.abs(work) / scale)[cv]
+        # Jacobian of the bilinear interpolant inside each cell at the cell edges; jump across interior id-edges
+        with np.errstate(invalid="ignore"):
+            ldd_cell = (psd[1:, :-1] - psd[:-1, :-1]) / dd          # d psi_d / d id along the lower edge of each cell
+            jumps = np.abs(ldd_cell[1:, :] - ldd_cell[:-1, :])
+            both = cv[1:, :] & cv[:-1, :]
+            jscale = np.maximum(np.abs(ldd_cell[1:, :]), np.abs(ldd_cell[:-1, :])) + 1e-300
+        jrel = (jumps / jscale)[both] if np.any(both) else np.array([0.0])
+        with np.errstate(invalid="ignore"):
+            lqd = [(psq[1:, :-1] - psq[:-1, :-1]) / dd, (psq[1:, 1:] - psq[:-1, 1:]) / dd]      # u = 0, u = 1
+            ldq = [(psd[:-1, 1:] - psd[:-1, :-1]) / dq, (psd[1:, 1:] - psd[1:, :-1]) / dq]      # t = 0, t = 1
+            asym = np.maximum.reduce([np.abs(a - b) for a in lqd for b in ldq])
+            lself = np.maximum.reduce([np.abs((psd[1:, :-1] - psd[:-1, :-1]) / dd), np.abs((psd[1:, 1:] - psd[:-1, 1:]) / dd),
+                                       np.abs((psq[:-1, 1:] - psq[:-1, :-1]) / dq), np.abs((psq[1:, 1:] - psq[1:, :-1]) / dq)])
+        arel = (asym / (lself + 1e-300))[cv]
+        return {
+            "cells": int(cv.sum()),
+            "max_closed_path_work_J": float(w.max()) if w.size else 0.0,
+            "max_rel_closed_path_work": float(rel.max()) if rel.size else 0.0,
+            "max_rel_Ldd_jump_across_edges": float(jrel.max()),
+            "max_interior_asymmetry_H": float(asym[cv].max()) if np.any(cv) else 0.0,
+            "max_rel_interior_asymmetry": float(arel.max()) if arel.size else 0.0,
+            "note": "per-unit-of-3/2 energy (Wb*A = J); the factor 3/2 converts to machine co-energy",
+        }
+
+    def magnetic_qualification(self, rel_tol: float = 1e-3) -> dict:
+        """Static and dynamic use kept apart (review F10): node plausibility is not dynamic conservativeness."""
+        nodes = self.reciprocity_report(rel_tol)
+        interp = self.interpolant_consistency()
+        static_ok = nodes.get("passed")
+        return {
+            "static_use": {
+                "status": ("PLAUSIBLE at the nodes" if static_ok else
+                           "NOT CHECKED (no complete stencil)" if static_ok is None else "INCONSISTENT at the nodes"),
+                "basis": "reciprocity and positive-definite differential inductance of the data at the nodes",
+                "node_checks": nodes,
+                "limits": "does not validate the saturation model against hardware or FEA holdouts",
+            },
+            "dynamic_use": {
+                "status": "NOT QUALIFIED",
+                "reasons": ["bilinear interpolant: piecewise-constant, discontinuous Jacobian (L_diff jumps across cell "
+                            f"edges up to {interp['max_rel_Ldd_jump_across_edges']:.3g} relative)",
+                            "closed-path work of the interpolant is not zero (max relative "
+                            f"{interp['max_rel_closed_path_work']:.3g}): not energy-consistent",
+                            "pointwise cross-derivative asymmetry inside cells (L_dq != L_qd off-grid) up to "
+                            f"{interp['max_rel_interior_asymmetry']:.3g} relative (exact corner maximum)",
+                            "no declared dynamic qualification (inverse map, conditioning, off-grid holdouts)"],
+                "interpolant": interp,
+                "meaning": "static steady-state solves may use the map; transients (ASC, current-control) need a "
+                           "qualified energy-consistent model",
+            },
+        }
+
 
 def _mirror_q(plane: FluxMapPlane) -> FluxMapPlane:
     """Apply declared q-axis symmetry: psi_d even in iq, psi_q odd in iq."""
     ax_q = plane.iq_axis_A
+    # the zero seam: odd symmetry requires psi_q(id, iq = 0) = 0 (otherwise the mirrored map jumps at iq = 0)
+    j0 = 0 if ax_q[0] == 0.0 else (ax_q.size - 1 if ax_q[-1] == 0.0 else None)
+    if j0 is not None:
+        seam = np.abs(plane.psi_q_Wb[:, j0][plane.valid[:, j0]])
+        ref = max(float(np.nanmax(np.abs(plane.psi_q_Wb[plane.valid]))), 1e-12)
+        if seam.size and float(seam.max()) > 1e-6 * ref:
+            raise InputValidationError(
+                f"declared q-odd symmetry needs psi_q(iq = 0) = 0, found {float(seam.max()):.3g} Wb at the seam",
+                field="symmetry")
     if ax_q[0] == 0.0 and ax_q[-1] > 0:
         neg = -ax_q[:0:-1]
         new_q = np.concatenate([neg, ax_q])

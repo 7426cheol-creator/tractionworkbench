@@ -26,6 +26,7 @@ from ..models.components import DriveModel
 from ..physics import DriveKernel, evaluate_point
 from ..scenario import Scenario
 from ..settings import DEFAULT_SETTINGS, NumericalSettings
+from ..solvers.gate import HARD_GROUPS, check_witness, torque_tolerance
 from ..solvers.policy import PolicyEvaluator
 from ..status import Claim, Evidence, EvidenceKind, Reason, Status
 from .variation import PARAMETERS, apply
@@ -48,9 +49,47 @@ class ParameterInterval:
             raise InputValidationError("kind must be 'admissible' or 'outer_enclosure'", field="kind")
 
 
+def _fixed_calibration(d: DriveModel, s: Scenario, settings: NumericalSettings, id_A: float, iq_A: float,
+                       T_request: float, accuracy_Nm: float | None) -> tuple[str, float | None, list, list]:
+    """The nominal calibration applied unchanged: same witness gate as every other path (review DV-03).
+
+    VIOLATED -> INFEASIBLE; NOT_EVALUATED, an undeclared DC limit that can bind, missing loss data or model issues
+    -> UNKNOWN.  The torque error is judged against the stated accuracy, never against the numerical residual.
+    """
+    k = DriveKernel(d, s, settings)
+    if k.issues:
+        return "UNKNOWN", None, [], [i.message for i in k.issues]
+    try:
+        fp = evaluate_point(k, id_A, iq_A)
+    except OutsideModelDomain as exc:
+        return "UNKNOWN", None, [], [str(exc)]
+    terr = None if fp.Tshaft_Nm is None else fp.Tshaft_Nm - T_request
+    viol = [c.name for c in fp.violations()]
+    gate = check_witness(k, id_A, iq_A, point=fp, groups=HARD_GROUPS, require_dc=True, include_validity=False)
+    not_eval = [m for m in gate.messages if "not evaluated" in m or "not declared" in m or "undefined" in m]
+    num_tol = torque_tolerance(k)
+    if viol:
+        return "INFEASIBLE", terr, viol, []
+    if terr is None:
+        return "UNKNOWN", terr, viol, ["shaft torque undefined (rotational loss missing)"]
+    if accuracy_Nm is not None and abs(terr) > accuracy_Nm:
+        return "INFEASIBLE", terr, viol, [f"torque error {terr:+.4g} N*m > stated accuracy {accuracy_Nm:g} N*m"]
+    if accuracy_Nm is None and abs(terr) > num_tol:
+        return "UNKNOWN", terr, viol, [f"torque error {terr:+.4g} N*m; no torque-accuracy requirement stated "
+                                       f"(REQUIREMENT_INCOMPLETE; the numerical residual is not a requirement)"]
+    if not_eval:
+        return "UNKNOWN", terr, viol, not_eval
+    return "FEASIBLE", terr, viol, []
+
+
 def bounded_input_analysis(drive: DriveModel, scenario: Scenario, T_request: float,
                            intervals: list[ParameterInterval], include_center: bool = True,
-                           settings: NumericalSettings = DEFAULT_SETTINGS) -> dict:
+                           settings: NumericalSettings = DEFAULT_SETTINGS,
+                           torque_accuracy_Nm: float | None = None) -> dict:
+    """``torque_accuracy_Nm``: stated torque-accuracy requirement for the fixed-calibration check (None = not
+    stated: a torque error above the numerical residual is then UNKNOWN, not a counterexample)."""
+    if torque_accuracy_Nm is not None and (not math.isfinite(torque_accuracy_Nm) or torque_accuracy_Nm < 0):
+        raise InputValidationError("torque accuracy must be finite and >= 0", field="torque_accuracy_Nm")
     if not intervals:
         raise InputValidationError("at least one parameter interval is required", field="intervals")
     if len(intervals) > 8:
@@ -67,19 +106,10 @@ def bounded_input_analysis(drive: DriveModel, scenario: Scenario, T_request: flo
             d, s = apply(d, s, iv.name, v)
         sol = PolicyEvaluator(d, s, settings).solve(T_request)
         adaptive = sol.policy_claim.status.value
-        fixed = None
-        terr = None
-        fixed_viol = []
+        fixed, terr, fixed_viol, fixed_notes = None, None, [], []
         if npt is not None:
-            k = DriveKernel(d, s, settings)
-            try:
-                fp = evaluate_point(k, npt.id_A, npt.iq_A)
-                terr = None if fp.Tshaft_Nm is None else fp.Tshaft_Nm - T_request
-                fixed_viol = [c.name for c in fp.violations()]
-                tol = max(settings.torque_residual_abs_Nm, settings.torque_residual_rel * k.torque_scale())
-                fixed = "FEASIBLE" if (not fixed_viol and terr is not None and abs(terr) <= tol) else "INFEASIBLE"
-            except OutsideModelDomain:
-                fixed = "UNKNOWN"
+            fixed, terr, fixed_viol, fixed_notes = _fixed_calibration(d, s, settings, npt.id_A, npt.iq_A, T_request,
+                                                                      torque_accuracy_Nm)
         pt = sol.point
         rows.append({
             "values": {iv.name: v for iv, v in zip(intervals, vals)},
@@ -89,6 +119,7 @@ def bounded_input_analysis(drive: DriveModel, scenario: Scenario, T_request: flo
             "fixed_calibration_status": fixed,
             "fixed_calibration_torque_error_Nm": terr,
             "fixed_calibration_violations": fixed_viol,
+            "fixed_calibration_notes": fixed_notes,
         })
     kinds = {iv.kind for iv in intervals}
     admissible = kinds == {"admissible"}
@@ -132,6 +163,7 @@ def bounded_input_analysis(drive: DriveModel, scenario: Scenario, T_request: flo
                        detail="sampled corners only; no probability is attached to the intervals")
     return {
         "T_request_Nm": T_request,
+        "torque_accuracy_Nm": torque_accuracy_Nm,
         "intervals": [{"name": iv.name, "low": iv.low, "high": iv.high, "kind": iv.kind, "basis": iv.basis}
                       for iv in intervals],
         "nominal_policy_status": nominal.policy_claim.status.value,

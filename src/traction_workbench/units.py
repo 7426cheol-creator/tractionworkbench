@@ -159,8 +159,19 @@ def speed_rpm(obj, fieldname: str, conv: Conversions, pole_pairs: int | None = N
     return out if isinstance(v, (list, tuple)) else out[0]
 
 
-def pm_flux_linkage(motor: dict, pole_pairs: int, conv: Conversions) -> float:
-    """psi_PM (amplitude-invariant phase peak) from psi_pm, Ke or Kt with complete conventions only."""
+KT_UNITS = {"N*m/A": 1.0, "Nm/A": 1.0, "N·m/A": 1.0, "N m/A": 1.0, "mN*m/A": 1e-3, "mNm/A": 1e-3,
+            "kN*m/A": 1e3, "kNm/A": 1e3}
+
+
+def pm_flux_linkage(motor: dict, pole_pairs: int, conv: Conversions, connection: str = "wye") -> float:
+    """psi_PM (amplitude-invariant phase peak) from psi_pm, Ke or Kt with complete conventions only.
+
+    Kt (independent review F09) needs an explicit unit from ``KT_UNITS`` (mN*m/A, kN*m/A, ... are converted,
+    anything else is rejected - never read as N*m/A), a current basis (fundamental peak / RMS) and the
+    current reference: ``line`` (= the wye-equivalent phase current the dq model uses) or ``winding_phase``
+    (accepted for a wye winding; for a declared wye-equivalent of another winding the physical winding
+    current differs from the line current and the value is rejected).
+    """
     if "psi_pm" in motor:
         obj = motor["psi_pm"]
         if obj.get("basis") != "phase_peak":
@@ -173,9 +184,14 @@ def pm_flux_linkage(motor: dict, pole_pairs: int, conv: Conversions) -> float:
         if not isinstance(per, dict):
             raise InputValidationError("Ke needs per_speed {'value','unit','kind'}; its convention is otherwise "
                                        "ambiguous and is not converted automatically", field="motor.Ke")
+        if connection != "wye" and obj.get("basis") in ("phase_peak", "phase_rms"):
+            raise InputValidationError("a phase-basis Ke is ambiguous for a wye-equivalent of another winding: give "
+                                       "the line-to-line value", field="motor.Ke")
         v_pk = voltage_phase_peak({k: obj[k] for k in ("value", "unit", "basis") if k in obj}, "motor.Ke", conv)
         n = speed_rpm(per, "motor.Ke.per_speed", conv, pole_pairs)
         we = pole_pairs * 2 * math.pi * n / 60.0
+        if we == 0:
+            raise InputValidationError("Ke reference speed must be non-zero", field="motor.Ke.per_speed")
         psi = v_pk / we
         conv.add("motor.Ke", obj, psi, "back-EMF constant -> psi_PM = V_phase_peak / omega_e")
         return psi
@@ -185,12 +201,29 @@ def pm_flux_linkage(motor: dict, pole_pairs: int, conv: Conversions) -> float:
             raise InputValidationError("Kt converts to psi_PM only when defined as electromagnetic torque per "
                                        "current at id = 0 (definition 'shaft_or_em_torque_per_current_at_id0', "
                                        "torque 'electromagnetic')", field="motor.Kt")
+        unit = str(obj.get("unit", "")).strip()
+        if unit not in KT_UNITS:
+            raise InputValidationError(f"Kt unit {unit!r} not accepted (accepted: {', '.join(KT_UNITS)}); a torque "
+                                       f"constant without an explicit SI-convertible unit is not guessed",
+                                       field="motor.Kt")
+        ref = obj.get("current_reference")
+        if ref not in ("line", "winding_phase"):
+            raise InputValidationError("Kt needs current_reference 'line' (wye-equivalent phase current) or "
+                                       "'winding_phase'", field="motor.Kt")
+        if ref == "winding_phase" and connection != "wye":
+            raise InputValidationError("Kt per winding-phase current is ambiguous for a wye-equivalent of another "
+                                       "winding (winding current != line current): give it per line current",
+                                       field="motor.Kt")
         basis = obj.get("current_basis")
-        k = _num("motor.Kt", obj.get("value"))
+        k = _num("motor.Kt", obj.get("value")) * KT_UNITS[unit]
+        if KT_UNITS[unit] != 1.0:
+            conv.add("motor.Kt", obj, k, f"{unit} -> N*m/A (x{KT_UNITS[unit]:g})")
         if basis == "fundamental_rms":
             k = k / math.sqrt(2)
         elif basis != "fundamental_peak":
             raise InputValidationError("Kt needs current_basis fundamental_peak or fundamental_rms", field="motor.Kt")
+        if k <= 0:
+            raise InputValidationError("Kt must be > 0", field="motor.Kt")
         psi = k / (1.5 * pole_pairs)
         conv.add("motor.Kt", obj, psi, "Kt (per phase-peak A, id = 0) -> psi_PM = Kt / (1.5 p)")
         return psi

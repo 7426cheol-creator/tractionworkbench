@@ -92,6 +92,126 @@ def test_schematics_render(tmp_path):
     assert len(list(tmp_path.glob("s*.png"))) == len(jobs)
 
 
+@pytest.mark.parametrize("lang, theme", [("ko", "light"), ("en", "dark")])
+def test_review_and_oew_hev_figures_render(tmp_path, lang, theme):
+    """Figures of the review analyses (protection, ASC, module, ripple, lifetime) and of the OEW / HEV addendum."""
+    from traction_workbench.plots import oew_hev_figures as OH
+    from traction_workbench.plots import review_figures as RF
+    from traction_workbench.plots import schematics as SC
+    set_language(lang)
+    style.apply(theme)
+    try:
+        prot = api.protection(api.EXAMPLE_PROTECTION)
+        asc = api.asc({})
+        mod = api.module_losses({})
+        rip = api.dclink_ripple({})
+        life = api.lifetime({})
+        oew = api.oew({})
+        cmp = api.oew_compare({"compare_speeds_rpm": [2000.0, 8000.0, 14000.0]})
+        js = api.hev_joint({"n_levels": 7})
+        cr = api.hev_crank({"crank": {**api.EXAMPLE_HEV["crank"], "theta0_deg": [0, 90]}})
+        rej = api.hev_rejection({})
+        pl = api.hev_planetary({})
+        em = api.emi({"n_grid": 40})
+        eo = api.emi_oew({})
+        rq = js["request"]
+        jobs = [(RF.fig_protection_timeline, (prot,)), (RF.fig_threshold_window, (prot,)),
+                (RF.fig_protection_loop, (prot,)), (RF.fig_asc_transient, (asc,)), (RF.fig_module_losses, (mod,)),
+                (RF.fig_ripple, (rip,)), (RF.fig_lifetime, (life,)),
+                (OH.fig_oew_voltage_sets, (oew,)), (OH.fig_oew_point, (oew,)), (OH.fig_oew_compare, (cmp,)),
+                (OH.fig_oew_paired, (oew,)), (OH.fig_oew_ripple, (oew,)), (OH.fig_hev_joint, (js,)),
+                (OH.fig_hev_crank, (cr,)), (OH.fig_hev_rejection, (rej,)), (OH.fig_planetary, (pl,)),
+                (SC.fig_oew_schematic, (oew["topology"],)), (OH.fig_emi_screening, (em,)), (OH.fig_emi_measured, (em,)),
+                (OH.fig_oew_cm, (eo,)), (SC.fig_emi_network, (em["network"],)),
+                (SC.fig_hev_schematic, ({"p1_W": rq["branch_P_dc_W"][0], "p2_W": rq["branch_P_dc_W"][1],
+                                         "p_src_W": rq["P_source_W"]},))]
+        for i, (fn, args) in enumerate(jobs):
+            fig = Figure(figsize=(11, 6))
+            fn(fig, *args)
+            fig.savefig(tmp_path / f"r{i:02d}.png", dpi=50)
+        assert len(list(tmp_path.glob("r*.png"))) == len(jobs)
+    finally:
+        set_language("ko")
+        style.apply("light")
+
+
+@pytest.mark.parametrize("lang, theme", [("ko", "light"), ("en", "dark")])
+def test_efficiency_figures_render(tmp_path, lang, theme):
+    """Point (defined, regen, mixed flow, no point), boundary maps, mission and module A/B figures."""
+    from traction_workbench.plots import efficiency_figures as EF
+    set_language(lang)
+    style.apply(theme)
+    try:
+        small = {"map_speeds_rpm": [1000.0, 6000.0, 12000.0], "map_torques_Nm": [-100.0, 50.0, 200.0]}
+        jobs = [(EF.fig_efficiency_point, api.efficiency({})),
+                (EF.fig_efficiency_point, api.efficiency({"speed_rpm": 4000.0, "torque_Nm": -120.0})),
+                (EF.fig_efficiency_point, api.efficiency({"loss_model": "surrogate", "speed_rpm": 1000.0, "torque_Nm": -0.1})),
+                (EF.fig_efficiency_point, api.efficiency({"torque_Nm": 5000.0})),
+                (EF.fig_efficiency_maps, api.efficiency_map(small)),
+                (EF.fig_efficiency_mission, api.efficiency_mission({})),
+                (EF.fig_module_compare, api.module_compare({"compare": {**api.EXAMPLE_EFFICIENCY["compare"],
+                                                                        "requests": [[6000.0, 150.0, 600.0]]},
+                                                            "mission": None}))]
+        for i, (fn, res) in enumerate(jobs):
+            fig = Figure(figsize=(11, 6))
+            fn(fig, res)
+            fig.savefig(tmp_path / f"e{i}.png", dpi=50)
+        assert len(list(tmp_path.glob("e*.png"))) == len(jobs)
+    finally:
+        set_language("ko")
+        style.apply("light")
+
+
+@pytest.mark.parametrize("lang, theme", [("ko", "light"), ("en", "dark")])
+def test_pwm_and_driveline_figures_render(tmp_path, lang, theme):
+    """Variable-PWM policies, timing / transition, ripple; anti-jerk variants (with and without wheel radius) and
+    the stability map."""
+    from traction_workbench.plots import pwm_figures as PF
+    set_language(lang)
+    style.apply(theme)
+    try:
+        segs = api.EXAMPLE_PWM["segments"][:2]
+        dl_nor = {**api.EXAMPLE_DRIVELINE, "driveline": {**api.EXAMPLE_DRIVELINE["driveline"], "wheel_radius_m": None},
+                  "requirement": {"t_to_90_max_s": 0.3, "peak_jerk_max": 1e4, "settle_max_s": 1.0}}
+        jobs = [(PF.fig_pwm_policies, api.pwm_policies({"segments": segs, "use_capacitor": False})),
+                (PF.fig_pwm_timing, api.pwm_timing({})), (PF.fig_pwm_ripple, api.pwm_ripple({"fsw_list_kHz": [10.0]})),
+                (PF.fig_driveline, api.driveline({})), (PF.fig_driveline, api.driveline(dl_nor)),
+                (PF.fig_driveline_stability, api.driveline_stability({"stability": {"Kd_list": [1.0, 3.0],
+                                                                                     "delay_ms_list": [0.0, 10.0, 30.0]}}))]
+        for i, (fn, res) in enumerate(jobs):
+            fig = Figure(figsize=(11, 6))
+            fn(fig, res)
+            fig.savefig(tmp_path / f"p{i}.png", dpi=50)
+        assert len(list(tmp_path.glob("p*.png"))) == len(jobs)
+    finally:
+        set_language("ko")
+        style.apply("light")
+
+
+@pytest.mark.parametrize("lang, theme", [("ko", "light"), ("en", "dark")])
+def test_machine_design_figures_render(tmp_path, lang, theme):
+    """Trade study, winding (balanced, fractional-slot and infeasible) and concept-sizing figures."""
+    from traction_workbench.plots import machine_figures as MF
+    set_language(lang)
+    style.apply(theme)
+    try:
+        tr_ = api.machine_trade({"candidates": api.EXAMPLE_MACHINE["candidates"][:3],
+                                 "checks": api.EXAMPLE_MACHINE["checks"][:2] + api.EXAMPLE_MACHINE["checks"][3:4],
+                                 "envelope_speeds_rpm": [0.0, 8000.0, 16000.0]})
+        jobs = [(MF.fig_machine_trade, tr_), (MF.fig_winding, api.winding({})),
+                (MF.fig_winding, api.winding({"Q": 12, "p": 5, "y": 1, "parallel_paths": 1, "turns_per_coil": 20})),
+                (MF.fig_winding, api.winding({"Q": 10, "p": 4, "y": 1, "parallel_paths": 1, "compare": None})),
+                (MF.fig_concept_sizing, api.concept_sizing({}))]
+        for i, (fn, res) in enumerate(jobs):
+            fig = Figure(figsize=(11, 6))
+            fn(fig, res)
+            fig.savefig(tmp_path / f"m{i}.png", dpi=50)
+        assert len(list(tmp_path.glob("m*.png"))) == len(jobs)
+    finally:
+        set_language("ko")
+        style.apply("light")
+
+
 def test_pdf_report(tmp_path):
     from traction_workbench.report_pdf import build_pdf
     case = json.loads((EX / "cases" / "req_ts_012_450V_sizing.json").read_text(encoding="utf-8"))
@@ -128,9 +248,26 @@ def test_desktop_smoke(tmp_path):
         page.run()
         assert page.result["record"]["verdict"]["verdict"] == "FAIL"
         assert page.views.plane is not None and page.views.pv is None
+        lay = {page.layers_table.item(r, 0).text(): page.layers_table.item(r, 1).text()
+               for r in range(page.layers_table.rowCount())}
+        assert set(lay) == {"mathematical", "model", "requirement", "qualification"}   # four separate statements
         ex = win.pages["explorer"]
         ex._picked(-250.0, 120.0)
         assert ex.views.pv.point.id_A == -250.0 and ex.views.pv.point.iq_A == 120.0
+        fwd_status = ex.claims.item(0, 1).text()
+        assert fwd_status in ("ACCEPTED", "DIAGNOSTIC ONLY")                # a picked point is never just 'OK'
+        mdl = win.pages["model"]
+        orig_limits = dict(win.state.limits_dict)
+        mdl.refresh()
+        assert mdl.audit.rowCount() >= 5
+        kind, _val, _sc = mdl.lim_fields["discharge_power_max_W"]
+        kind.setCurrentIndex(kind.findData("unlimited"))                  # declared unlimited is math.inf, not None
+        mdl._apply_limits()
+        assert win.state.limits_dict["discharge_power_max_W"] == float("inf")
+        kind.setCurrentIndex(kind.findData("missing"))
+        mdl._apply_limits()
+        assert win.state.limits_dict["discharge_power_max_W"] is None
+        win.state.set_limits(orig_limits)
         th = win.pages["thermal"]
         th.run()
         t1 = th.last["res"]["request"]["time_to_first_limit_s"]
@@ -147,12 +284,77 @@ def test_desktop_smoke(tmp_path):
         R, X, _how = parse_stage_text("0.01\t0.002\n0.03\t0.03")
         assert R == [0.01, 0.03] and X == [0.002, 0.03]
         sp = win.pages["safety"]
+        sp.run_ftti()
+        rows = {sp.t_ftti.item(r, 0).text(): sp.t_ftti.item(r, 1).text() for r in range(sp.t_ftti.rowCount())}
+        assert any("SYS_FRTI" in v or "DECAY" in v for v in rows.values())   # the chosen path is shown
+        sp.f_endpoint.setCurrentIndex(sp.f_endpoint.findData("command_issued"))
+        sp.run_ftti()
+        assert sp.t_ftti.item(0, 1).text().startswith("UNKNOWN")           # a command is not the physical safe state
+        sp.f_endpoint.setCurrentIndex(sp.f_endpoint.findData("physical_safe_state"))
+        sp.d_n.setValue(3000.0)
         sp.run_discharge()
+        txt = " ".join(sp.t_dis.item(r, 1).text() for r in range(sp.t_dis.rowCount()))
+        assert txt.startswith("UNKNOWN") and "rectification risk" in txt and "not a bound" in txt
         sp.run_passive()
         sp.run_overvoltage()
+        assert sp.t_ov.item(0, 1).text().startswith("INFEASIBLE")
         sp.run_safe()
         assert all(p._draw is not None for p in (sp.s_dis, sp.s_pas, sp.p_pas, sp.s_ov, sp.s_safe))
         assert page.views.overview._draw is not None or ex.views.overview._draw is not None
+        pro = win.pages["protection"]
+        pro.run()
+        assert pro.last is not None and pro.last["trace"]["protected"]
+        pw = win.pages["power"]
+        pw.run_module()
+        assert pw.last_module is not None and pw.last_module["losses"]["established"]
+        oh = win.pages["oew_hev"]
+        oh.run_oew()
+        assert oh.last_oew is not None and oh.last_oew["result"]["witness"] is not None
+        oh.run_rej()
+        assert oh.last_rej["claim"]["status"] == "INFEASIBLE"             # example 9.4: 1 ms reaction is too slow
+        ep = win.pages["emi"]
+        ep.run()
+        assert ep.last is not None and ep.last["claim"]["status"] == "UNKNOWN"      # screening is never a pass
+        efp = win.pages["efficiency"]
+        efp.run_point()
+        assert efp.last_point["ledger"]["boundaries"]["edrive"]["status"] == "DEFINED"
+        efp.r_on.setChecked(False)                      # no reducer data: the eDrive efficiency is UNKNOWN, not 100 %
+        efp.run_point()
+        assert efp.last_point["ledger"]["boundaries"]["edrive"]["status"] == "UNKNOWN"
+        efp.t_req.load([[6000.0, 150.0, 600.0]])
+        efp.ab_mis.setChecked(False)
+        efp.run_ab()
+        assert efp.last_ab["rows"][0]["compare"]["verdict"] in ("A_LOWER_LOSS", "B_LOWER_LOSS", "UNDECIDED")
+        pd = win.pages["pwm_driveline"]
+        pd.t_seg.load([[5.0, 6000.0, 45.0, 600.0, 70.0], [5.0, 3000.0, 250.0, 600.0, 95.0]])
+        pd.p_cap.setChecked(False)
+        pd.run_policies()
+        assert pd.last_pol is not None and len(pd.last_pol["policies"]) == 3
+        pd.run_driveline()
+        assert pd.last_dl["variants"]["combined"]["stability"]["stable"]
+        pd.run_transients()
+        assert pd.last_trn["sampling_here"]["status"] in ("OK", "UNKNOWN", "VIOLATION")
+        pd.sn_kind.setCurrentIndex(pd.sn_kind.findData("dc_link_shunt"))      # a single shunt fails at low modulation
+        pd.run_policies()
+        assert all(any("current sampling" in v for v in p["violations"]) for p in pd.last_pol["policies"])
+        pd.sg_drop.setText("450-560")                                          # wheel-speed dropout, declared fallback
+        pd.m_em.setChecked(True)
+        pd.run_driveline()
+        fb = pd.last_dl["variants"]["feedback"]
+        assert fb["safety"]["status"] in ("FEASIBLE", "INFEASIBLE") and "evaluated_until_s" in fb["metrics"]
+        mp = win.pages["machine"]
+        mp.t_cand.load([["ref", 1.0, 1.0, 1.0, None, None], ["N+10%", 1.1, 1.0, 1.0, None, None],
+                        ["L+", 1.2, 1.2, 1.0, None, None]])            # stack change without end shares: refused
+        mp.t_chk.load([["ugo", "ugo", 12000.0, 450.0, None, 900.0], ["asc", "asc", 12000.0, 450.0, None, None]])
+        mp.t_env_on.setChecked(False)
+        mp.run_trade()
+        rows = {r["candidate"]: r for r in mp.last_trade["rows"]}
+        assert "error" in rows["L+"] and rows["ref"]["checks"]["asc"]["status"] == "UNKNOWN"    # no limit: no pass
+        assert rows["N+10%"]["checks"]["ugo"]["status"] == "INFEASIBLE"
+        mp.run_wind()
+        assert mp.last_wind["balanced"] and mp.w_send.isEnabled()
+        mp.run_size()
+        assert mp.last_size is not None
         win.set_theme("dark")
         win.set_theme("light")
         assert not (app.property("twb_errors") or [])

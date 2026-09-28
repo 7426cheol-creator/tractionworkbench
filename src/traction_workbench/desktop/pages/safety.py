@@ -137,6 +137,45 @@ def _claim_line(c: dict) -> str:
     return f"{c['status']} · {', '.join(c.get('reasons') or []) or '—'} · {c.get('detail', '')}"
 
 
+def ms_(x):
+    return None if x is None else x * 1e3
+
+
+def _claim_rows(c: dict) -> list:
+    """Claim as table rows: status + reasons, then one row per clause of the detail (long messages stay readable)."""
+    rows = [(tr("판정", "claim"), f"{c['status']} · {', '.join(c.get('reasons') or []) or '—'}")]
+    rows += [(tr("근거", "detail") if i == 0 else "", part) for i, part in enumerate(p for p in (c.get("detail") or "").split("; ") if p)]
+    rows += [(tr("한정", "qualifier"), q) for q in c.get("qualifiers") or []]
+    return rows
+
+
+def _emf_rows(res: dict) -> list:
+    """Back-EMF / rectification screening of a discharge result (review F08b): risk, basis and the coupled estimate."""
+    if "back_emf_ll_peak_V" not in res:
+        return [(tr("역기전력", "back-EMF"), tr("회전 속도 미지정: 정지 가정 (정류 위험 미평가)",
+                                                "no speed given: standstill assumed (rectification not assessed)"))]
+    risk = res.get("rectification_risk")
+    rows = [(tr("역기전력 선간 peak", "back-EMF line-line peak"),
+             f"{fmt(res.get('back_emf_ll_peak_V'))} V · {res.get('back_emf_basis', '')}"),
+            (tr("정류 위험", "rectification risk"),
+             "UNKNOWN" if risk is None else (tr("있음: 다이오드가 링크를 충전 (RC 시간은 하한)",
+                                                "YES: the diodes feed the link (the RC time is only a lower bound)")
+                                             if risk else tr("없음 (역기전력 ≤ 목표 전압)", "no (back-EMF ≤ target voltage)"))),
+            (tr("목표 전압을 넘지 않는 최고 속도", "highest speed with back-EMF ≤ target"),
+             f"{fmt(res.get('max_speed_for_target_rpm'))} rpm")]
+    est = res.get("rectified_link_screening")
+    if est:
+        rows += [(tr("정류 링크 전압 (스크리닝 추정)", "rectified link voltage (screening estimate)"),
+                  f"{est['V_dc_V']:.4g} V · I_dc {est['I_dc_A']:.3g} A · P {est['P_W']:.3g} W · "
+                  f"{tr('상전류', 'phase current')} {est['phase_current_A_peak']:.3g} A peak"),
+                 (tr("추정 방법", "estimate method"), est["method"])]
+    elif risk:
+        rows.append((tr("정류 링크 전압", "rectified link voltage"),
+                     tr("추정 불가 (일정 파라미터 모델 아님): 결합 모델 필요", "not estimated (not a constant-parameter model): "
+                        "coupled model required")))
+    return rows
+
+
 class SafetyPage(QWidget):
     def __init__(self, win):
         super().__init__()
@@ -169,9 +208,25 @@ class SafetyPage(QWidget):
         self.f_frti = number(ex["frti_budget_ms"], 0, 1e6, "ms", 3)
         self.f_det = QLineEdit(ex["detection_event"])
         self.f_events = QLineEdit(", ".join(ex["events"]))
+        self.f_safe = QLineEdit(ex.get("safe_event") or "")
+        self.f_safe.setPlaceholderText(tr("비우면 마지막 이벤트", "empty = last event"))
+        self.f_endpoint = combo([(tr("물리적 안전 상태 (전류·토크 소멸)", "physical safe state (current / torque extinguished)"),
+                                  "physical_safe_state"),
+                                 (tr("명령 발행 (게이트 차단 요청 등)", "command issued (e.g. gate-off request)"), "command_issued")],
+                                ex.get("endpoint_kind", "physical_safe_state"))
+        self.f_endpoint.setToolTip(tr("명령이 드라이버에 도달한 시점은 물리적 안전 상태가 아닙니다: 명령으로 끝나는 체인은 UNKNOWN입니다.",
+                                      "a command reaching the driver is not the physical safe state: a chain that ends at a "
+                                      "command is UNKNOWN"))
+        self.f_attain = check(tr("최악값 동시 발생 선언", "maxima jointly attainable"), bool(ex.get("worst_case_attainable", False)),
+                              tr("항목 최댓값들이 한 트레이스에서 함께 일어날 수 있다고 선언하면, 합이 FTTI를 넘을 때 INFEASIBLE "
+                                 "(선언하지 않으면 독립 최댓값의 합은 상한일 뿐이므로 UNKNOWN)",
+                                 "declares that the item maxima occur together in one trace: a sum above the FTTI is then "
+                                 "INFEASIBLE (otherwise the sum of independent maxima is only a bound -> UNKNOWN)"))
         for lab, wd in (("chain id", self.f_id), (tr("고장", "fault"), self.f_fault), ("FTTI", self.f_ftti),
                         (tr("FDTI 예산", "FDTI budget"), self.f_fdti), (tr("FRTI 예산", "FRTI budget"), self.f_frti),
-                        (tr("검출 이벤트", "detection event"), self.f_det), (tr("이벤트 순서", "event order"), self.f_events)):
+                        (tr("검출 이벤트", "detection event"), self.f_det), (tr("이벤트 순서", "event order"), self.f_events),
+                        (tr("안전 종점 이벤트", "safe endpoint event"), self.f_safe),
+                        (tr("종점 종류", "endpoint kind"), self.f_endpoint), ("", self.f_attain)):
             f.addRow(lab, wd)
         v.addWidget(g)
         g = QGroupBox(tr("지연 항목 (min / nom / max, 주기 항목은 1주기 추가)", "latency items"))
@@ -234,7 +289,9 @@ class SafetyPage(QWidget):
         return {"chain_id": self.f_id.text(), "fault": self.f_fault.text(), "ftti_ms": self.f_ftti.value(),
                 "fdti_budget_ms": self.f_fdti.value() or None, "frti_budget_ms": self.f_frti.value() or None,
                 "detection_event": self.f_det.text().strip() or None,
-                "events": [e.strip() for e in self.f_events.text().split(",") if e.strip()], "items": items}
+                "events": [e.strip() for e in self.f_events.text().split(",") if e.strip()], "items": items,
+                "safe_event": self.f_safe.text().strip() or None, "endpoint_kind": self.f_endpoint.currentData(),
+                "worst_case_attainable": self.f_attain.isChecked()}
 
     def run_ftti(self):
         try:
@@ -246,12 +303,28 @@ class SafetyPage(QWidget):
         self.p_ftti.draw(F.fig_ftti, tl, title=f"{res['chain_id']} · {res['fault']}", name="ftti",
                          csv=lambda: {k: [b[k] for b in tl["bars"]] for k in ("id", "owner", "from", "to", "start_worst_s",
                                                                               "worst_s", "min_s", "max_s", "counted")})
+        ms = ms_
         rows = [(tr("판정", "claim"), _claim_line(res["claim"])),
-                (tr("최악 / 최선 [ms]", "worst / best [ms]"), f"{res['worst_s'] * 1e3:.4g} / {res['best_s'] * 1e3:.4g}"),
-                (tr("여유 [ms]", "margin [ms]"), fmt(None if res.get("margin_s") is None else res["margin_s"] * 1e3))]
+                (tr("종점", "endpoint"), f"{res['safe_event']} · {res['endpoint_kind']}"),
+                (tr("보장 상한 경로", "chosen (tightest) path"),
+                 " → ".join(res.get("chosen_path") or []) + f"  ({res.get('paths', 0)} {tr('개 경로 중', 'path(s) considered')})"),
+                (tr("최악 / 공칭 / 최선 [ms]", "worst / nominal / best [ms]"),
+                 f"{fmt(ms(res['worst_s']))} / {fmt(ms(res.get('nominal_s')))} / {fmt(ms(res['best_s']))}"),
+                (tr("여유 [ms]", "margin [ms]"), fmt(ms(res.get("margin_s")))),
+                (tr("FDTI / FRTI 최악 (선택 경로) [ms]", "FDTI / FRTI worst on the chosen path [ms]"),
+                 f"{fmt(ms(res.get('fdti_worst_s')))} / {fmt(ms(res.get('frti_worst_s')))}")]
         rows += [(tr("중복 예산", "duplicate budget"), d["message"]) for d in res["duplicate_budgets"]]
         rows += [(tr("공백", "gap"), str(g)) for g in res.get("gaps", [])]
-        rows += [(c["budget"], f"{'OK' if c['ok'] else 'NG'} · {c}") for c in res.get("budget_checks", [])]
+        word = lambda ok: "UNKNOWN" if ok is None else ("OK" if ok else "NG")
+        for c in res.get("budget_checks", []):
+            if "ftti_s" in c:
+                txt = f"{word(c['ok'])} · {fmt(ms(c['allocated_s']))} ms vs FTTI {fmt(ms(c['ftti_s']))} ms"
+            else:
+                txt = (f"{word(c['ok'])} · {tr('최악', 'worst')} {fmt(ms(c.get('worst_s')))} ms / "
+                       f"{tr('할당', 'allocated')} {fmt(ms(c['allocated_s']))} ms")
+                if c.get("note"):
+                    txt += f" · {c['note']}"
+            rows.append((c["budget"], txt))
         rows += [(tr("주석", "note"), n) for n in res.get("notes", [])]
         self.t_ftti.set_rows(rows)
 
@@ -338,10 +411,14 @@ class SafetyPage(QWidget):
             l2.setContentsMargins(0, 0, 0, 0)
             sch = PlotPanel(min_height=240)
             plot = PlotPanel(min_height=260)
+            table = KeyValueTable()
+            table.setMinimumHeight(110)
             l2.addWidget(sch, 5)
             l2.addWidget(plot, 6)
+            l2.addWidget(table, 3)
             setattr(self, f"s_{key}", sch)
             setattr(self, f"p_{key}", plot)
+            setattr(self, f"t_{key}", table)
             right.addTab(w2, label)
         split.addWidget(right)
         split.setSizes([380, 1000])
@@ -382,6 +459,17 @@ class SafetyPage(QWidget):
                          "note": note},
                         title=tr("패시브 방전 회로 (R_p 상시 연결)", "passive discharge circuit (R_p always connected)"),
                         name="passive_circuit")
+        wa = res.get("with_active") or {}
+        rows = _claim_rows(res["claim"])
+        rows += [(tr("R_p 사용 / 허용 범위", "R_p used / window"),
+                  f"{res['R_used_ohm'] / 1e3:.4g} kΩ · [{fmt(None if res.get('R_min_ohm') is None else res['R_min_ohm'] / 1e3)}, "
+                  f"{fmt(None if res.get('R_max_ohm') is None else res['R_max_ohm'] / 1e3)}] kΩ"),
+                 (tr("도달 시간 / 요구", "time to target / required"), f"{res['t_reach_s']:.4g} s / {res['t_target_s']:g} s"),
+                 (tr("상시 손실 (정격 / 최대 V)", "continuous loss (nominal / max V)"),
+                  f"{res['P_cont_nom_W']:.3g} W / {res['P_cont_max_W']:.3g} W")]
+        if wa:
+            rows.append((tr("능동 R_a 병렬 시", "with active R_a in parallel"), f"{wa['t_reach_s']:.4g} s"))
+        self.t_pas.set_rows(rows + _emf_rows(res))
 
     def _default_dclink_schematics(self):
         self.s_dis.draw(SC.fig_dclink_schematic, "discharge",
@@ -424,6 +512,12 @@ class SafetyPage(QWidget):
                                      f"{res['claim']['status']}: back-EMF {bemf:.0f} V > target {res['Vf_V']:g} V → rectification blocks the discharge")
                                   if rect else f"{res['claim']['status']}: t = {res['t_reach_s']:.4g} s · I₀ = {res['I0_A']:.3g} A · P₀ = {res['P0_W']:.4g} W")},
                         title=tr("능동 방전 회로", "active discharge circuit"), name="discharge_circuit")
+        rows = _claim_rows(res["claim"])
+        rows += [(tr("R 사용 / 최대", "R used / maximum"), f"{res['R_used_ohm']:.4g} Ω / {res['R_max_ohm']:.4g} Ω"),
+                 (tr("도달 시간 / 허용", "time to target / allowed"), f"{res['t_reach_s']:.4g} s / {res['t_target_s']:g} s"),
+                 (tr("초기 전류 · 전력 · 저항 에너지", "initial current · power · resistor energy"),
+                  f"{res['I0_A']:.3g} A · {res['P0_W']:.4g} W · {res['E_R_J']:.4g} J")]
+        self.t_dis.set_rows(rows + _emf_rows(res))
 
     def run_overvoltage(self):
         s = self.win.state
@@ -447,6 +541,18 @@ class SafetyPage(QWidget):
                         "note": tr(f"dV/dt = P/(C·V₁) = {res['dVdt_initial_V_per_s'] / 1e3:.0f} V/ms · 허용 반응 {res['max_reaction_time_s'] * 1e3:.3g} ms",
                                    f"dV/dt = P/(C·V₁) = {res['dVdt_initial_V_per_s'] / 1e3:.0f} V/ms · allowed reaction {res['max_reaction_time_s'] * 1e3:.3g} ms")},
                        title=tr("회생 중 배터리 차단", "battery disconnect while regenerating"), name="overvoltage_circuit")
+        rows = _claim_rows(res["claim"])
+        rows += [(tr("유입 전력 / 에너지", "power / energy in"), f"{res['P_in_W'] / 1e3:.4g} kW / {res['energy_in_J']:.4g} J"),
+                 (tr("최고 전압 / 한계", "peak / limit"), f"{res['V_peak_V']:.5g} V / {res['V_limit_V']:g} V"),
+                 (tr("허용 반응 시간 / 선언", "allowed / declared reaction time"),
+                  f"{fmt(ms_(res.get('max_reaction_time_s')))} ms / {fmt(ms_(res.get('reaction_time_s')))} ms")]
+        if op:
+            rows.append((tr("회생 동작점", "regen operating point"),
+                         f"id {op['id_A']:.1f} A · iq {op['iq_A']:.1f} A · P_dc {op['Pdc_W'] / 1e3:.2f} kW"))
+        if res.get("back_emf_ll_peak_V") is not None:
+            rows.append((tr("역기전력 선간 peak", "back-EMF line-line peak"), f"{res['back_emf_ll_peak_V']:.4g} V"))
+        rows += [(tr("주석", "note"), n) for n in res.get("notes", [])]
+        self.t_ov.set_rows(rows)
 
     # ------------------------------------------------------------ safe state
     def _safe_tab(self):

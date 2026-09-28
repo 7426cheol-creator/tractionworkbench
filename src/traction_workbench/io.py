@@ -73,18 +73,38 @@ def provenance_from_dict(d: dict | None, where: str) -> Provenance:
 
 
 def _flux_map_from_dict(fm: dict, conv: Conversions) -> FluxMapModel:
+    """Flux-map import with the frame fixed at import time (review P0-B).
+
+    Required declarations: ``axis_convention`` 'd_on_PM' (PM flux on +d; an SR/"d on max permeance" map must be
+    converted before import), ``park`` 'amplitude_invariant' (phase-peak dq values) and each plane's
+    ``array_order``.  Anything ambiguous is rejected instead of guessed.
+    """
+    conv_ax = fm.get("axis_convention")
+    if conv_ax != "d_on_PM":
+        raise InputValidationError("flux_map.axis_convention must be declared 'd_on_PM' (PM flux on +d); maps in "
+                                   "another rotor frame (e.g. SR convention) must be converted before import",
+                                   field="motor.flux_map.axis_convention")
+    if fm.get("park") != "amplitude_invariant":
+        raise InputValidationError("flux_map.park must be declared 'amplitude_invariant' (phase-peak dq values)",
+                                   field="motor.flux_map.park")
     planes = []
     for i, p in enumerate(_req(fm, "planes", "motor.flux_map")):
         w = f"motor.flux_map.planes[{i}]"
         order = str(_req(p, "array_order", w)).replace(" ", "")
-        if order != "row=id,column=iq":
-            raise InputValidationError("array_order must be 'row=id, column=iq' (declared explicitly)", field=w)
+        if order not in ("row=id,column=iq", "row=iq,column=id"):
+            raise InputValidationError("array_order must be declared as 'row=id, column=iq' or 'row=iq, column=id' "
+                                       "(a square map cannot be checked by its shape)", field=w)
         ida = current_peak(_req(p, "id_axis", w), w + ".id_axis", conv, allow_list=True)
         iqa = current_peak(_req(p, "iq_axis", w), w + ".iq_axis", conv, allow_list=True)
         psd = _flux_array(_req(p, "psi_d", w), w + ".psi_d")
         psq = _flux_array(_req(p, "psi_q", w), w + ".psi_q")
-        planes.append(FluxMapPlane(np.array(ida), np.array(iqa), psd, psq,
-                                   None if p.get("valid") is None else np.array(p["valid"], dtype=bool),
+        valid = None if p.get("valid") is None else np.array(p["valid"], dtype=bool)
+        if order == "row=iq,column=id":
+            # e.g. MATLAB meshgrid(id, iq) layouts: transposed once, explicitly, and recorded
+            psd, psq = psd.T, psq.T
+            valid = None if valid is None else valid.T
+            conv.add(w + ".array_order", order, "row=id, column=iq", "declared row=iq layout transposed to row=id")
+        planes.append(FluxMapPlane(np.array(ida), np.array(iqa), psd, psq, valid,
                                    p.get("magnet_temp_C"), p.get("label", "")))
     return FluxMapModel(tuple(planes), conservative=bool(fm.get("conservative", True)), symmetry=fm.get("symmetry"),
                         temperature_interpolation=fm.get("temperature_interpolation"),
@@ -101,6 +121,9 @@ def _flux_array(obj, where):
     except (TypeError, ValueError):
         raise InputValidationError("flux array must be numeric (use the validity mask for holes)", field=where) from None
     return arr
+
+
+SINGLE_VSI_NAMES = ("single_vsi", "single three-phase two-level vsi", "2l_vsi", "vsi")
 
 
 def drive_from_dict(d: dict, conv: Conversions | None = None) -> DriveModel:
@@ -123,7 +146,7 @@ def drive_from_dict(d: dict, conv: Conversions | None = None) -> DriveModel:
     rs = resistance_per_phase(_req(m, "Rs", "drive.motor"), connection, "drive.motor.Rs", conv)
     model = _req(m, "model", "drive.motor")
     if model == "constant_dq":
-        psi = pm_flux_linkage(m, p, conv)
+        psi = pm_flux_linkage(m, p, conv, connection)
         ld = quantity(_req(m, "Ld", "drive.motor"), "inductance", "drive.motor.Ld", conv)
         lq = quantity(_req(m, "Lq", "drive.motor"), "inductance", "drive.motor.Lq", conv)
         val = m.get("parameter_validity")
@@ -157,6 +180,14 @@ def drive_from_dict(d: dict, conv: Conversions | None = None) -> DriveModel:
         psi_temperature=None if not psi_t else TemperatureDependence(psi_t["coeff_per_K"], tuple(psi_t["valid_C"]), psi_t["basis"]),
         fidelity=Fidelity(m.get("fidelity", fid.value)))
     iv = _req(d, "inverter", "drive")
+    topo = str(iv.get("topology", "single_vsi")).strip().lower()
+    if topo not in SINGLE_VSI_NAMES:
+        # topology identity (OEW/HEV addendum P0): a dual-bridge / open-end-winding / multi-machine declaration is
+        # never solved as a single VSI; those circuits have their own equations (extensions.oew / extensions.hev)
+        raise InputValidationError(
+            f"inverter topology {iv.get('topology')!r} is not a single three-phase two-level VSI; the single-VSI "
+            f"solver never re-interprets it (use the OEW / HEV analyses with an explicit topology)",
+            field="drive.inverter.topology")
     imax = current_peak(_req(iv, "current_limit", "drive.inverter"), "drive.inverter.current_limit", conv)
     ls = iv.get("loss")
     loss = None

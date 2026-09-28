@@ -67,8 +67,11 @@ def run_self_test(app, out_dir) -> int:
                 check("pdf_report", pdf.is_file() and pdf.stat().st_size > 50_000, f"{pdf.stat().st_size} bytes")
                 page.tabs.setCurrentIndex(0)
 
-        def visit(key, row, actions, shots):
-            win.nav.setCurrentRow(row)
+        from .main_window import PAGES
+        rows = {k: i for i, (k, *_rest) in enumerate(PAGES)}
+
+        def visit(key, _row, actions, shots):
+            win.nav.setCurrentRow(rows[key])            # rows follow PAGES (pages can be inserted)
             pg = win.pages[key]
             for a in actions:
                 getattr(pg, a)() if isinstance(a, str) else a(pg)
@@ -111,9 +114,151 @@ def run_self_test(app, out_dir) -> int:
         th.c_flow.setValue(10.0)
         th.tabs.setCurrentIndex(0)
         check("schematics", all(p._draw is not None for p in (saf.s_dis, saf.s_pas, saf.s_ov, saf.s_safe, page.views.overview)))
+        pro = visit("protection", 0, ["run"], [(None, "22_protection_timeline"),
+                                               (lambda pg: pg.ptabs.setCurrentIndex(1), "23_protection_window"),
+                                               (lambda pg: pg.ptabs.setCurrentIndex(2), "24_protection_loop")])
+        prot_ids = [r["id"] for r in (pro.last or {}).get("rows", [])]
+        check("protection:ov", pro.last is not None and pro.last["trace"]["protected"] and len(prot_ids) == 9,
+              f"{pro.last and pro.last['summary_status']} {prot_ids}")
+        pro.preset.setCurrentIndex(1)
+        pro.run()
+        check("protection:ot", pro.last is not None and pro.last["unit"] == "degC" and pro.last["trace"]["protected"])
+        pro.tabs.setCurrentIndex(1)
+        pro.run_asc()
+        asc_ok = pro.last_asc is not None and pro.last_asc["claim"]["status"] == "UNKNOWN" and \
+            len(pro.last_asc["requirements"]) == 2
+        check("protection:asc", asc_ok, pro.last_asc and pro.last_asc["claim"]["detail"])
+        shot(win, "25_asc_transient")
+        pw = visit("power", 0, ["run_module"], [(None, "26_power_module")])
+        check("power:module", pw.last_module is not None and pw.last_module["losses"]["established"]
+              and pw.last_module["operating_point"]["Pinv_module_W"] > 0)
+        pw.tabs.setCurrentIndex(1)
+        pw.run_ripple()
+        shot(win, "27_power_ripple")
+        check("power:ripple", pw.last_ripple is not None and pw.last_ripple["I_cap_rms_A"] > 0
+              and pw.last_ripple["claims"]["capacitor_life"]["status"] == "UNKNOWN")
+        pw.tabs.setCurrentIndex(2)
+        pw.run_life()
+        shot(win, "28_power_life")
+        check("power:lifetime", pw.last_life is not None and pw.last_life["damage"]["claim"]["status"] == "UNKNOWN"
+              and pw.last_life["damage"]["cycles_counted"] > 0)
+        oh = visit("oew_hev", 0, ["run_oew"], [(None, "29_oew_sets"), (lambda pg: pg.o_tabs.setCurrentIndex(1), "30_oew_point"),
+                                                (lambda pg: pg.o_tabs.setCurrentIndex(3), "31_oew_paired"),
+                                                (lambda pg: pg.o_tabs.setCurrentIndex(5), "32_oew_circuit")])
+        w = (oh.last_oew or {}).get("result", {}).get("witness")
+        check("oew:point", w is not None and oh.last_oew["result"]["status"] == "FEASIBLE"
+              and abs(w["identities"]["ports_minus_winding_W"]) < 1e-3, oh.last_oew and oh.last_oew["result"]["status"])
+        g = oh.last_oew["geometry"] if oh.last_oew else {}
+        check("oew:geometry", g.get("admissible_pairs") == 20 and g.get("admissible_unique_alphabeta") == 7
+              and abs(g.get("hull_inradius_V", 0) - 400.0) < 1e-9, str({k: g.get(k) for k in ("admissible_pairs",
+                                                                                                 "hull_inradius_V")}))
+        oh.run_compare()
+        shot(win, "33_oew_tn")
+        cmp_rows = [r for r in (oh.last_cmp or {}).get("rows", []) if r.get("single_vsi_Nm") is not None]
+        check("oew:compare", bool(cmp_rows) and cmp_rows[-1]["oew_common_bus_Nm"] > cmp_rows[-1]["single_vsi_Nm"])
+        oh.tabs.setCurrentIndex(1)
+        oh.run_joint()
+        shot(win, "34_hev_joint")
+        check("hev:joint", oh.last_joint is not None and
+              oh.last_joint["joint_cells_feasible"] < oh.last_joint["box_cells_feasible_separately"])
+        oh.run_crank()
+        shot(win, "35_hev_crank")
+        check("hev:crank", oh.last_crank is not None and oh.last_crank["claim"]["status"] in ("UNKNOWN", "INFEASIBLE"))
+        oh.run_rej()
+        check("hev:rejection", oh.last_rej is not None and abs(oh.last_rej["E_margin_J"] - 10.625) < 1e-9)
+        oh.run_planetary()
+        shot(win, "36_hev_planetary")
+        check("hev:planetary", oh.last_pl is not None and oh.last_pl["check"]["status"] == "FEASIBLE")
+        em = visit("emi", 0, ["run"], [(None, "37_emi_spectrum"), (lambda pg: pg.e_tabs.setCurrentIndex(1), "38_emi_network")])
+        check("emi:screening", em.last is not None and em.last["claim"]["status"] == "UNKNOWN"
+              and "SCREENING_ONLY" in em.last["claim"]["reasons"], em.last and em.last["claim"]["detail"])
+        em.tabs.setCurrentIndex(1)
+        em.run_oew()
+        shot(win, "39_emi_oew_cm")
+        cs = (em.last_oew or {}).get("cases", {})
+        check("emi:oew_cm", len(cs) == 2 and cs["0"]["u0_rms_V"] < cs["0.5"]["u0_rms_V"]
+              and cs["0"]["cm6_rms_V"] > cs["0.5"]["cm6_rms_V"])
+        ef = visit("efficiency", 0, ["run_point"], [(None, "43_efficiency_point")])
+        eb = ((ef.last_point or {}).get("ledger") or {}).get("boundaries", {})
+        check("efficiency:five_boundaries", all(eb.get(k, {}).get("status") == "DEFINED" for k in
+                                                ("inverter", "motor", "inverter_motor", "reducer", "edrive"))
+              and abs(eb["telescoping_residuals"]["edrive"]) < 1e-12, str({k: v.get("status") for k, v in eb.items()
+                                                                            if isinstance(v, dict) and "status" in v}))
+        ef.run_map()
+        shot(win, "44_efficiency_maps")
+        st_map = (ef.last_map or {}).get("status")
+        check("efficiency:maps", st_map is not None and "FEASIBLE" in set(st_map.ravel()))
+        ef.run_mission()
+        shot(win, "45_efficiency_mission")
+        em_ = (ef.last_mission or {}).get("energy") or {}
+        check("efficiency:mission", bool(ef.last_mission and ef.last_mission["delivered"])
+              and 0 < (em_.get("eta_traction") or 0) < 1 and 0 < (em_.get("eta_regeneration") or 0) < 1)
+        ef.tabs.setCurrentIndex(1)
+        ef.run_ab()
+        shot(win, "46_module_ab")
+        ab_rows = (ef.last_ab or {}).get("rows", [])
+        check("efficiency:module_ab", bool(ab_rows) and all(r["A"].get("Tj_C") is not None and r["B"].get("Tj_C") is not None
+                                                            for r in ab_rows)
+              and all(r["compare"]["verdict"] in ("A_LOWER_LOSS", "B_LOWER_LOSS", "UNDECIDED") for r in ab_rows),
+              str([r["compare"]["verdict"] for r in ab_rows]))
+        pw_ = visit("pwm_driveline", 0, ["run_policies"], [(None, "47_pwm_policies")])
+        pol = {p["policy"]["name"]: p for p in (pw_.last_pol or {}).get("policies", [])}
+        check("pwm:policies", pol.get("fixed 10 kHz", {}).get("admissible") and
+              not pol.get("thermal fallback 6 kHz", {}).get("admissible", True) and
+              (pw_.last_pol or {}).get("best_inverter_energy_among_evaluated") == "light-load 8 kHz",
+              str({k: v.get("violations") for k, v in pol.items()}))
+        pw_.run_timing()
+        shot(win, "48_pwm_timing")
+        check("pwm:transition", bool(pw_.last_tim) and pw_.last_tim["transition_shadow"]["ok"]
+              and not pw_.last_tim["transition_immediate"]["ok"])
+        pw_.run_ripple()
+        rr = (pw_.last_rip or {}).get("rows", [])
+        check("pwm:ripple", bool(rr) and all(abs(x["ripple_rms_A"] / x["ripple_rms_spectrum_A"] - 1) < 1e-3 for x in rr))
+        pw_.run_transients()
+        shot(win, "48b_pwm_sampling_transition")
+        tv = (pw_.last_trn or {}).get("transition", {}).get("variants", {})
+        sc = (pw_.last_trn or {}).get("sampling_curves", {})
+        check("pwm:sampling_transition", bool(tv) and tv["bumpless (volts, Ki*Ts remapped)"]["excursion_A"] == 0.0
+              and tv["integrator reset"]["excursion_A"] > tv["error-sum integrator, Ki*Ts remapped"]["excursion_A"] > 0
+              and sc.get("dc_link_shunt", {}).get("valid_fraction", [1])[0] == 0.0,
+              str({k: v.get("excursion_A") for k, v in tv.items()}))
+        pw_.tabs.setCurrentIndex(1)
+        pw_.run_driveline()
+        shot(win, "49_antijerk_variants")
+        dv = (pw_.last_dl or {}).get("variants", {})
+        check("antijerk:variants", set(dv) == {"off", "shaping", "feedback", "combined"}
+              and dv["off"]["metrics"]["peak_vehicle_jerk_m_s3"] > dv["combined"]["metrics"]["peak_vehicle_jerk_m_s3"],
+              str({k: v["status"] for k, v in dv.items()}))
+        pw_.run_stability()
+        shot(win, "50_antijerk_stability")
+        gr = (pw_.last_stab or {}).get("grid", [])
+        check("antijerk:stability", any(not x["stable"] for row in gr for x in row) and any(x["stable"] for row in gr for x in row))
+        mc = visit("machine", 0, ["run_trade"], [(None, "40_machine_trade")])
+        mrows = {r["candidate"]: r for r in (mc.last_trade or {}).get("rows", []) if "checks" in r}
+        check("machine:trade", "ref" in mrows and "N+10%" in mrows and mrows["ref"]["all_feasible"]
+              and mrows["N+10%"]["checks"]["UGO back-EMF"]["status"] == "INFEASIBLE"
+              and abs(mrows["N+10%"]["checks"]["UGO back-EMF"]["value"] / mrows["ref"]["checks"]["UGO back-EMF"]["value"]
+                      - 1.1) < 1e-9, str({k: v.get("binding") for k, v in mrows.items()}))
+        mc.tabs.setCurrentIndex(1)
+        mc.run_wind()
+        shot(win, "41_machine_winding")
+        mw = mc.last_wind or {}
+        check("machine:winding", abs(mw.get("kw1", 0) - 0.9330127018922193) < 1e-12 and mw.get("balanced")
+              and abs((mw.get("compare") or {}).get("k_turns", 0) - 1.25) < 1e-12, mw.get("kw1"))
+        n0 = mc.t_cand.rowCount()
+        mc.send_candidate()
+        check("machine:k_turns_to_trade", mc.t_cand.rowCount() == n0 + 1 and mc.tabs.currentIndex() == 0)
+        mc.tabs.setCurrentIndex(2)
+        mc.run_size()
+        shot(win, "42_machine_sizing")
+        check("machine:sizing", mc.last_size is not None and
+              all(abs(r["check_T_Nm"] - mc.last_size["T_Nm"]) < 1e-9 for r in mc.last_size["rows"]))
         visit("model", 7, [], [(None, "18_model")])
         vv = visit("verification", 8, ["run"], [(None, "19_verification")])
         check("acceptance", "PASS" in vv.summary.text() and "MISMATCH" not in vv.summary.text(), vv.summary.text())
+        xp = vv.export_exchange(str(out / "twb_exchange.json"))
+        xj = json.loads(Path(xp).read_text(encoding="utf-8")) if xp else {}
+        check("exchange:package", xj.get("schema") == "twb-exchange/1" and len(xj.get("fixtures", {})) >= 12)
         # flux-map drive: model switch + a decision on the D2 test drive
         win.state.set_drive({"builtin": "MANUFACTURED_FLUX_MAP_TEST_DRIVE"}, "flux map", "builtin")
         win.nav.setCurrentRow(0)

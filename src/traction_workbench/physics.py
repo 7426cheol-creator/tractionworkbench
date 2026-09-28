@@ -25,7 +25,8 @@ import numpy as np
 
 from .errors import InputValidationError, OutsideModelDomain
 from .models.components import DriveModel
-from .models.flux import ConstantFluxModel, FluxMapModel, _finite
+from .models.flux import ConstantFluxModel, FluxMapModel
+from .validation import finite as _finite
 from .scenario import Scenario
 from .settings import DEFAULT_SETTINGS, NumericalSettings
 from .status import Reason
@@ -94,6 +95,8 @@ class DriveKernel:
             self.tau_rot = self.rot.torque(self.omega_m)
             self.P_rot = self.rot.power(self.omega_m)
         self.inv_loss = inv.loss
+        self.module = inv.module_loss
+        self.module_Tj = inv.module_Tj_C
         if self.inv_loss is not None and self.inv_loss.valid_Vdc_V is not None:
             lo, hi = self.inv_loss.valid_Vdc_V
             if not (lo <= self.Vdc <= hi):
@@ -174,7 +177,31 @@ class DriveKernel:
 
     @property
     def dc_defined(self) -> bool:
-        return self.inv_loss is not None and self.tau_rot is not None
+        return (self.inv_loss is not None or self.module is not None) and self.tau_rot is not None
+
+    def module_loss_at(self, id_A, iq_A, vd, vq) -> dict | None:
+        """Datasheet module losses at one point (scalar); None without a module model."""
+        if self.module is None:
+            return None
+        from dataclasses import replace as _rep
+        from .extensions.module_loss import inverter_losses, standstill_hotspot
+        fsw = self.scenario.switching_frequency_Hz
+        mod = self.module if fsw is None else _rep(self.module, fsw_Hz=fsw)
+        if abs(self.omega_e) <= self.settings.speed_zero_tol_rad_s:
+            # DC phase currents: the fundamental-period average is meaningless; worst electrical angle instead
+            h = standstill_hotspot(mod, float(np.hypot(id_A, iq_A)), self.Vdc, self.module_Tj)
+            if not h.get("established"):
+                return {"established": False, "problems": [h.get("problem", "standstill loss not established")],
+                        "value_kind": mod.device.value_kind}
+            tot = max(r[2] for r in h["curve"])
+            return {"established": True, "semiconductor_W": tot, "conduction_W": float("nan"),
+                    "switching_W": float("nan"), "per_position_W": {}, "hottest_position": "worst angle",
+                    "hottest_position_W": h["hottest_device_W"], "modulation_index": 0.0, "power_factor": float("nan"),
+                    "Tj_eval_C": self.module_Tj, "fsw_Hz": mod.fsw_Hz, "value_kind": mod.device.value_kind,
+                    "problems": [], "dc_side_W": tot + (mod.driver_aux_W if mod.aux_from_hv_dc else 0.0),
+                    "standstill": {"angle_at_max_deg": h["angle_at_max_deg"], "total_over_six_W": h["total_over_six_W"],
+                                   "note": "worst electrical angle (sampled); total/6 is not a device-level input"}}
+        return inverter_losses(mod, id_A, iq_A, vd, vq, self.Vdc, self.module_Tj, refine_check=False)
 
     @property
     def tau_rot_or_zero(self) -> float:
@@ -364,8 +391,8 @@ def build_constraints(k: DriveKernel, *, id_A: float, iq_A: float, v_cmd_peak: f
          None if lim.charge_current_max_A is None else -lim.charge_current_max_A, i_dc, "A (average)",
          s.current_abs_tol_A),
     ):
-        if limit is None:
-            continue
+        if limit is None or not math.isfinite(limit):
+            continue            # not declared (see solvers.gate: never read as unlimited) or declared unlimited
         out.append(ConstraintResult(name, group, sense, limit, demand, unit, _tol(s, limit, floor), dc_src,
                                     details=(("note", "average DC quantity; not ripple RMS or transient peak"),)))
     return tuple(out)
@@ -446,6 +473,7 @@ class OperatingPoint:
     constraints: tuple[ConstraintResult, ...]
     pwm_ratio: float | None
     notes: tuple[str, ...] = ()
+    inverter_loss_detail: dict | None = None
 
     @property
     def identities_ok(self) -> bool:
@@ -508,6 +536,7 @@ class OperatingPoint:
             "Pdc_W": self.Pdc_W,
             "Idc_A_average": self.Idc_A,
             "loss_breakdown_W": {"copper": self.Pcu_W, "rotational": self.Prot_W, "inverter": self.Pinv_W},
+            "inverter_loss_detail": self.inverter_loss_detail,
             "power_identity_residuals_W": {
                 "Pac - (Te*wm + Pcu)": self.residual_pac_tem_W,
                 "Pac - (Pshaft + Pcu + Prot)": self.residual_pac_shaft_W,
@@ -563,11 +592,17 @@ def evaluate_point(kernel: DriveKernel, id_A: float, iq_A: float) -> OperatingPo
     p_shaft = tsh * wm if tsh is not None else None
     p_rot = k.P_rot
     p_inv = f["pinv"] if k.inv_loss is not None else None
+    ml = None
+    if k.module is not None:
+        ml = k.module_loss_at(d, q, f["vd"], f["vq"])
+        p_inv = ml["dc_side_W"] if ml["established"] else None
     p_dc = (f["pac"] + p_inv) if (p_inv is not None) else None
     i_dc = p_dc / k.Vdc if p_dc is not None else None
     res1 = f["pac"] - (f["tem"] * wm + f["pcu"])
     res2 = f["pac"] - (p_shaft + f["pcu"] + p_rot) if p_shaft is not None else None
     res3 = p_dc - (f["pac"] + p_inv) if p_dc is not None else None
+    if ml is not None:
+        f["pinv"] = p_inv if p_inv is not None else float("nan")
     scale = max(abs(f["pac"]), abs(f["pcu"]), abs(p_dc or 0.0), abs(p_shaft or 0.0), abs(f["tem"] * wm))
     id_tol = max(s.power_identity_abs_W, s.power_identity_rel * scale)
     mode, eta, eta_note = classify_energy(p_shaft, p_dc, wm, s)
@@ -581,8 +616,16 @@ def evaluate_point(kernel: DriveKernel, id_A: float, iq_A: float) -> OperatingPo
     notes = list(k.notes)
     if not k.shaft_defined:
         notes.append("rotational loss model missing: shaft torque/power undefined (electromagnetic values only)")
-    if k.inv_loss is None:
+    if k.inv_loss is None and k.module is None:
         notes.append("inverter loss model missing: DC power/current undefined")
+    if ml is not None:
+        if ml["established"]:
+            notes.append(f"inverter loss from the datasheet module model at Tj = {k.module_Tj:g} degC: "
+                         f"{ml['semiconductor_W']:.5g} W (conduction {ml['conduction_W']:.4g} W, switching "
+                         f"{ml['switching_W']:.4g} W; {ml['value_kind']} values)")
+        else:
+            notes.append("datasheet module loss not established at this point: " + "; ".join(ml["problems"])
+                         + " - DC power undefined (a missing loss is never set to zero)")
     return OperatingPoint(
         id_A=d, iq_A=q, speed_rpm=k.speed_rpm, omega_m=wm, omega_e=k.omega_e, f_e_Hz=fe, Vdc_V=k.Vdc,
         psi_d_Wb=f["psd"], psi_q_Wb=f["psq"], vd_V=f["vd"], vq_V=f["vq"], v_peak_V=v_peak,
@@ -593,6 +636,10 @@ def evaluate_point(kernel: DriveKernel, id_A: float, iq_A: float) -> OperatingPo
         energy_mode=mode, efficiency=eta, efficiency_note=eta_note, voltage_budget_V=k.Vb,
         voltage_ceiling_V=k.V_ceiling, voltage_margin_V=k.Vb - v_cmd, constraints=constraints,
         pwm_ratio=pwm_ratio, notes=tuple(notes),
+        inverter_loss_detail=None if ml is None else {
+            k2: ml[k2] for k2 in ("established", "semiconductor_W", "conduction_W", "switching_W", "per_position_W",
+                                  "hottest_position", "hottest_position_W", "modulation_index", "power_factor",
+                                  "Tj_eval_C", "fsw_Hz", "value_kind", "problems")},
     )
 
 
@@ -605,10 +652,22 @@ class ForwardResult:
     reason: Reason | None
     message: str
     issues: tuple = ()
+    gate_messages: tuple = ()    # why the point is not admissible evidence (common witness gate)
 
     @property
     def all_constraints_ok(self) -> bool | None:
         return None if self.point is None else self.point.all_satisfied()
+
+    @property
+    def validity_gate_passed(self) -> bool:
+        """False when the model is not valid for this scenario (e.g. Rs reference temperature missing)."""
+        return not self.issues
+
+    @property
+    def accepted(self) -> bool:
+        """Admissible evidence: model valid, covered, every constraint evaluated and met, relevant DC limits declared."""
+        return bool(self.evaluable and self.validity_gate_passed and self.point is not None
+                    and self.point.all_satisfied() and self.point.identities_ok and not self.gate_messages)
 
     def to_dict(self) -> dict:
         return {
@@ -617,9 +676,17 @@ class ForwardResult:
             "reason": None if self.reason is None else self.reason.value,
             "message": self.message,
             "model_issues": [i.to_dict() for i in self.issues],
+            "validity_gate": {
+                "passed": self.validity_gate_passed,
+                "meaning": ("model valid for this scenario" if self.validity_gate_passed else
+                            "model NOT valid for this scenario: the numbers are diagnostics only and the point is "
+                            "not an accepted witness"),
+            },
             "all_constraints_satisfied": self.all_constraints_ok,
-            "semantics": "the point is evaluated as given and never moved; a violating point is a diagnostic, "
-                         "not a feasible witness",
+            "accepted_as_evidence": self.accepted,
+            "not_accepted_because": list(self.gate_messages),
+            "semantics": "the point is evaluated as given and never moved; a violating point or a point evaluated "
+                         "outside the model-validity gate is a diagnostic, not a feasible witness",
             "operating_point": None if self.point is None else self.point.to_dict(),
         }
 
@@ -631,6 +698,16 @@ def forward_evaluation(drive: DriveModel, scenario: Scenario, id_A: float, iq_A:
         pt = evaluate_point(k, id_A, iq_A)
     except OutsideModelDomain as exc:
         return ForwardResult(None, False, Reason.OUTSIDE_MODEL_DOMAIN, str(exc), tuple(k.issues))
-    msg = "all evaluated constraints satisfied" if pt.all_satisfied() else (
-        "constraint violation(s): " + ", ".join(c.name for c in pt.violations()))
-    return ForwardResult(pt, True, None, msg, tuple(k.issues))
+    if pt.all_satisfied():
+        msg = "all evaluated constraints satisfied"
+    else:
+        bad = [c.name for c in pt.violations()] + [f"{c.name} (not evaluated)" for c in pt.constraints
+                                                   if c.state == NOT_EVALUATED]
+        msg = "constraint violation(s) / not evaluated: " + ", ".join(bad)
+    from .solvers.gate import check_witness          # local import: the gate builds on this module
+    gate = check_witness(k, id_A, iq_A, point=pt, require_dc=True)
+    if k.issues:
+        msg = ("DIAGNOSTIC ONLY - model validity gate failed (" + "; ".join(i.message for i in k.issues) + "); "
+               + msg)
+        return ForwardResult(pt, True, k.issues[0].reason, msg, tuple(k.issues), tuple(gate.messages))
+    return ForwardResult(pt, True, None, msg, tuple(k.issues), tuple(gate.messages))

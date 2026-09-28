@@ -48,17 +48,17 @@ def dc_ok(k: DriveKernel, pdc) -> np.ndarray:
     ok = np.isfinite(pdc)
     lim = k.limits
     with np.errstate(invalid="ignore"):
-        if lim.discharge_power_max_W is not None:
+        if lim.discharge_power_max_W is not None and math.isfinite(lim.discharge_power_max_W):
             L = lim.discharge_power_max_W
             ok &= (L - pdc) >= -_tol(k, L, s.power_abs_tol_W)
-        if lim.charge_power_max_W is not None:
+        if lim.charge_power_max_W is not None and math.isfinite(lim.charge_power_max_W):
             L = -lim.charge_power_max_W
             ok &= (pdc - L) >= -_tol(k, L, s.power_abs_tol_W)
         idc = pdc / k.Vdc
-        if lim.discharge_current_max_A is not None:
+        if lim.discharge_current_max_A is not None and math.isfinite(lim.discharge_current_max_A):
             L = lim.discharge_current_max_A
             ok &= (L - idc) >= -_tol(k, L, s.current_abs_tol_A)
-        if lim.charge_current_max_A is not None:
+        if lim.charge_current_max_A is not None and math.isfinite(lim.charge_current_max_A):
             L = -lim.charge_current_max_A
             ok &= (idc - L) >= -_tol(k, L, s.current_abs_tol_A)
     return ok

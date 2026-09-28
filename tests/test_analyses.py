@@ -42,7 +42,7 @@ def test_dominance_active_vs_limiting(drive):
     rows = {dict(x)["constraint"]: dict(x) for x in r.rows}
     assert rows["DC_DISCHARGE_POWER"]["classification"] == "limiting"
     assert rows["VOLTAGE"]["classification"] == "limiting"
-    assert rows["CURRENT"]["classification"] == "not limiting alone"
+    assert rows["CURRENT"]["classification"].startswith("not limiting alone")
     assert not r.joint
 
 
@@ -50,8 +50,8 @@ def test_joint_bottleneck_when_power_and_current_limits_coincide(drive):
     # 500 V x 400 A = 200 kW = discharge power limit: neither relaxation alone helps
     r = capability_dominance(drive, scenario(12000, 500), +1)
     rows = {dict(x)["constraint"]: dict(x) for x in r.rows}
-    assert rows["DC_DISCHARGE_POWER"]["classification"] == "not limiting alone"
-    assert rows["DC_DISCHARGE_CURRENT"]["classification"] == "not limiting alone"
+    assert rows["DC_DISCHARGE_POWER"]["classification"].startswith("not limiting alone")
+    assert rows["DC_DISCHARGE_CURRENT"]["classification"].startswith("not limiting alone")
     joint = [dict(j) for j in r.joint]
     assert any(set(j["constraints"]) == {"DC_DISCHARGE_POWER", "DC_DISCHARGE_CURRENT"} for j in joint)
 

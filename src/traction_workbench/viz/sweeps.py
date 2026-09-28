@@ -34,8 +34,8 @@ STATUS_NAMES = {OK: "OK", DC: "DC_LIMIT", NONE: "NO_SOLUTION", UNKNOWN: "UNKNOWN
 DC_GROUPS = ("DISCHARGE_SOURCE", "CHARGE_SOURCE")
 
 FIELDS = ("id_A", "iq_A", "I_peak_A", "I_rms_A", "v_cmd_V", "v_margin_V", "m_linear", "Te_Nm", "Tshaft_Nm",
-          "Pshaft_W", "Pac_W", "Pdc_W", "Idc_A", "Pcu_W", "Pinv_W", "Prot_W", "P_loss_W", "eta", "eta_motor",
-          "eta_inverter", "pf", "psi_d_Wb", "psi_q_Wb")
+          "Pshaft_W", "Pac_W", "Pdc_W", "Idc_A", "Pcu_W", "Pinv_W", "Prot_W", "P_loss_W", "P_loss_known_W", "eta",
+          "eta_motor", "eta_inverter", "pf", "psi_d_Wb", "psi_q_Wb")
 
 Progress = Callable[[float, str], None] | None
 
@@ -50,14 +50,24 @@ def _tick(progress: Progress, frac: float, msg: str = "") -> None:
 
 
 def point_fields(pt: OperatingPoint) -> dict:
-    loss = pt.Pcu_W + (pt.Pinv_W or 0.0) + (pt.Prot_W or 0.0)
-    eta_m = eta_i = None
-    if pt.energy_mode == "MOTORING":
-        eta_m = pt.Pshaft_W / pt.Pac_W if pt.Pac_W > 0 else None
-        eta_i = pt.Pac_W / pt.Pdc_W if pt.Pdc_W else None
-    elif pt.energy_mode == "REGENERATING":
-        eta_m = pt.Pac_W / pt.Pshaft_W if pt.Pshaft_W else None
-        eta_i = pt.Pdc_W / pt.Pac_W if pt.Pac_W < 0 else None
+    """Map / sweep fields of one point.
+
+    Losses: ``P_loss_W`` is the total only when every loss term is known; otherwise None, with the known subtotal
+    in ``P_loss_known_W`` (a missing loss is never summed as zero).  Efficiencies are judged per boundary on their
+    own two ports (inverter P_dc <-> P_ac, motor P_ac <-> P_shaft, inverter+motor P_dc <-> P_shaft), independently
+    of the overall energy mode: a missing inverter loss leaves the motor efficiency defined, and a standstill point
+    keeps the inverter DC -> AC terminal ratio."""
+    from ..analysis.efficiency import DEFINED, boundary_eta
+    terms = (pt.Pcu_W, pt.Pinv_W, pt.Prot_W)
+    known = sum(v for v in terms if v is not None)
+    loss = known if all(v is not None for v in terms) else None
+    tol = 1e-6 * max(1.0, abs(pt.Pac_W))
+
+    def eta(a, b):
+        r = boundary_eta(a, b, tol)
+        return r["eta"] if r["status"] == DEFINED else None
+    eta_i = eta(pt.Pdc_W, pt.Pac_W)
+    eta_m = eta(pt.Pac_W, pt.Pshaft_W)
     denom = 1.5 * pt.v_peak_V * pt.i_peak_A
     return {
         "id_A": pt.id_A, "iq_A": pt.iq_A, "I_peak_A": pt.i_peak_A, "I_rms_A": pt.i_phase_rms_A,
@@ -65,7 +75,7 @@ def point_fields(pt: OperatingPoint) -> dict:
         "m_linear": pt.v_cmd_peak_V / (pt.Vdc_V / math.sqrt(3.0)),
         "Te_Nm": pt.Te_Nm, "Tshaft_Nm": pt.Tshaft_Nm, "Pshaft_W": pt.Pshaft_W, "Pac_W": pt.Pac_W,
         "Pdc_W": pt.Pdc_W, "Idc_A": pt.Idc_A, "Pcu_W": pt.Pcu_W, "Pinv_W": pt.Pinv_W, "Prot_W": pt.Prot_W,
-        "P_loss_W": loss, "eta": pt.efficiency, "eta_motor": eta_m, "eta_inverter": eta_i,
+        "P_loss_W": loss, "P_loss_known_W": known, "eta": pt.efficiency, "eta_motor": eta_m, "eta_inverter": eta_i,
         "pf": (pt.Pac_W / denom) if denom > 0 else None,
         "psi_d_Wb": pt.psi_d_Wb, "psi_q_Wb": pt.psi_q_Wb,
     }

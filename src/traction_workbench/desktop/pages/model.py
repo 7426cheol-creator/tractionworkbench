@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import json
+import math
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
 from ...i18n import tr
 from ...io import load_json_file
 from ..state import BUILTIN_DRIVES
-from ..widgets import check, combo, error_box, fmt, hint, number, primary_button
+from ..widgets import KeyValueTable, combo, error_box, fmt, hint, number, primary_button
 
 
 def _fill(parent, key, value):
@@ -78,13 +78,22 @@ class ModelPage(QWidget):
                                       ("charge_power_max_W", tr("충전 전력", "charge power"), "kW", 1e-3),
                                       ("discharge_current_max_A", tr("방전 전류", "discharge current"), "A", 1.0),
                                       ("charge_current_max_A", tr("충전 전류", "charge current"), "A", 1.0)):
-            on = check("", lim.get(key) is not None, tr("해제 = 한계 없음 (DC claim은 UNKNOWN)", "off = not given (DC claims UNKNOWN)"))
-            val = number((lim.get(key) or 0.0) * scale, 0, 1e7, unit, 3)
+            cur = lim.get(key)
+            mode = "value" if (cur is not None and math.isfinite(cur)) else ("unlimited" if cur is not None else "missing")
+            kind = combo([(tr("값", "value"), "value"), (tr("미선언 (UNKNOWN)", "not declared (UNKNOWN)"), "missing"),
+                          (tr("선언된 무제한 (∞)", "declared unlimited (∞)"), "unlimited")], mode)
+            kind.setToolTip(tr("미선언은 무제한이 아닙니다: 묶일 수 있는 한계가 미선언이면 DC claim은 UNKNOWN. '선언된 무제한'은 "
+                               "근거가 있을 때만 선택하세요.",
+                               "Not declared is not unlimited: a limit that can bind but is not declared makes the DC claim "
+                               "UNKNOWN. Choose 'declared unlimited' only with a basis."))
+            val = number((cur if (cur is not None and math.isfinite(cur)) else 0.0) * scale, 0, 1e7, unit, 3)
+            kind.currentIndexChanged.connect(lambda _i, k=kind, w=val: w.setEnabled(k.currentData() == "value"))
+            val.setEnabled(mode == "value")
             row = QHBoxLayout()
-            row.addWidget(on)
+            row.addWidget(kind)
             row.addWidget(val, 1)
             f.addRow(lab, row)
-            self.lim_fields[key] = (on, val, scale)
+            self.lim_fields[key] = (kind, val, scale)
         b = primary_button(tr("한계 적용", "apply limits"))
         b.clicked.connect(self._apply_limits)
         f.addRow(b)
@@ -108,7 +117,12 @@ class ModelPage(QWidget):
         self.tree.setHeaderLabels([tr("항목", "item"), tr("값", "value")])
         self.tree.setColumnWidth(0, 320)
         self.tree.setAlternatingRowColors(True)
-        rv.addWidget(self.tree, 1)
+        rv.addWidget(self.tree, 3)
+        rv.addWidget(QLabel(tr("<b>데이터 감사</b> — 이 데이터로 할 수 있는 것 / 없는 것 (이웃 용도로 승격하지 않음)",
+                               "<b>data audit</b> — what these data may and may not be used for (never promoted from a "
+                               "neighbouring use)")))
+        self.audit = KeyValueTable(headers=[tr("용도", "use"), tr("상태", "status"), tr("근거", "basis")])
+        rv.addWidget(self.audit, 2)
         split.addWidget(right)
         split.setSizes([360, 1060])
         lay = QVBoxLayout(self)
@@ -129,6 +143,24 @@ class ModelPage(QWidget):
             _fill(self.tree, k, val)
         _fill(self.tree, tr("DC 소스 한계", "DC source limits"), s.limits.describe())
         self.tree.expandToDepth(0)
+        from ... import service as S
+        try:
+            au = S.data_audit(s.drive)
+        except Exception as exc:  # noqa: BLE001 - the audit never blocks the page
+            self.audit.set_rows([("audit", "ERROR", str(exc))])
+            return
+        rows, colors = [], {}
+        for i, u in enumerate(au["supported_uses"]):
+            st = str(u["status"])
+            rows.append((u["use"], st, u.get("basis", "")))
+            up = st.upper()
+            colors[(i, 1)] = ("#cf222e" if any(w in up for w in ("MISSING", "NOT SUPPORTED", "NEVER", "NOT QUALIFIED"))
+                              else "#9a6700" if any(w in up for w in ("SCREENING", "NOT COVERED", "WARNING", "NOT DECLARED",
+                                                                     "NOT PART")) else "#1a7f37")
+        for g in au["qualification_gaps"]:
+            rows.append((tr("qualification 공백", "qualification gap"), "GAP", g))
+            colors[(len(rows) - 1, 1)] = "#cf222e"
+        self.audit.set_rows(rows, colors)
 
     def _use_builtin(self):
         key = self.builtin.currentData()
@@ -151,8 +183,9 @@ class ModelPage(QWidget):
 
     def _apply_limits(self):
         d = {}
-        for key, (on, val, scale) in self.lim_fields.items():
-            d[key] = val.value() / scale if on.isChecked() else None
+        for key, (kind, val, scale) in self.lim_fields.items():
+            m = kind.currentData()
+            d[key] = val.value() / scale if m == "value" else (math.inf if m == "unlimited" else None)
         try:
             self.win.state.set_limits(d)
         except Exception as exc:  # noqa: BLE001

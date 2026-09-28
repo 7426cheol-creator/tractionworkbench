@@ -273,6 +273,135 @@ class KeyValueTable(QTableWidget):
         self.resizeRowsToContents()
 
 
+def parse_clipboard_grid(text: str) -> list[list[str]]:
+    """Spreadsheet/datasheet text -> cells (tab-separated from Excel, else ';', else whitespace)."""
+    rows = []
+    for line in text.replace("\r", "").split("\n"):
+        if not line.strip():
+            continue
+        if "\t" in line:
+            cells = line.split("\t")
+        elif ";" in line:
+            cells = line.split(";")
+        else:
+            cells = line.replace(",", " ").split()
+        rows.append([c.strip() for c in cells])
+    return rows
+
+
+class NumTable(QTableWidget):
+    """Editable numeric table: add/remove rows, Ctrl+V pastes a block from a spreadsheet at the current cell."""
+
+    def __init__(self, headers: list[str], rows=None, parent=None, min_height: int = 120, text_cols=(),
+                 optional_cols=()):
+        super().__init__(parent)
+        self.text_cols = frozenset(text_cols)            # returned as stripped text (names, kinds)
+        self.optional_cols = frozenset(optional_cols)    # a blank numeric cell here is None (not declared), not 0
+        self.setColumnCount(len(headers))
+        self.setHorizontalHeaderLabels(headers)
+        self.verticalHeader().setVisible(True)
+        self.verticalHeader().setDefaultSectionSize(22)
+        self.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.setSelectionBehavior(QAbstractItemView.SelectItems)
+        self.setMinimumHeight(min_height)
+        if rows:
+            self.load(rows)
+
+    def load(self, rows) -> None:
+        self.setRowCount(0)
+        for r in rows:
+            self.add_row(r)
+
+    def add_row(self, values=None) -> None:
+        i = self.rowCount()
+        self.insertRow(i)
+        for j in range(self.columnCount()):
+            v = None if values is None or j >= len(values) else values[j]
+            self.setItem(i, j, QTableWidgetItem("" if v is None else (v if isinstance(v, str) else fmt(v))))
+
+    def remove_selected(self) -> None:
+        rows = sorted({i.row() for i in self.selectedIndexes()} or ({self.currentRow()} if self.currentRow() >= 0 else set()),
+                      reverse=True)
+        for r in rows:
+            self.removeRow(r)
+
+    def values(self) -> list[list[float]]:
+        """Numeric rows (blank rows skipped); a non-numeric or partly filled row raises ValueError naming the cell.
+
+        Text columns come back as text; a blank optional column comes back as None (not declared)."""
+        out = []
+        for i in range(self.rowCount()):
+            cells = [(self.item(i, j).text().strip() if self.item(i, j) else "") for j in range(self.columnCount())]
+            if not any(cells):
+                continue
+            row = []
+            for j, c in enumerate(cells):
+                if j in self.text_cols:
+                    row.append(c)
+                    continue
+                if c == "" and j in self.optional_cols:
+                    row.append(None)
+                    continue
+                try:
+                    if "," in c:        # '1,5' (decimal comma) vs '1,000' (thousands) is ambiguous: never guessed
+                        raise ValueError
+                    v = float(c)
+                except ValueError:
+                    raise ValueError(tr(f"{i + 1}행 '{self.horizontalHeaderItem(j).text()}' 값이 숫자가 아닙니다: {c!r}",
+                                        f"row {i + 1}, column '{self.horizontalHeaderItem(j).text()}' is not a number: "
+                                        f"{c!r}")) from None
+                if not math.isfinite(v):
+                    raise ValueError(tr(f"{i + 1}행: 유한한 값이 필요합니다", f"row {i + 1}: finite value required"))
+                row.append(v)
+            out.append(row)
+        return out
+
+    def paste(self) -> None:
+        from PySide6.QtWidgets import QApplication
+        grid = parse_clipboard_grid(QApplication.clipboard().text())
+        if not grid:
+            return
+        r0, c0 = max(self.currentRow(), 0), max(self.currentColumn(), 0)
+        while self.rowCount() < r0 + len(grid):
+            self.add_row()
+        for di, row in enumerate(grid):
+            for dj, cell in enumerate(row):
+                if c0 + dj < self.columnCount():
+                    self.setItem(r0 + di, c0 + dj, QTableWidgetItem(cell))
+
+    def keyPressEvent(self, ev):
+        from PySide6.QtGui import QKeySequence
+        if ev.matches(QKeySequence.Paste):
+            self.paste()
+            return
+        if ev.key() in (Qt.Key_Delete, Qt.Key_Backspace) and self.state() != QAbstractItemView.EditingState:
+            for it in self.selectedItems():
+                it.setText("")
+            return
+        super().keyPressEvent(ev)
+
+
+def table_with_buttons(table: NumTable, note: str = "") -> QWidget:
+    """A NumTable with add / remove / paste buttons underneath."""
+    w = QWidget()
+    lay = QVBoxLayout(w)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(3)
+    lay.addWidget(table)
+    row = QHBoxLayout()
+    for text, fn in ((tr("+ 행", "+ row"), lambda: table.add_row()), (tr("− 선택 행", "− selected"), table.remove_selected),
+                     (tr("붙여넣기", "paste"), table.paste)):
+        b = QPushButton(text)
+        b.setMinimumHeight(24)
+        b.clicked.connect(fn)
+        row.addWidget(b)
+    row.addStretch(1)
+    lay.addLayout(row)
+    if note:
+        lay.addWidget(hint(note))
+    return w
+
+
 # ---------------------------------------------------------------------------
 # inputs
 # ---------------------------------------------------------------------------
