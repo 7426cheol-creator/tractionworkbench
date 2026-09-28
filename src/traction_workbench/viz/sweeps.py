@@ -139,8 +139,9 @@ def _box(k: DriveKernel) -> tuple[float, float, float, float]:
 
 
 def grid_extreme(k: DriveKernel, direction: int, include_dc: bool, n: int = 241, refine: int = 2):
-    """(T, id, iq) maximising direction*T over the feasible grid; None if no grid point is feasible."""
-    if not k.evaluable:
+    """(T, id, iq) maximising direction*T over the feasible grid; None if no grid point is feasible or, with DC,
+    if P_dc is not available on a grid (pointwise loss model: not evaluated, never 'infeasible')."""
+    if not k.evaluable or (include_dc and k.dc_defined and k.i2_dc is None):
         return None
     d0, d1, q0, q1 = _box(k)
     best = None

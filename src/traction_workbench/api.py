@@ -124,7 +124,7 @@ def _limits(body) -> DcSourceLimits:
                           lim.get("discharge_current_max_A"), lim.get("charge_current_max_A"), source="UI input")
 
 
-def _case(body) -> dict:
+def case_from_body(body) -> dict:
     r = body.get("requirement") or {}
     v = r.get("Vdc_V")
     vq = {"value": v, "unit": "V", "port": "inverter_dc_terminal"}
@@ -161,7 +161,7 @@ def info(body):
 
 
 def evaluate(body):
-    return S.evaluate_case(_case(body))
+    return S.evaluate_case(case_from_body(body))
 
 
 def curve(body):
@@ -283,7 +283,7 @@ def _coolant(cs: dict | None, inlet_C: float | None) -> CoolantLoop | None:
                        cs.get("reference", "mean"), None if g in (None, "") else float(g), source)
 
 
-def _network(n: dict, coolant: CoolantLoop | None) -> FosterNetwork:
+def thermal_network_from_dict(n: dict, coolant: CoolantLoop | None) -> FosterNetwork:
     kind = str(n.get("network", "foster")).lower()
     r = flow_scaled(n["R_K_per_W"], n.get("flow_dependent"), n.get("flow_ref_L_per_min"),
                     None if coolant is None else coolant.flow_L_per_min, n.get("flow_exponent", 0.8))
@@ -296,10 +296,10 @@ def _network(n: dict, coolant: CoolantLoop | None) -> FosterNetwork:
     return FosterNetwork(tuple(r), tuple(n["tau_s"]))
 
 
-def _thermal_model(spec, inlet_C: float | None = None) -> ThermalModel:
+def thermal_model_from_dict(spec, inlet_C: float | None = None) -> ThermalModel:
     spec = spec or EXAMPLE_THERMAL
     coolant = _coolant(spec.get("coolant"), inlet_C)
-    nodes = tuple(ThermalNode(str(n["id"]), _network(n, coolant), float(n["limit_C"]),
+    nodes = tuple(ThermalNode(str(n["id"]), thermal_network_from_dict(n, coolant), float(n["limit_C"]),
                               tuple((k, float(v)) for k, v in n["loss_share"].items()),
                               n.get("station") if coolant is not None else None) for n in spec["nodes"])
     # the data origin is declared, never derived from the 'validated' flag (a flag is not supplier evidence)
@@ -319,7 +319,7 @@ def _thermal_model(spec, inlet_C: float | None = None) -> ThermalModel:
 
 def thermal_details(spec, inlet_C: float | None = None) -> dict:
     """Model as used in the calculation (flow-scaled, Cauer converted) for display: networks, Z_th(inf), coolant."""
-    model = _thermal_model(spec, inlet_C)
+    model = thermal_model_from_dict(spec, inlet_C)
     spec = spec or EXAMPLE_THERMAL
     nodes = []
     for n, nd in zip(spec["nodes"], model.nodes):
@@ -334,7 +334,7 @@ def thermal(body):
     sc = Scenario("thermal", _num(body, "speed_rpm"), _num(body, "Vdc_V"), _limits(body),
                   coolant_temp_C=_num(body, "coolant_temp_C"),
                   initial_state=body.get("initial_state", "equilibrium_at_coolant") or None)
-    model = _thermal_model(body.get("model"), sc.coolant_temp_C)
+    model = thermal_model_from_dict(body.get("model"), sc.coolant_temp_C)
     durs = body.get("durations_s") or [1, 3, 10, 30, 60, 300, "inf"]
     durs = tuple(math.inf if x in ("inf", "continuous") else float(x) for x in durs)
     out = {"availability": torque_availability(d, sc, model, durs, 1 if _num(body, "direction", 1) >= 0 else -1)}
@@ -429,7 +429,7 @@ def protection(body):
 
 
 def _curve(c: dict, name: str):
-    from .extensions.module_loss import Table2D
+    from .models.module_loss import Table2D
     try:
         return Table2D(tuple(c["temps_C"]), tuple(c["currents_A"]), tuple(tuple(r) for r in c["values"]), c["unit"],
                        c.get("source", ""))
@@ -440,7 +440,7 @@ def _curve(c: dict, name: str):
 
 def module_model_from_dict(m: dict):
     """Datasheet module description -> ModuleLossModel (curves, test conditions, PWM, parallel modules)."""
-    from .extensions.module_loss import ModuleLossModel, SwitchDevice
+    from .models.module_loss import ModuleLossModel, SwitchDevice
     cv = m.get("curves") or {}
     for key in ("v_on", "v_rev", "e_on", "e_off"):
         if key not in cv:
@@ -490,7 +490,7 @@ EXAMPLE_MODULE = {
 def module_losses(body):
     """Datasheet-based inverter losses at the decision operating point, fed into P_dc (review 8.8)."""
     from dataclasses import replace as _rep
-    from .extensions.module_loss import electrothermal_fixed_point, inverter_losses, loss_claim, standstill_hotspot
+    from .models.module_loss import electrothermal_fixed_point, inverter_losses, loss_claim, standstill_hotspot
     b = body or {}
     mspec = b.get("module") or EXAMPLE_MODULE
     model = module_model_from_dict(mspec)
@@ -1536,7 +1536,7 @@ EXAMPLE_DRIVELINE = {
 }
 
 
-def _driveline(dd: dict):
+def driveline_from_dict(dd: dict):
     from .extensions.driveline import Driveline
     return Driveline(float(dd["Jm_kgm2"]), float(dd["J_out_kgm2"]), float(dd["k_out_Nm_per_rad"]),
                      float(dd["c_out_Nms_per_rad"]), float(dd.get("ratio") or 1.0), _opt(dd, "wheel_radius_m"),
@@ -1592,7 +1592,7 @@ def driveline(body):
     """Off / shaping / feedback / combined on one maneuver: response, jerk, correction, clipping, loss, stability."""
     from .extensions.driveline import Maneuver, evaluate_variants
     b = {**EXAMPLE_DRIVELINE, **(body or {})}
-    dl = _driveline(b["driveline"])
+    dl = driveline_from_dict(b["driveline"])
     m = b["maneuver"]
     d = _drive(b)
     lim = _limits(b)
@@ -1642,7 +1642,7 @@ def driveline_stability(body):
     from .extensions.driveline import (Controller, Damping, delay_crossings, relative_mode_coefficients,
                                        sampled_eigenvalues, undelayed_damping)
     b = {**EXAMPLE_DRIVELINE, **(body or {})}
-    dl = _driveline(b["driveline"])
+    dl = driveline_from_dict(b["driveline"])
     c = b["controller"]
     st = b["stability"]
     kind = (b["variants"].get("feedback") or {}).get("damping", {}).get("kind", "relative_speed")
@@ -1785,3 +1785,10 @@ ROUTES = {
     "pwm_transients": pwm_transients,
     "driveline": driveline, "driveline_stability": driveline_stability,
 }
+
+
+# former private names (compatibility; the desktop uses the public names)
+_case = case_from_body
+_network = thermal_network_from_dict
+_thermal_model = thermal_model_from_dict
+_driveline = driveline_from_dict

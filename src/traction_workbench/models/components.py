@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 
 from ..errors import InputValidationError
 from .flux import ConstantFluxModel, CurrentBox, FluxMapModel
+from .module_loss import ModuleLossModel
 from ..validation import finite as _finite, interval as _interval
 from .provenance import DataOrigin, Fidelity, Provenance
 
@@ -175,6 +176,11 @@ class VoltageModel:
         }
 
 
+# the declared inverter loss model (exclusive): what the DC-side claims may rest on
+LOSS_QUADRATIC = "quadratic_surrogate"   # InverterLossModel: P_inv = a0 + a2*I^2, a closed-form identity in I^2
+LOSS_MODULE = "datasheet_module"         # ModuleLossModel: datasheet curves, evaluated point by point
+
+
 @dataclass(frozen=True)
 class InverterModel:
     inverter_id: str
@@ -183,11 +189,17 @@ class InverterModel:
     loss: InverterLossModel | None
     switching_frequency_context_Hz: float | None = None
     current_limit_basis: str = "fundamental phase peak (dq norm)"
-    module_loss: object | None = None        # extensions.module_loss.ModuleLossModel (datasheet-based)
+    module_loss: ModuleLossModel | None = None   # datasheet module model (pointwise), exclusive with ``loss``
     module_Tj_C: float | None = None         # junction temperature at which the datasheet curves are evaluated
 
     def __post_init__(self):
+        if self.loss is not None and not isinstance(self.loss, InverterLossModel):
+            raise InputValidationError("inverter.loss must be an InverterLossModel (quadratic surrogate)",
+                                       field="inverter.loss")
         if self.module_loss is not None:
+            if not isinstance(self.module_loss, ModuleLossModel):
+                raise InputValidationError("inverter.module_loss must be a ModuleLossModel (datasheet module)",
+                                           field="inverter.module_loss")
             if self.loss is not None:
                 raise InputValidationError("declare one inverter loss model: the quadratic surrogate OR the "
                                            "datasheet module model (never both summed)", field="inverter.loss")
@@ -205,6 +217,14 @@ class InverterModel:
                 raise InputValidationError("switching frequency must be > 0", field="switching_frequency_context_Hz")
             object.__setattr__(self, "switching_frequency_context_Hz", f)
 
+    @property
+    def loss_kind(self) -> str | None:
+        """The declared inverter loss model: ``LOSS_QUADRATIC`` (P_inv = a0 + a2*I^2, a closed-form identity the
+        certificates use), ``LOSS_MODULE`` (datasheet curves evaluated point by point) or None (DC side undefined)."""
+        if self.module_loss is not None:
+            return LOSS_MODULE
+        return None if self.loss is None else LOSS_QUADRATIC
+
     def describe(self) -> dict:
         return {
             "inverter_id": self.inverter_id,
@@ -213,6 +233,7 @@ class InverterModel:
             "current_limit_basis": self.current_limit_basis,
             "current_limit_note": "fundamental amplitude only; PWM ripple, pulse peak, OC overshoot and SOA are not covered",
             "voltage": self.voltage.describe(),
+            "loss_kind": self.loss_kind,
             "loss": None if self.loss is None else self.loss.describe(),
             "module_loss": None if self.module_loss is None else {
                 "technology": self.module_loss.device.technology, "fsw_Hz": self.module_loss.fsw_Hz,

@@ -52,11 +52,13 @@ def regen_max_loss_vs_charge(k: DriveKernel, T_shaft: float) -> ScreenResult:
     """P_dc <= P_shaft + L_max: if even the largest possible loss cannot lift P_dc to -P_chg, regen is impossible."""
     name = "charge_cap_unreachable_even_with_maximum_loss"
     cap = k.P_chg_eff
-    if cap is None or k.inv_loss is None or k.P_rot is None:
+    if cap is None or k.P_rot is None or not k.has_inverter_loss:
         return ScreenResult(name, False, False, "charge limit or loss models not declared", "")
+    if k.i2_dc is None:
+        return ScreenResult(name, False, False, f"the {k.loss_label} has no closed-form maximum over the current "
+                                                "disk: screen not applied", "")
     p = T_shaft * k.omega_m
-    c2 = 1.5 * k.Rs + k.inv_loss.ipk2_coeff_W_per_A2
-    lmax = k.P_rot + k.inv_loss.offset_W + c2 * k.Imax ** 2
+    lmax = k.P_rot + k.i2_dc.a0_W + k.i2_dc.c2_W_per_A2 * k.Imax ** 2
     pmax = p + lmax
     tol = max(k.settings.power_abs_tol_W, k.settings.constraint_rel_tol * abs(cap))
     violated = pmax < -cap - tol

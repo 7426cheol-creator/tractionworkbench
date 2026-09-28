@@ -43,7 +43,7 @@ def _task(progress, body, spec):
     progress(0.05, tr("가용 토크 (지속시간별 bisection)", "availability (bisection per duration)"))
     res = api.thermal(body)
     progress(0.9, tr("노드 온도", "node temperatures"))
-    model = api._thermal_model(spec, body["coolant_temp_C"])
+    model = api.thermal_model_from_dict(spec, body["coolant_temp_C"])
     req = res.get("request") or {}
     curves = None
     if req.get("nodes"):
@@ -268,7 +268,7 @@ class ThermalPage(QWidget):
     def run(self):
         try:
             spec = self.full_spec()
-            api._thermal_model(spec, self.c_in.value())
+            api.thermal_model_from_dict(spec, self.c_in.value())
         except Exception as exc:  # noqa: BLE001
             error_box(self, tr("열 모델 입력 오류", "thermal model input error"), str(exc))
             return

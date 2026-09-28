@@ -349,6 +349,10 @@ def draw_idiq(ax, pl: dict, traj: dict | None = None, legend: bool = True, torqu
     if pl.get("all_ok") is not None and pl["all_ok"].any():
         ax.contourf(X, Y, pl["all_ok"].astype(float), levels=[0.5, 1.5], colors=[t["feasible_all"]], alpha=0.55)
         handles.append(Patch(fc=t["feasible_all"], alpha=0.55, label=tr("모든 한계 만족 (DC 포함)", "all limits incl. DC")))
+    elif pl.get("dc_grid_note"):
+        handles.append(Patch(fc="none", ec="none", label=tr("DC 한계: 격자 미평가 (모듈 손실은 점별) — 정책점에서 판정",
+                                                           "DC limits: not evaluated on the grid (pointwise module "
+                                                           "loss) - judged at the policy point")))
     if not pl["covered"].all():
         ax.contourf(X, Y, (~pl["covered"]).astype(float), levels=[0.5, 1.5], colors="none", hatches=["xx"])
         handles.append(Patch(fc="none", ec=t["muted"], hatch="xx", label=tr("모델 데이터 없음", "no model data")))

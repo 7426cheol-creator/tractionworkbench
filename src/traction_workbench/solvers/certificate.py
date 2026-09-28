@@ -66,11 +66,12 @@ def constant_model_quads(k: DriveKernel, include_dc: bool = True) -> tuple[Quad,
         Quad("IQ_MIN", np.zeros((2, 2)), np.array([0.0, -1.0]), k.domain.iq_A[0]),
         Quad("IQ_MAX", np.zeros((2, 2)), np.array([0.0, 1.0]), -k.domain.iq_A[1]),
     ]
-    if include_dc and k.inv_loss is not None:
-        c2 = 1.5 * k.Rs + k.inv_loss.ipk2_coeff_W_per_A2
+    if include_dc and k.i2_dc is not None:
+        # P_dc as a quadratic in (id, iq) exists only through the surrogate's I^2 identity; without it the DC
+        # constraints are left out, which keeps the certificate a valid (relaxed) upper bound
+        c2, a0 = k.i2_dc.c2_W_per_A2, k.i2_dc.a0_W
         Hp = k.omega_m * kp * dl * J + 2.0 * c2 * np.eye(2)
         gp = np.array([0.0, k.omega_m * kp * psi])
-        a0 = k.inv_loss.offset_W
         if k.P_dis_eff is not None:
             cons.append(Quad("DC_DISCHARGE", Hp, gp, a0 - k.P_dis_eff))
         if k.P_chg_eff is not None:

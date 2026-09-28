@@ -222,7 +222,7 @@ class DecisionPage(QWidget):
         if isinstance(vdc, float) and self.an_size_v.isChecked():
             an["compare_Vdc"] = sorted({base_v, 600.0})
         body = self.win.state.body(requirement=req, analyses=an)
-        return api._case(body), curves
+        return api.case_from_body(body), curves
 
     def run(self):
         try:

@@ -624,7 +624,7 @@ class PwmDrivelinePage(QWidget):
         kind = self.c_sh.currentData()
         sh = {"kind": kind, "rate_Nm_per_s": self.c_rate.value(), "tau_s": self.c_tau.value()}
         if kind == "zv":
-            md = api._driveline(b["driveline"]).modal()
+            md = api.driveline_from_dict(b["driveline"]).modal()
             sh.update({"zv_f_Hz": md["f_n_Hz"], "zv_zeta": md["zeta"]})
         dp = {"kind": self.c_dp.currentData(), "Kd_Nms_per_rad": self.c_kd.value(), "hpf_Hz": self.c_hpf.value()}
         b["variants"] = {"off": {}, "shaping": {"shaper": sh}, "feedback": {"damping": dp},

@@ -9,7 +9,7 @@
 - 판정 어휘와 "결측 ≠ 무제한" 규칙이 모든 분석에서 지켜지는지 **감사**했습니다(결측 입력이 조용히 통과로 바뀌는 곳 탐색).
 - 페이지마다 따로 있는 **예시 데이터**가 서로 모순되지 않는지 교차 확인했습니다.
 
-발견한 결함은 이번 검토에서 고쳤고(6절), 구조 문제는 영향 범위와 함께 권고로 남겼습니다(5절).
+발견한 결함은 이번 검토에서 고쳤고(6절), 구조 문제는 영향 범위와 함께 권고로 남겼습니다(5절). 권고 R1은 이행했습니다(7절).
 
 ## 0. 요약
 
@@ -21,7 +21,7 @@
 | 4 | 같은 예시 IGBT 모듈의 접합→냉각수 열저항이 페이지마다 **0.09 / 0.17 / 0.20 K/W** | 예시 데이터 불일치 | **부분 수정**: 효율·PWM·수명 페이지를 한 열 경로로 통일; 열 페이지는 다른 추상화(스위치 평균)로 명시 |
 | 5 | 변조(듀티) 법칙이 엔진에 **3벌**(+ 그림 1벌) — DPWM1은 섹터 경계 동점 처리까지 서로 다름 | 중복 물리 | **수정**: `modulation.py` 하나로 통합(구 구현과 1e-16 일치 확인) |
 | 6 | 다른 모듈의 비공개 함수 사용 **51곳**(패키지 경계를 넘는 것 33곳); 모든 확장이 숫자 검증 하나 때문에 **자속 모델 모듈**에 의존 | 숨은 결합 | **수정**: `validation.py`, 공개 이름 — 51 → 13(패키지 경계 넘는 것 **0**), 자속 모듈 의존 29 → 11 |
-| 7 | 코어 `physics`가 `extensions.module_loss`를 import — **"확장"이 사실상 코어**: 변경 시 영향이 physics와 같은 30개 엔진 모듈 | 층 위반·숨은 허브 | 권고 R1 (영향 표 5.1) |
+| 7 | 코어 `physics`가 `extensions.module_loss`를 import — **"확장"이 사실상 코어**: 변경 시 영향이 physics와 같은 30개 엔진 모듈 | 층 위반·숨은 허브 | **수정 (R1, 7절)**: 모델 층·타입 계약·커널 손실 계약, 회귀 기준, 아키텍처 테스트 |
 | 8 | 프로젝트 단위 데이터셋이 없음 — 드라이브·모듈·열·제어기·구동계 예시가 페이지마다 독립 | 맥락 일관성 | 권고 R2 |
 | 9 | 모든 수치 fixture는 구현 검증(V0–V3); 물리 검증(V4–V6)은 전 영역에서 없음 | 성숙도 | 4절 매트릭스, 권고 R8 |
 
@@ -91,7 +91,7 @@ flowchart TB
 | 모듈 | 직접 의존 | 전이 의존(엔진 쪽) | 의미 |
 |---|---:|---:|---|
 | `physics` | 22 | 30 | 뼈대. 변경 = 전체 재검증 (golden + 독립 검산) |
-| `extensions.module_loss` | 3 | **30** | physics가 import → 영향 범위가 physics와 **같음** (R1) |
+| `models.module_loss` (구 `extensions.module_loss`) | 3 | 30 | 커널이 평가하는 드라이브 모델의 일부 — 이제 위치·타입·회귀 기준(`module_core_anchor`)이 이 영향 범위와 일치 (R1) |
 | `solvers.gate` | 5 | 30 | 공통 witness gate. physics와 지연 순환 (2.2) |
 | `solvers.policy` | 18 | 17 | 최소전류 정책 — 결합 분석 대부분의 운전점 |
 | `models.flux` | 29 → **11** | 46 → 전이는 physics 경유로 유지 | 숫자 검증만 쓰던 18개 모듈을 `validation`으로 분리 |
@@ -100,7 +100,11 @@ flowchart TB
 ### 2.2 층 위반·순환 (정적 그래프, 지연 import 포함)
 
 - 모듈 수준 순환: **없음**. 지연 import 순환 1개: `physics ↔ solvers.gate` (gate는 사실상 physics 층; 동작은 정상).
-- 위쪽 의존 3개: `physics → extensions.module_loss` (R1), `io → analysis.rating` (정격 envelope 파싱; 경미), `cli → desktop/report_pdf` (진입점이므로 정상).
+- 위쪽 의존: 검토 당시 `physics → extensions.module_loss` (R1) — **수정 후 0**. 층은 base(errors·status·settings·units·validation·modulation)
+  < models(models·scenario·requirement) < kernel(physics·solvers) < engines(analysis·extensions) < services(io·exchange·service·decision·report·api)
+  < presentation(plots·viz·report_pdf·desktop·cli)이며, 입력 어댑터 `io`와 진입점 `cli`는 각각 services·presentation 층이라
+  `io → analysis.rating`, `cli → desktop`은 위반이 아닙니다. `tests/test_architecture.py`가 이 층 규칙(지연 import 포함)과
+  모듈 수준 순환 0을 강제합니다.
 
 ### 2.3 비공개 결합
 
@@ -108,9 +112,12 @@ flowchart TB
 |---|---:|---:|
 | 다른 모듈의 `_name` import | 51 | 13 |
 | 그중 패키지 경계를 넘는 것 (analysis ↔ extensions ↔ plots …) | 33 | **0** |
+| 다른 패키지 모듈의 `_name`을 속성으로 사용 (`api._case` 등, R1 때 추가 측정) | 5 | **0** |
 | `models.flux`를 import하는 모듈 | 29 | 11 |
 
 남은 13개는 같은 패키지 안의 그림 도우미(`plots.figures._note/_reset`, `viz.sweeps._tick`)와 데스크톱 내부 1개입니다(R6).
+데스크톱이 속성으로 쓰던 API 파서 4개는 공개 이름이 되었습니다(`case_from_body`, `thermal_model_from_dict`, `thermal_network_from_dict`,
+`driveline_from_dict`; 구 이름은 별칭). 패키지 경계를 넘는 비공개 이름 0은 아키텍처 테스트가 강제합니다.
 
 ### 2.4 중복 물리
 
@@ -145,12 +152,19 @@ flowchart TB
 - 드라이브라인 토크 창 미선언 → 이전: 클리핑 없이 통과 가능 / 이후: UNKNOWN (7ca1821)
 - PWM 요구 미확립 구간 → 이전: 위반 / 이후: UNKNOWN (7ca1821)
 - 미션 효율의 부분 비율 → 이전: 미션 효율로 표시 / 이후: UNKNOWN + 부분값 별도 (이번 검토)
+- 모듈 데이터가 운전점을 덮지 못할 때(스위칭 시험 전압 밖, 스케일링 법칙 미선언)의 DC claim 사유 → 이전: "손실 모델 없음"(MISSING_INPUT) /
+  이후: 모듈 손실 미확립 + 모델의 문제 목록(OUTSIDE_MODEL_DOMAIN) (R1-1)
+- 격자 위 DC 판정(id–iq 지도의 '모든 한계', 격자 envelope) → 이전: 모듈 모델에서 격자 P_dc(NaN)를 위반으로 비교해 '모든 한계 만족 영역 없음',
+  'DC 가능 점 없음' / 이후: '격자 미평가'(None)와 사유, DC는 정책점에서 판정 (R1-2)
 
 ### 3.3 교차 모듈 일관성 규칙 (이번 검토로 명시)
 
 1. **한 평가 = 한 펄스 패턴**: 손실·리플·샘플링·커패시터 전류는 같은 변조로 계산합니다(`module_modulation`에 선언값/사용값 기록).
 2. **한 모듈 = 한 열 경로**: 같은 모듈을 쓰는 페이지(효율·PWM·수명)는 같은 접합→냉각수 경로를 씁니다(예시의 Foster 합 = 모듈 Rth).
 3. **설계값 ≠ 플랜트**: 제어기 이득은 선언 설계 인덕턴스로, 판정은 운전점의 기계 차동 인덕턴스로 — 두 축 모두.
+4. **손실 모델 계약 하나** (R1-2): DC 쪽 논증은 커널의 손실 계약으로만 분기합니다 — 2차 surrogate의 폐형식 항등식
+   P_dc = T_em·ω_m + (1.5·R_s + a2)·I² + a0 (`i2_dc`: I² 대역, 라그랑지안 DC 제약, 셀 경계, 최대 손실 screen, 격자 P_dc)과
+   점별 모델(`pointwise_loss`: 직접 평가한 witness만, 격자에서는 미평가). 이전에는 같은 식이 7곳에 복제되고 모델 분기가 흩어져 있었습니다.
 
 ## 4. 성숙도
 
@@ -183,17 +197,18 @@ flowchart TB
 
 ## 5. 남은 위험과 권고 (우선순위)
 
-### 5.1 R1 — `module_loss`를 코어 모델로 (높음)
+### 5.1 R1 — `module_loss`를 코어 모델로 (완료, 7절)
 
-데이터시트 모듈 모델은 `InverterModel.module_loss`로 드라이브 모델의 일부이고 `physics`가 직접 평가합니다. 위치만 "확장"입니다.
+데이터시트 모듈 모델은 `InverterModel.module_loss`로 드라이브 모델의 일부이고 `physics`가 직접 평가합니다. 검토 당시 위치만 "확장"이었습니다.
 **변경 영향**: 모든 DC claim(정책·capability·sizing·지도), 효율·모듈 A/B, PWM 정책, 수명, OEW 브리지 손실.
-**권고**: `models/`로 옮기고(확장 경로는 재수출), 손실 모델 공통 인터페이스(2차 surrogate와 배타)를 두기. 다음 손실 모델 변경 때 함께.
+**이행**: `models/module_loss.py`(확장 경로는 재수출), 타입 계약, 커널 손실 계약, 모듈 모델 코어 경로 회귀 기준, 아키텍처 테스트.
 
 변경 시 다시 돌릴 것:
 
 | 바꾸는 것 | 재검증 |
 |---|---|
-| `module_loss` | `test_module_loss`, `test_efficiency`(one-physics), `test_pwm_policy`, `test_lifetime`, `test_oew`, self-test power/efficiency/pwm |
+| `models/module_loss` | `test_module_core_anchor`, `test_loss_contract`, `test_module_loss`, `test_efficiency`(one-physics), `test_pwm_policy`, `test_lifetime`, `test_oew`, self-test power/efficiency/pwm |
+| 커널 손실 계약 (`physics.QuadraticDC`, `loss_kind`) | 전체 + `twb acceptance` + 독립 검산 + `test_module_core_anchor` |
 | `modulation` | 위 + `test_emi`, `test_dclink_ripple`, `test_viz` |
 | `physics`, `solvers/*` | 전체 + `twb acceptance` + `verification/independent_fixture_check.py` |
 | `analysis.efficiency.module_point` | `test_efficiency`, `test_pwm_policy` |
@@ -228,3 +243,18 @@ flowchart TB
 | 변조 법칙 통합 | `modulation.py`; module_loss·emi·dclink_ripple·viz | 구 구현과 1e-16 일치, 관련 테스트 124개 |
 | 숫자 검증 분리 | `validation.py` (자속 모듈은 재수출) | 전체 테스트 |
 | 공개 이름: `module_point`, `edge_lines`, `positions`, `hull`, `jsonable` (구 이름은 별칭) | 해당 모듈 | 전체 테스트 |
+
+## 7. R1 이행 — `module_loss`를 코어 모델로
+
+순서는 "기준을 먼저 고정하고, 옮기고, 기준이 그대로인지 확인"입니다. 기준값은 이동 전후 모두 같습니다
+(`module_core_anchor`, golden 21/21, 독립 검산 136/136).
+
+| 단계 | 내용 | 확인 |
+|---|---|---|
+| R1-1 회귀 기준 | 모듈 모델이 켜진 코어 경로 — 정방향 손실 4점, 정책 해 5건과 claim, capability 3건, 스위칭 시험 전압 밖의 사유, Vdc sizing 경계(선언 스케일링 법칙) — 를 `verification/make_module_anchor.py` → `tests/fixtures/module_core_anchor.json`으로 고정. 구현 회귀 기준이며 독립 기준이 아닙니다 | `test_module_core_anchor` (정방향 상대 1e-9, solver 상대 1e-6 / 1e-4 A, sizing 1e-5 V) |
+| R1-1 발견 | 모듈 데이터가 점을 덮지 못할 때 DC·정책 claim 사유가 "손실 모델 없음"(MISSING_INPUT) → 모듈 손실 미확립 + 모델의 문제 목록(OUTSIDE_MODEL_DOMAIN). sizing의 Vdc 주석도 활성 손실 모델에 따름 | 기준의 `unscaled_700V` |
+| R1-2 이동·타입 | `models/module_loss.py` (구 경로 `extensions.module_loss`는 PEP 562 재수출), `InverterModel.module_loss: ModuleLossModel`, 두 손실 모델 모두 타입 검사, `InverterModel.loss_kind`; `physics`의 지연 상향 import 제거 | `test_loss_contract`, `test_architecture` |
+| R1-2 커널 계약 | `DriveKernel.loss_kind · i2_dc · pointwise_loss · dc_defined · loss_label`; 2차 항등식 7벌(정책 2, 공통 대역, 셀 경계, capability, 인증서, screen) → `QuadraticDC` 1벌; 정책·capability·경계·screen·지도·서비스가 계약으로만 분기 | 기준값 불변; 항등식 = 커널 평가(임의 200점, 1e-12) |
+| R1-2 발견 | 모듈 모델에서 id–iq 지도의 '모든 한계 만족' 영역이 항상 비고 격자 envelope가 DC 가능 점을 찾지 못함(격자 P_dc NaN을 위반으로 비교) → '격자 미평가'와 사유(그림 범례 포함). capability는 DC 한계가 witness 직접 검사로만 들어간다고 표시(경계는 전기적 상한 — 여전히 상한). 최대 손실 screen은 적용 불가 사유를 모델 이름으로 | `test_grid_dc_is_not_evaluated_with_a_pointwise_model`, `test_module_model_is_pointwise_everywhere` |
+| 아키텍처 테스트 | 층 규칙(지연 import 포함), 패키지 경계 비공개 이름 0(import와 속성 사용), 모듈 수준 순환 0, 모든 모듈의 층 배정 | `tests/test_architecture.py` |
+

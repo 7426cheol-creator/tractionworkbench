@@ -26,6 +26,7 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 
 from ..errors import InputValidationError
+from ..models.module_loss import ModuleLossModel
 from ..validation import finite as _finite, interval as _interval
 
 BOUNDARIES = (
@@ -488,12 +489,14 @@ class ModuleCandidate:
     """One module design in a comparison: its OWN datasheet model, gate / dead time, thermal path and error budget."""
 
     name: str
-    model: object                              # extensions.module_loss.ModuleLossModel
+    model: ModuleLossModel                     # its own datasheet module model
     Rth_K_per_W: float                         # hottest position junction -> coolant (its own thermal path)
     loss_error_rel: float | None = None        # declared loss error budget (NOT a statistical confidence)
     error_basis: str = ""
 
     def __post_init__(self):
+        if not isinstance(self.model, ModuleLossModel):
+            raise InputValidationError("a module candidate needs its datasheet ModuleLossModel", field="model")
         if _finite("Rth_K_per_W", self.Rth_K_per_W) <= 0:
             raise InputValidationError("Rth must be > 0", field="Rth_K_per_W")
         if self.loss_error_rel is not None:
