@@ -288,7 +288,31 @@ EMI·PWM 예시의 데드타임 불일치(1.0 µs vs 손실 1.5 µs — 프로�
 | 사용자 기능 4 | 입력 완성도별 진입점: 고객 사양만으로 필요조건, 서로 다른 운전점의 최대 토크×최대 속도 곱 금지, 포트·기계/전기 속도·지속시간 확인 | `spec_check`: 같은 운전점의 P_shaft = T·ω ≥ 0(구동)이면 P_dc ≥ P_shaft → 방전 전력/전류(범위면 최저 Vdc) 한계 초과는 어떤 드라이브로도 불가능; 회생은 손실이 흡수할 수 있어 '모델 필요'; 모델과 같은 허용오차. 모델이 UNKNOWN인 요구를 이 조건이 결정(FAIL, decided_by), 모델 PASS와 모순이면 표시하지 않고 오류 | `test_the_customer_numbers_alone_…`, `test_the_model_never_contradicts_…` | implemented |
 | 사용자 기능 5 | 결과 화면 순서: 요구 → 조건·데이터 수준 → 결론/여유 → 제한 원인 → 바꿀 수 있는 항목 → 다음 자료 → 상세 | 요구 묶음 상세 창이 이 순서(1–7)로 표시, 4층 판정·stale 표시는 판정 페이지에 그대로(선택한 요구를 판정 페이지에서 열기) | `test_desktop_requirement_set_page_…`(순서 검사), self-test `requirement_set:*` | implemented |
 
-## 14. 비목표 (handoff §15, 추가 명세 비목표)
+## 14. PWM 고조파·가변 PWM 인계 (P0)
+
+인계 문서(`PWM_Harmonic_Variable_PWM_Handoff`)의 P0 항목을 현재 코드와 대조해 구현했습니다. 첫 번째 공학 리뷰(13절)를 우선했고,
+PR #5의 코드는 병합하지 않고 이 문서의 의미를 현재 코드 기준으로 다시 구현했습니다. 수용 테스트 A–F는
+`tests/test_pwm_handoff.py`에 있습니다.
+
+| 항목 | 인계 요구 | 구현 | 확인 | 상태 |
+|---|---|---|---|---|
+| §3.1 | `iron_bound_W`는 실제 철손이 아니라 선언된 **상한** — 이름·표시 | `HarmonicLossData.magnetic_hf_loss_bound_W`(정식, Fe+PM HF), `iron_bound_W`는 호환 별칭(둘이 다르면 거절), anchor 주파수에서만(보간 없음), 합산하지 않고 구간 끝으로만 | C1, C3 | implemented |
+| §4 L0 | R_ac 자료 없이도 PWM 동손 **R_dc 하한** 3·R_s(T)·ΣI²(평가한 선 스펙트럼), 0 W 금지, 대역 밖 전역 하한이라 부르지 않음 | `harmonic_copper_loss`: `lower_bound_W`, `bandwidth_Hz`, `status`(ESTABLISHED / LOWER_BOUND_ONLY), R_s는 시나리오의 R_s(T)(기본파 동손과 같은 값) | B1–B3, `test_rs_follows_…` | implemented |
+| §4 L1 | R_ac/R_dc(f) 표, 유의 고조파가 표 밖이면 정확값 UNKNOWN(외삽 금지) + 하한 유지, `rac_coverage_I2_fraction` | 같은 함수: 커버리지(ΣI² 비율), 표 밖 유의 선 → 정확값 None | B2, B3 | implemented |
+| §4 L2 | hairpin/근접효과 모델 | 임의 형상 모델을 만들지 않음 | — | deliberately unsupported |
+| §8 | 주 효율 원장에 PWM 동손·상한 노출, 전력 항등식 유지, control volume | `point_ledger(pwm_hf=…)`: 'PWM harmonic copper'(정확값 또는 ≥ 하한), 'PWM Fe+PM HF magnetic loss'(≤ 상한, 값 아님), `loss_interval_W`, 포트 전력·기본파 η는 그대로(항목에 `in_port_powers`), motor·inverter+motor·eDrive 경계에 `eta_interval_incl_pwm_hf`(구동: P_out/(P_in + x), 회생: (|P_in| − x)/|P_out|) | D, C1, C4 | implemented (P0 노출) |
+| §8 P1 | PWM 추가 모터 손실을 P_dc 회계·DC 한계 판정에 정식 결합, 미션 에너지에 같은 의미 | — | — | remaining (P1) |
+| §9 | 'best'는 평가 후보 중 최선, Pareto 에너지 축은 확정 손실만, Fe+PM 상한은 기대값이 아님, 겹치면 UNDECIDED | `policy_energy`(구간 [E_inv + PWM 동손(정확/하한), + Fe+PM 상한], 열린 끝 None), `_pareto`(에너지는 구간 분리로만 지배), `_best_interval`, `compare_intervals`(IMPROVED / WORSE / UNDECIDED / UNKNOWN), `ENERGY_CONTROL_VOLUME`(커패시터 ESR·LV 전력은 별도) | E3–E5, `test_control_volume_…`, `test_interval_comparison` | implemented |
+| §10 | '리플 포함 피크'는 정확한 피크가 아닌 보수 상한 | `i_peak_bound_A` / `i_peak_bound_max_A`, `peak_current_meaning`; 요청 본문의 한도 이름 `i_peak_bound_max_A`(저장 필드는 기존 `i_peak_incl_ripple_max_A`, 둘이 다르면 거절) | E6 | implemented |
+| §11 | 요청 fsw ≠ 파형 모델 fsw를 숨기지 않음 | 구간마다 `fsw_requested_Hz`, `fsw_waveform_used_Hz`, `fsw_error_percent`, 커패시터 모델의 사용 fsw, 0.5 % 초과 시 advisory, 그림에 × 표시 | A4 | implemented; 비동기 캐리어 파형 엔진은 remaining |
+| §12 | 공급된 NTC 궤적 ≠ 폐루프 열 시뮬레이션 | `thermal_scope` 메타데이터 | F | implemented; 폐루프(P4) remaining |
+| §14 | EMI/NVH/베어링 전류 영향은 평가하지 않았다고 명시 | `not_evaluated` | F | implemented |
+| §15 | 에너지 패널: 확정 스택 + 상한은 구간(해치/whisker), 필수 제약 표의 이름, 상세 표 | 그림(확정 스택, R_dc 하한 해치, 비교 구간 whisker/열린 화살표, 요청≠파형 fsw 표시), 페이지 상세 행(에너지 구간, fsw 오차, 제어 체적, 열 범위, 미평가) | 그림 렌더 테스트 | implemented |
+| §16 | 프로젝트 데이터 `motor_hf`(L_hf, R_ac, magnetic bound) | 효율 페이지는 가변 PWM 페이지와 같은 선언 예시(합성, 표시됨)를 사용 | B4 | remaining (P1) |
+| §19 A | 시간 적분 RMS ≈ 스펙트럼 RMS, fsw 2배 → 리플 1/2, m = 0 리플 0, 비정수 fsw/fe | 기존 모델 확인 | A1–A4 | implemented |
+| §6·§7 | Fe/PM ROM, THD→철손 계수 금지 | THD 계수를 만들지 않음, 보정 ROM은 자료가 생기면(P3) | — | deliberately unsupported (P3) |
+
+## 15. 비목표 (handoff §15, 추가 명세 비목표)
 
 generic motor CAD/FEA 복제, 정적 ASC로 demag/SOA 승인, 일반 IGBT 식으로 SiC 수명 보증, 드라이버 typical delay로 ASIL 승인,
 class 번호로 EMC 합격률, 평균 dq로 NVH/베어링/MHz 임피던스, 생산 anti-jerk 제어기 자동 납품, 보편 안정성 인증서,

@@ -1025,6 +1025,26 @@ def _eff_drive(b):
     return d
 
 
+def _pwm_hf(b: dict, drive, sc, pt):
+    """Motor PWM harmonic losses at the point from the declared HF data (``pwm_hf``: L_hf_uH, fsw_kHz, modulation,
+    harmonic); default = the variable-PWM page's example data (synthetic, labelled).  ``pwm_hf: null`` = not
+    evaluated."""
+    from .extensions.pwm_policy import point_hf_losses
+    spec = b["pwm_hf"] if "pwm_hf" in b else {"L_hf_uH": EXAMPLE_PWM["L_hf_uH"], "fsw_kHz": _CTRL["fsw_kHz"],
+                                              "modulation": _CTRL["modulation"], "harmonic": EXAMPLE_PWM["harmonic"]}
+    if not spec:
+        return None
+    L = float(spec["L_hf_uH"]) * 1e-6
+    if not (math.isfinite(L) and L > 0):
+        raise InputValidationError("L_hf must be > 0", field="pwm_hf.L_hf_uH")
+    mod = str(spec.get("modulation", "svpwm"))
+    if mod not in ("svpwm", "spwm"):
+        return {"status": "UNKNOWN", "interval_W": [None, None], "copper": None, "magnetic_hf_bound_W": None,
+                "reason": f"ripple model supports svpwm / spwm, not {mod}", "basis": ""}
+    return point_hf_losses(drive, sc, pt, float(spec.get("fsw_kHz") or _CTRL["fsw_kHz"]) * 1e3, L, mod,
+                           harmonic_data(spec.get("harmonic")))
+
+
 def efficiency(body):
     """Five boundary efficiencies, loss ledger and flow table at one policy point (module-efficiency addendum)."""
     from .analysis.efficiency import point_ledger
@@ -1038,7 +1058,8 @@ def efficiency(body):
         out["ledger"] = None
         out["reason"] = sol.policy_claim.detail
         return _jsonable(out)
-    out["ledger"] = point_ledger(sol.point, d, _reducer(b.get("reducer")), _opt(b, "oil_temp_C"), _aux(b))
+    hf = _pwm_hf(b, d, Scenario("eff", n, vdc, _limits(b)), sol.point)
+    out["ledger"] = point_ledger(sol.point, d, _reducer(b.get("reducer")), _opt(b, "oil_temp_C"), _aux(b), pwm_hf=hf)
     out["point"] = {"id_A": sol.point.id_A, "iq_A": sol.point.iq_A, "i_peak_A": sol.point.i_peak_A,
                     "energy_mode": sol.point.energy_mode, "Tshaft_Nm": sol.point.Tshaft_Nm,
                     "Te_Nm": sol.point.Te_Nm, "module_detail": sol.point.inverter_loss_detail}
@@ -1170,8 +1191,8 @@ EXAMPLE_PWM = {
                           "basis": "example peak-to-peak noise of the schedule inputs (declare the measured values)"},
     "harmonic": {"f_Hz": [0.0, 1e3, 5e3, 10e3, 20e3, 50e3, 1e5, 3e5, 1e6, 3e6],
                  "rac_over_rdc": [1.0, 1.02, 1.3, 1.8, 2.8, 5.0, 8.0, 14.0, 25.0, 45.0],
-                 "iron_bound_W": [[6e3, 420.0], [8e3, 350.0], [10e3, 300.0], [16e3, 220.0]],
-                 "basis": "synthetic example (declare FEA / measured R_ac(f) and the harmonic iron-loss bound)"},
+                 "magnetic_hf_loss_bound_W": [[6e3, 420.0], [8e3, 350.0], [10e3, 300.0], [16e3, 220.0]],
+                 "basis": "synthetic example (declare FEA / measured R_ac(f) and the Fe+PM HF magnetic-loss bound)"},
     "pwm_limits": {"Tj_max_C": 150.0, "i_peak_incl_ripple_max_A": 700.0, "cap_rms_max_A": 250.0,
                    "phase_margin_min_deg": 45.0, "pulse_ratio_min": 10.0, "transition_excursion_max_A": 50.0,
                    "not_applicable": []},
@@ -1210,20 +1231,33 @@ def _plant_point(b: dict, default_speed: float = 6000.0, default_torque: float =
     return sol.point, differential_inductances(d, sc, sol.point.id_A, sol.point.iq_A), (n, T, vdc)
 
 
+def harmonic_data(hd):
+    """Declared motor PWM harmonic data: R_ac/R_dc(f) table and the Fe+PM HF magnetic-loss bound
+    (``magnetic_hf_loss_bound_W``; ``iron_bound_W`` is accepted as its alias)."""
+    from .extensions.pwm_policy import HarmonicLossData
+    if not hd:
+        return None
+    pairs = lambda key: tuple((float(f), float(w)) for f, w in (hd.get(key) or []))
+    return HarmonicLossData(tuple(float(x) for x in hd["f_Hz"]), tuple(float(x) for x in hd["rac_over_rdc"]),
+                            pairs("magnetic_hf_loss_bound_W"), str(hd.get("basis", "")), pairs("iron_bound_W"))
+
+
 def pwm_policies(body):
     """Fixed-frequency baseline vs a declared schedule on the same trajectory (P1-PWM)."""
     from .analysis.efficiency import ModuleCandidate
-    from .extensions.pwm_policy import HarmonicLossData, PwmLimits, evaluate_policies, fixed_schedule
+    from .extensions.pwm_policy import PwmLimits, evaluate_policies, fixed_schedule
     b = {**EXAMPLE_PWM, **(body or {})}
     model = module_model_from_dict(b.get("module") or EXAMPLE_MODULE)
     cand = ModuleCandidate(str((b.get("module") or {}).get("name", "module")), model, float(b["Rth_K_per_W"]))
-    hd = b.get("harmonic")
-    harm = None if not hd else HarmonicLossData(tuple(float(x) for x in hd["f_Hz"]),
-                                                tuple(float(x) for x in hd["rac_over_rdc"]),
-                                                tuple((float(f), float(w)) for f, w in (hd.get("iron_bound_W") or [])),
-                                                str(hd.get("basis", "")))
+    harm = harmonic_data(b.get("harmonic"))
     bank, source = _ripple_bank(EXAMPLE_RIPPLE) if b.get("use_capacitor") else (None, None)
     pl = dict(b.get("pwm_limits") or {})
+    if "i_peak_bound_max_A" in pl:                   # the canonical name of the limit on the conservative peak bound
+        v = pl.pop("i_peak_bound_max_A")
+        if pl.get("i_peak_incl_ripple_max_A") not in (None, "", v):
+            raise InputValidationError("i_peak_bound_max_A and its alias i_peak_incl_ripple_max_A disagree",
+                                       field="pwm_limits")
+        pl["i_peak_incl_ripple_max_A"] = v
     na = tuple(pl.pop("not_applicable", None) or ())
     lim = PwmLimits(**{k: (None if v in (None, "") else float(v)) for k, v in pl.items()}, not_applicable=na)
     pols = [fixed_schedule(float(b["baseline_fsw_kHz"]) * 1e3)] + [_schedule(sd, b) for sd in b.get("schedules") or []]

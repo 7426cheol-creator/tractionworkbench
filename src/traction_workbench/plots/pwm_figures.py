@@ -39,6 +39,7 @@ def fig_pwm_policies(fig, res: dict, title: str | None = None):
     ax = fig.add_subplot(gs[0, :])
     ax2 = fig.add_subplot(gs[1, 0])
     ax3 = fig.add_subplot(gs[1, 1])
+    mism_labeled = False
     for i, p in enumerate(pols):
         tt, ff = [0.0], []
         for s in p["segments"]:
@@ -50,6 +51,15 @@ def fig_pwm_policies(fig, res: dict, title: str | None = None):
         for e in p["transitions"]:
             if "protective" in e["reason"]:
                 ax.plot(e["t_s"], e["to_fsw_Hz"] / 1e3, marker="v", ms=9, color="#cf222e", ls="none")
+        # requested vs waveform-used carrier: the waveform models use a synchronous carrier (integer ratio to f_e)
+        mism = [(tt[k] + 0.5 * s["duration_s"], s["fsw_waveform_used_Hz"] / 1e3)
+                for k, s in enumerate(p["segments"]) if abs(s.get("fsw_error_percent") or 0.0) > 0.5]
+        if mism:
+            ax.plot(*zip(*mism), marker="x", ms=6, ls="none", color=_pc(i, t))
+            mism_labeled = True
+    if mism_labeled:
+        ax.plot([], [], marker="x", ls="none", color=t["fg"],
+                label=tr("× 파형 모델 fsw (동기 캐리어 ≠ 요청)", "× waveform fsw (synchronous carrier ≠ requested)"))
     tt = 0.0
     for sg in pols[0]["segments"]:
         ax.axvline(tt, color=t["grid"], lw=0.8)
@@ -60,35 +70,58 @@ def fig_pwm_policies(fig, res: dict, title: str | None = None):
     ax.set_title(tr("같은 궤적에서의 정책별 fsw (▼ 보호 선점)", "fsw per policy on the same trajectory (▼ protective pre-emption)"),
                  fontsize=9)
     ax.grid(True, alpha=0.35)
-    # energy per policy
+    # energy per policy: the known stack (established) and the open / bounded parts as an interval - a bound is
+    # never drawn as consumed energy
     names = [p["policy"]["name"] for p in pols]
     x = np.arange(len(pols))
-    inv = [(p["E_inv_J"] or np.nan) / 1e3 for p in pols]
-    hcu = [(p["E_cu_harm_J"] or 0.0) / 1e3 for p in pols]
-    fe = [(p["E_iron_harm_bound_J"] or 0.0) / 1e3 for p in pols]
-    ax2.bar(x, inv, 0.55, color=[_pc(i, t) for i in range(len(pols))], alpha=0.8, label=tr("인버터 손실", "inverter loss"))
-    ax2.bar(x, hcu, 0.55, bottom=inv, color="#bf8700", alpha=0.7, label=tr("모터 고조파 동손", "motor harmonic copper"))
-    ax2.bar(x, fe, 0.55, bottom=np.array(inv) + np.array(hcu), color="none", ec="#8250df", hatch="//",
-            label=tr("고조파 철손 상한 (선언)", "harmonic iron bound (declared)"))
+    inv = np.array([(p["E_inv_J"] if p["E_inv_J"] is not None else np.nan) / 1e3 for p in pols])
+    cu = np.array([(p["E_cu_pwm_J"] or 0.0) / 1e3 for p in pols])
+    cu_lb = np.array([(p["E_cu_pwm_lower_bound_J"] or 0.0) / 1e3 if p["E_cu_pwm_J"] is None else 0.0 for p in pols])
+    ax2.bar(x, inv, 0.55, color=[_pc(i, t) for i in range(len(pols))], alpha=0.8,
+            label=tr("인버터 반도체 손실 (확정)", "inverter semiconductor loss (established)"))
+    if cu.any():
+        ax2.bar(x, cu, 0.55, bottom=inv, color="#bf8700", alpha=0.75,
+                label=tr("모터 PWM 동손 (R_ac(f), 확정)", "motor PWM copper (R_ac(f), established)"))
+    if cu_lb.any():
+        ax2.bar(x, cu_lb, 0.55, bottom=inv, color="none", ec="#bf8700", hatch="..",
+                label=tr("모터 PWM 동손 ≥ R_dc 하한 (정확값 없음)", "motor PWM copper ≥ R_dc lower bound (no exact value)"))
+    tops = []
     for i, p in enumerate(pols):
+        e = p["energy"]
+        lo = None if e["lower_J"] is None else e["lower_J"] / 1e3
+        hi = None if e["upper_J"] is None else e["upper_J"] / 1e3
+        if lo is not None:
+            if hi is not None:
+                ax2.errorbar(x[i] + 0.2, 0.5 * (lo + hi), yerr=[[0.5 * (hi - lo)], [0.5 * (hi - lo)]], fmt="none",
+                             ecolor="#8250df", elinewidth=1.6, capsize=4,
+                             label=tr("비교 구간 [확정, 확정 + Fe+PM HF 상한]", "comparison interval [known, known + Fe+PM HF bound]")
+                             if i == 0 else None)
+                tops.append(hi)
+            else:
+                ax2.annotate("", (x[i] + 0.2, lo * 1.35), (x[i] + 0.2, lo), arrowprops={"arrowstyle": "->",
+                                                                                        "color": "#8250df", "ls": "--"})
+                ax2.plot([], [], color="#8250df", ls="--", label=tr("상한 없음 (열린 구간)", "no upper end (open interval)")
+                         if i == 0 else None)
+                tops.append(lo * 1.35)
         v = p.get("versus_baseline")
         if v and v.get("delta_E_inv_J") is not None:
             txt = f"Δinv {100 * (v.get('relative_inv') or 0):+.1f}%\n" + tr("총합: ", "total: ") + v["total"]["status"]
-            ax2.annotate(txt, (x[i], inv[i] + hcu[i] + fe[i]), xytext=(0, 4), textcoords="offset points", ha="center",
-                         fontsize=6.5, color=t["fg"])
+            ax2.annotate(txt, (x[i], (tops[-1] if tops else inv[i])), xytext=(0, 4), textcoords="offset points",
+                         ha="center", fontsize=6.5, color=t["fg"])
         if not p["admissible"]:
             ax2.annotate("✗", (x[i], inv[i] / 2), ha="center", fontsize=14, color="#cf222e")
-    tops = [a + b + c for a, b, c in zip(inv, hcu, fe) if np.isfinite(a + b + c)]
+    tops = [v for v in tops + list(inv + cu + cu_lb) if np.isfinite(v)]
     if tops:                                         # head room: the per-bar notes stay inside the axes, under the title
         ax2.set_ylim(0, max(tops) * 1.6)
     ax2.set_xticks(x)
     ax2.set_xticklabels([n.replace(" ", "\n", 1) for n in names], fontsize=7)
     ax2.set_ylabel(tr("궤적 에너지 [kJ]", "trajectory energy [kJ]"))
-    ax2.legend(fontsize=6.5, loc="upper left", framealpha=0.95)
-    ax2.set_title(tr("에너지 (인버터 개선 ≠ 모터+인버터 개선)", "energy (inverter gain ≠ motor+inverter gain)"), fontsize=9)
+    ax2.legend(fontsize=6.0, loc="upper left", framealpha=0.95)
+    ax2.set_title(tr("정책 민감 손실 (상한은 구간 끝, 확정값 아님)", "policy-sensitive loss (a bound is an interval end, not a value)"),
+                  fontsize=9)
     # utilisation of the mandatory limits
     lim = res["limits"]
-    items = [("Tj", "Tj_max_C", "Tj_max_C", False), (tr("피크 전류", "peak current"), "i_peak_incl_ripple_max_A",
+    items = [("Tj", "Tj_max_C", "Tj_max_C", False), (tr("피크 전류 상한", "peak-current bound"), "i_peak_bound_max_A",
                                                         "i_peak_incl_ripple_max_A", False),
              (tr("커패시터 전류", "cap. current"), "I_cap_rms_max_A", "cap_rms_max_A", False),
              (tr("위상 여유", "phase margin"), "phase_margin_min_deg", "phase_margin_min_deg", True)]
@@ -108,8 +141,12 @@ def fig_pwm_policies(fig, res: dict, title: str | None = None):
     ax3.set_title(tr("필수 제약 (효율과 맞바꾸지 않음)", "mandatory constraints (never traded for efficiency)"), fontsize=9)
     ax3.legend(fontsize=6.5, loc="upper left")
     best = res.get("best_inverter_energy_among_evaluated")
-    _note(ax3, tr(f"평가 후보 중 인버터 에너지 최선: {best or '없음'}\nPareto: {', '.join(res['pareto']) or '없음'}",
-                  f"best inverter energy among evaluated: {best or 'none'}\nPareto: {', '.join(res['pareto']) or 'none'}"),
+    be = res.get("best_policy_energy_among_evaluated") or {}
+    tot = be.get("policy") or be.get("status", "—")
+    _note(ax3, tr(f"평가 후보 중 인버터 에너지 최선: {best or '없음'}\n정책 에너지(구간): {tot}\n"
+                  f"Pareto: {', '.join(res['pareto']) or '없음'}",
+                  f"best inverter energy among evaluated: {best or 'none'}\npolicy energy (interval): {tot}\n"
+                  f"Pareto: {', '.join(res['pareto']) or 'none'}"),
           loc="upper right", fontsize=6.5)
     return fig
 

@@ -71,7 +71,18 @@ def fig_efficiency_point(fig, res: dict, title: str | None = None):
     items = led["loss_items"]
     y = np.arange(len(items))[::-1]
     for yy, it in zip(y, items):
-        if it["W"] is None:
+        if it["W"] is None and it.get("lower_bound_W") is not None:
+            ax.barh(yy, it["lower_bound_W"], color="none", ec=colors.get(it["boundary"], t["muted"]), hatch="..",
+                    lw=1.0)
+            ax.text(it["lower_bound_W"], yy, tr(f"  ≥ {it['lower_bound_W']:.1f} W (R_dc 하한, 정확값 없음)",
+                                                f"  ≥ {it['lower_bound_W']:.1f} W (R_dc lower bound, no exact value)"),
+                    va="center", fontsize=7.5, color=ST_COL["UNKNOWN"])
+        elif it["W"] is None and it.get("upper_bound_W") is not None:
+            ax.barh(yy, it["upper_bound_W"], color="none", ec="#8250df", ls="--", lw=1.0)
+            ax.text(it["upper_bound_W"], yy, tr(f"  ≤ {it['upper_bound_W']:.1f} W (선언 상한, 값 아님)",
+                                                f"  ≤ {it['upper_bound_W']:.1f} W (declared bound, not a value)"),
+                    va="center", fontsize=7.5, color="#8250df")
+        elif it["W"] is None:
             ax.barh(yy, 1.0, color="none", ec=ST_COL["UNKNOWN"], hatch="//", lw=1.0)
             ax.text(1.0, yy, tr("  미상 (0으로 두지 않음)", "  unknown (not set to zero)"), va="center", fontsize=7.5,
                     color=ST_COL["UNKNOWN"])
@@ -81,8 +92,8 @@ def fig_efficiency_point(fig, res: dict, title: str | None = None):
     ax.set_yticks(y)
     ax.set_yticklabels([f"{it['boundary']}: {it['item']}" for it in items], fontsize=7)
     ax.set_xlabel(tr("손실 [W]", "loss [W]"))
-    known = [it["W"] for it in items if it["W"] is not None]
-    ax.set_xlim(0, (max(known) if known else 1.0) * 1.45)
+    known = [v for it in items for v in (it["W"], it.get("upper_bound_W"), it.get("lower_bound_W")) if v is not None]
+    ax.set_xlim(0, (max(known) if known else 1.0) * 1.6)
     tot = led["loss_total_W"]
     ax.set_title(tr(f"손실 원장: 알려진 소계 {led['loss_known_subtotal_W']:.1f} W" +
                     (" = 총 손실" if tot is not None else f" + 미상 {len(led['loss_unknown_items'])}항 (총 손실 미확정)"),
@@ -110,6 +121,10 @@ def fig_efficiency_point(fig, res: dict, title: str | None = None):
         put(f"{100 * r['eta']:.3f}%" if r["eta"] is not None and r["status"] == "DEFINED" else r["status"], x=0.98,
             size=8, color=col, weight="bold", ha="right", dy=0.04)
         txt = r["definition"] if r["status"] == "DEFINED" else r.get("reason", "")
+        iv = r.get("eta_interval_incl_pwm_hf")
+        if iv:                                        # the PWM harmonic loss as an interval, never a single value
+            txt = (txt or "") + tr("  ·  PWM 고조파 포함 η ∈ ", "  ·  incl. PWM harmonic η ∈ ") + \
+                f"[{'—' if iv[0] is None else f'{100 * iv[0]:.3f}'}, {100 * iv[1]:.3f}] %"
         put(txt or "—", x=0.04, size=6.6, color=t["muted"], width=62, dy=0.036)
         pos["y"] -= 0.012
     res_t = b.get("telescoping_residuals") or {}

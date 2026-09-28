@@ -249,8 +249,27 @@ class EfficiencyPage(QWidget):
                     continue
                 val = f"{100 * r['eta']:.4f}% ({r['definition']}, {r['direction']})" if r["status"] == "DEFINED" else \
                     f"{r['status']} — {r.get('reason', '')}"
+                iv = r.get("eta_interval_incl_pwm_hf")
+                if iv:
+                    val += tr(" · PWM 고조파 손실 포함 η ∈ ", " · incl. PWM harmonic loss η ∈ ") + (
+                        f"[{'—' if iv[0] is None else f'{100 * iv[0]:.3f}'}, {100 * iv[1]:.3f}] %")
                 rows.append((f"η {r['label']}", val + (f" · {r['qualifier']}" if r.get("qualifier") else "")))
             rows.append((tr("알려진 손실 소계", "known loss subtotal"), f"{fmt(led['loss_known_subtotal_W'])} W"))
+            lo, hi = led.get("loss_interval_W") or (None, None)
+            rows.append((tr("손실 구간 (미상·상한 포함)", "loss interval (open items and bounds)"),
+                         f"[{fmt(lo)}, {fmt(hi) if hi is not None else '∞'}] W"))
+            for it in led["loss_items"]:
+                if it["item"].startswith("PWM"):
+                    v = (f"{fmt(it['W'])} W" if it["W"] is not None else
+                         f"≥ {fmt(it['lower_bound_W'])} W" if it.get("lower_bound_W") is not None else
+                         f"≤ {fmt(it['upper_bound_W'])} W" if it.get("upper_bound_W") is not None else "UNKNOWN")
+                    rows.append((f"{it['item']}", f"{v} · {it.get('status', '')} · {it.get('basis', '')}"))
+            hf = led.get("pwm_hf")
+            if hf:
+                rows.append((tr("PWM 고조파 입력", "PWM harmonic inputs"),
+                             f"L_hf {fmt(hf['L_hf_H'] and hf['L_hf_H'] * 1e6)} µH · fsw {fmt(hf['fsw_requested_Hz'] / 1e3)} kHz"
+                             f" ({tr('파형', 'waveform')} {fmt(hf['fsw_waveform_used_Hz'] / 1e3)} kHz) · m "
+                             f"{fmt(hf['modulation_index'], 4)} · {hf['basis']}"))
             rows.append((tr("미상 손실 항", "unknown loss items"), ", ".join(led["loss_unknown_items"]) or tr("없음", "none")))
             for k, val in (led.get("aux_metrics") or {}).items():
                 rows.append((k, f"{100 * val:.3f}%"))
