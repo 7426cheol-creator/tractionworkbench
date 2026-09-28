@@ -1,6 +1,6 @@
 # Verification Report — Traction Workbench
 
-자동 생성: `python verification/make_report.py` · software 0.5.0 · commit `d284faf` · 2026-09-28 · Python 3.11.15, NumPy 2.4.6, SciPy 1.17.1
+자동 생성: `python verification/make_report.py` · software 0.5.0 · commit `3c9310f` · 2026-09-28 · Python 3.11.15, NumPy 2.4.6, SciPy 1.17.1
 
 > 범위: 합성(synthetic) 참조 fixture에 대한 검증(verification)입니다. 하드웨어·공급사 데이터·외부 시뮬레이터에 대한 validation은 수행하지 않았습니다. 수치 자릿수는 회귀 검산용이며 실제 제품 정확도가 아닙니다.
 
@@ -9,11 +9,11 @@
 | 항목 | 결과 |
 |---|---|
 | 참조 패키지 무결성 (manifest SHA-256, 10 files) | OK |
-| 독립 fixture 검산 (production 코드 미사용) | 136/136 pass (64 s) |
+| 독립 fixture 검산 (production 코드 미사용) | 136/136 pass (28 s) |
 | Production vs golden acceptance | 21/21 pass |
-| pytest | 662 passed, 2 warnings in 690.74s (0:11:30) (694 s) |
-| 데스크톱 앱 self-test (headless, `twb selftest`) | 57/57 pass (369 s) |
-| MathWorks 이식 패키지 (`twb mathworks`) | parity PASS — 79 PASS · 0 FAIL · 0 ERROR · 1 NOT_SUPPORTED; GNU Octave 8.4.0 - MATLAB-language proxy; MATLAB / Simulink not run (9 s) |
+| pytest | 801 passed, 2 warnings in 350.04s (0:05:50) (354 s) |
+| 데스크톱 앱 self-test (headless, `twb selftest`) | 65/65 pass (203 s) |
+| MathWorks 이식 패키지 (`twb mathworks`) | parity PASS — 79 PASS · 0 FAIL · 0 ERROR · 1 NOT_SUPPORTED; GNU Octave 8.4.0 - MATLAB-language proxy; MATLAB / Simulink not run (4 s) |
 
 ## 2. 독립 fixture 검산 (`verification/independent_fixture_check.py`)
 
@@ -66,7 +66,7 @@ PASS  inverse:I10_STANDSTILL_TORQUE:golden                             |did|=5.5
 | REQ-RG-080 | **PASS** | — | 3.7111 | 에너지 회수 회생 가능 |
 | REQ-RG-100 | **FAIL** | CONSTRAINT_VIOLATION | -16.2889 | 손실을 최대로 늘려도 충전 한계 초과 (배터리 수용이 병목) |
 | REQ-PK-350 | **FAIL** | CONSTRAINT_VIOLATION | -43.1711 | 축 출력만으로 방전 한계 초과 |
-| REQ-RANGE | **UNKNOWN** | SAMPLED_COVERAGE | 51.8181 | 표본점 통과만으로 전 구간 PASS 아님 |
+| REQ-RANGE | **PASS** | — | 51.8181 | 저전압 끝점 + 단조성 조건으로 전 구간 입증 (표본만으로는 PASS 아님) |
 | REQ-ST-300 | **PASS** | — | 199.4377 | 등가 RMS, 효율 N/A, 지속시간 미확인 |
 
 ## 5. 데스크톱 앱 self-test (`twb selftest`)
@@ -77,19 +77,25 @@ PASS  inverse:I10_STANDSTILL_TORQUE:golden                             |did|=5.5
 |---|---|---|
 | decision:ts012_600 | PASS | verdict PASS, expected PASS |
 | decision:ts012_450 | PASS | verdict FAIL, expected FAIL |
-| pdf_report | PASS | 132525 bytes |
+| pdf_report | PASS | 132561 bytes |
 | decision:ts012_10s | PASS | verdict UNKNOWN, expected UNKNOWN |
 | decision:regen_80 | PASS | verdict PASS, expected PASS |
 | decision:regen_100 | PASS | verdict FAIL, expected FAIL |
 | decision:dis_350 | PASS | verdict FAIL, expected FAIL |
-| decision:range | PASS | verdict UNKNOWN, expected UNKNOWN |
+| decision:range | PASS | verdict PASS, expected PASS |
 | decision:stall | PASS | verdict PASS, expected PASS |
+| decision:pwm_risk | PASS | EVALUATED |
+| decision:battery_ocv | PASS | RESOLVED |
 | explorer:forward | PASS |  |
 | trajectory | PASS |  |
 | performance | PASS |  |
 | design | PASS |  |
+| requirement_set | PASS | {'PASS': 3, 'FAIL': 1, 'UNKNOWN': 1, 'total': 5, 'by_class': {'pass': 3, 'violation': 1, 'not_rated': 0, 'missing_input' |
+| requirement_set:candidates | PASS | {'charge 150 kW': (['REQ-B'], []), 'current 250 A': ([], ['REQ-A', 'REQ-C', 'REQ-D', 'REQ-E'])} |
+| requirement_set:open | PASS | REQ-B |
 | safety | PASS |  |
 | thermal | PASS | 냉각수 입구 65 °C (유량 10 L/min, EG 50%)에서 450 N·m는 약 <b>4.24 s</b> 유지 가능, 이후 <b>426 N·m</b> (연속)<br><span style='font-size:9p |
+| thermal:repeated_load | PASS | UNKNOWN |
 | thermal:coolant_flow | PASS | 10 L/min 4.239895719475726 s, 5 L/min 1.4845071749499539 s |
 | schematics | PASS |  |
 | protection:ov | PASS | INFEASIBLE ['PROT-01', 'PROT-04', 'PROT-02', 'PROT-03', 'PROT-05', 'PROT-06', 'PROT-07', 'PROT-08', 'PROT-09'] |
@@ -126,9 +132,11 @@ PASS  inverse:I10_STANDSTILL_TORQUE:golden                             |did|=5.5
 | project:switch | PASS | <b>stale</b> — 결과 계산 후 프로젝트가 바뀌었습니다 (emi: controller; emi_oew: controller): 다시 계산하세요 |
 | project:restore | PASS |  |
 | datasheet:module | PASS | Example Semiconductor (fictitious) EXM-750-820 datasheet rev 0.1 (synthetic format example) |
+| datasheet:entry_forms | PASS | {'motor': True, 'module': True, 'capacitor': True, 'gate_edges': True} |
+| datasheet:entry_motor | PASS | EXMOT-200 |
 | mathworks:package | PASS | ['no target report yet: every target stage is NOT_RUN'] |
 | guide | PASS |  |
-| acceptance | PASS | <span style='color:#1a7f37; font-weight:600'>21/21 PASS · manifest OK</span> · 3.10 s · verification against synthetic f |
+| acceptance | PASS | <span style='color:#1a7f37; font-weight:600'>21/21 PASS · manifest OK</span> · 1.24 s · verification against synthetic f |
 | exchange:package | PASS |  |
 | decision:flux_map | PASS | UNKNOWN |
 | no_error_dialogs | PASS |  |
@@ -139,7 +147,7 @@ Python reference(층 2)의 값과 수용된 원천(층 1: golden·계약 수식�
 
 | 단계 | 결과 |
 |---|---|
-| 패키지 | fingerprint `1e484dcfef9bbacd` · case {'forward': 48, 'flux_lookup': 21, 'requirement_witness': 11} · 층 2 ↔ 층 1 불일치 0 |
+| 패키지 | fingerprint `ae21c2a079e56c7f` · case {'forward': 48, 'flux_lookup': 21, 'requirement_witness': 11} · 층 2 ↔ 층 1 불일치 0 |
 | 패키지 검사 | PASS |
 | 대상 환경 | GNU Octave 8.4.0 - MATLAB-language proxy; MATLAB / Simulink not run |
 | stage `package_check` | PASS |
