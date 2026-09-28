@@ -113,6 +113,7 @@ twb mathworks verify out/mw --project P.json     # 대상 보고서 재수입: �
 
 python verification/independent_fixture_check.py      # production 코드를 쓰지 않는 독립 검산
 QT_QPA_PLATFORM=offscreen python -m pytest -q
+python verification/local_ci.py --parallel 3          # CI workflow의 세 job을 로컬에서 (커밋의 깨끗한 clone, job별 새 Python 3.12 환경)
 
 # 실행 파일 (Windows: packaging\build_windows.bat)
 pip install -e '.[gui,build]'
@@ -171,7 +172,8 @@ src/traction_workbench/
   report_pdf.py  PDF 엔지니어링 보고서
   api.py service.py cli.py
 packaging/       PyInstaller spec, launcher(TractionWorkbench.exe + twb.exe), build.py, 아이콘
-verification/    independent_fixture_check.py (production 비의존), make_report.py, make_module_anchor.py (모듈 모델 코어 경로 회귀 기준)
+verification/    independent_fixture_check.py (production 비의존), make_report.py, make_module_anchor.py (모듈 모델 코어 경로 회귀 기준),
+                 local_ci.py (GitHub Actions를 쓸 수 없을 때 같은 job을 로컬에서)
 tests/           골든·의미론·검증·리뷰 재현(P0-A/B)·확장·P1·OEW/HEV·EMI·효율·PWM·드라이브라인·모터 설계·교환·보고서·데스크톱,
                  아키텍처(층 base < models < kernel < engines < services < presentation, 지연 import 포함·비공개 결합·순환)
 examples/        case 파일, 단위가 선언된 drive 정의, datasheets/ (곡선·대표값·모터 spec 예시 — 가상 부품)

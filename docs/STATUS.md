@@ -59,6 +59,10 @@ provenance, stale 표시), 데이터시트 가져오기·대표값 직접 입력
 - 2026-09-28 14:29 UTC 이후 GitHub Actions가 이 저장소의 작업에 **runner를 배정하지 않습니다**(`runner_id 0`, 로그 없음, 3초
   만에 실패). 코드와 무관한 계정 수준 문제(Actions 사용량·지출 한도 등)로 보이며, 저장소 소유자가 GitHub 설정(Billing & plans →
   Actions)에서 확인해야 합니다. 같은 검사는 로컬에서 모두 통과합니다.
+- 대안 — **로컬 CI** `python verification/local_ci.py`: workflow의 세 job(Linux 테스트, MathWorks/Octave, 패키징)을 커밋의 깨끗한
+  clone과 job별 새 Python 3.12 가상환경에서 같은 단계로 실행하고 `build/local_ci/<commit>/summary.md`에 기록합니다. 패키징 job은
+  Windows job의 단계를 이 OS에서 실행하므로 PyInstaller 사양·데이터 파일·동결 self-test는 확인하지만 Windows 실행 파일 자체는
+  확인하지 못합니다(Windows PC에서 실행하면 패키징 job이 Windows job과 같은 단계가 되도록 작성했지만, Windows에서는 아직 실행해 보지 않았습니다).
 
 ## 3. 이어서 시작하는 법
 
@@ -67,6 +71,7 @@ pip install -e '.[gui,test]'
 QT_QPA_PLATFORM=offscreen python -m pytest -q          # 전체 테스트 (약 6분)
 twb selftest out/selftest                             # 데스크톱 self-test (약 3분, out/selftest/selftest.json)
 python verification/independent_fixture_check.py      # production 코드를 쓰지 않는 독립 검산
+python verification/local_ci.py --parallel 3          # CI의 세 job을 로컬에서 (약 15분, build/local_ci/<commit>/summary.md)
 twb gui                                               # 앱
 ```
 
