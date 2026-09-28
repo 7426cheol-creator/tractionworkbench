@@ -934,12 +934,18 @@ def transition_check(fsw_from_Hz: float, fsw_to_Hz: float, duty: float, deadtime
 
 @dataclass(frozen=True)
 class HarmonicLossData:
-    """Declared motor data for PWM harmonics: R_ac/R_dc vs frequency (copper) and an optional upper bound of the
-    iron / magnet harmonic loss per carrier frequency.  Without the bound the motor+inverter total is UNKNOWN."""
+    """Declared motor data for PWM harmonics.
+
+    R_ac/R_dc(f) establishes the PWM copper loss.  iron_bound_W is retained as the v0.x input name for
+    compatibility, but its physical meaning is an upper bound on the combined high-frequency magnetic loss
+    (stator/rotor iron + permanent-magnet eddy loss) at the declared carrier frequency.  It is not an estimate and
+    is not silently split into iron and magnet components.  Without that bound the motor+inverter comparison stays
+    UNKNOWN.
+    """
 
     f_Hz: tuple
     rac_over_rdc: tuple
-    iron_bound_W: tuple = ()                  # ((fsw_Hz, W upper bound at the operating points of interest), ...)
+    iron_bound_W: tuple = ()                  # legacy name: ((fsw_Hz, Fe+PM HF-loss upper bound W), ...)
     basis: str = ""
 
     def __post_init__(self):
@@ -956,26 +962,42 @@ class HarmonicLossData:
         out = np.interp(f, fa, np.asarray(self.rac_over_rdc, float))
         return np.where((f >= fa[0]) & (f <= fa[-1]), out, np.nan)
 
-    def iron_bound(self, fsw_Hz: float) -> float | None:
+    def magnetic_bound(self, fsw_Hz: float) -> float | None:
+        """Fe + PM high-frequency-loss upper bound at this carrier; exact declared anchors only."""
         for f, w in self.iron_bound_W:
             if abs(f - fsw_Hz) <= 1e-6 * f:
                 return float(w)
         return None
 
+    def iron_bound(self, fsw_Hz: float) -> float | None:
+        """Compatibility alias for the former, narrower name."""
+        return self.magnetic_bound(fsw_Hz)
+
 
 def harmonic_copper_loss(rip: dict, Rs_ohm: float, data: HarmonicLossData | None) -> dict:
-    """3 sum I_nu,rms^2 R_ac(f_nu) of the switching harmonics (the fundamental copper loss is counted separately
-    by the drive model - never both from a total RMS)."""
-    if data is None:
-        return {"W": None, "reason": "no R_ac(f) data declared"}
-    f = rip["harmonic_f_Hz"]
-    I = rip["harmonic_I_pk_A"]
-    ratio = data.rac(f)
+    """PWM copper loss and a DC-resistance lower bound.
+
+    W is established only when the declared R_ac/R_dc table covers every significant switching harmonic:
+    3 sum I_nu,rms^2 R_ac(f_nu).  lower_bound_W is always available from the same finite spectrum under the
+    declared passive-conductor contract R_ac >= R_dc.  The fundamental copper loss is counted separately by the
+    drive model - never both from a total RMS.
+    """
+    f = np.asarray(rip["harmonic_f_Hz"], float)
+    I = np.asarray(rip["harmonic_I_pk_A"], float)
     sig = I > 1e-6 * max(float(I.max()), 1e-12)
+    P_lb = 3.0 * float(np.sum(0.5 * I[sig] ** 2 * Rs_ohm))
+    if data is None:
+        return {"W": None, "lower_bound_W": P_lb, "coverage_I2": 0.0,
+                "reason": "no R_ac(f) data declared; only the R_dc lower bound is established"}
+    ratio = data.rac(f)
+    covered = sig & np.isfinite(ratio)
+    den = float(np.sum(I[sig] ** 2))
+    cov = 1.0 if den <= 0 else float(np.sum(I[covered] ** 2) / den)
     if np.any(np.isnan(ratio[sig])):
-        return {"W": None, "reason": "harmonics outside the declared R_ac(f) table (no extrapolation)"}
+        return {"W": None, "lower_bound_W": P_lb, "coverage_I2": cov,
+                "reason": "harmonics outside the declared R_ac(f) table (no extrapolation); R_dc lower bound retained"}
     P = 3.0 * float(np.sum(0.5 * I[sig] ** 2 * Rs_ohm * ratio[sig]))
-    return {"W": P, "reason": ""}
+    return {"W": P, "lower_bound_W": P_lb, "coverage_I2": 1.0, "reason": ""}
 
 
 # --------------------------------------------------------------------------------------------- policy comparison
@@ -1046,12 +1068,18 @@ def _segment_eval(base_drive, cand, seg: dict, fsw: float, coolant_C: float, lim
     ipk = p["i_peak_A"] + rip["ripple_peak_A"]
     mp = minimum_pulse(m, modulation, fsw, timing.min_pulse_s)
     hcu = harmonic_copper_loss(rip, base_drive.motor.Rs_ohm, harmonic)
+    mag_bound = None if harmonic is None else harmonic.magnetic_bound(fsw)
+    fsw_wave = float(rip["fsw_used_Hz"])
+    fsw_err = (fsw_wave - fsw) / fsw
     out.update({"P_inv_W": p["Pinv_W"], "P_cu_fund_W": p["Pcu_W"], "P_dc_W": p["Pdc_W"], "i_peak_A": p["i_peak_A"],
                 "ripple_rms_A": rip["ripple_rms_A"], "ripple_peak_A": rip["ripple_peak_A"], "i_peak_incl_ripple_A": ipk,
+                "i_peak_incl_ripple_kind": "conservative upper bound: fundamental peak + max |switching ripple|",
                 "ripple_quasi_static": fe_true < fsw / 400.0, "modulation_index": m,
+                "fsw_requested_Hz": fsw, "fsw_waveform_used_Hz": fsw_wave, "fsw_waveform_rel_error": fsw_err,
                 "pulse_ratio": (fsw / fe_true) if fe_true > 0 else None, "narrowest_pulse_s": mp["narrowest_pulse_s"],
-                "min_pulse_ok": mp["ok"], "P_cu_harm_W": hcu["W"], "P_cu_harm_reason": hcu["reason"],
-                "P_iron_harm_bound_W": None if harmonic is None else harmonic.iron_bound(fsw),
+                "min_pulse_ok": mp["ok"], "P_cu_harm_W": hcu["W"], "P_cu_harm_lb_W": hcu["lower_bound_W"],
+                "P_cu_harm_Rac_coverage_I2": hcu["coverage_I2"], "P_cu_harm_reason": hcu["reason"],
+                "P_magnetic_harm_bound_W": mag_bound, "P_iron_harm_bound_W": mag_bound,
                 "linear_modulation": not rip["overmodulation"],
                 "iq_A": p.get("iq_A"), "vq_V": p.get("vq_V"), "voltage_budget_V": p.get("voltage_budget_V")})
     if sensing is not None:
@@ -1136,16 +1164,30 @@ def evaluate_policies(base_drive, cand, segments: list[dict], policies: list, co
     adm = [o for o in out if o["admissible"]]
     pareto = _pareto(adm)
     best = min(adm, key=lambda o: o["E_inv_J"]) if adm and all(o["E_inv_J"] is not None for o in adm) else None
+    known = [o for o in adm if o.get("E_known_policy_sensitive_J") is not None]
+    best_known = min(known, key=lambda o: o["E_known_policy_sensitive_J"]) if known else None
     return {"policies": out, "pareto": [o["policy"]["name"] for o in pareto],
+            "pareto_scope": "known policy-sensitive loss (inverter + PWM copper) plus mandatory stress/margin metrics; "
+                            "the Fe+PM HF upper bound is shown as an interval, not treated as an estimate",
             "best_inverter_energy_among_evaluated": None if best is None else best["policy"]["name"],
+            "best_known_policy_sensitive_energy_among_evaluated": None if best_known is None else best_known["policy"]["name"],
             "limits": lim.__dict__, "coolant_C": coolant_C, "modulation": modulation,
+            "harmonic_data": None if harmonic is None else
+                {"basis": harmonic.basis, "Rac_semantics": "R_ac/R_dc versus frequency, no extrapolation",
+                 "magnetic_bound_semantics": "declared Fe+PM high-frequency-loss upper bound at exact carrier anchors"},
             "module_modulation": {"declared": declared_mod, "used": modulation,
                                   "note": None if declared_mod == modulation else
-                                  "the module data's declared modulation is replaced by the policy's: one pulse pattern "
-                                  "for losses, ripple, sampling and capacitor current"},
+                                  "the module data's declared modulation is replaced by the policy's: one modulation "
+                                  "family for losses, ripple, sampling and capacitor current"},
+            "waveform_scope": "ripple and sampling use a synchronous regular-sampled carrier over one electrical "
+                              "period; when fsw/f_e is non-integer the waveform carrier is rounded to the nearest "
+                              "integer pulse ratio and the mismatch is reported per segment",
+            "thermal_scope": "Tj is a per-segment steady electrothermal fixed point (Tj = coolant + Rth*P_hot); "
+                             "the schedule's sensor temperature is an externally supplied observable. Mission thermal "
+                             "transients, sensor lag and power-cycling damage are not established on this page.",
             "meaning": "evaluated candidates only (no global optimum claimed); a mandatory violation is never traded "
-                       "for efficiency; an inverter-loss gain is not a motor+inverter gain without a harmonic-loss "
-                       "bound"}
+                       "for efficiency; an inverter-loss gain is not a motor+inverter gain without established motor "
+                       "high-frequency loss evidence"}
 
 
 def _status(viol, required_unknown, open_, delivered) -> str:
@@ -1219,12 +1261,19 @@ def _aggregate(pol, rows, events, lim: PwmLimits, loop: CurrentLoop | None = Non
             return None
         return float(sum(v * r["duration_s"] for v, r in zip(vals, rows)))
     E_inv, E_cu, E_h = tot("P_inv_W"), tot("P_cu_fund_W"), tot("P_cu_harm_W")
-    E_fe = tot("P_iron_harm_bound_W")
+    E_h_lb = tot("P_cu_harm_lb_W")
+    E_mag = tot("P_magnetic_harm_bound_W")
     tj = [r["Tj_C"] for r in rows if r.get("Tj_C") is not None]
     ipk = [r["i_peak_incl_ripple_A"] for r in rows if r.get("i_peak_incl_ripple_A") is not None]
     icap = [r["I_cap_rms_A"] for r in rows if r.get("I_cap_rms_A") is not None]
     pm = [r["timing"].get("phase_margin_deg") for r in rows if r["timing"].get("phase_margin_deg") is not None]
     np_ = [r["pulse_ratio"] for r in rows if r.get("pulse_ratio") is not None]
+    sync_err = [abs(r.get("fsw_waveform_rel_error", 0.0)) for r in rows if r.get("fsw_waveform_rel_error") is not None]
+    sync_err_max = max(sync_err) if sync_err else 0.0
+    if sync_err_max > 1e-12:
+        advisory.append("synchronous waveform approximation changes the carrier by up to "
+                        f"{100 * sync_err_max:.3g}% from the requested fsw; module loss and policy scheduling retain "
+                        "the requested fsw")
     if any(not r["timing"]["deadline_ok"] for r in rows):
         viol.append("control deadline missed at the scheduled frequency")
     unstable = [k for k, r in enumerate(rows) if r["timing"].get("sampled_stable") is False]
@@ -1253,11 +1302,20 @@ def _aggregate(pol, rows, events, lim: PwmLimits, loop: CurrentLoop | None = Non
         if (worst > limit) if hi else (worst < limit):
             viol.append(f"{name} {worst:.4g} vs limit {limit:g}")
     status = _status(viol, unknown, open_, delivered)
+    E_known_policy = None if (E_inv is None or E_h is None) else E_inv + E_h
+    E_policy_upper = None if (E_known_policy is None or E_mag is None) else E_known_policy + E_mag
+    E_cmp_lower = None if (E_inv is None or E_cu is None or E_h is None) else E_inv + E_cu + E_h
+    E_cmp_upper = None if (E_cmp_lower is None or E_mag is None) else E_cmp_lower + E_mag
     return {"policy": pol.describe(), "segments": rows, "transitions": events, "violations": viol,
             "unverified": unknown + advisory, "unverified_required": unknown, "advisory": advisory,
             "not_applicable_declared": sorted(na), "status": status, "admissible": status == "ADMISSIBLE",
             "delivered": delivered,
-            "E_inv_J": E_inv, "E_cu_fund_J": E_cu, "E_cu_harm_J": E_h, "E_iron_harm_bound_J": E_fe,
+            "E_inv_J": E_inv, "E_cu_fund_J": E_cu, "E_cu_harm_J": E_h, "E_cu_harm_lb_J": E_h_lb,
+            "E_magnetic_harm_bound_J": E_mag, "E_iron_harm_bound_J": E_mag,
+            "E_known_policy_sensitive_J": E_known_policy, "E_policy_sensitive_upper_J": E_policy_upper,
+            "E_motor_inverter_comparison_lower_J": E_cmp_lower, "E_motor_inverter_comparison_upper_J": E_cmp_upper,
+            "waveform_fsw_rel_error_max": sync_err_max,
+            "peak_current_metric": "conservative upper bound: fundamental peak + max |switching ripple|",
             "Tj_max_C": max(tj) if tj else None, "i_peak_incl_ripple_max_A": max(ipk) if ipk else None,
             "I_cap_rms_max_A": max(icap) if icap else None, "phase_margin_min_deg": min(pm) if pm else None,
             "pulse_ratio_min": min(np_) if np_ else None}
@@ -1275,11 +1333,11 @@ def _versus(base: dict, o: dict) -> dict:
         res["total"] = {"status": "UNKNOWN", "reason": "motor PWM harmonic copper loss not evaluated (no R_ac(f) data): "
                                                        "the inverter-loss change is not a motor+inverter change"}
         return res
-    if base["E_iron_harm_bound_J"] is None or o["E_iron_harm_bound_J"] is None:
+    if base["E_magnetic_harm_bound_J"] is None or o["E_magnetic_harm_bound_J"] is None:
         res["total"] = {"status": "UNKNOWN", "lower_delta_J": lo_o - lo_b,
-                        "reason": "iron / magnet harmonic loss bound not declared for both frequencies"}
+                        "reason": "Fe+PM high-frequency-loss upper bound not declared for both policies"}
         return res
-    hi_b, hi_o = lo_b + base["E_iron_harm_bound_J"], lo_o + o["E_iron_harm_bound_J"]
+    hi_b, hi_o = lo_b + base["E_magnetic_harm_bound_J"], lo_o + o["E_magnetic_harm_bound_J"]
     if hi_o < lo_b:
         st = "IMPROVED"
     elif lo_o > hi_b:
@@ -1287,15 +1345,16 @@ def _versus(base: dict, o: dict) -> dict:
     else:
         st = "UNDECIDED"
     res["total"] = {"status": st, "interval_candidate_J": [lo_o, hi_o], "interval_baseline_J": [lo_b, hi_b],
-                    "reason": "motor+inverter energy as [known, known + declared harmonic iron bound] intervals"}
+                    "reason": "motor+inverter comparison as [known, known + declared Fe+PM HF upper bound] intervals; "
+                              "the upper endpoint is a bound, not an expected loss"}
     return res
 
 
 def _pareto(rows: list) -> list:
     """Non-dominated admissible policies on (inverter energy, peak Tj, peak current incl. ripple, capacitor current,
     -phase margin); objectives that are None for any policy are left out."""
-    keys = [("E_inv_J", 1), ("Tj_max_C", 1), ("i_peak_incl_ripple_max_A", 1), ("I_cap_rms_max_A", 1),
-            ("phase_margin_min_deg", -1)]
+    keys = [("E_known_policy_sensitive_J", 1), ("Tj_max_C", 1), ("i_peak_incl_ripple_max_A", 1),
+            ("I_cap_rms_max_A", 1), ("phase_margin_min_deg", -1)]
     keys = [(k, s) for k, s in keys if all(r.get(k) is not None for r in rows)]
     out = []
     for a in rows:
