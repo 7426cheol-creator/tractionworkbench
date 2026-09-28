@@ -32,6 +32,7 @@ from .models import (
     RotationalLossModel,
     TemperatureDependence,
     VoltageModel,
+    WindingDefinition,
 )
 from .requirement import Requirement
 from .scenario import DcSourceLimits, Scenario
@@ -178,7 +179,10 @@ def drive_from_dict(d: dict, conv: Conversions | None = None) -> DriveModel:
         reference_winding_temp_C=temps.get("winding_C"), reference_magnet_temp_C=temps.get("magnet_C"),
         rs_temperature=None if not rs_t else TemperatureDependence(rs_t["coeff_per_K"], tuple(rs_t["valid_C"]), rs_t["basis"]),
         psi_temperature=None if not psi_t else TemperatureDependence(psi_t["coeff_per_K"], tuple(psi_t["valid_C"]), psi_t["basis"]),
-        fidelity=Fidelity(m.get("fidelity", fid.value)))
+        fidelity=Fidelity(m.get("fidelity", fid.value)),
+        winding=None if not m.get("winding") else WindingDefinition(
+            **{k: m["winding"][k] for k in ("Q", "p", "y", "parallel_paths", "turns_per_coil") if k in m["winding"]},
+            basis=str(m["winding"].get("basis", ""))))
     iv = _req(d, "inverter", "drive")
     topo = str(iv.get("topology", "single_vsi")).strip().lower()
     if topo not in SINGLE_VSI_NAMES:

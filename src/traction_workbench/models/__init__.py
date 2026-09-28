@@ -7,6 +7,7 @@ from .components import (
     RotationalLossModel,
     TemperatureDependence,
     VoltageModel,
+    WindingDefinition,
 )
 from .flux import ConstantFluxModel, CurrentBox, FluxMapModel, FluxMapPlane, uncovered_distance
 from .provenance import DataOrigin, Fidelity, Provenance
@@ -27,5 +28,6 @@ __all__ = [
     "RotationalLossModel",
     "TemperatureDependence",
     "VoltageModel",
+    "WindingDefinition",
     "uncovered_distance",
 ]

@@ -987,3 +987,305 @@ def test_ct07_harmonic_representation_invariance_and_exact_phase_peak():
     iso = O.OewTopology("isolated", 400.0, 400.0)
     o = O.oew_point(d, iso, 3000.0, -80.0, 120.0, waveforms=False, n_theta=36)
     assert o["currents"]["phase_peak_A"] == pytest.approx(math.hypot(80.0, 120.0), rel=1e-12)   # exact, not sampled
+
+
+# ---------------------------------------------------------------------------------------------- F: EMC-01 .. EMC-04
+
+def _emi():
+    from traction_workbench.extensions import emi as E
+    src = E.SwitchingSource(600.0, 300.0, -0.3, 0.8, 0.0, 400.0, 10000.0, 50e-9, 60e-9, 1e-6, basis="review synthetic")
+    net = E.HvNetwork(C_dc_F=500e-6, C_y_F=100e-9, C_par_F=2e-9, L_h_H=1e-6, basis="review synthetic")
+    return E, src, net
+
+
+def _emi_profile(E, lo=150e3, hi=30e6, level=200.0, unit="dBuV", detector="peak", method="voltage_AN", gaps=(),
+                 reserve=0.0):
+    fields = dict(standard="review fixture", edition="1", customer_revision="A", curve_id="review", port="HV+/HV-",
+                  method=method, detector=detector, rbw_Hz=9000.0, network="AN 5uH/50ohm", fixture="bench",
+                  operating_condition="6000 rpm")
+    return E.EmiProfile(fields, E.LimitCurve(((lo, level), (hi, level)), unit, detector, "review fixture", gaps), reserve)
+
+
+def _record(res, **kw):
+    rec = {"evidence": "correlation report R-1", "holdout": "6 held-out points", "acquisition": "peak, 9 kHz, 10 ms",
+           "error_model": "max |E_meas - E_model| over the hold-out", "uncertainty_dB": 3.0,
+           "f_intervals_Hz": [[150e3, 30e6]], **res["configuration"]}
+    rec.update(kw)
+    return rec
+
+
+def test_emc01_band_supremum_is_exact_and_independent_of_the_display_grid():
+    E, src, net = _emi()
+    ref = E.conducted_emission_screening(src, net, _emi_profile(E), n_grid=20)
+    rec = _record(ref)
+    sups, claims = [], []
+    for n in (20, 160, 1200):              # review: 160 points FEASIBLE (0.49 dB), 1200 points INFEASIBLE (-0.34 dB)
+        r = E.conducted_emission_screening(src, net, _emi_profile(E, level=126.2), n_grid=n, calibration=rec)
+        sups.append(r["domain"][0]["E_sup_dBuV"])
+        claims.append((r["claim"]["status"], tuple(r["claim"]["reasons"])))
+        assert np.nanmax(r["E_dBuV"]) <= sups[-1]                    # the display grid never exceeds the bound
+    assert max(sups) - min(sups) == 0.0 and len(set(claims)) == 1
+    assert claims[0] == ("UNKNOWN", ("UNCERTAINTY_OVERLAP",))       # E + 3 > 126.2 > E - 3: neither side proven
+    # independent check: a dense receiver sweep of the direct edge sum + nodal solve reaches the same supremum
+    lo, hi = 205e3, 215e3
+    prof = _emi_profile(E, lo, hi)
+    row = E.conducted_emission_screening(src, net, prof, lo, hi, n_grid=5)["domain"][0]
+    fr = np.arange(lo, hi + 1.0, 400.0 / 8)
+
+    def port(f, key):
+        sl = E.source_lines(src, f)
+        return E.solve_network(net, f, sl["v_cm"], sl["i_dm"])[key]
+    vp, _ = E.line_sum_estimate(fr, 9000.0, 400.0, lambda f: port(f, "v_meas_plus"))
+    vm, _ = E.line_sum_estimate(fr, 9000.0, 400.0, lambda f: port(f, "v_meas_minus"))
+    dense = float(np.max(20 * np.log10(np.maximum(vp, vm) / 1e-6)))
+    assert row["E_sup_dBuV"] == pytest.approx(dense, abs=2e-6) and row["E_sup_dBuV"] >= dense
+
+
+def test_emc01_partial_limit_units_detector_and_calibration_completeness():
+    E, src, net = _emi()
+    ref = E.conducted_emission_screening(src, net, _emi_profile(E), n_grid=20)
+    rec = _record(ref)
+    # a limit defined only on 150-160 kHz: the rest of the band is UNDEFINED, not passed
+    r = E.conducted_emission_screening(src, net, _emi_profile(E, 150e3, 160e3), n_grid=20, calibration=rec)
+    assert r["claim"]["status"] == "UNKNOWN" and "OUTSIDE_MODEL_DOMAIN" in r["claim"]["reasons"]
+    st = {(d["lo_Hz"], d["hi_Hz"]): d["status"] for d in r["domain"]}
+    assert st[(150e3, 160e3)] == "evaluated" and st[(160e3, 30e6)] == "undefined"
+    # ... unless the approved curve declares that band a gap
+    g = E.conducted_emission_screening(src, net, _emi_profile(E, 150e3, 160e3, gaps=((160e3, 30e6),)), 150e3, 160e3 * 1.0,
+                                       n_grid=20, calibration=rec)
+    assert g["claim"]["status"] == "FEASIBLE"
+    # a current-probe / dBuA requirement is not comparable with an AN-voltage prediction: never renamed
+    for kw in ({"unit": "dBuA", "method": "current_probe"}, {"unit": "dBuA"}, {"method": "current_probe"}):
+        c = E.conducted_emission_screening(src, net, _emi_profile(E, **kw), n_grid=20, calibration=rec)
+        assert c["claim"]["status"] == "UNKNOWN" and c["claim"]["reasons"] == ["OUTSIDE_MODEL_DOMAIN"]
+    # QP without a QP-matched correlation: the peak record does not apply
+    q = E.conducted_emission_screening(src, net, _emi_profile(E, detector="quasi_peak"), n_grid=20, calibration=rec)
+    assert q["claim"]["status"] == "UNKNOWN" and any("detector" in m for m in q["calibration"]["mismatches"])
+    # a title string is not evidence; None / NaN / negative / Inf / an unexplained 0 are never a 0 dB bound
+    t = E.conducted_emission_screening(src, net, _emi_profile(E), n_grid=20, calibration={"evidence": "placeholder"})
+    assert t["claim"]["status"] == "UNKNOWN" and "MISSING_INPUT" in t["claim"]["reasons"]
+    for bad in (None, float("nan"), -1.0, float("inf"), 0.0):
+        b = E.conducted_emission_screening(src, net, _emi_profile(E), n_grid=20,
+                                           calibration=_record(ref, uncertainty_dB=bad))
+        assert b["claim"]["status"] == "UNKNOWN" and b["calibration"]["problems"]
+    z = E.conducted_emission_screening(src, net, _emi_profile(E), n_grid=20,
+                                       calibration=_record(ref, uncertainty_dB=0.0, zero_uncertainty_basis="exact FE"))
+    assert z["claim"]["status"] == "FEASIBLE"
+    ok = E.conducted_emission_screening(src, net, _emi_profile(E), n_grid=20, calibration=rec)
+    assert ok["claim"]["status"] == "FEASIBLE" and ok["calibrated"]
+
+
+def test_emc01_applicability_is_rechecked_when_the_configuration_changes():
+    E, src, net = _emi()
+    ref = E.conducted_emission_screening(src, net, _emi_profile(E), n_grid=20)
+    rec = _record(ref)
+    filt = E.HvNetwork(C_dc_F=500e-6, C_y_F=220e-9, C_par_F=2e-9, L_h_H=1e-6, basis="review synthetic")
+    wave = E.SwitchingSource(600.0, 300.0, -0.3, 0.8, 0.0, 400.0, 10000.0, 30e-9, 60e-9, 1e-6, basis="review synthetic")
+    fixture = _emi_profile(E)
+    fixture = E.EmiProfile({**fixture.fields, "fixture": "vehicle harness"}, fixture.limit, 0.0)
+    for s, n, p in ((src, filt, _emi_profile(E)), (wave, net, _emi_profile(E)), (src, net, fixture)):
+        r = E.conducted_emission_screening(s, n, p, n_grid=20, calibration=rec)
+        assert r["claim"]["status"] == "UNKNOWN" and not r["calibrated"] and r["calibration"]["mismatches"]
+    # the display notes keep the requested and the evaluated carrier (asynchronous 10.1 kHz is not a line model)
+    asy = E.SwitchingSource(600.0, 300.0, -0.3, 0.8, 0.0, 400.0, 10100.0, 50e-9, 60e-9, 1e-6, basis="x")
+    e = E.pwm_edges(asy)
+    assert e["fsw_requested_Hz"] == 10100.0 and e["fsw_used_Hz"] == 10000.0 and not e["validity"]["ok"]
+    syn = replace(asy, carrier="synchronous")
+    assert E.pwm_edges(syn)["validity"]["ok"]
+
+
+def test_emc02_measured_trace_needs_coverage_and_its_own_metadata():
+    E, _, _ = _emi()
+    p = _emi_profile(E, 10e6, 30e6, 70.0)
+    meta = {"representation": "raw_sweep", "detector": "peak", "unit": "dBuV", "rbw_Hz": 9000.0, "if_shape": "gaussian",
+            "dwell_s": 0.01, "corrections": "AN factor and cable loss applied", "port": "HV+/HV-", "method": "voltage_AN", "network": "AN 5uH/50ohm", "fixture": "bench",
+            "operating_condition": "6000 rpm"}
+    f = np.arange(10e6, 30e6 + 1, 100e3)                     # review: 201 points, 91 kHz unobserved between windows
+    assert E.measured_trace_verdict(f, np.full(f.size, 50.0), p, 3.0, meta=meta)["verdict"] == "INDETERMINATE"
+    rect = E.measured_trace_verdict(f, np.full(f.size, 50.0), p, 3.0, meta={**meta, "if_shape": "rectangular"})
+    assert rect["verdict"] == "INDETERMINATE" and rect["coverage"]["uncovered"]
+    dense = np.arange(10e6, 30e6 + 1, 4.5e3)
+    ok = E.measured_trace_verdict(dense, np.full(dense.size, 50.0), p, 3.0, meta=meta)
+    assert ok["verdict"] == "PASS"
+    # a tone between two readings of the dense scan is bounded: loss <= 6.02 (step / RBW)^2 dB is part of the verdict
+    assert ok["coverage"]["allowance_max_dB"] == pytest.approx(6.0206 * 0.25)
+    near = np.full(dense.size, 50.0)
+    near[1000] = 70.0 - 3.0 - 0.5                               # reading + U fits, reading + U + loss does not
+    assert E.measured_trace_verdict(dense, near, p, 3.0, meta=meta)["compliance"]["verdict"] != "PASS"
+    # raw vs certified max-envelope vs a final list
+    env = {**meta, "representation": "max_envelope", "raw_step_Hz": 4.5e3, "peak_preservation": "max-hold, manual 4.2"}
+    assert E.measured_trace_verdict(f, np.full(f.size, 50.0), p, 3.0, meta=env)["verdict"] == "PASS"
+    assert E.measured_trace_verdict(f, np.full(f.size, 50.0), p, 3.0,
+                                    meta={**env, "peak_preservation": ""})["verdict"] == "INDETERMINATE"
+    assert E.measured_trace_verdict(dense, np.full(dense.size, 50.0), p, 3.0,
+                                    meta={**meta, "representation": "final_list"})["verdict"] == "INDETERMINATE"
+    # the trace's own conditions: no metadata, another set-up or a lower-ranked detector never PASS
+    for m in ({}, {**meta, "fixture": "vehicle"}, {**meta, "detector": "average"}, {**meta, "rbw_Hz": 120e3},
+              {**meta, "corrections": ""}):
+        assert E.measured_trace_verdict(dense, np.full(dense.size, 50.0), p, 3.0, meta=m)["verdict"] != "PASS"
+    # a reading above the limit is a FAIL witness at that frequency (an average reading proves a peak exceedance)
+    hi = np.full(dense.size, 50.0)
+    hi[2000] = 80.0
+    for det in ("peak", "average"):
+        r = E.measured_trace_verdict(dense, hi, p, 3.0, meta={**meta, "detector": det})
+        assert r["verdict"] == "FAIL" and r["witness"]["f_Hz"] == pytest.approx(dense[2000])
+    # empty band, NaN, negative / NaN U: never a PASS and never an unstructured error
+    assert E.measured_trace_verdict([1e3, 2e3], [0.0, 0.0], p, 3.0, meta=meta)["verdict"] == "INDETERMINATE"
+    gap = np.full(dense.size, 50.0)
+    gap[100:300] = np.nan
+    assert E.measured_trace_verdict(dense, gap, p, 3.0, meta=meta)["verdict"] == "INDETERMINATE"
+    for U in (-1.0, float("nan"), None):
+        with pytest.raises(InputValidationError):
+            E.measured_trace_verdict(dense, np.full(dense.size, 50.0), p, U, meta=meta)
+    # compliance and reserve are separate statements
+    res = E.measured_trace_verdict(dense, np.full(dense.size, 60.0), _emi_profile(E, 10e6, 30e6, 70.0, reserve=6.0), 3.0,
+                                   meta=meta)
+    assert res["compliance"]["verdict"] == "PASS" and res["reserve"]["verdict"] != "MET" and res["verdict"] != "PASS"
+    assert res["decision_rule"]["agreed"] is False
+
+
+def test_emc03_an_upper_bound_exceedance_is_not_a_violation_witness():
+    E, src, net = _emi()
+    ref = E.conducted_emission_screening(src, net, _emi_profile(E), n_grid=20)
+    rec = _record(ref)
+    sup = ref["domain"][0]["E_sup_dBuV"]
+    over = E.conducted_emission_screening(src, net, _emi_profile(E, level=sup + 1.0), n_grid=20, calibration=rec)
+    assert over["claim"]["status"] == "UNKNOWN" and over["claim"]["reasons"] == ["UNCERTAINTY_OVERLAP"]
+    bad = E.conducted_emission_screening(src, net, _emi_profile(E, level=sup - 4.0), n_grid=20, calibration=rec)
+    assert bad["claim"]["status"] == "INFEASIBLE"
+    w = bad["claim"]["evidence"][0]["data"]
+    assert w["E_lower_dBuV"] > w["limit_minus_reserve_dBuV"]
+    # the witness is a real receiver frequency: re-evaluating its window reproduces the lower bound's exceedance
+    f0, f1 = w["window_Hz"]
+    n = np.arange(math.ceil(f0 / 400.0), math.floor(f1 / 400.0) + 1) * 400.0
+    sl = E.source_lines(src, n)
+    nw = E.solve_network(net, n, sl["v_cm"], sl["i_dm"])
+    lvl = 20 * np.log10(max(np.abs(nw["v_meas_plus"]).sum(), np.abs(nw["v_meas_minus"]).sum()) / math.sqrt(2) / 1e-6)
+    assert lvl - 3.0 > sup - 4.0
+
+
+def test_emc04_dead_time_sequence_is_physical_and_matches_a_switching_simulation():
+    from traction_workbench.modulation import duties
+    E, _, _ = _emi()
+
+    def switching_sim(s, n=200_000):
+        T = 1 / s.fe_Hz
+        Ts = T / s.carrier_ratio
+        t = (np.arange(n) + 0.5) * T / n
+        tcen = (np.minimum((t // Ts).astype(int), s.carrier_ratio - 1) + 0.5) * Ts
+        d = np.clip(duties(2 * np.pi * s.fe_Hz * tcen, s.m, s.alpha_rad, s.modulation), 0, 1)
+        if s.min_pulse_policy == "drop":
+            dm = s.min_pulse_s / Ts
+            d = np.where(d < dm, 0, np.where(d > 1 - dm, 1, d))
+        poles = np.zeros((3, n))
+        for k in range(3):
+            cmd = (np.abs(t - tcen) < 0.5 * d[k] * Ts) | (d[k] >= 1)
+            ch = np.nonzero(cmd != np.roll(cmd, 1))[0]
+            idx = np.searchsorted(ch, np.arange(n), side="right") - 1
+            since = (np.arange(n) - np.where(idx >= 0, ch[idx], ch[-1] - n)) * (T / n)
+            i = s.I_pk_A * np.cos(2 * np.pi * s.fe_Hz * t + s.beta_rad - 2 * np.pi * k / 3)
+            on, off = cmd & (since >= s.t_dead_s), (~cmd) & (since >= s.t_dead_s)
+            poles[k] = np.where(on, 1.0, np.where(off, 0.0, np.where(i < 0, 1.0, 0.0)))
+        return t, poles
+
+    cases = [E.SwitchingSource(600, 300, 1.2, 1.15, 0, 800, 20000, 50e-9, 60e-9, 1e-6, basis="review"),   # review
+             E.SwitchingSource(600, 200, 2.6, 0.9, 0.3, 300, 9000, 50e-9, 50e-9, 2e-6, basis="regen"),
+             E.SwitchingSource(600, 5, -0.2, 0.3, 0.0, 200, 10000, 50e-9, 50e-9, 1e-6, basis="low current"),
+             E.SwitchingSource(600, 300, 0.3, 1.15, 0, 600, 12000, 50e-9, 60e-9, 1e-6, basis="drop",
+                               min_pulse_s=2e-6, min_pulse_policy="drop")]
+    zc_seen = False
+    for beta in np.linspace(0.0, 2 * np.pi, 13)[:-1]:      # a current zero crossing inside a dead time
+        s = E.SwitchingSource(600, 150, float(beta), 0.9, 0.0, 400, 10000, 50e-9, 50e-9, 3e-6, basis="zc")
+        if E.pwm_edges(s)["validity"]["zero_crossing_commutations"]:
+            cases.append(s)
+            zc_seen = True
+            break
+    assert zc_seen
+    for s in cases:
+        e = E.pwm_edges(s)
+        T = e["period_s"]
+        t, ref = switching_sim(s)
+        mine = np.tile(np.asarray(e["initial_state"], float)[:, None], (1, t.size))
+        for (k, t0, sg, tau, cur) in e["edges"]:
+            mine[k] += sg * (t >= t0)
+        assert set(np.unique(mine)) <= {0.0, 1.0}                              # every leg state in {0, 1}
+        near = np.zeros(t.size, bool)
+        for x in (x[1] for x in e["edges"]):
+            near |= np.abs(((t - x + T / 2) % T) - T / 2) < 3 * T / t.size
+        assert np.count_nonzero((mine != ref)[:, ~near]) == 0
+        for k in range(3):                                    # ordered, alternating, non-negative pulses
+            ek = sorted((x for x in e["edges"] if x[0] == k), key=lambda x: x[1])
+            assert all(a[2] != b[2] for a, b in zip(ek, ek[1:]))
+            assert all(b[1] > a[1] for a, b in zip(ek, ek[1:]))
+    review = E.pwm_edges(cases[0])
+    assert review["validity"]["suppressed_gate_pulses"] > 0 and review["validity"]["min_pulse_width_s"] > 0
+    # contradictory timing is refused; an unknown minimum-pulse handling puts affected pulses out of validity
+    with pytest.raises(InputValidationError):
+        E.SwitchingSource(600, 300, 0.0, 0.8, 0.0, 400, 10000, 30e-6, 30e-6, 25e-6, basis="x")
+    unk = E.SwitchingSource(600, 300, 0.3, 1.15, 0, 600, 12000, 50e-9, 60e-9, 1e-6, basis="x", min_pulse_s=2e-6,
+                            min_pulse_policy="unknown")
+    assert not E.pwm_edges(unk)["validity"]["ok"]
+
+
+# ---------------------------------------------------------------------------------------------- G: MD-01 / MD-02
+
+def test_md01_invalid_windings_and_foreign_pole_pairs_are_never_handed_over(drive):
+    from traction_workbench.analysis import machine_design as M
+    ref = M.winding_layout(9, 4, 1, parallel_paths=2, turns_per_coil=5)          # asymmetric paths: invalid
+    cand = M.winding_layout(9, 4, 1, parallel_paths=1, turns_per_coil=5)
+    with pytest.raises(InputValidationError):
+        M.effective_turns_ratio(ref, cand)
+    g = M.winding_change(drive, ref, cand)
+    assert not g["sendable"] and g["k_turns"] is None and g["candidate"] is None
+    api_r = api.winding({"Q": 9, "p": 4, "y": 1, "parallel_paths": 2, "turns_per_coil": 5,
+                         "compare": {"parallel_paths": 1, "turns_per_coil": 5}})
+    assert not api_r["compare"]["sendable"] and api_r["compare"]["k_turns"] is None
+    p5 = api.winding({"Q": 12, "p": 5, "y": 1, "parallel_paths": 1, "turns_per_coil": 5,
+                      "compare": {"parallel_paths": 1, "turns_per_coil": 6}})      # the active machine has p = 4
+    assert not p5["compare"]["sendable"] and any("p = 4" in x for x in p5["compare"]["refusals"])
+    # an undeclared reference winding: a labelled generic thought experiment, never "this machine's redesign"
+    gen = api.winding({})
+    assert gen["compare"]["sendable"] and gen["compare"]["binding"] == "unbound"
+    assert "generic" in gen["compare"]["candidate"]["basis"] and "winding_from" not in gen["compare"]["candidate"]
+
+
+def test_md01_declared_winding_binds_the_lineage_and_keeps_the_invariants(drive):
+    from traction_workbench.analysis import machine_design as M
+    from traction_workbench.models import WindingDefinition
+    wd = WindingDefinition(48, 4, 5, 2, 4, basis="review synthetic winding")
+    d = replace(drive, motor=replace(drive.motor, winding=wd))
+    ref = M.winding_layout(48, 4, 5, parallel_paths=2, turns_per_coil=4)
+    cand = M.winding_layout(48, 4, 5, parallel_paths=2, turns_per_coil=5)
+    g = M.winding_change(d, ref, cand)
+    assert g["sendable"] and g["binding"] == "declared" and g["k_turns"] == pytest.approx(1.25)
+    derived, lin = M.scale_drive(d, M.spec_from_dict(g["candidate"]))
+    assert derived.motor.winding.turns_per_coil == 5 and lin["winding"]["identity"] == cand["identity"]
+    for n, i_d, i_q in ((1500.0, -80.0, 250.0), (6000.0, -220.0, 180.0)):        # same ampere-turns: same torque, Pcu
+        p0 = evaluate_point(DriveKernel(d, Scenario("t", n, 600.0, sf.synthetic_limits())), i_d, i_q)
+        p1 = evaluate_point(DriveKernel(derived, Scenario("t", n, 600.0, sf.synthetic_limits())), i_d / 1.25, i_q / 1.25)
+        assert p1.Te_Nm == pytest.approx(p0.Te_Nm, rel=1e-12) and p1.Pcu_W == pytest.approx(p0.Pcu_W, rel=1e-12)
+        assert p1.v_peak_V == pytest.approx(1.25 * p0.v_peak_V, rel=1e-12)
+    # another entered reference than the declared winding, or a lineage from another machine, is refused
+    other = M.winding_layout(48, 4, 6, parallel_paths=2, turns_per_coil=4)
+    assert not M.winding_change(d, other, M.winding_layout(48, 4, 6, parallel_paths=2, turns_per_coil=5))["sendable"]
+    with pytest.raises(InputValidationError):
+        M.scale_drive(drive, M.spec_from_dict(g["candidate"]))                 # the plain reference declares none
+    with pytest.raises(InputValidationError):                                  # k_N inconsistent with the change
+        M.scale_drive(d, M.spec_from_dict({**g["candidate"], "k_turns": 1.3}))
+    # a generic k_N on a machine with a declared winding leaves the derived winding undefined
+    gd, glin = M.scale_drive(d, M.ScalingSpec("N+10", k_turns=1.1))
+    assert gd.motor.winding is None and any("generic" in x for x in glin["invalidated"])
+
+
+def test_md02_zero_is_not_a_default_and_integers_are_never_truncated():
+    from traction_workbench.analysis import machine_design as M
+    for key in ("k_turns", "k_stack", "k_pm"):
+        with pytest.raises(InputValidationError):
+            M.spec_from_dict({"name": "zero", key: 0})
+    assert M.spec_from_dict({"name": "blank", "k_turns": "", "k_stack": None}).is_reference
+    w = M.winding_layout(3, 3, 1)                              # phases B and C get no coil side: structured, invalid
+    assert not w["valid"] and not w["feasible"] and not w["balanced"] and w["kw1"] == 0.0
+    for body in ({"Q": 48.5}, {"p": 4.2}, {"y": 5.5}, {"parallel_paths": 1.5}, {"turns_per_coil": 4.9}):
+        with pytest.raises(InputValidationError):
+            api.winding(body)
+    assert api.winding({"Q": 48.0, "p": 4.0})["Q"] == 48

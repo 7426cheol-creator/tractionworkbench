@@ -23,7 +23,7 @@ def src(**kw):
 
 def profile(**kw):
     fields = {"standard": "TEST", "edition": "1", "customer_revision": "A", "curve_id": "T-1", "port": "HV+/HV-",
-              "method": "voltage (AN)", "detector": "peak", "rbw_Hz": 9e3, "network": "AN 5uH/50ohm", "fixture": "bench",
+              "method": "voltage_AN", "detector": "peak", "rbw_Hz": 9e3, "network": "AN 5uH/50ohm", "fixture": "bench",
               "operating_condition": "6000 rpm"}
     fields.update(kw.pop("fields", {}))
     lim = kw.pop("limit", E.LimitCurve(((150e3, 70.0), (30e6, 70.0)), "dBuV", "peak", "test curve"))
@@ -118,36 +118,61 @@ def test_incomplete_profile_withholds_the_verdict():
     assert np.all(np.asarray(r["required_attenuation_dB"]) >= 0)                    # the need is still reported
 
 
+def record(res, **kw):
+    """A complete calibration record bound to the configuration of ``res`` (review R2, EMC-01)."""
+    rec = {"evidence": "holdout correlation R-1", "holdout": "6 held-out operating points, 2 harnesses",
+           "acquisition": "peak detector, 9 kHz RBW, 10 ms dwell, stepped scan", "error_model":
+           "max |E_meas - E_model| over the hold-out, per receiver frequency", "uncertainty_dB": 3.0,
+           "f_intervals_Hz": [[150e3, 30e6]], **res["configuration"]}
+    rec.update(kw)
+    return rec
+
+
 def test_screening_is_never_a_pass_calibration_is_declared():
     net = E.HvNetwork(C_dc_F=500e-6, C_y_F=100e-9, C_par_F=2e-9, L_h_H=1e-6, basis="test")
     lenient = profile(limit=E.LimitCurve(((150e3, 200.0), (30e6, 200.0)), "dBuV", "peak", "test"))
     scr = E.conducted_emission_screening(src(), net, lenient, n_grid=20)
     assert scr["claim"]["status"] == "UNKNOWN" and "SCREENING_ONLY" in scr["claim"]["reasons"]
-    cal = E.conducted_emission_screening(src(), net, lenient, n_grid=20,
-                                         calibration={"evidence": "holdout correlation R-1", "uncertainty_dB": 3.0})
-    assert cal["claim"]["status"] == "FEASIBLE"
+    # a title string is not calibration evidence: the record is incomplete, the result stays a screening
+    title = E.conducted_emission_screening(src(), net, lenient, n_grid=20,
+                                           calibration={"evidence": "holdout correlation R-1", "uncertainty_dB": 3.0})
+    assert title["claim"]["status"] == "UNKNOWN" and "MISSING_INPUT" in title["claim"]["reasons"]
+    cal = E.conducted_emission_screening(src(), net, lenient, n_grid=20, calibration=record(scr))
+    assert cal["claim"]["status"] == "FEASIBLE" and cal["calibrated"]
     strict = profile(limit=E.LimitCurve(((150e3, 20.0), (30e6, 20.0)), "dBuV", "peak", "test"))
-    bad = E.conducted_emission_screening(src(), net, strict, n_grid=20,
-                                         calibration={"evidence": "holdout correlation R-1", "uncertainty_dB": 3.0})
+    bad = E.conducted_emission_screening(src(), net, strict, n_grid=20, calibration=record(scr))
     assert bad["claim"]["status"] == "INFEASIBLE"
+    w = bad["claim"]["evidence"][0]["data"]                                 # the LOWER bound exceeds: a witness
+    assert w["E_lower_dBuV"] > w["limit_minus_reserve_dBuV"]
     # the required attenuation follows A = max(0, E_U + M_d - L)
     A = np.asarray(bad["required_attenuation_dB"])
     assert np.allclose(A, np.maximum(0, np.asarray(bad["E_upper_dBuV"]) + 6.0 - 20.0))
 
 
+def meta(**kw):
+    m = {"representation": "raw_sweep", "detector": "peak", "unit": "dBuV", "rbw_Hz": 9e3, "if_shape": "gaussian",
+         "dwell_s": 0.01, "corrections": "AN factor and cable loss applied (cal file C-12)", "port": "HV+/HV-", "method": "voltage_AN", "network": "AN 5uH/50ohm", "fixture": "bench",
+         "operating_condition": "6000 rpm"}
+    m.update(kw)
+    return m
+
+
 def test_measured_trace_verdicts():
     p = profile()
-    f = np.geomspace(150e3, 30e6, 400)
-    ok = E.measured_trace_verdict(f, np.full(f.size, 50.0), p, 3.0)
-    assert ok["verdict"] == "PASS"
-    fail = E.measured_trace_verdict(f, np.where(f > 1e6, 75.0, 50.0), p, 3.0)
+    f = np.arange(150e3, 30e6 + 1, 4.5e3)                   # raw sweep, step = RBW / 2: <= 1.5 dB between readings
+    ok = E.measured_trace_verdict(f, np.full(f.size, 50.0), p, 3.0, meta=meta())
+    assert ok["verdict"] == "PASS" and ok["coverage"]["allowance_max_dB"] == pytest.approx(6.0206 / 4)
+    fail = E.measured_trace_verdict(f, np.where(f > 1e6, 75.0, 50.0), p, 3.0, meta=meta())
     assert fail["verdict"] == "FAIL"
-    grey = E.measured_trace_verdict(f, np.full(f.size, 63.0), p, 3.0)        # 63 + 3 > 70 - 6
+    grey = E.measured_trace_verdict(f, np.full(f.size, 62.0), p, 3.0, meta=meta())   # 62 + 3 + 1.5 > 70 - 6
     assert grey["verdict"] == "INDETERMINATE"
-    partial = E.measured_trace_verdict(f[f < 5e6], np.full(int(np.sum(f < 5e6)), 50.0), p, 3.0)
+    partial = E.measured_trace_verdict(f[f < 5e6], np.full(int(np.sum(f < 5e6)), 50.0), p, 3.0, meta=meta())
     assert partial["verdict"] == "INDETERMINATE"                              # band not covered
-    floor = E.measured_trace_verdict(f, np.full(f.size, 50.0), p, 3.0, noise_floor=np.full(f.size, 66.0))
+    floor = E.measured_trace_verdict(f, np.full(f.size, 50.0), p, 3.0, noise_floor=np.full(f.size, 66.0), meta=meta())
     assert floor["verdict"] == "INDETERMINATE"
+    # 400 log-spaced readings leave up to ~400 kHz between readings at 9 kHz RBW: coverage is not established
+    sparse = np.geomspace(150e3, 30e6, 400)
+    assert E.measured_trace_verdict(sparse, np.full(sparse.size, 50.0), p, 3.0, meta=meta())["verdict"] == "INDETERMINATE"
 
 
 def test_coupling_checks():

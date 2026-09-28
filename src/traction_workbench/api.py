@@ -915,6 +915,7 @@ def hev_planetary(body):
 EXAMPLE_EMI = {
     "speed_rpm": 6000.0, "torque_Nm": 150.0, "Vdc_V": 600.0,
     "source": {"fsw_kHz": 10.0, "t_rise_ns": 50.0, "t_fall_ns": 50.0, "t_dead_us": 1.0, "modulation": "svpwm",
+               "carrier": "asynchronous", "min_pulse_us": 0.0, "min_pulse_policy": "none",
                "basis": "example gate setting (not a measured switch-node waveform)"},
     "network": {"C_dc_uF": 500.0, "ESR_dc_mohm": 1.0, "ESL_dc_nH": 15.0, "C_y_nF": 100.0, "L_y_nH": 10.0,
                 "R_y_mohm": 5.0, "C_par_nF": 2.0, "R_par_ohm": 1.0, "L_par_nH": 100.0, "R_h_mohm": 5.0, "L_h_uH": 1.0,
@@ -922,10 +923,11 @@ EXAMPLE_EMI = {
                 "an_R_par_ohm": 1000.0, "an_C_sup_uF": 1.0, "R_bat_mohm": 10.0, "L_bat_uH": 0.0,
                 "validated_up_to_MHz": None, "basis": "synthetic example network (not characterised)"},
     "profile": {"standard": "EXAMPLE (enter the standard)", "edition": "EXAMPLE", "customer_revision": "EXAMPLE",
-                "curve_id": "EXAMPLE-FLAT-70", "port": "HV+ / HV-", "method": "voltage via artificial network",
+                "curve_id": "EXAMPLE-FLAT-70", "port": "HV+ / HV-", "method": "voltage_AN",
                 "detector": "peak", "rbw_Hz": 9000.0, "network": "AN 5 uH / 50 ohm (declare per your standard)",
-                "fixture": "EXAMPLE", "operating_condition": "EXAMPLE", "design_reserve_dB": 6.0},
-    "limit": {"points": [[150e3, 70.0], [30e6, 70.0]], "unit": "dBuV", "detector": "peak",
+                "fixture": "EXAMPLE", "operating_condition": "EXAMPLE", "design_reserve_dB": 6.0,
+                "decision_rule": None},
+    "limit": {"points": [[150e3, 70.0], [30e6, 70.0]], "unit": "dBuV", "detector": "peak", "gaps_Hz": [],
               "source": "EXAMPLE ONLY - not a standard limit; enter the approved curve"},
     "band_MHz": [0.15, 30.0], "n_grid": 160, "calibration": None, "E_y_allowed_J": None, "f_control_Hz": 1000.0,
     "measured": None,
@@ -937,9 +939,10 @@ def _emi_profile(pr: dict, lim: dict | None):
     curve = None
     if lim and lim.get("points"):
         curve = LimitCurve(tuple(tuple(x) for x in lim["points"]), lim.get("unit", "dBuV"), lim.get("detector", "peak"),
-                           str(lim.get("source", "")))
-    fields = {k: pr.get(k) for k in PROFILE_FIELDS}
-    return EmiProfile(fields, curve, float(pr.get("design_reserve_dB") or 0.0))
+                           str(lim.get("source", "")), tuple(tuple(g) for g in (lim.get("gaps_Hz") or ())))
+    fields = {k: pr.get(k) for k in PROFILE_FIELDS + ("decision_rule", "min_dwell_s")}
+    reserve = pr.get("design_reserve_dB")
+    return EmiProfile(fields, curve, 0.0 if reserve in (None, "") else _num(pr, "design_reserve_dB"))
 
 
 def emi(body):
@@ -957,9 +960,11 @@ def emi(body):
         raise InputValidationError("EMI screening needs a rotating operating point (fe > 0)", field="speed_rpm")
     sc = {**EXAMPLE_EMI["source"], **(b.get("source") or {})}
     src = SwitchingSource(vdc, pt.i_peak_A, math.atan2(pt.iq_A, pt.id_A), pt.v_peak_V / (0.5 * vdc),
-                          math.atan2(pt.vq_V, pt.vd_V), abs(pt.f_e_Hz), float(sc["fsw_kHz"]) * 1e3,
-                          float(sc["t_rise_ns"]) * 1e-9, float(sc["t_fall_ns"]) * 1e-9,
-                          float(sc.get("t_dead_us") or 0.0) * 1e-6, sc.get("modulation", "svpwm"), str(sc.get("basis", "")))
+                          math.atan2(pt.vq_V, pt.vd_V), abs(pt.f_e_Hz), _num(sc, "fsw_kHz") * 1e3,
+                          _num(sc, "t_rise_ns") * 1e-9, _num(sc, "t_fall_ns") * 1e-9,
+                          float(sc.get("t_dead_us") or 0.0) * 1e-6, sc.get("modulation", "svpwm"), str(sc.get("basis", "")),
+                          str(sc.get("carrier") or "asynchronous"), float(sc.get("min_pulse_us") or 0.0) * 1e-6,
+                          str(sc.get("min_pulse_policy") or "none"))
     net = _emi_network({**EXAMPLE_EMI["network"], **(b.get("network") or {})})
     prof = _emi_profile({**EXAMPLE_EMI["profile"], **(b.get("profile") or {})}, b.get("limit"))
     lo, hi = (float(x) * 1e6 for x in b.get("band_MHz") or (0.15, 30.0))
@@ -967,17 +972,22 @@ def emi(body):
     r["coupling"] = coupling_checks(net, vdc, src, _opt(b, "E_y_allowed_J"), _opt(b, "f_control_Hz"))
     r["operating_point"] = {"speed_rpm": n, "torque_Nm": T, "Vdc_V": vdc, "i_peak_A": pt.i_peak_A,
                             "modulation_index": src.m, "f_e_Hz": src.fe_Hz, "policy": sol.policy_claim.status.value}
-    r["source"] = {"fsw_kHz": sc["fsw_kHz"], "t_rise_ns": sc["t_rise_ns"], "t_fall_ns": sc["t_fall_ns"],
-                   "t_dead_us": sc.get("t_dead_us"), "basis": src.basis}
+    r["source"] = {"fsw_kHz": sc["fsw_kHz"], "fsw_requested_kHz": src.fsw_Hz / 1e3,
+                   "fsw_used_kHz": src.fsw_used_Hz / 1e3, "carrier_ratio": src.carrier_ratio, "carrier": src.carrier,
+                   "t_rise_ns": sc["t_rise_ns"], "t_fall_ns": sc["t_fall_ns"], "t_dead_us": sc.get("t_dead_us"),
+                   "min_pulse_us": src.min_pulse_s * 1e6, "min_pulse_policy": src.min_pulse_policy,
+                   "basis": src.basis, "validity": r["source_validity"]}
     r["network"] = {**EXAMPLE_EMI["network"], **(b.get("network") or {})}
     r["profile"] = {**prof.fields, "design_reserve_dB": prof.design_reserve_dB,
-                    "limit_source": None if prof.limit is None else prof.limit.source}
+                    "limit_source": None if prof.limit is None else prof.limit.source,
+                    "limit_gaps_Hz": [] if prof.limit is None else [list(g) for g in prof.limit.gaps]}
     ms = b.get("measured")
     if ms and ms.get("f_Hz"):
         band = ms.get("band_MHz")
-        r["measured"] = measured_trace_verdict(ms["f_Hz"], ms["level_dB"], prof, float(ms.get("U_meas_dB") or 0.0),
-                                               ms.get("noise_floor_dB"),
-                                               None if not band else (float(band[0]) * 1e6, float(band[1]) * 1e6))
+        U = ms.get("U_meas_dB")
+        r["measured"] = measured_trace_verdict(ms["f_Hz"], ms["level_dB"], prof, U, ms.get("noise_floor_dB"),
+                                               None if not band else (float(band[0]) * 1e6, float(band[1]) * 1e6),
+                                               ms.get("meta"))
         r["measured"]["f_Hz"] = list(ms["f_Hz"])
         r["measured"]["level_dB"] = list(ms["level_dB"])
     return _jsonable(r)
@@ -1650,30 +1660,50 @@ def machine_trade(body):
 
 
 def winding(body):
-    """Star-of-slots layout, winding factors, three-phase MMF spectrum and consistency with the drive model."""
-    from .analysis.machine_design import effective_turns_ratio, winding_layout
+    """Star-of-slots layout, winding factors, three-phase MMF spectrum and consistency with the drive model; the k_N
+    hand-over to the trade study passes the core gate (valid layouts, this machine's pole pairs and declared winding)."""
+    from .analysis.machine_design import winding_change, winding_layout
+    from .validation import integer
     b = {**EXAMPLE_WINDING, **(body or {})}
-    Q, p = int(_num(b, "Q")), int(_num(b, "p"))
-    y = None if b.get("y") in (None, "") else int(_num(b, "y"))
-    a = int(_num(b, "parallel_paths", 1))
-    nc = None if b.get("turns_per_coil") in (None, "") else int(_num(b, "turns_per_coil"))
-    w = winding_layout(Q, p, y, 3, int(b.get("harmonics") or 25), a, nc)
+
+    def whole(d, key, default=None, lo=1):
+        v = d.get(key, default)
+        return None if v is None or v == "" else integer(key, v, lo)
+    Q, p = whole(b, "Q"), whole(b, "p")
+    if Q is None or p is None:
+        raise InputValidationError("slots Q and pole pairs p are required", field="Q")
+    y = whole(b, "y")
+    a = whole(b, "parallel_paths", 1)
+    nc = whole(b, "turns_per_coil")
+    w = winding_layout(Q, p, y, 3, whole(b, "harmonics", 25), a, nc)
     d = _drive(b)
+    dw = d.motor.winding
     cons = [{"item": "pole pairs", "ok": d.motor.pole_pairs == p,
              "detail": f"winding p = {p}, drive model p = {d.motor.pole_pairs}"},
             {"item": "feasible slot / pole combination", "ok": w["feasible"], "detail": f"Q/(3 t) = {Q / (3 * w['t_periodicity']):g}"},
             {"item": "balanced three-phase", "ok": w["balanced"], "detail": w["phase_sequence"]},
             {"item": "parallel paths symmetric", "ok": w["parallel_paths_ok"],
-             "detail": f"a = {a}, divisors of {w['max_parallel_paths']} allowed"}]
+             "detail": f"a = {a}, divisors of {w['max_parallel_paths']} allowed"},
+            {"item": "the machine's declared winding", "ok": dw is not None and w["identity"] == _winding_id(dw),
+             "detail": "not declared by the active model (a k_N is a generic thought experiment)" if dw is None else
+             f"declared Q {dw.Q}, p {dw.p}, y {dw.y}, {dw.parallel_paths} paths, {dw.turns_per_coil} turns / coil"}]
     w["consistency"] = cons
     cmp = b.get("compare")
     if cmp and nc is not None:
-        w2 = winding_layout(Q, p, y, 3, 1, int(cmp.get("parallel_paths") or a), int(cmp.get("turns_per_coil") or nc))
+        w2 = winding_layout(Q, p, y, 3, 1, whole(cmp, "parallel_paths", a), whole(cmp, "turns_per_coil", nc))
+        gate = winding_change(d, w, w2)
         w["compare"] = {"turns_per_coil": w2["turns_per_coil"], "parallel_paths": w2["parallel_paths"],
-                        "N_series": w2["N_series"], "N_eff": w2["N_eff"], "k_turns": effective_turns_ratio(w, w2),
-                        "parallel_paths_ok": w2["parallel_paths_ok"],
+                        "N_series": w2["N_series"], "N_eff": w2["N_eff"], "k_turns": gate["k_turns"],
+                        "parallel_paths_ok": w2["parallel_paths_ok"], "valid": w2["valid"],
+                        "sendable": gate["sendable"], "refusals": gate["refusals"], "binding": gate["binding"],
+                        "kind": gate["kind"], "candidate": gate["candidate"], "assumptions": gate["assumptions"],
                         "meaning": "k_N for the scaling trade study (same slots, poles and pitch only)"}
     return _jsonable(w)
+
+
+def _winding_id(wd):
+    from .analysis.machine_design import winding_identity
+    return winding_identity(wd)
 
 
 def concept_sizing(body):

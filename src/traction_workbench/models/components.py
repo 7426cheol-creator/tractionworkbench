@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from ..errors import InputValidationError
 from .flux import ConstantFluxModel, CurrentBox, FluxMapModel
 from .module_loss import ModuleLossModel
-from ..validation import finite as _finite, interval as _interval
+from ..validation import finite as _finite, integer as _integer, interval as _interval
 from .provenance import DataOrigin, Fidelity, Provenance
 
 SQRT3 = math.sqrt(3.0)
@@ -300,6 +300,33 @@ class TemperatureDependence:
 
 
 @dataclass(frozen=True)
+class WindingDefinition:
+    """The machine's stator winding as built (double layer, three phases): slots Q, pole pairs p, coil pitch y in
+    slots, parallel paths and turns per coil.  It binds a turns / parallel-path change to THIS machine (review R2,
+    MD-01): without it a k_N is a generic thought experiment, not a redesign of this winding."""
+
+    Q: int
+    p: int
+    y: int
+    parallel_paths: int
+    turns_per_coil: int
+    basis: str = ""
+
+    def __post_init__(self):
+        for name in ("Q", "p", "y", "parallel_paths", "turns_per_coil"):
+            object.__setattr__(self, name, _integer(f"winding.{name}", getattr(self, name), 1))
+        if not (1 <= self.y < self.Q):
+            raise InputValidationError("coil pitch y must satisfy 1 <= y < Q", field="winding.y")
+        if not self.basis.strip():
+            raise InputValidationError("a declared winding needs its basis (drawing / supplier data revision)",
+                                       field="winding.basis")
+
+    def identity(self) -> dict:
+        return {"Q": self.Q, "p": self.p, "y": self.y, "parallel_paths": self.parallel_paths,
+                "turns_per_coil": self.turns_per_coil}
+
+
+@dataclass(frozen=True)
 class MotorModel:
     motor_id: str
     pole_pairs: int
@@ -313,6 +340,7 @@ class MotorModel:
     rs_temperature: TemperatureDependence | None = None
     psi_temperature: TemperatureDependence | None = None
     fidelity: Fidelity = Fidelity.D1
+    winding: WindingDefinition | None = None     # declared stator winding (binds winding changes to this machine)
 
     def __post_init__(self):
         p = self.pole_pairs
@@ -362,6 +390,12 @@ class MotorModel:
                         f"the Rs temperature law gives Rs = {r:g} ohm at {t:g} degC inside its declared validity "
                         f"{list(dep.valid_C)} degC: a winding resistance must stay positive (non-passive law)",
                         field="rs_temperature")
+        if self.winding is not None:
+            if not isinstance(self.winding, WindingDefinition):
+                raise InputValidationError("winding must be a WindingDefinition", field="winding")
+            if self.winding.p != p:
+                raise InputValidationError(f"the declared winding has p = {self.winding.p}, the motor {p} pole pairs: "
+                                           f"not this machine's winding", field="winding.p")
         if self.psi_temperature is not None and isinstance(self.flux, ConstantFluxModel):
             dep, ref = self.psi_temperature, self.reference_magnet_temp_C
             for t in dep.valid_C:
@@ -385,6 +419,7 @@ class MotorModel:
             "rs_temperature": None if self.rs_temperature is None else vars(self.rs_temperature),
             "psi_temperature": None if self.psi_temperature is None else vars(self.psi_temperature),
             "fidelity": self.fidelity.value,
+            "winding": None if self.winding is None else {**self.winding.identity(), "basis": self.winding.basis},
         }
 
 

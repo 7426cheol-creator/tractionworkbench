@@ -51,14 +51,19 @@ NOTE_W = lambda: tr(
     "같고 축이 120° 간격. 스펙트럼은 평형 3상 전류의 MMF 계수(3의 배수 차수 상쇄, 회전 방향 표시)이며, p보다 낮은 차수는 "
     "서브하모닉(분수슬롯: 회전자 손실·NVH 위험, 정량화 안 함). 병렬 경로 a는 동일 구간 수(t, Q/t가 짝수면 2t)의 약수여야 "
     "합니다. 권선계수는 손실·AC 저항·NVH·제작성을 승인하지 않습니다. 같은 Q·p·y에서 턴/병렬 경로만 바꾸면 유효 턴 비 "
-    "k_N = (k_w1 N)'/(k_w1 N)를 트레이드 스터디 후보로 보낼 수 있습니다.",
+    "k_N = (k_w1 N)'/(k_w1 N)를 트레이드 스터디 후보로 보낼 수 있습니다 — 단 <b>기준·후보 모두 유효한 권선</b>(가능·평형·대칭 병렬 경로)이고 "
+    "극쌍수가 현재 기계와 같을 때만. 현재 모델이 권선을 선언하면 기준이 바로 그 권선이어야 하고(계보가 후보에 결속), 선언하지 않으면 "
+    "k_N은 이 기계의 권선 재설계가 아닌 <b>일반적 사고 실험</b>으로 표시됩니다.",
     "<b>Winding (star of slots)</b>: double layer, 60-degree phase belts. Feasible iff Q/(3t) is an integer (t = "
     "gcd(Q, p)); balanced iff the three phases get equal coil sides with axes 120 degrees apart. The spectrum is "
     "the MMF factor for balanced three-phase currents (triplen orders cancel, direction shown); orders below p are "
     "sub-harmonics (fractional slot: rotor loss / NVH risk, not quantified). Parallel paths a must divide the "
     "number of identical sections (t, or 2t when Q/t is even). A winding factor approves neither losses, AC "
     "resistance, NVH nor manufacturability. With the same Q, p, y and only turns / paths changed, the effective-"
-    "turns ratio k_N = (k_w1 N)'/(k_w1 N) can be sent to the trade study.")
+    "turns ratio k_N = (k_w1 N)'/(k_w1 N) can be sent to the trade study - only when <b>both layouts are valid "
+    "windings</b> (feasible, balanced, symmetric paths) and the pole pairs are the machine's. When the active model "
+    "declares its winding the reference must be that winding (the lineage is bound to the candidate); when it does not, "
+    "the k_N is a <b>generic thought experiment</b>, not a redesign of this machine's winding.")
 
 NOTE_S = lambda: tr(
     "<b>개념 사이징</b>: 공극 전단응력 σ(냉각 등급 등으로 선언한 범위)에서 T = 2σV_r → 회전자 체적, L/D로 D·L. "
@@ -99,6 +104,7 @@ class MachinePage(QWidget):
         super().__init__()
         self.win = win
         self.last_trade = self.last_wind = self.last_size = None
+        self.cand_lineage = {}              # candidate name -> the winding gate's hand-over (basis, winding lineage)
         self.tabs = QTabWidget()
         self.tabs.addTab(self._trade_tab(), tr("스케일링 트레이드 스터디", "scaling trade study"))
         self.tabs.addTab(self._wind_tab(), tr("권선 (star of slots)", "winding (star of slots)"))
@@ -173,8 +179,14 @@ class MachinePage(QWidget):
         b = copy.deepcopy(api.EXAMPLE_MACHINE)
         cands = []
         for name, kN, kL, kPM, eR, eL in self.t_cand.values():
-            cands.append({"name": name or f"C{len(cands) + 1}", "k_turns": kN, "k_stack": kL, "k_pm": kPM,
-                          "end_R_share": eR, "end_L_share": eL, "basis": "entered in the machine-design page"})
+            c = {"name": name or f"C{len(cands) + 1}", "k_turns": kN, "k_stack": kL, "k_pm": kPM,
+                 "end_R_share": eR, "end_L_share": eL, "basis": "entered in the machine-design page"}
+            lin = self.cand_lineage.get(c["name"])
+            if lin and kN is not None and abs(float(kN) - lin["k_turns"]) <= 1e-9 * lin["k_turns"]:
+                c["basis"] = lin["basis"]                       # sent from the winding gate, k_N unchanged
+                if lin.get("winding_from"):
+                    c.update(winding_from=lin["winding_from"], winding_to=lin["winding_to"])
+            cands.append(c)
         checks = []
         for name, kind, n, vdc, T, lim in self.t_chk.values():
             checks.append({"name": name or kind, "kind": kind.strip().lower(), "speed_rpm": n, "Vdc_V": vdc,
@@ -333,19 +345,23 @@ class MachinePage(QWidget):
             rows.append((tr("직렬 턴 / 유효 턴", "series / effective turns"), f"{fmt(w['N_series'])} / {w['N_eff']:.3f}"))
         cmp = w.get("compare")
         if cmp:
-            rows.append((tr("대안: 유효 턴 비 k_N", "alternative: effective-turns ratio k_N"),
-                         f"{cmp['k_turns']:.4f} ({cmp['turns_per_coil']}/coil, {cmp['parallel_paths']} paths, "
-                         f"N_eff {cmp['N_eff']:.3f}; paths {ok(cmp['parallel_paths_ok'])})"))
+            if cmp["sendable"]:
+                rows.append((tr("대안: 유효 턴 비 k_N", "alternative: effective-turns ratio k_N"),
+                             f"{cmp['k_turns']:.4f} ({cmp['turns_per_coil']}/coil, {cmp['parallel_paths']} paths, "
+                             f"N_eff {cmp['N_eff']:.3f}) — {cmp['kind']}"))
+            else:
+                rows.append((tr("대안: k_N 보내기 거부", "alternative: k_N not handed over"), "; ".join(cmp["refusals"])))
         rows.append((tr("의미", "meaning"), w["note"]))
         self.k_wind.set_rows(rows)
-        self.w_send.setEnabled(bool(cmp) and bool(cmp and cmp["parallel_paths_ok"]))
+        self.w_send.setEnabled(bool(cmp and cmp["sendable"]))
 
     def send_candidate(self):
         cmp = (self.last_wind or {}).get("compare")
-        if not cmp:
+        if not cmp or not cmp.get("sendable"):          # the same gate as the API / core: never a refused k_N
             return
-        name = f"{cmp['turns_per_coil']}t/{cmp['parallel_paths']}a"
-        self.t_cand.add_row([name, round(cmp["k_turns"], 6), 1.0, 1.0, None, None])
+        c = cmp["candidate"]
+        self.cand_lineage[c["name"]] = c
+        self.t_cand.add_row([c["name"], c["k_turns"], 1.0, 1.0, None, None])
         self.tabs.setCurrentIndex(0)
 
     # ================================================================== concept sizing

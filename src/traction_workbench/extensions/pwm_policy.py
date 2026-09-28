@@ -733,10 +733,8 @@ def phase_ripple(Vdc_V: float, m: float, alpha_rad: float, fe_Hz: float, fsw_Hz:
     else:
         kk = t0 = sgn = wgt = np.array([])
         Vl = np.zeros(f.size, complex)
-    # exact integral of v_an: piecewise constant between the (ideal) edges; initial pole levels of clamped legs
-    Ts = T / N
-    d0 = np.clip(_duties(np.array([TWO_PI * fe_Hz * 0.5 * Ts]), m, alpha_rad, modulation), 0.0, 1.0)[:, 0]
-    level = np.array([1.0 if d0[j] >= 1.0 else 0.0 for j in range(3)])
+    # exact integral of v_an: piecewise constant between the (ideal) edges, from each pole's state before t = 0
+    level = np.asarray(e["initial_state"], dtype=float)
     order = np.argsort(t0, kind="stable")
     tb, Fb = [0.0], [0.0]
     v = Vdc_V * (level[0] - level.mean())
