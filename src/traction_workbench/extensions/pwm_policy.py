@@ -1168,14 +1168,17 @@ def evaluate_policies(base_drive, cand, segments: list[dict], policies: list, co
     best_known = min(known, key=lambda o: o["E_known_policy_sensitive_J"]) if known else None
     pareto_energy = bool(adm) and len(known) == len(adm)
     pareto_scope = (
-        "known policy-sensitive loss (inverter + PWM copper) plus mandatory stress/margin metrics; "
-        "the Fe+PM HF upper bound is shown as an interval, not treated as an estimate"
+        "known modelled policy-sensitive loss (inverter + PWM copper + established DC-link capacitor ESR) plus "
+        "mandatory stress/margin metrics; the Fe+PM HF upper bound is shown as an interval, not treated as an estimate"
         if pareto_energy else
         "mandatory stress/margin metrics only: the PWM-copper energy objective is omitted because it is not "
         "established for every admissible candidate"
     )
     return {"policies": out, "pareto": [o["policy"]["name"] for o in pareto],
             "pareto_scope": pareto_scope,
+        "policy_energy_scope": "known modelled policy-sensitive losses: semiconductor module + motor PWM copper + "
+                               "DC-link capacitor ESR when that capacitor model is enabled and established; excludes "
+                               "gate-drive/control LV auxiliaries and treats Fe+PM HF loss only as a declared upper bound",
             "best_inverter_energy_among_evaluated": None if best is None else best["policy"]["name"],
             "best_known_policy_sensitive_energy_among_evaluated": None if best_known is None else best_known["policy"]["name"],
             "limits": lim.__dict__, "coolant_C": coolant_C, "modulation": modulation,
@@ -1270,6 +1273,8 @@ def _aggregate(pol, rows, events, lim: PwmLimits, loop: CurrentLoop | None = Non
     E_inv, E_cu, E_h = tot("P_inv_W"), tot("P_cu_fund_W"), tot("P_cu_harm_W")
     E_h_lb = tot("P_cu_harm_lb_W")
     E_mag = tot("P_magnetic_harm_bound_W")
+    cap_modelled = any(("I_cap_rms_A" in r) or ("P_cap_W" in r) for r in rows)
+    E_cap = tot("P_cap_W") if cap_modelled else 0.0
     tj = [r["Tj_C"] for r in rows if r.get("Tj_C") is not None]
     ipk = [r["i_peak_incl_ripple_A"] for r in rows if r.get("i_peak_incl_ripple_A") is not None]
     icap = [r["I_cap_rms_A"] for r in rows if r.get("I_cap_rms_A") is not None]
@@ -1309,7 +1314,7 @@ def _aggregate(pol, rows, events, lim: PwmLimits, loop: CurrentLoop | None = Non
         if (worst > limit) if hi else (worst < limit):
             viol.append(f"{name} {worst:.4g} vs limit {limit:g}")
     status = _status(viol, unknown, open_, delivered)
-    E_known_policy = None if (E_inv is None or E_h is None) else E_inv + E_h
+    E_known_policy = None if (E_inv is None or E_h is None or E_cap is None) else E_inv + E_h + E_cap
     E_policy_upper = None if (E_known_policy is None or E_mag is None) else E_known_policy + E_mag
     E_cmp_lower = None if (E_inv is None or E_cu is None or E_h is None) else E_inv + E_cu + E_h
     E_cmp_upper = None if (E_cmp_lower is None or E_mag is None) else E_cmp_lower + E_mag
@@ -1318,6 +1323,7 @@ def _aggregate(pol, rows, events, lim: PwmLimits, loop: CurrentLoop | None = Non
             "not_applicable_declared": sorted(na), "status": status, "admissible": status == "ADMISSIBLE",
             "delivered": delivered,
             "E_inv_J": E_inv, "E_cu_fund_J": E_cu, "E_cu_harm_J": E_h, "E_cu_harm_lb_J": E_h_lb,
+            "E_cap_J": E_cap if cap_modelled else None, "capacitor_loss_in_energy_objective": cap_modelled,
             "E_magnetic_harm_bound_J": E_mag, "E_iron_harm_bound_J": E_mag,
             "E_known_policy_sensitive_J": E_known_policy, "E_policy_sensitive_upper_J": E_policy_upper,
             "E_motor_inverter_comparison_lower_J": E_cmp_lower, "E_motor_inverter_comparison_upper_J": E_cmp_upper,
@@ -1358,7 +1364,8 @@ def _versus(base: dict, o: dict) -> dict:
 
 
 def _pareto(rows: list) -> list:
-    """Non-dominated admissible policies on known policy-sensitive loss (inverter + PWM copper), peak Tj,
+    """Non-dominated admissible policies on known modelled policy-sensitive loss (inverter + PWM copper +
+    established DC-link capacitor ESR when modelled), peak Tj,
     conservative peak-current bound, capacitor current and -phase margin.  An objective that is not established for
     every admissible policy is left out rather than silently filled with zero."""
     keys = [("E_known_policy_sensitive_J", 1), ("Tj_max_C", 1), ("i_peak_incl_ripple_max_A", 1),
