@@ -349,6 +349,10 @@ def draw_idiq(ax, pl: dict, traj: dict | None = None, legend: bool = True, torqu
     if pl.get("all_ok") is not None and pl["all_ok"].any():
         ax.contourf(X, Y, pl["all_ok"].astype(float), levels=[0.5, 1.5], colors=[t["feasible_all"]], alpha=0.55)
         handles.append(Patch(fc=t["feasible_all"], alpha=0.55, label=tr("모든 한계 만족 (DC 포함)", "all limits incl. DC")))
+    elif pl.get("dc_grid_note"):
+        handles.append(Patch(fc="none", ec="none", label=tr("DC 한계: 격자 미평가 (모듈 손실은 점별) — 정책점에서 판정",
+                                                           "DC limits: not evaluated on the grid (pointwise module "
+                                                           "loss) - judged at the policy point")))
     if not pl["covered"].all():
         ax.contourf(X, Y, (~pl["covered"]).astype(float), levels=[0.5, 1.5], colors="none", hatches=["xx"])
         handles.append(Patch(fc="none", ec=t["muted"], hatch="xx", label=tr("모델 데이터 없음", "no model data")))
@@ -716,9 +720,21 @@ def fig_capability_vs_parameter(fig, cv: dict, sizing: dict | None = None, title
             lo, hi = _span_edges(x, a, b)
             ax.axvspan(lo, hi, color=t["feasible"], alpha=0.35, lw=0, zorder=0)
     ax.axvline(cv["baseline"], color=t["fg"], lw=1.1, ls=":", label=tr(f"현재값 {cv['baseline']:g} {unit}", f"baseline {cv['baseline']:g} {unit}"))
+    if sizing:
+        # the evidence level of the sizing result survives the renderer (review R2 D-R2-04): unresolved regions are
+        # drawn as such, and an edge is a 'local bracket' only next to an excluded region, else 'smallest witnessed'
+        for (lo_r, hi_r), st in ((r["range"], r["status"]) for r in sizing.get("regions", [])):
+            if st == "UNKNOWN":
+                ax.axvspan(lo_r, hi_r, facecolor="none", edgecolor=t["muted"], hatch="///", lw=0, zorder=0)
+        if any(r["status"] == "UNKNOWN" for r in sizing.get("regions", [])):
+            ax.plot([], [], color="none", label=tr("미확정 영역 (///)", "unresolved region (///)"))
     if sizing and sizing.get("minimal_feasible_value") is not None:
         mv = sizing["minimal_feasible_value"]
-        ax.axvline(mv, color=S.VERDICT["PASS"], lw=1.6, label=tr(f"최소 가능값 {mv:.6g} {unit} (bisection)", f"minimal feasible {mv:.6g} {unit} (bisection)"))
+        if sizing.get("minimal_is_bracketed"):
+            lab = tr(f"국소 경계 {mv:.6g} {unit} (아래는 표본점에서 배제)", f"local bracket {mv:.6g} {unit} (excluded at the samples below)")
+        else:
+            lab = tr(f"찾은 최소 가능값 {mv:.6g} {unit} (최소 증명 아님)", f"smallest witnessed {mv:.6g} {unit} (not a proven minimum)")
+        ax.axvline(mv, color=S.VERDICT["PASS"], lw=1.6, label=lab)
     ax.set_xlabel(f"{p['parameter']} [{unit}] · {p['change_kind']}")
     ax.set_ylabel(tr("정책 capability [N·m]", "policy capability [N·m]"))
     ax.legend(loc="best", fontsize=7.5)
@@ -760,7 +776,7 @@ def fig_dominance(fig, dom: dict, relax: dict | None = None, title: str | None =
                      va="center", fontsize=7.5, color=t["fg"])
         ax2.set_yticks(yy)
         ax2.set_yticklabels(names, fontsize=7.5)
-        ax2.set_xlabel(tr("요구 달성에 필요한 최소 완화 [%]", "minimal relaxation to meet the request [%]"))
+        ax2.set_xlabel(tr("요구를 만족한 가장 작은 표본 완화 [%] (표본 탐색)", "smallest sampled relaxation that met the request [%] (sampled)"))
         joint = relax.get("joint") or []
         jt = "; ".join("+".join(j["constraints"]) + f" +{100 * j['minimal_relative_relaxation_each']:.2f}%" for j in joint)
         ax2.set_title(tr(f"요구 {relax['T_request_Nm']:g} N·m 완화 분석", f"relaxation for {relax['T_request_Nm']:g} N·m"), fontsize=9)

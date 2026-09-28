@@ -368,6 +368,10 @@ def fig_hev_rejection(fig, lr: dict, title: str | None = None):
     b.set_ylabel(tr("잉여 전력 [kW] (주황)", "excess power [kW] (orange)"), color=S.REQUEST)
     b.grid(False)
     b.spines["right"].set_visible(True)
+    if lr.get("t_peak_s") is not None:
+        ax.plot([lr["t_peak_s"] * 1e3], [lr["V_peak_V"]], marker="o", ms=5, color=S.ACCENT)
+        ax.annotate(tr(f"최대 {lr['V_peak_V']:.2f} V", f"peak {lr['V_peak_V']:.2f} V"),
+                    (lr["t_peak_s"] * 1e3, lr["V_peak_V"]), textcoords="offset points", xytext=(6, -12), fontsize=7)
     tl = lr["time_to_limit_s"]
     if tl is not None and math.isfinite(tl):
         ax.axvline(tl * 1e3, color="#cf222e", ls=":", lw=1.2)
@@ -426,6 +430,17 @@ def fig_emi_screening(fig, res: dict, title: str | None = None):
     ax.plot(f, res["minus_dBuV"], color="#8250df", lw=1.1, label=tr("HV− 측정단 (추정)", "HV− port (estimate)"))
     ax.plot(f, res["from_cm_source_dBuV"], color="#bf8700", lw=1.0, ls="--", label=tr("CM 소스 기여 (HV+)", "CM-source share (HV+)"))
     ax.plot(f, res["from_dm_source_dBuV"], color="#1a7f37", lw=1.0, ls="--", label=tr("DM 소스 기여 (HV+)", "DM-source share (HV+)"))
+    env = res.get("E_envelope_dBuV")
+    if env is not None and np.any(np.isfinite(np.asarray(env, dtype=float))):
+        ax.step(f, np.asarray(env, dtype=float), where="mid", color="#cf222e", lw=0.9,
+                label=tr("정확 포락 (구간별 최대, 판정 근거)", "exact envelope (max per bin, the claim's basis)"))
+    if res.get("calibrated"):
+        ax.fill_between(f, np.asarray(res["E_lower_dBuV"], dtype=float), np.asarray(res["E_upper_dBuV"], dtype=float),
+                        color=S.ACCENT, alpha=0.10, label=tr("보정 오차 한계 E−U− … E+U+", "calibrated bounds E−U− … E+U+"))
+    for d in res.get("domain") or []:
+        if d.get("status") in ("undefined", "no requirement (declared gap)"):
+            ax.axvspan(d["lo_Hz"] / 1e6, d["hi_Hz"] / 1e6, color="#8c959f",
+                       alpha=0.18 if d["status"] == "undefined" else 0.07, lw=0)
     if np.any(np.isfinite(L)):
         ax.plot(f, L, color=t["fg"], lw=2.0, label=tr("한계 (입력 곡선)", "limit (entered curve)"))
         rs = res["profile"].get("design_reserve_dB") or 0.0
@@ -437,9 +452,9 @@ def fig_emi_screening(fig, res: dict, title: str | None = None):
     ax.set_ylabel("dBµV")
     ax.legend(fontsize=6.8, loc="upper right", ncols=2)
     c = res["claim"]
-    ax.set_title(tr("HV 전도성 방출: 소스(PWM 에지) → 경로(CM/DM 망) → 수신기(RBW 선합) — 스크리닝",
-                    "HV conducted emission: source (PWM edges) -> path (CM/DM network) -> receiver (RBW line sum)"),
-                 fontsize=9)
+    ax.set_title(tr("HV 전도성 방출: 소스(스위칭 순서) → 경로(CM/DM 망) → 수신기(RBW 선합) — 회색: 미정의/공백",
+                    "HV conducted emission: source (switching sequence) -> path (CM/DM network) -> receiver (RBW line sum) "
+                    "— grey: undefined / gap"), fontsize=9)
     _note(ax, f"{c['status']}: {c['detail'][:120]}\n" + tr("선합 추정치 ≠ CISPR 수신기 판독 (QP/AV 미모델)",
                                                            "line-sum estimate != CISPR receiver reading (QP/AV not modelled)"),
           loc="lower left", fontsize=6.6)
@@ -478,10 +493,22 @@ def fig_emi_measured(fig, res: dict, title: str | None = None):
     ax.set_xlabel(tr("주파수 [MHz]", "frequency [MHz]"))
     ax.set_ylabel("dBµV")
     ax.legend(fontsize=7, loc="upper right")
-    ax.set_title(tr(f"측정 trace 판정 (같은 요구 프로파일): {m.get('verdict')}",
-                    f"measured-trace verdict (same profile): {m.get('verdict')}"), fontsize=9)
-    _note(ax, (m.get("reason") or "")[:120] + "\n" + tr("시험 대표성·승인은 별도", "representativeness / approval are separate"),
-          loc="lower left", fontsize=7)
+    w = m.get("witness")
+    if w:
+        ax.plot([w["f_Hz"] / 1e6], [w["level_dB"]], "v", color="#cf222e", ms=8,
+                label=tr(f"초과 증인 {w['exceedance_dB']:.1f} dB", f"exceedance witness {w['exceedance_dB']:.1f} dB"))
+        ax.legend(fontsize=7, loc="upper right")
+    cov = m.get("coverage") or {}
+    ax.set_title(tr(f"측정 trace 판정 (같은 요구 프로파일, trace 자체 취득 조건): {m.get('verdict')}",
+                    f"measured-trace verdict (same profile, the trace's own acquisition): {m.get('verdict')}"), fontsize=9)
+    extra = ""
+    if cov.get("representation"):
+        extra = (f"{cov['representation']}, IF {cov.get('if_shape') or '?'}"
+                 + (f", max step {cov['max_step_Hz'] / 1e3:.3g} kHz" if cov.get("max_step_Hz") else "")
+                 + (f", between-reading loss <= {cov['allowance_max_dB']:.2f} dB"
+                    if cov.get("allowance_max_dB") is not None and np.isfinite(cov["allowance_max_dB"]) else ""))
+    _note(ax, (m.get("reason") or "")[:120] + ("\n" + extra if extra else "") + "\n"
+          + tr("시험 대표성·승인은 별도", "representativeness / approval are separate"), loc="lower left", fontsize=7)
 
 
 def fig_oew_cm(fig, res: dict, title: str | None = None):

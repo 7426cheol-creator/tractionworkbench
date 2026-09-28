@@ -27,7 +27,8 @@ from dataclasses import dataclass, replace
 import numpy as np
 
 from ..errors import InputValidationError
-from ..models.components import DriveModel, RotationalLossModel
+from ..identity import content_sha256
+from ..models.components import DriveModel, RotationalLossModel, WindingDefinition
 from ..models.flux import ConstantFluxModel, CurrentBox, FluxMapModel
 from ..validation import finite as _finite
 from ..models.provenance import Provenance
@@ -51,11 +52,18 @@ class ScalingSpec:
     end_L_share: float | None = None     # share of Ld / Lq from end-winding leakage (required if k_stack != 1)
     rot_loss: str = "proportional_to_stack"   # rotational loss: proportional_to_stack | unchanged (declared)
     basis: str = ""
+    winding_from: str | None = None      # identity of the reference winding a turns / path change was computed from
+    winding_to: dict | None = None       # the changed {parallel_paths, turns_per_coil} of that winding
 
     def __post_init__(self):
         for name in ("k_turns", "k_stack", "k_pm"):
             if _finite(name, getattr(self, name)) <= 0:
                 raise InputValidationError(f"{name} must be > 0", field=name)
+        if (self.winding_from is None) != (self.winding_to is None):
+            raise InputValidationError("a winding change needs both the reference identity and the new turns / paths",
+                                       field="winding_to")
+        if self.winding_to is not None and set(self.winding_to) != {"parallel_paths", "turns_per_coil"}:
+            raise InputValidationError("winding_to is {parallel_paths, turns_per_coil}", field="winding_to")
         if abs(self.k_stack - 1.0) > 1e-12 and (self.end_R_share is None or self.end_L_share is None):
             raise InputValidationError("a stack-length change needs the declared end-winding shares of R and L "
                                        "(end effects do not scale with the stack; they are never assumed zero)",
@@ -80,13 +88,20 @@ class ScalingSpec:
 
 
 def spec_from_dict(c: dict) -> ScalingSpec:
-    """A candidate as entered (units in the names); blank end shares stay None (not declared)."""
+    """A candidate as entered (units in the names).  Only an absent / blank factor means "unchanged" (1); an entered
+    0 stays 0 and is refused by the spec - a real input is never swapped for another valid design (review R2, MD-02).
+    Blank end shares stay None (not declared)."""
+    def factor(key):
+        v = c.get(key)
+        return 1.0 if v is None or (isinstance(v, str) and not v.strip()) else _finite(key, v)
+
     def opt(key):
         v = c.get(key)
-        return None if v in (None, "") else float(v)
-    return ScalingSpec(str(c.get("name") or "candidate"), float(c.get("k_turns") or 1.0), float(c.get("k_stack") or 1.0),
-                       float(c.get("k_pm") or 1.0), opt("end_R_share"), opt("end_L_share"),
-                       c.get("rot_loss") or "proportional_to_stack", c.get("basis") or "")
+        return None if v is None or (isinstance(v, str) and not v.strip()) else _finite(key, v)
+    wt = c.get("winding_to")
+    return ScalingSpec(str(c.get("name") or "candidate"), factor("k_turns"), factor("k_stack"), factor("k_pm"),
+                       opt("end_R_share"), opt("end_L_share"), c.get("rot_loss") or "proportional_to_stack",
+                       c.get("basis") or "", c.get("winding_from") or None, None if not wt else dict(wt))
 
 
 INVALIDATED = {
@@ -100,10 +115,43 @@ INVALIDATED = {
 }
 
 
+def winding_identity(w) -> str:
+    """Content identity of a winding (WindingDefinition or a layout dict): slots, pole pairs, pitch, paths, turns."""
+    d = w.identity() if isinstance(w, WindingDefinition) else {k: w.get(k) for k in ("Q", "p", "y", "parallel_paths",
+                                                                                         "turns_per_coil")}
+    return content_sha256(d)
+
+
+def _winding_lineage(drive: DriveModel, spec: ScalingSpec):
+    """The derived machine's winding: a checked turns / path change of the declared reference winding, or None (a
+    generic k_N leaves the derived winding undefined)."""
+    ref = drive.motor.winding
+    if spec.winding_from is None:
+        if ref is not None and abs(spec.k_turns - 1.0) > 1e-12:
+            return None, "generic k_N: the derived machine's winding is not defined (not a change of the declared winding)"
+        return ref, None
+    if ref is None or winding_identity(ref) != spec.winding_from:
+        raise InputValidationError("the candidate's winding change was computed from another reference winding than "
+                                   "the active machine declares - not a change of THIS winding", field="winding_from")
+    to = {k: int(spec.winding_to[k]) for k in ("parallel_paths", "turns_per_coil")}
+    new = replace(ref, **to, basis=ref.basis + f" [changed: {to['turns_per_coil']} turns / {to['parallel_paths']} paths]")
+    a = winding_layout(ref.Q, ref.p, ref.y, parallel_paths=ref.parallel_paths, turns_per_coil=ref.turns_per_coil,
+                       harmonics=1)
+    b = winding_layout(ref.Q, ref.p, ref.y, parallel_paths=new.parallel_paths, turns_per_coil=new.turns_per_coil,
+                       harmonics=1)
+    kN = effective_turns_ratio(a, b)
+    if abs(kN - spec.k_turns) > 1e-9 * kN:
+        raise InputValidationError(f"k_turns {spec.k_turns:g} does not follow from the winding change (k_N = {kN:.6g})",
+                                   field="k_turns")
+    return new, (f"winding {winding_identity(ref)[:12]} -> {winding_identity(new)[:12]}: {ref.turns_per_coil} -> "
+                 f"{new.turns_per_coil} turns / coil, {ref.parallel_paths} -> {new.parallel_paths} paths (same Q, p, y)")
+
+
 def scale_drive(drive: DriveModel, spec: ScalingSpec) -> tuple[DriveModel, dict]:
     """Derived candidate with lineage; the reference is returned unchanged for the identity spec."""
-    if spec.is_reference:
+    if spec.is_reference and spec.winding_from is None:
         return drive, {"carried": [], "invalidated": [], "factors": spec.factors(), "derived": False}
+    new_winding, wnote = _winding_lineage(drive, spec)
     fa = spec.factors()
     m = drive.motor
     flux = m.flux
@@ -134,7 +182,7 @@ def scale_drive(drive: DriveModel, spec: ScalingSpec) -> tuple[DriveModel, dict]
                                   includes_iron_loss=rot.includes_iron_loss, basis=rot.basis + " [stack-scaled]",
                                   description=rot.description)
     motor = replace(m, motor_id=f"{m.motor_id}·{spec.name}", flux=new_flux, Rs_ohm=m.Rs_ohm * fa["R"],
-                    rotational_loss=rot)
+                    rotational_loss=rot, winding=new_winding)
     dom = drive.domain
     domain = replace(dom, id_A=tuple(x * fa["current_axis"] for x in dom.id_A),
                      iq_A=tuple(x * fa["current_axis"] for x in dom.iq_A),
@@ -158,8 +206,12 @@ def scale_drive(drive: DriveModel, spec: ScalingSpec) -> tuple[DriveModel, dict]
                f"Rs x{fa['R']:.4g} (k_N^2 (k_L (1-e_R) + e_R); same slot fill and copper area)",
                f"current axes / domain x{fa['current_axis']:.4g} (same ampere-turns)",
                f"rotational loss x{fa['rotational_loss']:.4g} ({spec.rot_loss})"]
+    if wnote:
+        (carried if spec.winding_from else inval).append(wnote)
     return derived, {"carried": carried, "invalidated": inval, "factors": fa, "derived": True,
-                     "validation_status": prov.validation_status}
+                     "validation_status": prov.validation_status,
+                     "winding": None if new_winding is None else {**new_winding.identity(),
+                                                                  "identity": winding_identity(new_winding)}}
 
 
 # --------------------------------------------------------------------------------------------- trade study
@@ -335,6 +387,8 @@ def winding_layout(Q: int, p: int, y: int | None = None, m: int = 3, harmonics: 
     counts = {ph: len(v) for ph, v in sides.items()}
 
     def kw_mech(ph, k):
+        if not sides[ph]:                              # a phase without coil sides (e.g. Q = 3, p = 3): no factor
+            return 0.0, math.nan
         z = sum(sg * np.exp(1j * 2 * math.pi * k * s / Q) for s, sg in sides[ph])
         return abs(z) / len(sides[ph]), math.degrees(np.angle(z))
     kw1, angA = kw_mech("A", p)
@@ -342,7 +396,7 @@ def winding_layout(Q: int, p: int, y: int | None = None, m: int = 3, harmonics: 
     _, angC = kw_mech("C", p)
     shift_AB = (angB - angA) % 360.0
     shift_AC = (angC - angA) % 360.0
-    near = lambda a, b: min(abs(a - b), 360 - abs(a - b)) < 1e-6          # noqa: E731
+    near = lambda a, b: math.isfinite(a) and min(abs(a - b), 360 - abs(a - b)) < 1e-6          # noqa: E731
     balanced = feasible and len(set(counts.values())) == 1 and kw1 > 1e-9 and (
         (near(shift_AB, 120) and near(shift_AC, 240)) or (near(shift_AB, 240) and near(shift_AC, 120)))
     sequence = "A-B-C along increasing slot number" if near(shift_AB, 120) else (
@@ -383,18 +437,86 @@ def winding_layout(Q: int, p: int, y: int | None = None, m: int = 3, harmonics: 
         out.update({"turns_per_coil": turns_per_coil, "N_series": n_series, "N_eff": kw1 * n_series})
     if not paths_ok:
         out["note"] += f"; {parallel_paths} parallel paths are not symmetric (divisors of {sections} only)"
+    empty = [ph for ph, v in sides.items() if not v]
+    if empty:
+        out["note"] += f"; phase(s) {', '.join(empty)} get no coil side: not a three-phase winding"
+    out["valid"] = bool(out["feasible"] and out["balanced"] and paths_ok and kw1 > 1e-9)
+    out["identity"] = winding_identity({"Q": Q, "p": p, "y": y, "parallel_paths": parallel_paths,
+                                        "turns_per_coil": turns_per_coil})
+    return out
+
+
+def layout_problems(w: dict) -> list:
+    """Why a layout cannot carry a turns scaling: infeasible slot / pole combination, unbalanced phases, asymmetric
+    parallel paths, no effective turns."""
+    out = []
+    if not w["feasible"]:
+        out.append(f"Q = {w['Q']}, p = {w['p']} is not a feasible three-phase double-layer combination")
+    if not w["balanced"]:
+        out.append("not a balanced three-phase winding")
+    if not w["parallel_paths_ok"]:
+        out.append(f"{w['parallel_paths']} parallel paths are not symmetric (divisors of {w['max_parallel_paths']})")
+    if not (w.get("N_eff") or 0) > 0:
+        out.append("no effective series turns (turns per coil missing or kw1 = 0)")
     return out
 
 
 def effective_turns_ratio(reference: dict, candidate: dict) -> float:
-    """k_N for ScalingSpec from two layouts of the SAME slot/pole/pitch (turns per coil and/or parallel paths only)."""
+    """k_N for ScalingSpec from two VALID layouts of the SAME slot / pole / pitch (turns per coil and / or parallel
+    paths only): both must be feasible, balanced, with symmetric parallel paths and effective turns (review R2,
+    MD-01)."""
     for key in ("Q", "p", "y"):
         if reference[key] != candidate[key]:
             raise InputValidationError(f"a {key} change is a new winding (harmonic leakage and saturation change), "
-                                       "not a turns scaling", field=key)
+                                       "not a turns scaling: it needs a new machine map", field=key)
     if "N_eff" not in reference or "N_eff" not in candidate:
         raise InputValidationError("both layouts need turns_per_coil", field="turns_per_coil")
+    for tag, w in (("reference", reference), ("candidate", candidate)):
+        probs = layout_problems(w)
+        if probs:
+            raise InputValidationError(f"{tag} layout is not a valid winding: " + "; ".join(probs), field=tag)
     return candidate["N_eff"] / reference["N_eff"]
+
+
+def winding_change(drive: DriveModel, reference: dict, candidate: dict) -> dict:
+    """The gate between the winding calculator and the trade study (core, API and UI alike): a k_N is handed over only
+    when both layouts are valid windings of the same Q, p, y, the pole pairs are the machine's, and - when the machine
+    declares its winding - the reference IS that winding.  With no declared winding the k_N is a generic thought
+    experiment and is labelled so; it is never presented as a redesign of this machine's winding."""
+    refusals = []
+    for tag, w in (("reference", reference), ("candidate", candidate)):
+        refusals += [f"{tag}: {x}" for x in layout_problems(w)]
+    for key in ("Q", "p", "y"):
+        if reference[key] != candidate[key]:
+            refusals.append(f"{key} differs: a new winding needs a new machine map, not a turns scaling")
+    p_drive = drive.motor.pole_pairs
+    if reference["p"] != p_drive:
+        refusals.append(f"winding p = {reference['p']} but the active machine has p = {p_drive}: not this machine")
+    declared = drive.motor.winding
+    if declared is None:
+        binding = "unbound"
+    elif winding_identity(declared) == reference["identity"]:
+        binding = "declared"
+    else:
+        binding = "different"
+        refusals.append("the entered reference layout is not the winding the active machine declares "
+                        f"(Q {declared.Q}, p {declared.p}, y {declared.y}, {declared.parallel_paths} paths, "
+                        f"{declared.turns_per_coil} turns / coil)")
+    k = None if refusals else effective_turns_ratio(reference, candidate)
+    name = f"{candidate.get('turns_per_coil')}t/{candidate.get('parallel_paths')}a"
+    if binding == "declared":
+        kind = "turns / parallel-path change of the declared winding of this machine"
+        spec = {"name": name, "k_turns": k, "basis": kind, "winding_from": reference["identity"],
+                "winding_to": {"parallel_paths": candidate["parallel_paths"],
+                               "turns_per_coil": candidate["turns_per_coil"]}}
+    else:
+        kind = ("generic k_N (thought experiment): the active machine declares no winding, so this is not a redesign "
+                "of its winding")
+        spec = {"name": name + " (generic)", "k_turns": k, "basis": kind}
+    return {"sendable": not refusals, "refusals": refusals, "k_turns": k, "binding": binding, "kind": kind,
+            "candidate": None if refusals else spec,
+            "assumptions": ["same Q, p, y: same slot fill and copper area (conductor area x 1 / k_N)",
+                            "same materials and temperatures", "terminal phase current scales 1 / k_N (same ampere-turns)"]}
 
 
 # --------------------------------------------------------------------------------------------- concept sizing

@@ -22,26 +22,51 @@ from ..widgets import (ConceptNote, KeyValueTable, NumTable, PlotPanel, check, c
                        primary_button, table_with_buttons)
 
 NOTE_EMI = lambda: tr(
-    "<b>전도성 EMI (HV 포트)</b>는 <b>소스 → 경로 → 수신기</b>로 계산합니다. 소스는 PWM 모든 스위칭 에지의 정확한 선스펙트럼"
-    "(선언한 상승·하강 시간, 전류 부호에 따른 데드타임 에지 이동)이고, 경로는 선언한 DC-link(ESR/ESL), Y-cap(장착 L), 스위치노드·"
-    "모터·케이블→섀시 C, 하네스, CM 초크(결합 인덕터), 인공회로망(AN)을 절점해석으로 CM·DM 동시(위상 포함) 풉니다. 수신기는 RBW 안 "
-    "선들의 크기 합(피크 검출기 판독의 상한 추정)이며 QP/AV 가중·IF 필터·dwell은 모델 밖입니다.<br>"
-    "<b>판정</b>: 요구 프로파일(규격·판·고객 개정·곡선 ID·포트·방법·검출기·RBW·AN·치구·운전조건)이 빠지면 REQUIREMENT_INCOMPLETE. "
-    "규격 한계값은 내장하지 않습니다(승인된 곡선을 입력). 보정 근거가 없으면 SCREENING: 여유와 <b>필요 감쇠 A = max(0, E_U + M_d − L)</b>, "
-    "지배 경로(CM→Y-cap/CM 초크/본딩, DM→X-cap/DM L/ESL)를 보여주며 FAIL 대신 '예측 초과'로 표시합니다. 측정 trace는 같은 프로파일로 "
-    "PASS/FAIL/INDETERMINATE를 판정합니다(시험 대표성·승인은 별도). C·dv/dt 한 값이나 평균 dq 파형 FFT로 EMI를 승인하지 않습니다.",
+    "<b>전도성 EMI (HV 포트)</b>는 <b>소스 → 경로 → 수신기</b>로 계산합니다. 소스는 게이트 명령에 데드타임(턴온 지연)과 전류 부호에 따른 "
+    "다이오드 클램프를 적용한 실제 스위칭 순서의 정확한 선스펙트럼입니다(데드타임보다 짧은 게이트 펄스는 사라지고 펄스가 뒤집히지 않음). "
+    "과변조, 에지 램프 겹침, 미선언 최소 펄스 처리, 정수가 아닌 비동기 캐리어 비는 소스 유효 범위 밖입니다. 경로는 선언한 DC-link(ESR/ESL), "
+    "Y-cap, 스위치노드·모터·케이블→섀시 C, 하네스, CM 초크, 인공회로망(AN)을 절점해석으로 CM·DM 동시(위상 포함) 풉니다. 수신기는 RBW 안 "
+    "선들의 크기 합(선합 추정; CISPR 판독 아님)이며, 수신 주파수를 연속으로 옮길 때 창 안의 선 집합이 바뀌는 모든 지점과 한계 꼭짓점을 "
+    "<b>정확히 열거</b>해 대역 전체의 최대값·최소 여유를 구합니다(표시 격자는 그림일 뿐 판정이 아님).<br>"
+    "<b>판정</b>: 요구 프로파일이 빠지면 REQUIREMENT_INCOMPLETE, 방법·단위가 모델 출력(AN 측정단 dBµV)과 다르면 비교 불가(UNKNOWN). "
+    "한계가 없는 구간은 '승인된 공백'으로 선언하지 않는 한 미정의입니다. 보정 기록(근거·holdout·취득·오차 모델·유한한 오차 한계·주파수 구간·"
+    "측정 set-up·경로망 식별자·소스 범위)이 완전하고 <b>이번 계산의 구성과 일치할 때만</b> 주장: 모든 수신 주파수에서 E + U+ ≤ L − M_d이면 "
+    "FEASIBLE, E − U− > L − M_d인 주파수(증인)가 있어야 INFEASIBLE, 그 외는 UNKNOWN(상한 초과만으로는 위반이 아님). 측정 trace는 "
+    "<b>trace 자체의 취득 조건</b>(표현·검출기·RBW·IF 형상·dwell·set-up)으로 판정하며, 읽음값 사이의 손실까지 포함한 커버리지가 없으면 PASS가 아닙니다.",
     "<b>Conducted EMI (HV port)</b> is computed as <b>source -> path -> receiver</b>. Source: the exact line spectrum of "
-    "every PWM edge (declared rise / fall times, dead-time edge shift by current sign). Path: the declared DC link "
-    "(ESR / ESL), Y capacitors (mounting L), switch-node / motor / cable capacitance to chassis, harness, CM choke "
-    "(coupled inductors) and the artificial network, solved by nodal analysis with CM and DM together (phases kept). "
-    "Receiver: magnitude sum of the lines inside the RBW (an upper estimate of a peak-detector reading); QP / AV weighting, "
-    "IF filter and dwell are outside the model.<br><b>Judgement</b>: a profile missing standard, edition, customer "
-    "revision, curve ID, port, method, detector, RBW, AN, fixture or operating condition is REQUIREMENT_INCOMPLETE. No "
-    "standard limit values are built in (enter the approved curve). Without calibration evidence it is SCREENING: margins, "
-    "the <b>required attenuation A = max(0, E_U + M_d - L)</b> and the dominant path (CM -> Y cap / CM choke / bonding, "
-    "DM -> X cap / DM L / ESL), 'predicted exceedance' instead of FAIL. A measured trace gets PASS / FAIL / INDETERMINATE "
-    "against the same profile (representativeness and approval are separate). No EMI approval from a single C dv/dt "
-    "value or an FFT of averaged dq waveforms.")
+    "the switching sequence built from the gate commands with dead time (turn-on delay) and the diode clamp by current "
+    "sign (a gate pulse shorter than the dead time vanishes; pulses never reverse). Overmodulation, overlapping edge "
+    "ramps, an undeclared minimum-pulse handling and a non-integer asynchronous carrier ratio are outside the source "
+    "validity. Path: the declared DC link (ESR / ESL), Y capacitors, switch-node / motor / cable capacitance to chassis, "
+    "harness, CM choke and the artificial network, solved by nodal analysis with CM and DM together. Receiver: the "
+    "magnitude sum of the lines inside the RBW (a line-sum estimate, not a CISPR reading); every point where the window "
+    "content changes and every limit vertex is <b>enumerated exactly</b>, giving the supremum and the minimum margin over "
+    "the continuous band (the display grid is a plot, never the claim).<br><b>Judgement</b>: an incomplete profile is "
+    "REQUIREMENT_INCOMPLETE; a method or unit other than the model's output (AN measuring port, dBuV) is not comparable "
+    "(UNKNOWN). A band without a limit is undefined unless declared an approved gap. A claim needs a complete calibration "
+    "record (evidence, hold-out, acquisition, error model, finite error bounds, frequency intervals, measurement set-up, "
+    "path-network identity, source ranges) that <b>matches this evaluation's configuration</b>: FEASIBLE when E + U+ <= "
+    "L - M_d at every receiver frequency, INFEASIBLE only with a witness frequency where E - U- > L - M_d, otherwise "
+    "UNKNOWN (exceeding the upper bound alone is not a violation). A measured trace is judged with <b>its own "
+    "acquisition</b> (representation, detector, RBW, IF shape, dwell, set-up); without coverage between the readings "
+    "(their loss included) it is not a PASS.")
+
+
+def _DETECTORS():
+    return [(tr("피크", "peak"), "peak"), (tr("준첨두 (QP)", "quasi-peak"), "quasi_peak"), (tr("평균", "average"), "average")]
+
+
+def _gaps(text: str) -> list:
+    """'0.3-0.53, 1.8-5.9' (MHz) -> [[f_lo_Hz, f_hi_Hz], ...]"""
+    out = []
+    for part in (text or "").replace(";", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        a, b = part.split("-", 1)
+        out.append([float(a) * 1e6, float(b) * 1e6])
+    return out
+
 
 def _task(fn):
     def run(progress, body):
@@ -73,7 +98,7 @@ class EmiPage(QWidget):
 
     # ------------------------------------------------------------------ main tab
     def _main_tab(self):
-        ex = api.EXAMPLE_EMI
+        ex = self.win.state.example("EMI")
         split = QSplitter(Qt.Horizontal)
         form = QWidget()
         v = QVBoxLayout(form)
@@ -88,10 +113,20 @@ class EmiPage(QWidget):
         self.e_tr = number(sc["t_rise_ns"], 1, 5000, "ns", 1, 5)
         self.e_tf = number(sc["t_fall_ns"], 1, 5000, "ns", 1, 5)
         self.e_td = number(sc["t_dead_us"], 0, 20, "µs", 3, 0.1)
+        self.e_carrier = combo([(tr("비동기 (고정 fsw)", "asynchronous (fixed fsw)"), "asynchronous"),
+                                (tr("동기 (fsw = 정수 × fe)", "synchronous (fsw = integer × fe)"), "synchronous")],
+                               sc.get("carrier", "asynchronous"))
+        self.e_minp = number(float(sc.get("min_pulse_us") or 0.0), 0, 50, "µs", 3, 0.1)
+        self.e_minp_pol = combo([(tr("없음 (모든 펄스 출력)", "none (every pulse issued)"), "none"),
+                                 (tr("제거 (캐리어 주기별 듀티 클램프)", "drop (duty clamped per carrier period)"), "drop"),
+                                 (tr("미상 (처리 방식 미선언)", "unknown (handling not declared)"), "unknown")],
+                                sc.get("min_pulse_policy", "none"))
         self.e_src_basis = QLineEdit(sc["basis"])
         for lab, w in ((tr("속도", "speed"), self.e_n), (tr("토크", "torque"), self.e_T), ("Vdc", self.e_vdc),
-                       (tr("스위칭 주파수", "switching frequency"), self.e_fsw), (tr("상승 시간 (선언)", "rise time (declared)"), self.e_tr),
+                       (tr("스위칭 주파수", "switching frequency"), self.e_fsw), (tr("캐리어", "carrier"), self.e_carrier),
+                       (tr("상승 시간 (선언)", "rise time (declared)"), self.e_tr),
                        (tr("하강 시간 (선언)", "fall time (declared)"), self.e_tf), (tr("데드타임", "dead time"), self.e_td),
+                       (tr("최소 펄스", "minimum pulse"), self.e_minp), (tr("최소 펄스 처리", "minimum-pulse handling"), self.e_minp_pol),
                        (tr("근거", "basis"), self.e_src_basis)):
             f.addRow(lab, w)
         v.addWidget(g)
@@ -125,18 +160,24 @@ class EmiPage(QWidget):
         self.prof = {}
         for key, lab in (("standard", tr("규격", "standard")), ("edition", tr("판", "edition")),
                          ("customer_revision", tr("고객 규격 개정", "customer spec revision")), ("curve_id", tr("클래스/곡선 ID", "class / curve ID")),
-                         ("port", tr("포트", "port")), ("method", tr("방법", "method")), ("network", tr("AN 정의", "AN definition")),
+                         ("port", tr("포트", "port")), ("network", tr("AN 정의", "AN definition")),
                          ("fixture", tr("치구·하네스·본딩", "fixture / harness / bonding")), ("operating_condition", tr("운전 조건", "operating condition"))):
             w = QLineEdit(str(pr.get(key, "")))
             self.prof[key] = w
             f.addRow(lab, w)
-        self.e_det = combo([(tr("피크", "peak"), "peak"), (tr("준첨두 (QP)", "quasi-peak"), "quasi_peak"), (tr("평균", "average"), "average")],
-                           pr["detector"])
+        self.e_method = combo([(tr("전압법 (AN 측정단) — 모델 출력", "voltage method (AN measuring port) — the model's output"), "voltage_AN"),
+                               (tr("전류 프로브 (이 모델로 예측 안 함)", "current probe (not predicted by this model)"), "current_probe")],
+                              pr.get("method", "voltage_AN"))
+        self.e_det = combo(_DETECTORS(), pr["detector"])
         self.e_rbw = number(pr["rbw_Hz"] / 1e3, 0.01, 1e4, "kHz", 2, 1)
         self.e_res = number(pr["design_reserve_dB"], 0, 60, "dB", 1, 1)
+        self.e_rule = QLineEdit(str(pr.get("decision_rule") or ""))
+        self.e_rule.setPlaceholderText(tr("합의된 판정 규칙 (비우면 워크벤치 기본 보수 규칙)", "agreed decision rule (empty: the workbench's guarded default)"))
+        f.addRow(tr("방법", "method"), self.e_method)
         f.addRow(tr("검출기", "detector"), self.e_det)
         f.addRow("RBW", self.e_rbw)
         f.addRow(tr("설계 여유 M_d", "design reserve M_d"), self.e_res)
+        f.addRow(tr("판정 규칙", "decision rule"), self.e_rule)
         lim = ex["limit"]
         self.e_lim = NumTable([tr("주파수 [MHz]", "frequency [MHz]"), tr("한계 [dBµV]", "limit [dBuV]")],
                               [[p[0] / 1e6, p[1]] for p in lim["points"]], min_height=110)
@@ -144,19 +185,44 @@ class EmiPage(QWidget):
         f.addRow(table_with_buttons(self.e_lim))
         self.e_lim_src = QLineEdit(lim["source"])
         f.addRow(tr("곡선 출처", "curve source"), self.e_lim_src)
+        self.e_gaps = QLineEdit(", ".join(f"{a / 1e6:g}-{b / 1e6:g}" for a, b in lim.get("gaps_Hz") or []))
+        self.e_gaps.setPlaceholderText(tr("요구 없음으로 승인된 구간 [MHz], 예: 0.3-0.53, 1.8-5.9", "bands approved without a requirement [MHz], e.g. 0.3-0.53, 1.8-5.9"))
+        f.addRow(tr("선언 공백", "declared gaps"), self.e_gaps)
         v.addWidget(g)
         g = QGroupBox(tr("보정·결합", "calibration · coupling"))
         f = QFormLayout(g)
-        self.e_cal_on = check(tr("보정 근거 선언 (없으면 스크리닝)", "declare calibration evidence (else screening)"), False)
+        self.e_cal_on = check(tr("보정 기록 선언 (없으면 스크리닝)", "declare a calibration record (else screening)"), False)
         self.e_cal_ev = QLineEdit()
-        self.e_cal_ev.setPlaceholderText(tr("상관 보고서·holdout 결과", "correlation report / holdout results"))
-        self.e_cal_u = number(3.0, 0, 40, "dB", 1, 0.5)
+        self.e_cal_ev.setPlaceholderText(tr("상관 보고서 ID", "correlation report ID"))
+        self.e_cal_ho = QLineEdit()
+        self.e_cal_ho.setPlaceholderText(tr("holdout 근거 (맞춤에 쓰지 않은 운전점·주파수)", "hold-out evidence (points / frequencies not used to fit)"))
+        self.e_cal_acq = QLineEdit()
+        self.e_cal_acq.setPlaceholderText(tr("취득 조건 (검출기·RBW·dwell·스캔)", "acquisition (detector, RBW, dwell, scan)"))
+        self.e_cal_em = QLineEdit()
+        self.e_cal_em.setPlaceholderText(tr("오차 모델 (U가 |E_측정 − E_모델|을 어떻게 제한하는가)", "error model (how U bounds |E_meas - E_model|)"))
+        self.e_cal_u = number(3.0, 0, 40, "dB", 2, 0.5)
+        self.e_cal_ul = number(3.0, 0, 40, "dB", 2, 0.5)
+        self.e_cal_zero = QLineEdit()
+        self.e_cal_zero.setPlaceholderText(tr("U = 0일 때 필수: 오차가 없는 이유", "required when a bound is 0: why the error vanishes"))
+        self.e_cal_lo = number(0.15, 0.001, 1000, "MHz", 3, 0.05)
+        self.e_cal_hi = number(30.0, 0.01, 1000, "MHz", 2, 1)
+        self.cal_binding = None
+        self.e_cal_bind = QPushButton(tr("마지막 결과의 구성에 결속", "bind to the last result's configuration"))
+        self.e_cal_bind.clicked.connect(self.bind_calibration)
+        self.e_cal_lab = QLabel(tr("구성에 결속 안 됨 (결속 전에는 적용 불가)", "not bound to a configuration (not applicable until bound)"))
+        self.e_cal_lab.setWordWrap(True)
         self.e_ey_on = check(tr("Y-cap 허용 에너지 선언", "declare allowed Y-cap energy"), False)
         self.e_ey = number(0.2, 0, 100, "J", 3, 0.05)
         self.e_fc = number(ex["f_control_Hz"], 1, 1e6, "Hz", 0, 100)
         self.e_lo = number(0.15, 0.001, 1000, "MHz", 3, 0.05)
         self.e_hi = number(30.0, 0.01, 1000, "MHz", 2, 1)
-        for lab, w in (("", self.e_cal_on), (tr("근거", "evidence"), self.e_cal_ev), (tr("모델 불확도", "model uncertainty"), self.e_cal_u),
+        for lab, w in (("", self.e_cal_on), (tr("근거", "evidence"), self.e_cal_ev), ("holdout", self.e_cal_ho),
+                       (tr("취득", "acquisition"), self.e_cal_acq), (tr("오차 모델", "error model"), self.e_cal_em),
+                       (tr("모델 오차 상한 U+", "model-error bound U+"), self.e_cal_u),
+                       (tr("모델 오차 하한 U−", "model-error bound U−"), self.e_cal_ul),
+                       (tr("U = 0 근거", "zero-bound basis"), self.e_cal_zero),
+                       (tr("보정 구간 하한", "calibrated from"), self.e_cal_lo), (tr("보정 구간 상한", "calibrated to"), self.e_cal_hi),
+                       ("", self.e_cal_bind), ("", self.e_cal_lab),
                        ("", self.e_ey_on), (tr("허용 에너지", "allowed energy"), self.e_ey),
                        (tr("제어 대역", "control bandwidth"), self.e_fc), (tr("대역 하한", "band from"), self.e_lo),
                        (tr("대역 상한", "band to"), self.e_hi)):
@@ -174,9 +240,29 @@ class EmiPage(QWidget):
         row.addWidget(b)
         row.addWidget(b2)
         self.e_U = number(3.0, 0, 20, "dB", 1, 0.5)
+        self.m_rep = combo([(tr("원시 스윕", "raw sweep"), "raw_sweep"),
+                            (tr("최대 포락 압축", "max-envelope (compressed)"), "max_envelope"),
+                            (tr("최종 측정 목록", "final-measurement list"), "final_list")], "raw_sweep")
+        self.m_det = combo(_DETECTORS(), "peak")
+        self.m_rbw = number(9.0, 0.01, 1e4, "kHz", 2, 1)
+        self.m_if = combo([(tr("가우시안", "Gaussian"), "gaussian"), (tr("사각", "rectangular"), "rectangular"),
+                           (tr("미선언", "not declared"), "")], "gaussian")
+        self.m_dwell = number(10.0, 0, 1e5, "ms", 2, 1)
+        self.m_raw = number(4.5, 0, 1e4, "kHz", 2, 0.5)
+        self.m_peak = QLineEdit()
+        self.m_peak.setPlaceholderText(tr("최대 포락: 피크 보존 근거", "max-envelope: peak-preservation evidence"))
+        self.m_corr = QLineEdit()
+        self.m_corr.setPlaceholderText(tr("적용한 보정 (AN 계수·케이블 손실·리미터) 또는 불필요한 이유",
+                                          "corrections applied (AN factor, cable loss, limiter) or why none apply"))
         f.addRow(self.e_meas_lab)
         f.addRow(row)
         f.addRow(tr("측정 불확도 U", "measurement uncertainty U"), self.e_U)
+        f.addRow(QLabel(tr("trace 자체의 취득 조건 (프로파일과 별개로 trace에 결속)", "the trace's own acquisition (bound to the trace, not the profile)")))
+        for lab, w in ((tr("표현", "representation"), self.m_rep), (tr("검출기", "detector"), self.m_det), ("RBW", self.m_rbw),
+                       (tr("IF 형상", "IF shape"), self.m_if), ("dwell", self.m_dwell),
+                       (tr("원시 스캔 간격 (포락)", "raw scan step (envelope)"), self.m_raw), ("", self.m_peak),
+                       (tr("보정", "corrections"), self.m_corr)):
+            f.addRow(lab, w)
         v.addWidget(g)
         self.e_btn = primary_button(tr("EMI 계산", "compute EMI"))
         self.e_btn.clicked.connect(self.run)
@@ -212,9 +298,19 @@ class EmiPage(QWidget):
                 error_box(self, tr("가져오기 실패", "import failed"), str(exc))
 
     def load_trace_csv(self, path):
-        f, x, nf = [], [], []
+        """(f_Hz, level[, noise]) rows; optional header lines '# key: value' carry the trace's acquisition
+        (representation, detector, rbw_Hz, if_shape, dwell_s, raw_step_Hz, peak_preservation, corrections) and set-up
+        (port, method, network, fixture, operating_condition).  A set-up the file does not state is taken from the
+        profile AS IT IS NOW (the operator's statement at import) and stays with the trace."""
+        f, x, nf, head = [], [], [], {}
         with open(path, encoding="utf-8-sig", newline="") as fh:
             for row in csv.reader(fh):
+                if row and row[0].lstrip().startswith("#"):
+                    line = ",".join(row).lstrip()[1:]
+                    if ":" in line:
+                        k, v = line.split(":", 1)
+                        head[k.strip()] = v.strip()
+                    continue
                 try:
                     a, b_ = float(row[0]), float(row[1])
                 except (ValueError, IndexError):
@@ -228,36 +324,113 @@ class EmiPage(QWidget):
                         pass
         if len(f) < 2:
             raise ValueError(tr("(f_Hz, dBµV) 행이 2개 이상 필요합니다", "need at least two (f_Hz, dBuV) rows"))
-        self.measured = {"f_Hz": f, "level_dB": x, "noise_floor_dB": nf if len(nf) == len(f) else None}
+        prof = self._profile_fields()
+        setup = {k: head.get(k, prof.get(k, "")) for k in ("port", "method", "network", "fixture", "operating_condition")}
+        for key, w in (("representation", self.m_rep), ("detector", self.m_det), ("if_shape", self.m_if)):
+            if key in head:
+                i = w.findData(head[key])
+                if i >= 0:
+                    w.setCurrentIndex(i)
+        for key, w, scale in (("rbw_Hz", self.m_rbw, 1e-3), ("dwell_s", self.m_dwell, 1e3), ("raw_step_Hz", self.m_raw, 1e-3)):
+            try:
+                w.setValue(float(head[key]) * scale)
+            except (KeyError, ValueError):
+                pass
+        if "peak_preservation" in head:
+            self.m_peak.setText(head["peak_preservation"])
+        if "corrections" in head:
+            self.m_corr.setText(head["corrections"])
+        self.measured = {"f_Hz": f, "level_dB": x, "noise_floor_dB": nf if len(nf) == len(f) else None, "setup": setup}
         self.e_meas_lab.setText(tr(f"{len(f)}점 ({f[0] / 1e6:.3g}–{f[-1] / 1e6:.3g} MHz)", f"{len(f)} points "
-                                   f"({f[0] / 1e6:.3g}-{f[-1] / 1e6:.3g} MHz)") + f" · {path}")
+                                   f"({f[0] / 1e6:.3g}-{f[-1] / 1e6:.3g} MHz)") + f" · {path}\n"
+                                + tr("set-up: ", "set-up: ") + " · ".join(f"{k} {v}" for k, v in setup.items()))
 
     def clear_trace(self):
         self.measured = None
         self.e_meas_lab.setText(tr("가져온 trace 없음", "no trace imported"))
 
+    def _profile_fields(self) -> dict:
+        prof = {k: w.text().strip() for k, w in self.prof.items()}
+        prof.update({"method": self.e_method.currentData(), "detector": self.e_det.currentData(),
+                     "rbw_Hz": self.e_rbw.value() * 1e3, "design_reserve_dB": self.e_res.value(),
+                     "decision_rule": self.e_rule.text().strip() or None})
+        return prof
+
+    def bind_calibration(self):
+        if not self.last:
+            error_box(self, tr("결속 불가", "cannot bind"), tr("먼저 EMI를 계산하세요 (결속은 계산된 구성에 합니다)",
+                                                             "compute EMI first (a record binds to a computed configuration)"))
+            return
+        self.cal_binding = copy.deepcopy(self.last["configuration"])
+        c = self.cal_binding
+        src = c["source_ranges"]
+        self.e_cal_lab.setText(tr("결속: ", "bound: ") + f"network {c['network_sha256'][:12]}…, "
+                               f"Vdc {fmt(src['Vdc_V'][0])} V, |i| {fmt(src['I_pk_A'][0])} A, fe {fmt(src['fe_Hz'][0])} Hz, "
+                               f"fsw {fmt(src['fsw_Hz'][0] / 1e3)} kHz, tr/tf {fmt(src['t_rise_s'][0] * 1e9)}/{fmt(src['t_fall_s'][0] * 1e9)} ns, "
+                               f"{c['setup']['method']} / {c['setup']['detector']} / RBW {c['setup']['rbw_Hz']}"
+                               + tr(" — 입력이 바뀌면 적용되지 않습니다", " — any changed input makes it inapplicable"))
+
+    def apply_project(self, _project=None):
+        """Switching source (controller: fsw, gate edges, dead time, carrier, minimum pulse) and the HV network /
+        test set-up from the active project; operating point, profile, limit and traces stay."""
+        ex = self.win.state.example("EMI")
+        sc, nw = ex["source"], ex["network"]
+        self.e_fsw.setValue(float(sc["fsw_kHz"]))
+        self.e_tr.setValue(float(sc["t_rise_ns"]))
+        self.e_tf.setValue(float(sc["t_fall_ns"]))
+        self.e_td.setValue(float(sc.get("t_dead_us") or 0.0))
+        for w, v in ((self.e_carrier, sc.get("carrier", "asynchronous")),
+                     (self.e_minp_pol, sc.get("min_pulse_policy", "none"))):
+            i = w.findData(v)
+            if i >= 0:
+                w.setCurrentIndex(i)
+        self.e_minp.setValue(float(sc.get("min_pulse_us") or 0.0))
+        self.e_src_basis.setText(str(sc.get("basis", "")))
+        for k, w in self.net.items():
+            if nw.get(k) is not None:
+                w.setValue(float(nw[k]))
+        self.e_valid_on.setChecked(nw.get("validated_up_to_MHz") is not None)
+        if nw.get("validated_up_to_MHz") is not None:
+            self.e_valid.setValue(float(nw["validated_up_to_MHz"]))
+        self.e_net_basis.setText(str(nw.get("basis", "")))
+
     def body(self) -> dict:
-        b = copy.deepcopy(api.EXAMPLE_EMI)
+        b = self.win.state.example("EMI")            # product data of the active project; widgets overlay it
         b.update(self.win.state.body())
         b.update({"speed_rpm": self.e_n.value(), "torque_Nm": self.e_T.value(), "Vdc_V": self.e_vdc.value()})
-        b["source"] = {"fsw_kHz": self.e_fsw.value(), "t_rise_ns": self.e_tr.value(), "t_fall_ns": self.e_tf.value(),
-                       "t_dead_us": self.e_td.value(), "modulation": "svpwm", "basis": self.e_src_basis.text().strip()}
-        b["network"] = {k: w.value() for k, w in self.net.items()}
+        b["source"] = {**b["source"], "fsw_kHz": self.e_fsw.value(), "t_rise_ns": self.e_tr.value(),
+                       "t_fall_ns": self.e_tf.value(),
+                       "t_dead_us": self.e_td.value(), "carrier": self.e_carrier.currentData(),
+                       "min_pulse_us": self.e_minp.value(), "min_pulse_policy": self.e_minp_pol.currentData(),
+                       "basis": self.e_src_basis.text().strip()}
+        b["network"] = {**b["network"], **{k: w.value() for k, w in self.net.items()}}
         b["network"]["basis"] = self.e_net_basis.text().strip()
         b["network"]["validated_up_to_MHz"] = self.e_valid.value() if self.e_valid_on.isChecked() else None
-        prof = {k: w.text().strip() for k, w in self.prof.items()}
-        prof.update({"detector": self.e_det.currentData(), "rbw_Hz": self.e_rbw.value() * 1e3,
-                     "design_reserve_dB": self.e_res.value()})
-        b["profile"] = prof
+        b["profile"] = self._profile_fields()
         pts = self.e_lim.values()
         b["limit"] = ({"points": [[r[0] * 1e6, r[1]] for r in pts], "unit": "dBuV", "detector": self.e_det.currentData(),
-                       "source": self.e_lim_src.text().strip()} if len(pts) >= 2 else None)
-        b["calibration"] = ({"evidence": self.e_cal_ev.text().strip(), "uncertainty_dB": self.e_cal_u.value()}
+                       "source": self.e_lim_src.text().strip(), "gaps_Hz": _gaps(self.e_gaps.text())}
+                      if len(pts) >= 2 else None)
+        b["calibration"] = ({"evidence": self.e_cal_ev.text().strip(), "holdout": self.e_cal_ho.text().strip(),
+                             "acquisition": self.e_cal_acq.text().strip(), "error_model": self.e_cal_em.text().strip(),
+                             "U_upper_dB": self.e_cal_u.value(), "U_lower_dB": self.e_cal_ul.value(),
+                             "zero_uncertainty_basis": self.e_cal_zero.text().strip(),
+                             "f_intervals_Hz": [[self.e_cal_lo.value() * 1e6, self.e_cal_hi.value() * 1e6]],
+                             **copy.deepcopy(self.cal_binding or {})}
                             if self.e_cal_on.isChecked() else None)
         b["E_y_allowed_J"] = self.e_ey.value() if self.e_ey_on.isChecked() else None
         b["f_control_Hz"] = self.e_fc.value()
         b["band_MHz"] = [self.e_lo.value(), self.e_hi.value()]
-        b["measured"] = None if not self.measured else {**self.measured, "U_meas_dB": self.e_U.value()}
+        if self.measured:
+            meta = {"representation": self.m_rep.currentData(), "detector": self.m_det.currentData(), "unit": "dBuV",
+                    "rbw_Hz": self.m_rbw.value() * 1e3, "if_shape": self.m_if.currentData() or None,
+                    "dwell_s": self.m_dwell.value() / 1e3, "raw_step_Hz": self.m_raw.value() * 1e3,
+                    "peak_preservation": self.m_peak.text().strip(), "corrections": self.m_corr.text().strip(),
+                    **self.measured["setup"]}
+            b["measured"] = {k: v for k, v in self.measured.items() if k != "setup"}
+            b["measured"].update({"U_meas_dB": self.e_U.value(), "meta": meta})
+        else:
+            b["measured"] = None
         return b
 
     def run(self):
@@ -287,10 +460,31 @@ class EmiPage(QWidget):
         import numpy as np
         A = np.asarray(res["required_attenuation_dB"], dtype=float)
         g = np.asarray(res["grid_Hz"])
+        so = res["source"]
         rows = [(tr("판정", "claim"), f"{c['status']} — {c['detail']}" + (f" [{', '.join(c['reasons'])}]" if c.get("reasons") else "")),
                 (tr("운전점", "operating point"), f"{fmt(res['operating_point']['speed_rpm'])} rpm, {fmt(res['operating_point']['torque_Nm'])} N·m, "
                                                  f"|i| {fmt(res['operating_point']['i_peak_A'])} A, m {fmt(res['operating_point']['modulation_index'], 3)}, "
-                                                 f"carrier ratio {res['carrier_ratio']}")]
+                                                 f"carrier ratio {res['carrier_ratio']}"),
+                (tr("스위칭 주파수", "switching frequency"), tr(f"요청 {fmt(so['fsw_requested_kHz'])} kHz → 평가 {fmt(so['fsw_used_kHz'])} kHz ({so['carrier']})",
+                                                               f"requested {fmt(so['fsw_requested_kHz'])} kHz -> evaluated {fmt(so['fsw_used_kHz'])} kHz ({so['carrier']})")),
+                (tr("소스 유효성", "source validity"), "OK" if so["validity"]["ok"] else "; ".join(so["validity"]["problems"]))]
+        bd = res.get("band") or {}
+        rows.append((tr("대역 평가", "band evaluation"),
+                     (tr(f"정확 열거 (선 {bd.get('lines')}개, 해 잔차 {bd.get('solve_residual', 0):.1e})",
+                         f"exact enumeration ({bd.get('lines')} lines, solve residual {bd.get('solve_residual', 0):.1e})")
+                      if bd.get("certified") else tr("표본 격자만 (", "sampled grid only (") + str(bd.get("reason", "")) + ")")))
+        for d in res.get("domain", []):
+            txt = d["status"]
+            if d.get("min_margin_dB") is not None:
+                txt += f" · E_sup {d['E_sup_dBuV']:.2f} dBµV @ {d['f_E_sup_Hz'] / 1e6:.4g} MHz · min margin {d['min_margin_dB']:.2f} dB"
+            if d["reasons"] or d["claim_reasons"]:
+                txt += " — " + "; ".join(d["reasons"] + d["claim_reasons"])
+            rows.append((f"{d['lo_Hz'] / 1e6:g}–{d['hi_Hz'] / 1e6:g} MHz", txt))
+        cal = res.get("calibration") or {}
+        if cal.get("declared"):
+            rows.append((tr("보정 기록", "calibration record"),
+                         tr("적용", "applicable") if cal["applicable"] else
+                         "; ".join((cal.get("problems") or []) + (cal.get("mismatches") or []))))
         if np.any(np.isfinite(A)):
             j = int(np.nanargmax(A))
             rows.append((tr("최대 필요 감쇠", "max required attenuation"),
@@ -308,6 +502,10 @@ class EmiPage(QWidget):
         ms = res.get("measured")
         if ms:
             rows.append((tr("측정 trace", "measured trace"), f"{ms['verdict']} — {ms['reason']}"))
+            rows.append((tr("  적합 / 여유", "  compliance / reserve"),
+                         f"{ms['compliance']['verdict']} / {ms['reserve']['verdict']} · "
+                         + tr("판정 규칙: ", "decision rule: ") + ms["decision_rule"]["rule"]
+                         + ("" if ms["decision_rule"]["agreed"] else tr(" (합의 안 됨)", " (not agreed)"))))
         for n in res.get("notes", []):
             rows.append((tr("주의", "note"), n))
         self.t_emi.set_rows(rows)
@@ -320,7 +518,7 @@ class EmiPage(QWidget):
         form = QWidget()
         v = QVBoxLayout(form)
         v.setContentsMargins(0, 0, 6, 0)
-        ex = api.EXAMPLE_OEW
+        ex = self.win.state.example("OEW")
         g = QGroupBox(tr("공통 bus OEW (OEW 예시 토폴로지)", "common-bus OEW (OEW example topology)"))
         f = QFormLayout(g)
         self.o_V = number(ex["topology"]["VA_V"], 1, 2000, "V", 1, 10)
@@ -359,7 +557,7 @@ class EmiPage(QWidget):
         return split
 
     def run_oew(self):
-        b = copy.deepcopy(api.EXAMPLE_OEW)
+        b = self.win.state.example("OEW")
         b.update(self.win.state.body())
         b["topology"] = {**b["topology"], "VA_V": self.o_V.value()}
         b.update({"speed_rpm": self.o_n.value(), "torque_Nm": self.o_T.value(), "fsw_kHz": self.o_fsw.value(),

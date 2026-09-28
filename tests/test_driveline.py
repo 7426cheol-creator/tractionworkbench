@@ -140,7 +140,11 @@ def test_api_example_compares_the_four_variants_on_the_same_maneuver():
     assert set(v) == {"off", "shaping", "feedback", "combined"}
     assert v["off"]["metrics"]["peak_vehicle_jerk_m_s3"] > v["shaping"]["metrics"]["peak_vehicle_jerk_m_s3"]
     assert v["shaping"]["metrics"]["t_to_90_s"] > v["off"]["metrics"]["t_to_90_s"]      # the cost of shaping
-    assert v["feedback"]["metrics"]["t_settle_s"] < v["off"]["metrics"]["t_settle_s"]
+    # measured on the REQUESTED target (review R2 CT-03): the speed feedback leaves a steady torque deficit, so it
+    # does not settle on the request - a lower delivered response is never credited as a jerk improvement
+    assert v["feedback"]["metrics"]["achieved_fraction"] < 0.95 and v["feedback"]["metrics"]["t_settle_s"] is None
+    assert any("settling time" in x for x in v["feedback"]["reasons"])
+    assert v["off"]["metrics"]["achieved_fraction"] == pytest.approx(1.0, abs=5e-3)
     assert v["feedback"]["stability"]["stable"]
     assert "not an efficiency gain" in v["shaping"]["loss_note"]
     assert r["window"]["source"].startswith("policy capability")
@@ -206,7 +210,7 @@ def test_safety_reaction_is_judged_on_its_own():
     ctl = D.Controller(1e-3, 1e-3, shaper=D.Shaper("rate", rate_Nm_per_s=200.0))
     man = D.Maneuver(100.0, 100.0, 0.0, 0.3, 1000.0, window_Nm=(-500.0, 500.0), emergency_t_s=0.1, emergency_T_Nm=0.0)
     for lim, st in ((0.02, "FEASIBLE"), (5e-4, "INFEASIBLE"), (None, "UNKNOWN")):
-        req = {**REQ, **({} if lim is None else {"safety_reaction_max_s": lim})}
+        req = {**REQ, "safety_band_Nm": 2.0, **({} if lim is None else {"safety_reaction_max_s": lim})}
         r = D.evaluate_variants(D01, {"x": ctl}, man, req)["variants"]["x"]
         assert r["safety"]["status"] == st
         assert r["safety"]["reaction_s"] == pytest.approx(1e-3, abs=6e-4)     # the declared delay, not the ramp

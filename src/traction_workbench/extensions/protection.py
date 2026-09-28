@@ -68,12 +68,15 @@ def _pos(name, v):
 
 def threshold_window(x_normal_max: float, x_limit: float, E_plus: float = 0.0, E_minus: float = 0.0,
                      E_theta: float = 0.0, dx_after: float = 0.0, reserve_normal: float = 0.0,
-                     reserve_safety: float = 0.0, tight_attainable: bool = False, upper_bound: float | None = None,
-                     candidate: float | None = None) -> dict:
-    """Conservative nominal-threshold window for an upper-limit protection (section 9.4).
+                     reserve_safety: float = 0.0, tight_attainable: bool = False, upper_bound=None,
+                     candidate: float | None = None, sensor_memoryless: bool = True) -> dict:
+    """Conservative nominal-threshold window for an upper-limit protection (section 9.4; review R2 PD-01).
 
-    ``upper_bound`` replaces x_limit - dx_after by a stronger physics bound (e.g. the OV energy trigger bound
-    V_tr,max) before the sensor/threshold tolerances are subtracted.
+    ``upper_bound`` is the protection-side physics bound on the MEASURED trigger value, with its validity:
+    None = no dynamic bound requested (the generic memoryless bound x_limit - dx_after, valid only for a memoryless
+    sensor); a number = a valid bound; a dict {"status": "valid" | "no_bound" | "not_applicable" | "invalid",
+    "value": ..., "reason": ..., "assumptions": [...]}.  A missing or invalid bound is never replaced by the generic
+    one: the protection side is then not guaranteed (UNKNOWN).
     """
     xn = _finite("x_normal_max", x_normal_max)
     xl = _finite("x_limit", x_limit)
@@ -81,11 +84,27 @@ def threshold_window(x_normal_max: float, x_limit: float, E_plus: float = 0.0, E
     dx, rn, rs = _nonneg("dx_after", dx_after), _nonneg("reserve_normal", reserve_normal), \
         _nonneg("reserve_safety", reserve_safety)
     lo = xn + ep + et + rn
-    base = (xl - dx) if upper_bound is None else _finite("upper_bound", upper_bound)
-    hi = base - em - et - rs
-    exists = lo < hi
+    if upper_bound is None:
+        bound = ({"status": "valid", "value": xl - dx, "assumptions": ["memoryless sensor, monotone scalar"]}
+                 if sensor_memoryless else
+                 {"status": "not_applicable", "reason": "the sensor filters: the memoryless bound x_limit - dx_after "
+                                                      "does not hold and no dynamic bound was supplied"})
+    elif isinstance(upper_bound, dict):
+        bound = dict(upper_bound)
+        if bound.get("status") not in ("valid", "no_bound", "not_applicable", "invalid"):
+            raise InputValidationError("bound status must be valid, no_bound, not_applicable or invalid",
+                                       field="upper_bound")
+    else:
+        bound = {"status": "valid", "value": _finite("upper_bound", upper_bound), "assumptions": ["declared bound"]}
+    valid = bound["status"] == "valid"
+    hi = (_finite("upper_bound", bound["value"]) - em - et - rs) if valid else None
+    exists = valid and lo < hi
     q = "a nominal threshold that avoids nuisance trips AND protects the limit"
-    if exists:
+    if not valid:
+        st, reasons = Status.UNKNOWN, (Reason.BOUND_INCONCLUSIVE,)
+        detail = (f"no valid protection-side bound ({bound['status']}: {bound.get('reason', '')}): no threshold is "
+                  f"guaranteed to protect the limit - and a missing bound is not replaced by the static one")
+    elif exists:
         st, reasons = Status.FEASIBLE, ()
         detail = f"window ({lo:.6g}, {hi:.6g}]: width {hi - lo:.4g} (before model/measurement reserves)"
     elif tight_attainable:
@@ -99,39 +118,64 @@ def threshold_window(x_normal_max: float, x_limit: float, E_plus: float = 0.0, E
                   f"cannot be guaranteed with these bounds; this is not a proof that no threshold exists - refine "
                   f"the bounds (correlations, attainable trajectories) first")
     out = {"nuisance_lower_bound": lo, "protection_upper_bound": hi, "window_exists": exists,
-           "window_width": hi - lo, "tight_attainable": bool(tight_attainable),
+           "window_width": None if hi is None else hi - lo, "tight_attainable": bool(tight_attainable),
+           "protection_bound": bound,
            "terms": {"x_normal_max": xn, "x_limit": xl, "E_plus": ep, "E_minus": em, "E_theta": et,
-                     "dx_after": dx, "reserve_normal": rn, "reserve_safety": rs, "physics_upper_bound": upper_bound}}
+                     "dx_after": dx, "reserve_normal": rn, "reserve_safety": rs,
+                     "physics_upper_bound": bound.get("value") if valid else None}}
     if candidate is not None:
         c = _finite("candidate", candidate)
-        out["candidate"] = {"theta_nom": c, "no_nuisance_guaranteed": c > lo, "protection_guaranteed": c <= hi}
-    out["claim"] = Claim("threshold_window", st, q, "sufficient-condition bounds (monotone scalar, memoryless sensor)",
-                         reasons=reasons, evidence=(Evidence.make(EvidenceKind.ANALYTIC_BOUND, detail),),
-                         detail=detail).to_dict()
+        out["candidate"] = {"theta_nom": c, "no_nuisance_guaranteed": c > lo,
+                            "protection_guaranteed": bool(valid and c <= hi)}
+    out["claim"] = Claim("threshold_window", st, q, "sufficient-condition bounds (monotone scalar; sensor dynamics in "
+                         "the bound's assumptions)", reasons=reasons,
+                         evidence=(Evidence.make(EvidenceKind.ANALYTIC_BOUND, detail),), detail=detail).to_dict()
     return out
 
 
 def ov_trigger_bound(C_min_F: float, V_lim_min_V: float, P0_W: float, t_delay_s: float, t_ramp_s: float = 0.0,
-                     E_extra_J: float = 0.0, E_reserve_J: float = 0.0) -> dict:
-    """Highest physical trigger voltage from which the declared post-trigger energy still fits below V_lim.
+                     E_extra_J: float = 0.0, E_reserve_J: float = 0.0, tau_filter_s: float = 0.0,
+                     V_start_min_V: float | None = None) -> dict:
+    """Highest trigger voltage from which the declared post-trigger energy still fits below V_lim (review R2 PD-01).
 
     E_after = P0 t_delay + P0 t_ramp / 2 (constant power until the reaction starts, then a linear ramp to zero);
     V_tr,max = sqrt(V_lim^2 - 2 (E_after + E_extra + E_reserve) / C_min).  E_extra is only the energy of paths
-    NOT already contained in the integrated DC-port power (no double counting of magnetic/rotor energy).
+    NOT already contained in the integrated DC-port power.  A first-order sensor filter is not a pure delay: with
+    the filter settled at the fault start, its lag is at most (max slope) x tau, and the max slope of
+    V = sqrt(V0^2 + 2 P0 t / C) is P0 / (C V_start); the MEASURED trigger bound is V_tr,max - lag.  The result
+    carries its validity: a radicand <= 0 or an unknown start voltage with a filter is "no_bound" (UNKNOWN unless
+    the energy bound is tight and attainable) - never a static fallback.
     """
     C = _pos("C_min_F", C_min_F)
     Vl = _pos("V_lim_min_V", V_lim_min_V)
     P0 = _nonneg("P0_W", P0_W)
     td, tr = _nonneg("t_delay_s", t_delay_s), _nonneg("t_ramp_s", t_ramp_s)
     ex, er = _nonneg("E_extra_J", E_extra_J), _nonneg("E_reserve_J", E_reserve_J)
+    tau = _nonneg("tau_filter_s", tau_filter_s)
     e_after = P0 * td + 0.5 * P0 * tr
     rad = Vl * Vl - 2.0 * (e_after + ex + er) / C
-    return {"E_after_J": e_after, "E_extra_J": ex, "E_reserve_J": er, "radicand_V2": rad,
-            "V_trigger_max_V": math.sqrt(rad) if rad > 0 else None,
-            "immediate_ramp_E_J": 0.5 * P0 * (td + tr),
-            "note": ("radicand <= 0: no positive trigger voltage is guaranteed by this bound (UNKNOWN unless the "
-                     "energy bound is tight and attainable)" if rad <= 0 else
-                     "treating the whole delay as an immediate ramp would understate E_after (optimistic)")}
+    out = {"E_after_J": e_after, "E_extra_J": ex, "E_reserve_J": er, "radicand_V2": rad,
+           "V_trigger_max_V": math.sqrt(rad) if rad > 0 else None, "immediate_ramp_E_J": 0.5 * P0 * (td + tr),
+           "tau_filter_s": tau, "filter_lag_bound_V": 0.0}
+    assumptions = ["constant pre-reaction power P0 until the reaction, then the declared linear ramp",
+                   "confirmation within the declared samples after the measured crossing (monotone rise)"]
+    if rad <= 0:
+        out.update(status="no_bound", value=None,
+                   reason="radicand <= 0: the declared post-trigger energy alone exceeds the capacitor margin, no "
+                          "positive trigger voltage is guaranteed by this bound")
+        return out
+    lag = 0.0
+    if tau > 0:
+        if V_start_min_V is None or _finite("V_start_min_V", V_start_min_V) <= 0:
+            out.update(status="no_bound", value=None,
+                       reason="filtered sensor: the lag bound needs the lowest voltage of the pre-detection rise")
+            return out
+        lag = P0 / (C * float(V_start_min_V)) * tau
+        assumptions.append(f"first-order filter settled at the fault start: lag <= P0 / (C V_start) x tau = "
+                           f"{lag:.4g} V")
+    out.update(status="valid", value=math.sqrt(rad) - lag, filter_lag_bound_V=lag, assumptions=assumptions,
+               note="treating the whole delay as an immediate ramp would understate E_after (optimistic)")
+    return out
 
 
 def ov_peak_after_trigger(C_F: float, V_trigger_V: float, E_after_J: float) -> float:
@@ -155,6 +199,7 @@ class Sensor:
     confirm_samples: int = 1
     exec_delay_s: float = 0.0
     comparator: str = ">="
+    initial_state: float | None = None     # filter state at t = 0 (None: settled at the plant's initial value)
 
     def __post_init__(self):
         _finite("gain_error", self.gain_error)
@@ -169,6 +214,8 @@ class Sensor:
         _nonneg("exec_delay_s", self.exec_delay_s)
         if self.comparator not in (">", ">="):
             raise InputValidationError("comparator must be '>' or '>='", field="comparator")
+        if self.initial_state is not None:
+            _finite("initial_state", self.initial_state)
 
 
 @dataclass(frozen=True)
@@ -262,14 +309,34 @@ def _first_crossing(t, v, level):
     return float(t[k - 1] + (level - v0) * (t[k] - t[k - 1]) / (v1 - v0)) if v1 != v0 else float(t[k])
 
 
+def _detect(samples_t, samples_y, threshold: float, comparator: str, n: int):
+    """First confirmation (n consecutive samples; a false sample resets the counter) and the first sample."""
+    flags = samples_y > threshold if comparator == ">" else samples_y >= threshold
+    count, t_first = 0, None
+    for tk, f in zip(samples_t, flags):
+        if f:
+            count += 1
+            if t_first is None:
+                t_first = float(tk)
+            if count >= n:
+                return float(tk), t_first, flags
+        else:
+            count, t_first = 0, None
+    return None, None, flags
+
+
 def simulate(plant: Plant, sensor: Sensor, threshold: float, limit: float, horizon_s: float,
              action_delay_s: float = 0.0, threshold_error: float = 0.0, dt_s: float | None = None,
              release_threshold: float | None = None) -> dict:
-    """One causal trace: detection on sampled measurements, action after the delays, physical consequence.
+    """One causal trace on [0, horizon]: detection on sampled measurements, action after the delays, physical
+    consequence (review R2 PD-04 / PD-07).
 
     ``threshold_error`` shifts the *actual* comparator threshold (theta_true = theta_nom + error).
     The detector counter resets on every false sample; the action becomes effective at
-    t_confirm + exec_delay + action_delay.  The trajectory is re-evaluated with that action time.
+    t_confirm + exec_delay + action_delay.  An action after the horizon is scheduled-but-not-observed: the grid,
+    the peak and every event stay inside the horizon.  The returned samples are the measurements of the ACTUAL
+    trajectory (the no-action counterfactual is a separate field); the release instant is read from the sensed
+    samples, not from the physical variable.
     """
     H = _pos("horizon_s", horizon_s)
     th = _finite("threshold", threshold) + _finite("threshold_error", threshold_error)
@@ -280,46 +347,43 @@ def simulate(plant: Plant, sensor: Sensor, threshold: float, limit: float, horiz
     Ts = sensor.period_s
     dt = dt_s or min(Ts / 20.0, H / 4000.0, (sensor.tau_filter_s / 20.0) if sensor.tau_filter_s > 0 else math.inf)
     samples = np.arange(sensor.phase_s, H + 1e-15, Ts)
-    grid = np.unique(np.concatenate([np.arange(0.0, H + dt / 2, dt), samples, [H]]))
+    samples = samples[samples <= H]
+    grid = np.unique(np.concatenate([np.arange(0.0, H, dt), samples, [H]]))
+    grid = grid[grid <= H]
     x_free = plant.x(grid, math.inf)
-    y_free = (1.0 + sensor.gain_error) * _filter(grid, x_free, sensor.tau_filter_s, x_free[0]) + sensor.offset
-    ys = np.interp(samples, grid, y_free)
-    flags = ys > th if sensor.comparator == ">" else ys >= th
-    count, t_first, t_confirm = 0, None, None
-    for tk, f in zip(samples, flags):
-        if f:
-            count += 1
-            if t_first is None:
-                t_first = float(tk)
-            if count >= sensor.confirm_samples:
-                t_confirm = float(tk)
-                break
-        else:
-            count = 0                   # a false sample resets the confirmation counter
-            t_first = None
+    y0 = x_free[0] if sensor.initial_state is None else sensor.initial_state
+    y_free = (1.0 + sensor.gain_error) * _filter(grid, x_free, sensor.tau_filter_s, y0) + sensor.offset
+    ys_free = np.interp(samples, grid, y_free)
+    t_confirm, t_first, _ = _detect(samples, ys_free, th, sensor.comparator, sensor.confirm_samples)
     t_act = math.inf if t_confirm is None else t_confirm + sensor.exec_delay_s + ad
-    if not math.isinf(t_act):
+    observed = not math.isinf(t_act) and t_act <= H
+    if observed:
         grid = np.unique(np.concatenate([grid, [t_act]]))
-    x = plant.x(grid, t_act)
-    y = (1.0 + sensor.gain_error) * _filter(grid, x, sensor.tau_filter_s, x[0]) + sensor.offset
+    x = plant.x(grid, t_act if observed else math.inf)
+    y = (1.0 + sensor.gain_error) * _filter(grid, x, sensor.tau_filter_s, y0) + sensor.offset
+    ys = np.interp(samples, grid, y)                     # the ACTUAL measured samples
+    flags = ys > th if sensor.comparator == ">" else ys >= th
     k_pk = int(np.argmax(x))
     t_limit = _first_crossing(grid, x, lim)
     t_xcross = _first_crossing(grid, x, th)
     t_ycross = _first_crossing(grid, y, th)
     rel = None
-    if release_threshold is not None and t_confirm is not None:
-        after = grid > t_act
-        below = np.flatnonzero(after & (x < _finite("release_threshold", release_threshold)))
-        rel = None if below.size == 0 else float(grid[below[0]])
-    protected = t_limit is None
+    if release_threshold is not None and observed:
+        r_th = _finite("release_threshold", release_threshold)
+        below = np.flatnonzero((samples > t_act) & (ys < r_th))
+        rel = None if below.size == 0 else float(samples[below[0]])
     return {
         "t_s": grid, "x": x, "y": y, "samples_t_s": samples, "samples_y": ys, "sample_flags": flags,
+        "no_action_samples_y": ys_free,
         "events": {"t_xcross_s": t_xcross, "t_ycross_s": t_ycross, "t_first_sample_s": t_first,
-                   "t_confirm_s": t_confirm, "t_action_effective_s": None if math.isinf(t_act) else t_act,
-                   "t_limit_s": t_limit, "t_release_s": rel,
+                   "t_confirm_s": t_confirm, "t_action_effective_s": t_act if observed else None,
+                   "t_action_scheduled_s": None if math.isinf(t_act) else t_act, "action_observed": observed,
+                   "t_limit_s": t_limit, "t_release_sensed_s": rel, "t_release_s": rel,
                    "peak": float(x[k_pk]), "t_peak_s": float(grid[k_pk])},
-        "threshold_true": th, "limit": lim, "protected": protected,
+        "threshold_true": th, "limit": lim, "protected": t_limit is None, "horizon_s": H,
         "detected": t_confirm is not None,
+        "sensor_initial_state": {"value": float(y0), "basis": "declared" if sensor.initial_state is not None else
+                                 "settled at the plant's initial value (default)"},
     }
 
 
@@ -354,16 +418,36 @@ def _row(pid, item, status, detail, evidence=""):
             "detail": detail, "evidence": evidence}
 
 
+def _containment(plant: Plant, x_act: float, limit: float) -> tuple[float | None, str]:
+    """Exact supremum of the variable after the action for the native plants (None: not available)."""
+    if plant.kind == "thermal_1node":
+        T_eq = plant.p("T_coolant_C") + plant.p("R_K_per_W") * plant.p("P_after_W", 0.0)
+        return max(x_act, T_eq), (f"one-node exact solution: after the action T(t) moves monotonically from "
+                                  f"{x_act:.6g} toward the equilibrium {T_eq:.6g}, so it never exceeds "
+                                  f"max({x_act:.6g}, {T_eq:.6g})")
+    if plant.kind == "capacitor_energy":
+        C, P0, tr = plant.p("C_F"), plant.p("P0_W"), plant.p("t_ramp_s", 0.0)
+        v = math.sqrt(max(x_act * x_act + 2.0 * P0 * 0.5 * tr / C, 0.0)) if P0 > 0 else x_act
+        return v, "exact energy balance: the net power ramps to zero after the action, the voltage then stays constant"
+    return x_act, "the ramp plant is frozen after the action"
+
+
 def protection_review(plant: Plant, sensor: Sensor, fault_threshold: float, limit: float, horizon_s: float,
                       action_delay_s: float = 0.0, E_theta: float = 0.0, normal_plants: tuple = (),
                       warning_threshold: float | None = None, warning_needed_s: float | None = None,
                       release_threshold: float | None = None, x_normal_max: float | None = None,
                       tight_attainable: bool = False, hw_path: str | None = None,
-                      upper_bound: float | None = None, dx_after: float = 0.0, phases: int = 16) -> dict:
+                      upper_bound=None, dx_after: float = 0.0, phases: int = 16,
+                      warning_confirm_samples: int | None = None, require_immediate_reversal: bool = False,
+                      threshold_errors_independent: bool = False) -> dict:
     """Review of one threshold set on causal trajectories; every row states its evidence level.
 
     Sensor error extremes are applied as separate traces: the protection trace reads LOW (under-read:
     -|gain|, -|offset|, threshold +E_theta), the nuisance trace reads HIGH (over-read, threshold -E_theta).
+    The warning lead is evaluated on the SAME trace as the fault reaction it precedes (same plant, sensor
+    realisation and sample phase), minimised over the sampled realisations with its own witness (review R2 PD-02).
+    The threshold tolerance E_theta shifts both comparators together (one error set) unless
+    ``threshold_errors_independent`` declares independent comparators (then warning late, fault early).
     """
     rows = []
     g, o = abs(sensor.gain_error), abs(sensor.offset)
@@ -408,47 +492,91 @@ def protection_review(plant: Plant, sensor: Sensor, fault_threshold: float, limi
         rows.append(_row("PROT-04", "fault protection before the physical limit", Status.INFEASIBLE,
                          f"worst phase peak {sw['worst_peak']:.6g} >= limit {limit:.6g} (confirmation alone is not "
                          f"protection)", "causal simulation witness"))
-    # PROT-02 warning usefulness
+    # PROT-02 warning usefulness: on each realisation the warning and the fault detector read the SAME samples of
+    # the same trace; the warning does not act on the plant; the minimum lead over realisations is the claim
     if warning_threshold is not None and warning_needed_s is not None:
-        wr = simulate(plant, under, warning_threshold, limit, horizon_s, 0.0, +E_theta)
-        tw = wr["events"]["t_confirm_s"]
-        tl = base["events"]["t_limit_s"]
-        t_fault = base["events"]["t_confirm_s"]
-        ref = t_fault if t_fault is not None else tl
-        if tw is None:
-            rows.append(_row("PROT-02", "warning usefulness", Status.INFEASIBLE, "warning never confirmed"))
-        elif ref is None:
+        nw = sensor.confirm_samples if warning_confirm_samples is None else int(warning_confirm_samples)
+        if nw < 1:
+            raise InputValidationError("warning_confirm_samples must be >= 1", field="warning_confirm_samples")
+        worst = None
+        n_ph = max(1, int(phases))
+        shifts = ((E_theta, -E_theta),) if threshold_errors_independent else ((E_theta, E_theta), (-E_theta, -E_theta))
+        n_real = 0
+        for name, sen in (("under-reading", under), ("over-reading", over)):
+            for e_w, e_f in shifts:
+                for i in range(n_ph):
+                    ph = sen.period_s * i / n_ph
+                    n_real += 1
+                    tr_ = simulate(plant, replace(sen, phase_s=ph), fault_threshold, limit, horizon_s,
+                                   action_delay_s, e_f)
+                    t_f = tr_["events"]["t_confirm_s"]
+                    ref = t_f if t_f is not None else tr_["events"]["t_limit_s"]
+                    t_w, _, _ = _detect(tr_["samples_t_s"], tr_["samples_y"], warning_threshold + e_w,
+                                        sen.comparator, nw)
+                    if ref is None and t_w is None:
+                        continue
+                    lead = -math.inf if t_w is None else (math.inf if ref is None else ref - t_w)
+                    if worst is None or lead < worst["lead_s"]:
+                        worst = {"lead_s": lead, "phase_s": ph, "sensor": name, "t_warning_s": t_w,
+                                 "t_reference_s": ref, "threshold_errors": [e_w, e_f]}
+        if worst is None:
+            rows.append(_row("PROT-02", "warning usefulness", Status.UNKNOWN,
+                             "neither warning, fault nor limit reached in the horizon on any sampled realisation"))
+        elif worst["t_warning_s"] is None:
+            rows.append(_row("PROT-02", "warning usefulness", Status.INFEASIBLE,
+                             f"no warning before the fault reaction on the {worst['sensor']} sensor at sample phase "
+                             f"{worst['phase_s']:.4g} s (same trace)", "causal simulation witness"))
+        elif math.isinf(worst["lead_s"]):
             rows.append(_row("PROT-02", "warning usefulness", Status.FEASIBLE,
-                             f"warning at {tw:.4g} s; neither fault nor limit reached in the horizon"))
+                             f"warning confirmed; neither fault nor limit reached in the horizon"))
         else:
-            avail = ref - tw
-            st = Status.FEASIBLE if avail >= warning_needed_s else Status.INFEASIBLE
-            rows.append(_row("PROT-02", "warning usefulness", st,
-                             f"warning confirmed {avail * 1e3:.4g} ms before the fault reaction (needed "
-                             f"{warning_needed_s * 1e3:.4g} ms)"))
+            ok = worst["lead_s"] >= warning_needed_s
+            rows.append(_row("PROT-02", "warning usefulness", Status.FEASIBLE if ok else Status.INFEASIBLE,
+                             f"minimum lead {worst['lead_s'] * 1e3:.4g} ms over {n_real} sampled realisations (needed "
+                             f"{warning_needed_s * 1e3:.4g} ms; witness: {worst['sensor']} sensor, sample phase "
+                             f"{worst['phase_s']:.4g} s, warning and fault on the same samples)",
+                             "causal simulation, sampled phases" if ok else "causal simulation witness"))
     else:
         rows.append(_row("PROT-02", "warning usefulness", Status.UNKNOWN, "no warning threshold / required "
                          "intervention time declared"))
-    # PROT-03 derating effectiveness (does the action reverse the rise before the limit?)
+    # PROT-03 derating / reaction effectiveness: the declared objective is containment below the limit (exact
+    # supremum after the action for the native plants); an immediate reversal is a separate, optional requirement
     ev = base["events"]
     if ev["t_action_effective_s"] is None:
-        rows.append(_row("PROT-03", "derating / reaction effectiveness", Status.UNKNOWN, "no action within the horizon"))
+        rows.append(_row("PROT-03", "derating / reaction effectiveness", Status.UNKNOWN,
+                         "no action effective within the horizon" + (
+                             f" (scheduled at {ev['t_action_scheduled_s']:.4g} s: not observed)"
+                             if ev.get("t_action_scheduled_s") is not None else "")))
     else:
-        t, x = base["t_s"], base["x"]
-        after = t >= ev["t_action_effective_s"]
-        dxdt = np.gradient(x[after], t[after]) if after.sum() > 2 else np.array([0.0])
-        reversed_ = bool(np.any(dxdt < 0)) or float(np.max(dxdt)) <= 0
-        ok = reversed_ and base["protected"]
-        rows.append(_row("PROT-03", "derating / reaction effectiveness", Status.FEASIBLE if ok else Status.INFEASIBLE,
-                         ("the variable stops rising after the action at "
-                          f"{ev['t_action_effective_s']:.4g} s and stays below the limit" if ok else
-                          "after the action the variable keeps rising or crosses the limit (an earlier warning is "
-                          "not evidence that the derating works)"), "causal simulation"))
+        ta = ev["t_action_effective_s"]
+        x_act = float(np.interp(ta, base["t_s"], base["x"]))
+        sup, how = _containment(plant, x_act, limit)
+        contained = sup < limit and base["protected"]
+        det = (f"after the action at {ta:.4g} s the variable is bounded by {sup:.6g} {'<' if sup < limit else '>='} "
+               f"limit {limit:.6g} ({how})")
+        st = Status.FEASIBLE if contained else Status.INFEASIBLE
+        if require_immediate_reversal and plant.kind == "thermal_1node":
+            T_eq = plant.p("T_coolant_C") + plant.p("R_K_per_W") * plant.p("P_after_W", 0.0)
+            if x_act < T_eq:
+                st = Status.INFEASIBLE
+                det += f"; immediate reversal required but T keeps rising toward {T_eq:.6g}"
+        rows.append(_row("PROT-03", "derating / reaction effectiveness", st, det, "exact post-action solution"))
     # PROT-05 threshold feasibility (conservative window)
     if x_normal_max is not None:
         win = threshold_window(x_normal_max, limit, E_plus=o + g * abs(x_normal_max), E_minus=o + g * abs(limit),
                                E_theta=E_theta, dx_after=dx_after, tight_attainable=tight_attainable,
-                               upper_bound=upper_bound, candidate=fault_threshold)
+                               upper_bound=upper_bound, candidate=fault_threshold,
+                               sensor_memoryless=sensor.tau_filter_s == 0)
+        prot04 = next(r for r in rows if r["id"] == "PROT-04")
+        if win["candidate"]["protection_guaranteed"] and prot04["status"] == "INFEASIBLE":
+            # a sufficient guarantee and an admissible failing trajectory of the same declared model cannot coexist
+            win["candidate"]["protection_guaranteed"] = False
+            win["candidate"]["contradicted_by"] = prot04["detail"]
+            win["claim"] = Claim("threshold_window", Status.UNKNOWN, win["claim"]["quantity"], win["claim"]["scope"],
+                                 reasons=(Reason.CONFLICTING_EVIDENCE,),
+                                 detail="the bound claims protection but a trajectory of the same declared model "
+                                        "crosses the limit (PROT-04): the bound's assumptions do not hold for this "
+                                        "scenario - no guarantee").to_dict()
         rows.append(_row("PROT-05", "threshold feasibility window", win["claim"]["status"], win["claim"]["detail"],
                          "sufficient-condition bounds"))
     else:
@@ -462,10 +590,10 @@ def protection_review(plant: Plant, sensor: Sensor, fault_threshold: float, limi
                              "release threshold is not below the assert threshold: no hysteresis"))
         elif ev["t_release_s"] is None:
             rows.append(_row("PROT-06", "recovery (hysteresis, re-trigger)", Status.UNKNOWN,
-                             "the variable does not fall below the release threshold in the horizon"))
+                             "the sensed samples do not fall below the release threshold in the horizon"))
         else:
             rows.append(_row("PROT-06", "recovery (hysteresis, re-trigger)", Status.UNKNOWN,
-                             f"release condition met at {ev['t_release_s']:.4g} s; restoring authority needs the "
+                             f"sensed release condition at {ev['t_release_s']:.4g} s; restoring authority needs the "
                              f"declared dwell, latch and restart rules (not modelled natively)"))
     else:
         rows.append(_row("PROT-06", "recovery (hysteresis, re-trigger)", Status.UNKNOWN, "no release threshold declared"))

@@ -100,7 +100,9 @@ def test_mission_api_runs_through_the_module_model():
     from traction_workbench import api
     r = api.lifetime({})
     assert r["reversals"] > 3 and r["max_range_K"] > 0
-    assert all(s["P_hot_device_W"] > 0 for s in r["segments"])
+    # every loaded segment heats; the 0 rpm / 0 N·m segment carries no current and so no loss (review R2 PT-02)
+    assert all((s["P_hot_device_W"] > 0) == (s["torque_Nm"] != 0.0) for s in r["segments"])
     assert r["damage"]["claim"]["status"] == "UNKNOWN"                   # no supplier model in the example
+    assert set(r["devices"]) == {"upper_igbt", "upper_diode", "lower_igbt", "lower_diode"}     # one history per die
     tr = api.lifetime({"trace": {"t_s": [0, 1, 2, 3, 4], "T_C": [60, 100, 60, 100, 60]}})
     assert tr["source"] == "imported Tj trace" and tr["max_range_K"] == 40.0

@@ -32,6 +32,7 @@ from .models import (
     RotationalLossModel,
     TemperatureDependence,
     VoltageModel,
+    WindingDefinition,
 )
 from .requirement import Requirement
 from .scenario import DcSourceLimits, Scenario
@@ -178,7 +179,10 @@ def drive_from_dict(d: dict, conv: Conversions | None = None) -> DriveModel:
         reference_winding_temp_C=temps.get("winding_C"), reference_magnet_temp_C=temps.get("magnet_C"),
         rs_temperature=None if not rs_t else TemperatureDependence(rs_t["coeff_per_K"], tuple(rs_t["valid_C"]), rs_t["basis"]),
         psi_temperature=None if not psi_t else TemperatureDependence(psi_t["coeff_per_K"], tuple(psi_t["valid_C"]), psi_t["basis"]),
-        fidelity=Fidelity(m.get("fidelity", fid.value)))
+        fidelity=Fidelity(m.get("fidelity", fid.value)),
+        winding=None if not m.get("winding") else WindingDefinition(
+            **{k: m["winding"][k] for k in ("Q", "p", "y", "parallel_paths", "turns_per_coil") if k in m["winding"]},
+            basis=str(m["winding"].get("basis", ""))))
     iv = _req(d, "inverter", "drive")
     topo = str(iv.get("topology", "single_vsi")).strip().lower()
     if topo not in SINGLE_VSI_NAMES:
@@ -271,7 +275,7 @@ def requirement_from_dict(d: dict, conv: Conversions, pole_pairs: int | None = N
 
 
 def rating_from_dict(d: dict, conv: Conversions):
-    from .analysis.rating import RatingEnvelope
+    from .analysis.rating import RatingApproval, RatingEnvelope
     dur = _req(d, "duration", "rating")
     dsec = math.inf if dur == "continuous" else quantity(dur, "time", "rating.duration", conv)
     sp = speed_rpm(_req(d, "speed", "rating"), "rating.speed", conv, None, True)
@@ -286,7 +290,10 @@ def rating_from_dict(d: dict, conv: Conversions):
         provenance=provenance_from_dict(d.get("provenance"), "rating.provenance"),
         min_braking_torque_Nm=None if tb is None else tuple(quantity(tb, "torque", "rating.min_braking_torque", conv, True)),
         conditions=tuple(conds), condition_tolerances=tuple((d.get("condition_tolerances") or {}).items()),
-        interpolation=d.get("interpolation", "conservative"), evidence_kind=d.get("evidence_kind", "supplier_rated"))
+        interpolation=d.get("interpolation", "conservative"), evidence_kind=d.get("evidence_kind", "supplier_rated"),
+        approval=None if not d.get("approval") else RatingApproval(**{
+            k: v for k, v in d["approval"].items()
+            if k in ("state", "evidence_id", "evidence_revision", "intended_use", "approved_by")}))
 
 
 @dataclass

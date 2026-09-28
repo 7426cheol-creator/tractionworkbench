@@ -254,6 +254,26 @@ def run_self_test(app, out_dir) -> int:
         check("machine:sizing", mc.last_size is not None and
               all(abs(r["check_T_Nm"] - mc.last_size["T_Nm"]) < 1e-9 for r in mc.last_size["rows"]))
         visit("model", 7, [], [(None, "18_model")])
+        # project data package (R2): identity, consistency, every result names its product data, a revision switch
+        # reloads the pages and marks older results stale
+        pj = visit("project", 0, [], [(None, "18b_project")])
+        check("project:identity", pj.last_check["status"] == "OK" and win.state.project.id == "SYNTH-TRACTION-200KW",
+              pj.last_check["status"])
+        uses = {k: u for pg in win.usages.values() for k, u in pg.items()}
+        check("project:usage", len(uses) >= 20 and all(u.get("project_digest") for u in uses.values())
+              and uses.get("emi", {}).get("local_edits") == [], str(sorted(uses)))
+        import copy as _copy
+        from ..examples import SYNTHETIC_PROJECT
+        from ..project import Project, builtin_project
+        d = _copy.deepcopy(SYNTHETIC_PROJECT)
+        d["project"]["revision"] = "SELFTEST"
+        d["sections"]["controller"]["data"]["deadtime_us"] = 1.2
+        win.state.set_project(Project.from_dict(d))
+        emi_pg = visit("emi", 0, [], [(None, "18c_project_stale")])
+        check("project:switch", emi_pg.e_td.value() == 1.2 and win.banners["emi"].property("state") == "stale"
+              and win.banners["protection"].property("state") != "stale", win.banners["emi"].text())
+        win.state.set_project(builtin_project())
+        check("project:restore", win.banners["emi"].property("state") != "stale" and emi_pg.e_td.value() == 1.5)
         vv = visit("verification", 8, ["run"], [(None, "19_verification")])
         check("acceptance", "PASS" in vv.summary.text() and "MISMATCH" not in vv.summary.text(), vv.summary.text())
         xp = vv.export_exchange(str(out / "twb_exchange.json"))

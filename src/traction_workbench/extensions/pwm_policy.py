@@ -509,16 +509,93 @@ def differential_inductances(drive, scenario, id_A: float, iq_A: float, dI_A: fl
     return {"d": Ld, "q": Lq}
 
 
-def axis_margins(loop, tau_s: float, fsw_Hz: float, plant_L: dict | None = None, updates_per_period: int = 1) -> dict:
-    """Phase margin per axis with the DECLARED gains on the PLANT inductance (the machine's differential inductance
-    at the operating point when given, else the design value); the binding axis is the minimum."""
+def sampled_loop(loop: CurrentLoop, fsw_Hz: float, tc: "TimingConfig", plant_L_H: float | None = None) -> dict:
+    """The IMPLEMENTED discrete current loop of one axis (review R2 CT-06).
+
+    PI as executed: v_k = Kp e_k + x_k, x_{k+1} = x_k + Ki_d e_k at the update period T (Ki_d = Ki T, or the fixed
+    Ki T_ref); every command applied after the declared delay D = filter + (1 + modulator fraction) T - the SAME
+    chain as the transition replay; the RL plant integrated exactly between applications (the fractional part of D
+    splits the period).  Stability is the spectral radius of the augmented state matrix (< 1); the discrete phase
+    margin is read on the unit circle.  A continuous PI + RL + pure-delay margin is only a screen."""
+    upd = tc.updates_per_period
+    T = 1.0 / (fsw_Hz * upd)
+    if tc.sample_to_latch_s > T:
+        return {"evaluated": False, "reason": "control deadline missed: no sampled loop"}
+    L, R, Kp = (plant_L_H or loop.L_H), loop.R_ohm, loop.Kp
+    Tref = None if loop.reference_fsw_Hz is None else 1.0 / (loop.reference_fsw_Hz * upd)
+    Ki_d = loop.Ki * (T if loop.gain_mapping == "continuous" else Tref)
+    D = tc.filter_delay_s + (1.0 + tc.modulator_delay_fraction) * T
+    d = max(1, int(math.floor(D / T + 1e-12)))
+    delta = min(max(D - d * T, 0.0), T)
+    a = math.exp(-R * T / L)
+
+    def phi(h):
+        return (1.0 - math.exp(-R * h / L)) / R if R > 0 else h / L
+    b2 = phi(T - delta)                                   # v_{k-d} over the last (T - delta)
+    b1 = phi(delta) * math.exp(-R * (T - delta) / L)      # v_{k-d-1} over the first delta, then decaying
+    n = 3 + d                                             # [i_k, x_k, v_{k-1} .. v_{k-d-1}]
+    M = np.zeros((n, n))
+    M[0, 0] = a
+    M[0, d + 1] += b2
+    M[0, d + 2] += b1
+    M[1, 0], M[1, 1] = -Ki_d, 1.0
+    M[2, 0], M[2, 1] = -Kp, 1.0
+    for j in range(1, d + 1):
+        M[2 + j, 1 + j] = 1.0
+    eig = np.linalg.eigvals(M)
+    rho = float(np.max(np.abs(eig)))
+
+    def Lz(w):
+        z = np.exp(1j * w * T)
+        return (Kp + Ki_d / (z - 1.0)) * (b2 + b1 / z) * z ** (-d) / (z - a)
+
+    def phase(w):
+        z = np.exp(1j * w * T)
+        return (np.angle(Kp + Ki_d / (z - 1.0)) + np.angle(b2 + b1 / z) - d * w * T - np.angle(z - a))
+    w = np.logspace(math.log10(1e-6 * math.pi / T), math.log10(math.pi / T * (1 - 1e-9)), 4000)
+    mag = np.abs(Lz(w))
+    idx = np.nonzero((mag[:-1] >= 1.0) & (mag[1:] < 1.0))[0]
+    pm = wc = None
+    if idx.size:
+        lo_, hi_ = w[idx[0]], w[idx[0] + 1]
+        for _ in range(80):
+            mid = math.sqrt(lo_ * hi_)
+            if abs(Lz(mid)) >= 1.0:
+                lo_ = mid
+            else:
+                hi_ = mid
+        wc = math.sqrt(lo_ * hi_)
+        pm = 180.0 + math.degrees(phase(wc))
+    return {"evaluated": True, "spectral_radius": rho, "stable": rho < 1.0 - 1e-12, "phase_margin_deg": pm,
+            "crossover_Hz": None if wc is None else wc / TWO_PI, "update_period_s": T, "delay_s": D,
+            "delay_samples": d, "delay_fraction": delta / T, "matrix": M.tolist(),
+            "basis": "discrete PI as executed, exact ZOH RL plant with the declared fractional delay"}
+
+
+def axis_margins(loop, tau_s: float, fsw_Hz: float, plant_L: dict | None = None, updates_per_period: int = 1,
+                 timing: "TimingConfig | None" = None) -> dict:
+    """Per axis with the DECLARED gains on the PLANT inductance (the machine's differential inductance at the
+    operating point when given, else the design value).  With the timing chain the sampled loop decides: its
+    stability (spectral radius) and discrete phase margin are the claim; the continuous margin is a screen."""
     out = {}
     for ax, lp in axis_loops(loop).items():
         Lp = (plant_L or {}).get(ax, lp.L_H)
         mg = replace(lp, L_H=Lp).margins(tau_s, lp.effective_Ki(fsw_Hz, updates_per_period))
-        out[ax] = {**mg, "plant_L_H": Lp, "design_L_H": lp.L_H}
+        row = {**mg, "plant_L_H": Lp, "design_L_H": lp.L_H, "continuous_screen_phase_margin_deg":
+               mg.get("phase_margin_deg")}
+        if timing is not None:
+            sl = sampled_loop(lp, fsw_Hz, timing, Lp)
+            if sl["evaluated"]:
+                row.update(phase_margin_deg=sl["phase_margin_deg"], crossover_Hz=sl["crossover_Hz"],
+                           sampled_stable=sl["stable"], spectral_radius=sl["spectral_radius"],
+                           margin_basis=sl["basis"])
+            else:
+                row.update(phase_margin_deg=None, sampled_stable=None, margin_basis=sl["reason"])
+        out[ax] = row
     pms = [v["phase_margin_deg"] for v in out.values() if v.get("phase_margin_deg") is not None]
+    st = [v.get("sampled_stable") for v in out.values()]
     return {"axes": out, "phase_margin_deg": min(pms) if pms else None,
+            "sampled_stable": None if timing is None or any(x is None for x in st) else all(st),
             "binding_axis": min(out, key=lambda a: out[a]["phase_margin_deg"] if out[a].get("phase_margin_deg")
                                 is not None else math.inf) if out else None}
 
@@ -656,10 +733,8 @@ def phase_ripple(Vdc_V: float, m: float, alpha_rad: float, fe_Hz: float, fsw_Hz:
     else:
         kk = t0 = sgn = wgt = np.array([])
         Vl = np.zeros(f.size, complex)
-    # exact integral of v_an: piecewise constant between the (ideal) edges; initial pole levels of clamped legs
-    Ts = T / N
-    d0 = np.clip(_duties(np.array([TWO_PI * fe_Hz * 0.5 * Ts]), m, alpha_rad, modulation), 0.0, 1.0)[:, 0]
-    level = np.array([1.0 if d0[j] >= 1.0 else 0.0 for j in range(3)])
+    # exact integral of v_an: piecewise constant between the (ideal) edges, from each pole's state before t = 0
+    level = np.asarray(e["initial_state"], dtype=float)
     order = np.argsort(t0, kind="stable")
     tb, Fb = [0.0], [0.0]
     v = Vdc_V * (level[0] - level.mean())
@@ -704,14 +779,19 @@ def minimum_pulse(m: float, modulation: str, fsw_Hz: float, min_pulse_s: float, 
                     "voltage and current leave the linear averaged model"}
 
 
-def check_gate_events(edges_hi: list, edges_lo: list, min_pulse_s: float, deadtime_s: float, t_end_s: float) -> dict:
+def check_gate_events(edges_hi: list, edges_lo: list, min_pulse_s: float, deadtime_s: float, t_end_s: float,
+                      t_start_s: float = 0.0) -> dict:
     """Legality of complementary gate signals of one leg (imported or generated): edges are (t, +1/-1).
 
     Detects missing / duplicate edges (two rises in a row), pulses shorter than the minimum and dead-time
-    violations (upper on while lower on, or less than the dead time between them)."""
+    violations (upper on while lower on, or less than the dead time between them).  A pulse the observation window
+    cuts (still on at t_end, or on from t_start) is not a complete pulse: its width is not judged against the
+    minimum (it is counted as open), its overlap with the other switch still is."""
     problems = []
+    open_pulses = 0
 
     def pulses(edges, name):
+        nonlocal open_pulses
         out, level, t_on = [], 0, None
         for t, s in sorted(edges):
             if s == +1:
@@ -722,24 +802,26 @@ def check_gate_events(edges_hi: list, edges_lo: list, min_pulse_s: float, deadti
                 if level == 0:
                     problems.append(f"{name}: falling edge without a rising edge at {t:.9g} s")
                 else:
-                    out.append((t_on, t))
+                    out.append((t_on, t, t_on <= t_start_s + 1e-15))
                 level = 0
         if level == 1:
-            out.append((t_on, t_end_s))
+            out.append((t_on, t_end_s, True))
+        open_pulses += sum(1 for p in out if p[2])
         return out
     hi, lo = pulses(edges_hi, "upper"), pulses(edges_lo, "lower")
     for name, ps in (("upper", hi), ("lower", lo)):
-        for a, b in ps:
-            if b - a < min_pulse_s - 1e-15:
+        for a, b, cut in ps:
+            if not cut and b - a < min_pulse_s - 1e-15:
                 problems.append(f"{name}: pulse {1e9 * (b - a):.1f} ns shorter than the minimum {1e9 * min_pulse_s:.1f} ns "
                                 f"at {a:.9g} s")
-    for a, b in hi:
-        for c, d in lo:
+    for a, b, _ in hi:
+        for c, d, _ in lo:
             gap = max(c - b, a - d)                 # < 0: overlap (shoot-through); < dead time: violation
             if gap < deadtime_s - 1e-15:
                 problems.append(f"dead time {1e9 * gap:.1f} ns < {1e9 * deadtime_s:.1f} ns between upper "
                                 f"[{a:.9g}, {b:.9g}] and lower [{c:.9g}, {d:.9g}]")
-    return {"ok": not problems, "problems": problems, "pulses_upper": len(hi), "pulses_lower": len(lo)}
+    return {"ok": not problems, "problems": problems, "pulses_upper": len(hi), "pulses_lower": len(lo),
+            "open_pulses": open_pulses}
 
 
 def counter_pwm(writes: list, t_end_s: float, f_clk_Hz: float, deadtime_s: float, shadow: bool = True,
@@ -900,7 +982,11 @@ def harmonic_copper_loss(rip: dict, Rs_ohm: float, data: HarmonicLossData | None
 
 @dataclass(frozen=True)
 class PwmLimits:
-    """Mandatory constraints of the comparison (declared; a missing limit is not a pass)."""
+    """Mandatory constraints of the comparison (declared; a missing limit is not a pass).
+
+    Every mandatory check is REQUIRED unless the project declares it not applicable (``not_applicable``, names from
+    ``NA_CHECKS``): a required check that is not established makes the policy UNKNOWN - never ADMISSIBLE, never a
+    Pareto member or 'best' (review R2 CT-01)."""
 
     Tj_max_C: float | None = None
     i_peak_incl_ripple_max_A: float | None = None     # device / over-current protection peak incl. switching ripple
@@ -908,6 +994,19 @@ class PwmLimits:
     phase_margin_min_deg: float | None = None
     pulse_ratio_min: float | None = None              # declared lower bound of the qualified PWM family (no default)
     transition_excursion_max_A: float | None = None   # allowed current excursion caused by a carrier-frequency change
+    not_applicable: tuple = ()                        # mandatory checks declared not applicable for this project
+
+    def __post_init__(self):
+        na = tuple(str(x) for x in (self.not_applicable or ()))
+        bad = [x for x in na if x not in NA_CHECKS]
+        if bad:
+            raise InputValidationError(f"not-applicable checks must be among {NA_CHECKS}: {bad}",
+                                       field="not_applicable")
+        object.__setattr__(self, "not_applicable", na)
+
+
+NA_CHECKS = ("current_sampling", "Tj", "peak_current", "capacitor_rms", "phase_margin", "pulse_ratio",
+             "transitions", "chatter")
 
 
 def _segment_eval(base_drive, cand, seg: dict, fsw: float, coolant_C: float, limits_dc, timing: TimingConfig,
@@ -927,10 +1026,13 @@ def _segment_eval(base_drive, cand, seg: dict, fsw: float, coolant_C: float, lim
         plant = differential_inductances(base_drive, sc, p["id_A"], p["iq_A"])
         out["plant_L_H"] = plant
     if loop is not None and led["total_delay_s"] is not None:
-        am = axis_margins(loop, led["total_delay_s"], fsw, plant, timing.updates_per_period)
+        am = axis_margins(loop, led["total_delay_s"], fsw, plant, timing.updates_per_period, timing)
         out["timing"].update({"phase_margin_deg": am["phase_margin_deg"], "binding_axis": am["binding_axis"],
+                              "sampled_stable": am["sampled_stable"],
                               "axes": {a: {k: v.get(k) for k in ("phase_margin_deg", "crossover_Hz", "plant_L_H",
-                                                                  "design_L_H")} for a, v in am["axes"].items()},
+                                                                  "design_L_H", "sampled_stable", "spectral_radius",
+                                                                  "continuous_screen_phase_margin_deg")}
+                                       for a, v in am["axes"].items()},
                               "plant": "machine differential inductance at the operating point" if plant else
                                        "design inductance (operating point not established)"})
     if p is None:
@@ -961,7 +1063,8 @@ def _segment_eval(base_drive, cand, seg: dict, fsw: float, coolant_C: float, lim
     if bank is not None and fe_true > 0:
         pf = d.get("power_factor")
         phi = math.acos(max(-1.0, min(1.0, float(pf)))) if (pf is not None and math.isfinite(pf)) else 0.0
-        cr = ripple_analysis(p["i_peak_A"], m, phi, fe_true, fsw, vdc, bank, source, modulation)
+        cr = ripple_analysis(p["i_peak_A"], m, phi, fe_true, fsw, vdc, bank, source, modulation,
+                             T_ref_C=coolant_C)             # the capacitor's boundary: the declared coolant
         out["I_cap_rms_A"] = cr["I_cap_rms_A"]
         out["P_cap_W"] = cr["P_cap_W"]
     return out
@@ -1020,8 +1123,11 @@ def evaluate_policies(base_drive, cand, segments: list[dict], policies: list, co
         ch = chatter_risk(pol, measurement_noise) if not pol.is_fixed else {"rows": [], "violations": [], "unknown": []}
         agg["chatter"] = ch
         agg["violations"] += ch["violations"]
-        agg["unverified"] += ch["unknown"]
-        agg["status"] = "VIOLATION" if agg["violations"] else agg["status"]
+        ch_open = [] if "chatter" in lim.not_applicable else ch["unknown"]
+        agg["unverified"] += ch_open
+        agg["unverified_required"] += ch_open
+        agg["status"] = _status(agg["violations"], agg["unverified_required"],
+                                [r for r in rows if r["status"] not in ("FEASIBLE", "INFEASIBLE")], agg["delivered"])
         agg["admissible"] = agg["status"] == "ADMISSIBLE"
         out.append(agg)
     base = out[0]
@@ -1042,8 +1148,25 @@ def evaluate_policies(base_drive, cand, segments: list[dict], policies: list, co
                        "bound"}
 
 
+def _status(viol, required_unknown, open_, delivered) -> str:
+    """VIOLATION on any violated mandatory check; UNKNOWN while a required check or a segment is not established;
+    ADMISSIBLE only when every required check holds (review R2 CT-01)."""
+    if viol:
+        return "VIOLATION"
+    if required_unknown or open_ or not delivered:
+        return "UNKNOWN"
+    return "ADMISSIBLE"
+
+
 def _aggregate(pol, rows, events, lim: PwmLimits, loop: CurrentLoop | None = None) -> dict:
-    viol, unknown = [], []
+    viol, unknown, advisory = [], [], []
+    na = set(lim.not_applicable)
+
+    def need(check: str, text: str):
+        """A required check that is not established (skipped only when declared not applicable)."""
+        if check not in na:
+            unknown.append(text)
+
     delivered = all(r["status"] == "FEASIBLE" for r in rows)
     bad = [k for k, r in enumerate(rows) if r["status"] == "INFEASIBLE"]
     open_ = [k for k, r in enumerate(rows) if r["status"] not in ("FEASIBLE", "INFEASIBLE")]
@@ -1060,25 +1183,26 @@ def _aggregate(pol, rows, events, lim: PwmLimits, loop: CurrentLoop | None = Non
         if smp is None:
             continue
         viol += [f"segment {k + 1} current sampling: {x}" for x in smp["violations"]]
-        unknown += [f"segment {k + 1} current sampling: {x}" for x in smp["unknown"]]
+        for x in smp["unknown"]:
+            need("current_sampling", f"segment {k + 1} current sampling: {x}")
     if rows and all(r.get("sampling") is None for r in rows):
-        unknown.append("current-sampling validity not evaluated (no acquisition configuration declared)")
+        need("current_sampling", "current-sampling validity not evaluated (no acquisition configuration declared)")
     for e in events:
         if not e.get("carrier_change"):
             continue                                 # a rule change at the same carrier frequency
         tr = e.get("transient")
         tag = f"transition {e['from_fsw_Hz'] / 1e3:g} -> {e['to_fsw_Hz'] / 1e3:g} kHz at {e['t_s']:g} s"
         if tr is None:
-            unknown.append(f"{tag}: not replayed (no current loop / operating voltage declared)")
+            need("transitions", f"{tag}: not replayed (no current loop / operating voltage declared)")
             continue
         if not tr.get("evaluated"):
             viol.append(f"{tag}: {tr.get('reason')}") if "deadline" in str(tr.get("reason")) else \
-                unknown.append(f"{tag}: {tr.get('reason')}")
+                need("transitions", f"{tag}: {tr.get('reason')}")
             continue
         if tr["excursion_A"] <= tr.get("band_A", 0.0):
             pass                                     # stays inside the settling band: nothing to judge
         elif lim.transition_excursion_max_A is None:
-            unknown.append(f"{tag}: current excursion {tr['excursion_A']:.4g} A - no allowed excursion declared")
+            need("transitions", f"{tag}: current excursion {tr['excursion_A']:.4g} A - no allowed excursion declared")
         elif tr["excursion_A"] > lim.transition_excursion_max_A:
             why = "integrator reset" if tr.get("output_jump_V") and loop is not None and \
                 axis_loops(loop)["q"].on_transition == "reset" \
@@ -1086,8 +1210,8 @@ def _aggregate(pol, rows, events, lim: PwmLimits, loop: CurrentLoop | None = Non
             viol.append(f"{tag}: current excursion {tr['excursion_A']:.4g} A > {lim.transition_excursion_max_A:g} A "
                         f"({why}; output jump {tr['output_jump_V']:.4g} V)")
         if tr.get("Ki_eff_ratio") is not None and abs(tr["Ki_eff_ratio"] - 1.0) > 1e-9:
-            unknown.append(f"{tag}: fixed discrete gains change the effective Ki by x{tr['Ki_eff_ratio']:.3g} "
-                           "(gain-state jump of the loop dynamics; see the phase margin per segment)")
+            advisory.append(f"{tag}: fixed discrete gains change the effective Ki by x{tr['Ki_eff_ratio']:.3g} "
+                            "(gain-state jump of the loop dynamics; judged by the phase margin per segment)")
 
     def tot(key):
         vals = [r.get(key) for r in rows]
@@ -1103,25 +1227,36 @@ def _aggregate(pol, rows, events, lim: PwmLimits, loop: CurrentLoop | None = Non
     np_ = [r["pulse_ratio"] for r in rows if r.get("pulse_ratio") is not None]
     if any(not r["timing"]["deadline_ok"] for r in rows):
         viol.append("control deadline missed at the scheduled frequency")
+    unstable = [k for k, r in enumerate(rows) if r["timing"].get("sampled_stable") is False]
+    if unstable:
+        viol.append("the implemented (sampled) current loop is unstable in segment(s) " +
+                    ", ".join(str(k + 1) for k in unstable) + " - a positive continuous margin is not sufficient")
     if any(r.get("min_pulse_ok") is False for r in rows):
         viol.append("commanded pulse narrower than the declared minimum")
-    for name, vals, limit, hi in (("Tj", tj, lim.Tj_max_C, True), ("peak current incl. ripple", ipk,
-                                                                    lim.i_peak_incl_ripple_max_A, True),
-                                  ("capacitor RMS current", icap, lim.cap_rms_max_A, True),
-                                  ("current-loop phase margin", pm, lim.phase_margin_min_deg, False),
-                                  ("pulse ratio", np_, lim.pulse_ratio_min, False)):
+    for check, name, vals, limit, hi in (("Tj", "Tj", tj, lim.Tj_max_C, True),
+                                         ("peak_current", "peak current incl. ripple", ipk,
+                                          lim.i_peak_incl_ripple_max_A, True),
+                                         ("capacitor_rms", "capacitor RMS current", icap, lim.cap_rms_max_A, True),
+                                         ("phase_margin", "current-loop phase margin", pm, lim.phase_margin_min_deg,
+                                          False),
+                                         ("pulse_ratio", "pulse ratio", np_, lim.pulse_ratio_min, False)):
+        if check in na:
+            continue
         if limit is None:
-            unknown.append(f"{name}: no limit declared")
+            need(check, f"{name}: no limit declared")
             continue
-        if not vals:
-            unknown.append(f"{name}: not evaluated")
-            continue
+        if not vals or len(vals) < len(rows):
+            need(check, f"{name}: not evaluated in every segment")
+            if not vals:
+                continue
         worst = max(vals) if hi else min(vals)
         if (worst > limit) if hi else (worst < limit):
             viol.append(f"{name} {worst:.4g} vs limit {limit:g}")
-    status = "VIOLATION" if viol else ("UNKNOWN" if (open_ or not delivered) else "ADMISSIBLE")
+    status = _status(viol, unknown, open_, delivered)
     return {"policy": pol.describe(), "segments": rows, "transitions": events, "violations": viol,
-            "unverified": unknown, "status": status, "admissible": status == "ADMISSIBLE", "delivered": delivered,
+            "unverified": unknown + advisory, "unverified_required": unknown, "advisory": advisory,
+            "not_applicable_declared": sorted(na), "status": status, "admissible": status == "ADMISSIBLE",
+            "delivered": delivered,
             "E_inv_J": E_inv, "E_cu_fund_J": E_cu, "E_cu_harm_J": E_h, "E_iron_harm_bound_J": E_fe,
             "Tj_max_C": max(tj) if tj else None, "i_peak_incl_ripple_max_A": max(ipk) if ipk else None,
             "I_cap_rms_max_A": max(icap) if icap else None, "phase_margin_min_deg": min(pm) if pm else None,

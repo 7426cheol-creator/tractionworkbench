@@ -96,7 +96,7 @@ class OewHevPage(QWidget):
 
     # ================================================================== OEW
     def _oew_tab(self):
-        ex = api.EXAMPLE_OEW
+        ex = self.win.state.example("OEW")
         t = ex["topology"]
         split = QSplitter(Qt.Horizontal)
         form = QWidget()
@@ -203,8 +203,12 @@ class OewHevPage(QWidget):
         for w in (self.o_zs_pol,):
             w.setEnabled(not iso)
 
+    def apply_project(self, _project=None):
+        """The OEW bridges use the project's module and switching frequency."""
+        self.o_fsw.setValue(float(self.win.state.example("OEW")["fsw_kHz"]))
+
     def oew_body(self) -> dict:
-        b = copy.deepcopy(api.EXAMPLE_OEW)
+        b = self.win.state.example("OEW")            # the project's module (+ the declared 400 V scaling)
         iso = self.o_kind.currentData() == "isolated"
         lim = lambda d, c: {"discharge_power_max_W": d * 1e3, "charge_power_max_W": c * 1e3,
                             "discharge_current_max_A": INF, "charge_current_max_A": INF}
@@ -519,8 +523,15 @@ class OewHevPage(QWidget):
                                                              for m in res["machines"])),
                 (tr("동시 가능 셀 / 개별 가능 셀", "jointly / separately feasible cells"),
                  f"{res['joint_cells_feasible']} / {res['box_cells_feasible_separately']} ({res['policy']})")]
+        bus = res.get("bus") or {}
+        if bus:
+            rows.append((tr("버스", "bus"), f"{bus.get('topology', '')} — {bus.get('note', '')}"))
         if rq:
+            cb = rq.get("coupled_bus") or {}
+            resid = (" · " + tr("전압/전력 잔차", "voltage / power residual") +
+                     f" {fmt(cb.get('residual_V'), 3)} V / {fmt(cb.get('residual_P_W'), 3)} W") if cb else ""
             rows += [(tr("요구", "request"), f"({fmt(rq['T1_Nm'])}, {fmt(rq['T2_Nm'])}) N·m → {rq['status']} {rq.get('reason') or ''}"),
+                     (tr("버스 전압 (연성 해)", "bus voltage (coupled solution)"), f"{fmt(rq.get('V_bus_V'))} V{resid}"),
                      (tr("가지 P_dc", "branch P_dc"), ", ".join(fmt(x) for x in rq["branch_P_dc_W"]) + " W"),
                      (tr("가지 I_dc", "branch I_dc"), ", ".join(fmt(x) for x in rq["branch_I_dc_A"]) + " A"),
                      (tr("기기 순합 / 배터리 / 순환", "machines net / battery / circulating"),
@@ -557,7 +568,11 @@ class OewHevPage(QWidget):
                              (tr("잉여 전력", "excess power"), f"{fmt(res['P_excess_W'])} W"),
                              (tr("커패시터 여유 에너지", "capacitor margin"), f"{fmt(res['E_margin_J'])} J"),
                              (tr("한계 도달 시간", "time to limit"), f"{fmt(res['time_to_limit_s'])} s"),
-                             (tr("최대 전압", "peak voltage"), f"{fmt(res['V_peak_V'])} V"),
+                             (tr("최대 전압 / 시각", "peak voltage / time"),
+                              f"{fmt(res['V_peak_V'])} V @ {fmt(res.get('t_peak_s'))} s (E {fmt(res.get('E_peak_J'))} J)"),
+                             (tr("모델 영역 끝", "model domain end"),
+                              "—" if res.get("domain_end_s") is None else f"{fmt(res['domain_end_s'])} s " +
+                              tr("(정전력 싱크가 커패시터를 비움)", "(the constant-power sink empties the capacitor)")),
                              (tr("장부", "ledger"), str(res["ledger"]))])
 
     def _show_pl(self, res):

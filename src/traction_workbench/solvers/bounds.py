@@ -118,12 +118,13 @@ class CellBounds:
                "tem_hi": tem_hi * (1 + np.sign(tem_hi) * SAFETY) + SAFETY,
                "v2_lb": v2_lb * (1 - SAFETY), "i2_lb": i2_lb * (1 - SAFETY), "i2_ub": i2_ub * (1 + SAFETY),
                "ok": ok_all}
-        if k.inv_loss is not None:
-            c2 = 1.5 * k.Rs + k.inv_loss.ipk2_coeff_W_per_A2
+        if k.i2_dc is not None:
+            # P_dc bounds through the surrogate's I^2 identity (a pointwise loss model has none: no DC pruning)
+            c2, a0 = k.i2_dc.c2_W_per_A2, k.i2_dc.a0_W
             wm = k.omega_m
             t_lo, t_hi = (tem_lo * wm, tem_hi * wm) if wm >= 0 else (tem_hi * wm, tem_lo * wm)
-            out["pdc_lo"] = t_lo + c2 * i2_lb + k.inv_loss.offset_W - SAFETY * (1 + np.abs(t_lo))
-            out["pdc_hi"] = t_hi + c2 * i2_ub + k.inv_loss.offset_W + SAFETY * (1 + np.abs(t_hi))
+            out["pdc_lo"] = t_lo + c2 * i2_lb + a0 - SAFETY * (1 + np.abs(t_lo))
+            out["pdc_hi"] = t_hi + c2 * i2_ub + a0 + SAFETY * (1 + np.abs(t_hi))
         return out
 
     def _may(self, ev: dict, tem_target: float | None, include_dc: bool) -> np.ndarray:
@@ -137,11 +138,12 @@ class CellBounds:
         if tem_target is not None:
             m &= (ev["tem_lo"] <= tem_target) & (ev["tem_hi"] >= tem_target)
         if include_dc and "pdc_lo" in ev:
-            ptol = s.power_abs_tol_W
-            if k.P_dis_eff is not None:
-                m &= ev["pdc_lo"] <= k.P_dis_eff + max(ptol, s.constraint_rel_tol * abs(k.P_dis_eff))
-            if k.P_chg_eff is not None:
-                m &= ev["pdc_hi"] >= -k.P_chg_eff - max(ptol, s.constraint_rel_tol * abs(k.P_chg_eff))
+            # the witness gate's acceptance set (tolerances included): a cell is pruned only if the gate would
+            # reject every point in it
+            if k.dc_accept_hi_W is not None:
+                m &= ev["pdc_lo"] <= k.dc_accept_hi_W
+            if k.dc_accept_lo_W is not None:
+                m &= ev["pdc_hi"] >= k.dc_accept_lo_W
         return m
 
     @staticmethod

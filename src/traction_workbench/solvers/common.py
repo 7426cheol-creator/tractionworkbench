@@ -64,22 +64,29 @@ def dc_ok(k: DriveKernel, pdc) -> np.ndarray:
     return ok
 
 
-def dc_band_I2(k: DriveKernel, tem_target: float) -> tuple[float, float] | None:
+def dc_band_I2(k: DriveKernel, tem_target: float, nominal: bool = False) -> tuple[float, float] | None:
     """I^2 band compatible with the DC limits along a torque curve.
 
     Along any torque-matching curve P_dc = T_em*omega_m + (1.5*Rs + a2)*I^2 + a0
-    (P_ac = T_em*omega_m + P_cu holds for every flux model), so the DC limits
-    become an interval of I^2.  Returns None when the DC side is undefined.
+    (``DriveKernel.i2_dc``), so the DC limits become an interval of I^2.  The
+    limits are the witness gate's acceptance set (``DriveKernel.dc_accept_*``,
+    tolerances included), so the band excludes nothing the gate accepts.  Returns
+    None without that identity (no loss model, or a pointwise loss model).
+    ``nominal=True`` uses the declared limits without tolerance: that band lies inside the acceptance band and
+    is where a witness is PLACED (a point on the tolerance edge itself can fall out by rounding).
     """
-    if k.inv_loss is None:
+    q = k.i2_dc
+    if q is None:
         return None
-    c2 = 1.5 * k.Rs + k.inv_loss.ipk2_coeff_W_per_A2
-    base = tem_target * k.omega_m + k.inv_loss.offset_W
-    hi = k.P_dis_eff
-    lo = None if k.P_chg_eff is None else -k.P_chg_eff
+    c2 = q.c2_W_per_A2
+    base = tem_target * k.omega_m + q.a0_W
+    if nominal:
+        hi, lo = k.P_dis_eff, (None if k.P_chg_eff is None else -k.P_chg_eff)
+    else:
+        hi, lo = k.dc_accept_hi_W, k.dc_accept_lo_W
     if c2 <= 0:
-        ok_hi = hi is None or base <= hi + _tol(k, hi, k.settings.power_abs_tol_W)
-        ok_lo = lo is None or base >= lo - _tol(k, lo, k.settings.power_abs_tol_W)
+        ok_hi = hi is None or base <= hi
+        ok_lo = lo is None or base >= lo
         return (0.0, math.inf) if (ok_hi and ok_lo) else (math.inf, -math.inf)
     i2_hi = math.inf if hi is None else (hi - base) / c2
     i2_lo = -math.inf if lo is None else (lo - base) / c2

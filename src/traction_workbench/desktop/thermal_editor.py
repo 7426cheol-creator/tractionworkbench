@@ -300,7 +300,7 @@ class NodeEditor(QWidget):
         try:
             R, X, F = self.table.values()
             spec = self.spec()
-            net = api._network(spec, None)
+            net = api.thermal_network_from_dict(spec, None)
             dom = max(net.tau_s)
             self.summary.setText(tr(f"R_th 합계 {sum(R):.5g} K/W · 단 {len(R)}개 · 최장 시정수 {dom:.4g} s · "
                                     f"Z_th(1 s) = {net.zth(1.0):.4g} K/W" + (" · 유량 의존 단 있음" if any(F) else ""),
@@ -364,6 +364,7 @@ class ThermalModelEditor(QWidget):
         for w in (self.validated, self.v_temp, self.v_flow):
             w.toggled.connect(self.changed)
         self.coolant_spec: dict | None = None
+        self.reset_source = None          # () -> spec of the active project (set by the thermal page)
         self.load(api.EXAMPLE_THERMAL)
 
     def _close_tab(self, i):
@@ -409,7 +410,7 @@ class ThermalModelEditor(QWidget):
         self.changed.emit()
 
     def reset(self):
-        self.load(api.EXAMPLE_THERMAL)
+        self.load(self.reset_source() if self.reset_source else api.EXAMPLE_THERMAL)
 
     def spec(self) -> dict:
         nodes = [self.tabs.widget(i).spec() for i in range(self.tabs.count())]
@@ -432,7 +433,7 @@ class ThermalModelEditor(QWidget):
         try:
             with open(path, encoding="utf-8") as f:
                 spec = json.load(f)
-            api._thermal_model(spec, 65.0)          # validate before accepting
+            api.thermal_model_from_dict(spec, 65.0)          # validate before accepting
             self.load(spec)
         except Exception as exc:  # noqa: BLE001
             error_box(self, tr("열 모델 불러오기 실패", "could not load thermal model"), str(exc))

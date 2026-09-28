@@ -14,7 +14,7 @@ from traction_workbench import api
 from traction_workbench.errors import InputValidationError
 from traction_workbench.extensions import pwm_policy as P
 from traction_workbench.extensions.emi import SwitchingSource, pwm_edges
-from traction_workbench.extensions.module_loss import inverter_losses
+from traction_workbench.models.module_loss import inverter_losses
 
 
 @pytest.mark.parametrize("fsw", [5e3, 10e3, 20e3])
@@ -78,6 +78,16 @@ def test_gate_event_checker_catches_overlap_duplicates_and_runts():
     assert not bad["ok"] and "duplicate rising" in txt and "dead time" in txt
     runt = P.check_gate_events([(1e-6, 1), (1.2e-6, -1)], [], 1e-6, 0.0, 10e-6)
     assert not runt["ok"] and "shorter than the minimum" in runt["problems"][0]
+
+
+def test_a_pulse_cut_by_the_observation_window_is_not_a_runt():
+    # [0, 8 us] starts at the window start and [99.5 us, ...) is still on at the window end: both widths are unknown,
+    # neither is judged against the minimum (their dead-time gaps still are)
+    cut = P.check_gate_events([(10e-6, 1), (90e-6, -1)], [(0.0, 1), (8e-6, -1), (99.5e-6, 1)], 1e-6, 1e-6, 100e-6)
+    assert cut["ok"] and cut["open_pulses"] == 2
+    whole = P.check_gate_events([(10e-6, 1), (90e-6, -1)], [(0.0, 1), (8e-6, -1), (95e-6, 1), (95.5e-6, -1)],
+                                1e-6, 1e-6, 100e-6)
+    assert not whole["ok"] and "shorter than the minimum" in whole["problems"][0]
 
 
 def _noisy(mean, sigma, n, seed=1):
@@ -333,5 +343,7 @@ def test_loop_margin_is_checked_on_both_machine_axes():
     assert r["light-load 8 kHz"]["status"] == "VIOLATION"
     per_axis = {p["policy"]["name"]: p for p in api.pwm_policies({})["policies"]}
     ax = per_axis["light-load 8 kHz"]["segments"][1]["timing"]["axes"]
-    assert ax["d"]["phase_margin_deg"] == pytest.approx(ax["q"]["phase_margin_deg"], abs=0.05)
+    # identical in continuous time; the sampled loop's pole-zero cancellation is only approximate (a ~0.1 deg
+    # discretisation difference between the axes with different R / L)
+    assert ax["d"]["phase_margin_deg"] == pytest.approx(ax["q"]["phase_margin_deg"], abs=0.3)
     assert per_axis["light-load 8 kHz"]["status"] == "ADMISSIBLE"

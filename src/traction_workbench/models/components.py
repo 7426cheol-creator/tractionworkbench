@@ -11,7 +11,8 @@ from dataclasses import dataclass, field
 
 from ..errors import InputValidationError
 from .flux import ConstantFluxModel, CurrentBox, FluxMapModel
-from ..validation import finite as _finite, interval as _interval
+from .module_loss import ModuleLossModel
+from ..validation import finite as _finite, integer as _integer, interval as _interval
 from .provenance import DataOrigin, Fidelity, Provenance
 
 SQRT3 = math.sqrt(3.0)
@@ -175,6 +176,11 @@ class VoltageModel:
         }
 
 
+# the declared inverter loss model (exclusive): what the DC-side claims may rest on
+LOSS_QUADRATIC = "quadratic_surrogate"   # InverterLossModel: P_inv = a0 + a2*I^2, a closed-form identity in I^2
+LOSS_MODULE = "datasheet_module"         # ModuleLossModel: datasheet curves, evaluated point by point
+
+
 @dataclass(frozen=True)
 class InverterModel:
     inverter_id: str
@@ -183,11 +189,17 @@ class InverterModel:
     loss: InverterLossModel | None
     switching_frequency_context_Hz: float | None = None
     current_limit_basis: str = "fundamental phase peak (dq norm)"
-    module_loss: object | None = None        # extensions.module_loss.ModuleLossModel (datasheet-based)
+    module_loss: ModuleLossModel | None = None   # datasheet module model (pointwise), exclusive with ``loss``
     module_Tj_C: float | None = None         # junction temperature at which the datasheet curves are evaluated
 
     def __post_init__(self):
+        if self.loss is not None and not isinstance(self.loss, InverterLossModel):
+            raise InputValidationError("inverter.loss must be an InverterLossModel (quadratic surrogate)",
+                                       field="inverter.loss")
         if self.module_loss is not None:
+            if not isinstance(self.module_loss, ModuleLossModel):
+                raise InputValidationError("inverter.module_loss must be a ModuleLossModel (datasheet module)",
+                                           field="inverter.module_loss")
             if self.loss is not None:
                 raise InputValidationError("declare one inverter loss model: the quadratic surrogate OR the "
                                            "datasheet module model (never both summed)", field="inverter.loss")
@@ -205,6 +217,14 @@ class InverterModel:
                 raise InputValidationError("switching frequency must be > 0", field="switching_frequency_context_Hz")
             object.__setattr__(self, "switching_frequency_context_Hz", f)
 
+    @property
+    def loss_kind(self) -> str | None:
+        """The declared inverter loss model: ``LOSS_QUADRATIC`` (P_inv = a0 + a2*I^2, a closed-form identity the
+        certificates use), ``LOSS_MODULE`` (datasheet curves evaluated point by point) or None (DC side undefined)."""
+        if self.module_loss is not None:
+            return LOSS_MODULE
+        return None if self.loss is None else LOSS_QUADRATIC
+
     def describe(self) -> dict:
         return {
             "inverter_id": self.inverter_id,
@@ -213,6 +233,7 @@ class InverterModel:
             "current_limit_basis": self.current_limit_basis,
             "current_limit_note": "fundamental amplitude only; PWM ripple, pulse peak, OC overshoot and SOA are not covered",
             "voltage": self.voltage.describe(),
+            "loss_kind": self.loss_kind,
             "loss": None if self.loss is None else self.loss.describe(),
             "module_loss": None if self.module_loss is None else {
                 "technology": self.module_loss.device.technology, "fsw_Hz": self.module_loss.fsw_Hz,
@@ -279,6 +300,33 @@ class TemperatureDependence:
 
 
 @dataclass(frozen=True)
+class WindingDefinition:
+    """The machine's stator winding as built (double layer, three phases): slots Q, pole pairs p, coil pitch y in
+    slots, parallel paths and turns per coil.  It binds a turns / parallel-path change to THIS machine (review R2,
+    MD-01): without it a k_N is a generic thought experiment, not a redesign of this winding."""
+
+    Q: int
+    p: int
+    y: int
+    parallel_paths: int
+    turns_per_coil: int
+    basis: str = ""
+
+    def __post_init__(self):
+        for name in ("Q", "p", "y", "parallel_paths", "turns_per_coil"):
+            object.__setattr__(self, name, _integer(f"winding.{name}", getattr(self, name), 1))
+        if not (1 <= self.y < self.Q):
+            raise InputValidationError("coil pitch y must satisfy 1 <= y < Q", field="winding.y")
+        if not self.basis.strip():
+            raise InputValidationError("a declared winding needs its basis (drawing / supplier data revision)",
+                                       field="winding.basis")
+
+    def identity(self) -> dict:
+        return {"Q": self.Q, "p": self.p, "y": self.y, "parallel_paths": self.parallel_paths,
+                "turns_per_coil": self.turns_per_coil}
+
+
+@dataclass(frozen=True)
 class MotorModel:
     motor_id: str
     pole_pairs: int
@@ -292,6 +340,7 @@ class MotorModel:
     rs_temperature: TemperatureDependence | None = None
     psi_temperature: TemperatureDependence | None = None
     fidelity: Fidelity = Fidelity.D1
+    winding: WindingDefinition | None = None     # declared stator winding (binds winding changes to this machine)
 
     def __post_init__(self):
         p = self.pole_pairs
@@ -330,6 +379,31 @@ class MotorModel:
         if self.psi_temperature is not None and self.reference_magnet_temp_C is None:
             raise InputValidationError("PM flux temperature coefficient needs a reference magnet temperature",
                                        field="psi_temperature")
+        # physical admissibility over the WHOLE declared validity (review R2, C04): a linear law is checked at its
+        # end points; an ideal Rs = 0 fixture stays allowed, a law that turns a real resistance to <= 0 does not
+        if self.rs_temperature is not None:
+            dep, ref = self.rs_temperature, self.reference_winding_temp_C
+            for t in dep.valid_C:
+                r = rs * (1.0 + dep.coeff_per_K * (t - ref))
+                if r < 0 or (rs > 0 and r <= 0):
+                    raise InputValidationError(
+                        f"the Rs temperature law gives Rs = {r:g} ohm at {t:g} degC inside its declared validity "
+                        f"{list(dep.valid_C)} degC: a winding resistance must stay positive (non-passive law)",
+                        field="rs_temperature")
+        if self.winding is not None:
+            if not isinstance(self.winding, WindingDefinition):
+                raise InputValidationError("winding must be a WindingDefinition", field="winding")
+            if self.winding.p != p:
+                raise InputValidationError(f"the declared winding has p = {self.winding.p}, the motor {p} pole pairs: "
+                                           f"not this machine's winding", field="winding.p")
+        if self.psi_temperature is not None and isinstance(self.flux, ConstantFluxModel):
+            dep, ref = self.psi_temperature, self.reference_magnet_temp_C
+            for t in dep.valid_C:
+                psi = self.flux.psi_pm_Wb * (1.0 + dep.coeff_per_K * (t - ref))
+                if psi < 0:
+                    raise InputValidationError(
+                        f"the PM flux temperature law gives {psi:g} Wb at {t:g} degC inside its declared validity "
+                        f"{list(dep.valid_C)} degC: the magnet flux cannot reverse", field="psi_temperature")
 
     def describe(self) -> dict:
         return {
@@ -345,6 +419,7 @@ class MotorModel:
             "rs_temperature": None if self.rs_temperature is None else vars(self.rs_temperature),
             "psi_temperature": None if self.psi_temperature is None else vars(self.psi_temperature),
             "fidelity": self.fidelity.value,
+            "winding": None if self.winding is None else {**self.winding.identity(), "basis": self.winding.basis},
         }
 
 

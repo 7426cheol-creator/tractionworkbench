@@ -56,9 +56,12 @@ def test_markdown_render(drive, limits):
 
 
 def _rating(duration=10.0, table=(330.0, 330.0, 200.0, 160.0), conditions=(("coolant_temp_C", 65.0),)):
+    from traction_workbench.analysis.rating import ApprovalState, RatingApproval
     prov = Provenance(DataOrigin.SUPPLIER, "test envelope", "A", "supplier-rated (test data)")
     return RatingEnvelope("ENV-10S", "A", duration, (0.0, 6000.0, 9000.0, 12000.0), table, prov,
-                          conditions=conditions, condition_tolerances=(("coolant_temp_C", 1.0),))
+                          conditions=conditions, condition_tolerances=(("coolant_temp_C", 1.0),),
+                          approval=RatingApproval(ApprovalState.APPROVED, "TEST-RS-1", "A",
+                                                  "rating for requirement verification (test)"))
 
 
 def test_duration_needs_matching_envelope(drive, limits):

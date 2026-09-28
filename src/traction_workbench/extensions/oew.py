@@ -33,6 +33,7 @@ import numpy as np
 
 from ..errors import InputValidationError, OutsideModelDomain
 from ..models.components import DriveModel
+from ..models.module_loss import leg_losses_trajectory, positions
 from ..validation import finite as _finite
 from ..physics import DriveKernel
 from ..scenario import DcSourceLimits, Scenario
@@ -130,6 +131,10 @@ class ZeroSequenceModel:
             if n <= 0 or n % 3:
                 raise InputValidationError(f"zero-sequence PM flux harmonic order {n} is not triplen (3, 9, ...)",
                                            field="zero_sequence.psi0_harmonics")
+            if amp < 0:
+                # (-a, phi) and (a, phi + pi) are the same waveform: one canonical representation, so every bound and
+                # status is invariant to how the harmonic was written (review R2 CT-07)
+                amp, ph = -amp, math.fmod(ph + math.pi, 2.0 * math.pi)
             harm.append((n, amp, ph))
         object.__setattr__(self, "L0_H", l0)
         object.__setattr__(self, "psi0_harmonics", tuple(harm))
@@ -390,16 +395,24 @@ def _check_drive_for_oew(drive: DriveModel):
             "declared winding mapping", field="motor.connection")
 
 
-def _i0_trajectory(zs: ZeroSequenceModel, omega_e: float, Rs: float, th: np.ndarray):
-    """Periodic i0 for u0 = 0 (no compensation): L0 di0/dt + R0 i0 = -e0, e0 = omega_e dpsi0/dtheta."""
+def _i0_harmonics(zs: ZeroSequenceModel, omega_e: float, Rs: float) -> list:
+    """(order n, complex amplitude I_n) of the periodic i0 for u0 = 0: L0 di0/dt + R0 i0 = -e0."""
     R0 = Rs if zs.R0_ohm is None else zs.R0_ohm
-    i0 = np.zeros_like(th)
+    out = []
     for n, amp, ph in zs.psi0_harmonics:
         E = 1j * n * omega_e * amp * np.exp(1j * ph)          # e0_n(theta) = Re{E e^{j n theta}}
         Z = R0 + 1j * n * omega_e * zs.L0_H
         if abs(Z) == 0:
             continue
-        I = -E / Z
+        out.append((n, -E / Z))
+    return out
+
+
+def _i0_trajectory(zs: ZeroSequenceModel, omega_e: float, Rs: float, th: np.ndarray):
+    """Periodic i0 for u0 = 0 (no compensation): L0 di0/dt + R0 i0 = -e0, e0 = omega_e dpsi0/dtheta."""
+    R0 = Rs if zs.R0_ohm is None else zs.R0_ohm
+    i0 = np.zeros_like(th)
+    for n, I in _i0_harmonics(zs, omega_e, Rs):
         i0 = i0 + np.real(I * np.exp(1j * n * th))
     return i0, R0
 
@@ -409,7 +422,6 @@ def _bridge_losses(drive: DriveModel, legs_i: np.ndarray, duties: np.ndarray, V:
     quadratic surrogate per bridge as a screening value (not established)."""
     inv = drive.inverter
     if inv.module_loss is not None:
-        from .module_loss import positions, leg_losses_trajectory
         mdl = inv.module_loss
         tot, problems, pos_all = 0.0, [], {}
         cond = sw = 0.0
@@ -524,7 +536,7 @@ def oew_point(drive: DriveModel, topo: OewTopology, speed_rpm: float, id_A: floa
     elif topo.zs_policy == "regulate_i0":
         e0 = lambda t: we * zs.dpsi0(t)
         u0_fn = e0
-        dpsi_bound = abs(we) * sum(n * n * a for n, a, _ in zs.psi0_harmonics)
+        dpsi_bound = abs(we) * sum(n * n * abs(a) for n, a, _ in zs.psi0_harmonics)
         e0v = e0(th)
         zs_info = {"policy": "regulate_i0: u0* = e0 (ideal zero-sequence current control)", "status": "FEASIBLE",
                    "e0_peak_V": float(np.max(np.abs(e0v))), "i0_rms_A": 0.0,
@@ -535,11 +547,22 @@ def oew_point(drive: DriveModel, topo: OewTopology, speed_rpm: float, id_A: floa
                    "e0_peak_V": float(np.max(np.abs(we * zs.dpsi0(th)))),
                    "i0_peak_A": float(np.max(np.abs(i0))), "i0_rms_A": float(np.sqrt(np.mean(i0 ** 2)))}
     # ---------------- voltage allocation (command voltage incl. drop)
-    va = voltage_allocation(Uc, alpha_c, topo, reserve, u0_fn, dpsi_bound, n=max(1024, n_theta))
+    n_max = max((n for n, _a, _p in zs.psi0_harmonics), default=1) if zs is not None else 1
+    # the angular resolution follows the highest harmonic order (16 samples per period of it): no aliasing of a
+    # high-order zero-sequence term onto the grid, and a Lipschitz margin that can certify (review R2 CT-07)
+    va = voltage_allocation(Uc, alpha_c, topo, reserve, u0_fn, dpsi_bound, n=max(1024, n_theta, 16 * n_max))
     # ---------------- currents
     ia, ib, ic = dq0_to_abc(id_A, iq_A, i0, th)
     ph = np.vstack([ia, ib, ic])
-    i_peak = float(np.max(np.abs(ph)))
+    i_peak_sampled = float(np.max(np.abs(ph)))
+    if not np.any(i0):
+        # no zero sequence: the phase peak over EVERY angle is the dq magnitude exactly (review R2 CT-07)
+        i_peak, i_margin, i_basis = I, 0.0, "exact: sqrt(id^2 + iq^2) over every angle (i0 = 0)"
+    else:
+        harm0 = _i0_harmonics(zs, we, k.Rs)
+        L_i = I + sum(n * abs(In) for n, In in harm0)             # |d i_phase / d theta| bound
+        i_peak, i_margin = i_peak_sampled, L_i * (TWO_PI / n_theta) / 2.0
+        i_basis = f"{n_theta} sampled angles + Lipschitz margin {i_margin:.3g} A (i0 harmonics included)"
     i_rms = np.sqrt(np.mean(ph ** 2, axis=1))
     Ilim = topo.bridge_current_limit_A or drive.inverter.current_limit_A_peak
     # ---------------- copper / torque with the zero sequence
@@ -603,10 +626,15 @@ def oew_point(drive: DriveModel, topo: OewTopology, speed_rpm: float, id_A: floa
                      ev=(Evidence.make(EvidenceKind.CERTIFIED_BOUND if vst is Status.FEASIBLE else
                                        EvidenceKind.NUMERICAL_WITNESS,
                                        f"{va['samples']} angles + Lipschitz margin {va['lipschitz_margin_V']:.3g} V"),)))
-    cst = Status.FEASIBLE if i_peak <= Ilim * (1 + 1e-12) else Status.INFEASIBLE
+    if i_peak + i_margin <= Ilim * (1 + 1e-12):
+        cst, crs = Status.FEASIBLE, ()
+    elif i_peak_sampled > Ilim * (1 + 1e-12):
+        cst, crs = Status.INFEASIBLE, (Reason.CONSTRAINT_VIOLATION,)
+    else:
+        cst, crs = Status.UNKNOWN, (Reason.BOUNDARY_WITHIN_TOLERANCE,)
     claims.append(mk("oew_bridge_current", cst, "phase-current peak (incl. i0) within the per-bridge limit",
-                     f"phase peak {i_peak:.5g} A vs {Ilim:.5g} A per bridge (each bridge carries the full winding "
-                     f"current; never halved)", reasons=() if cst is Status.FEASIBLE else (Reason.CONSTRAINT_VIOLATION,)))
+                     f"phase peak {i_peak:.5g} A ({i_basis}) vs {Ilim:.5g} A per bridge (each bridge carries the full "
+                     f"winding current; never halved)", reasons=crs))
     dom = drive.domain
     in_dom = dom.id_A[0] <= id_A <= dom.id_A[1] and dom.iq_A[0] <= iq_A <= dom.iq_A[1] and \
         dom.speed_rpm[0] <= speed_rpm <= dom.speed_rpm[1]
@@ -698,8 +726,8 @@ def _feasible_mask(D, Q, ev, drive, topo: OewTopology | None, k: DriveKernel, V_
     zs = topo.zero_sequence
     sp = topo.split
     if topo.kind == "common_bus" and zs is not None and topo.zs_policy == "no_compensation":
-        i0, _ = _i0_trajectory(zs, k.omega_e, k.Rs, (np.arange(720) + 0.5) * TWO_PI / 720)
-        ok = ok & (I + float(np.max(np.abs(i0))) <= Imax)          # conservative bound on the phase peak
+        i0_pk = sum(abs(In) for _n, In in _i0_harmonics(zs, k.omega_e, k.Rs))     # analytic bound, not a sample
+        ok = ok & (I + i0_pk <= Imax)                               # conservative bound on the phase peak
     regulated = topo.kind == "common_bus" and zs is not None and topo.zs_policy == "regulate_i0" and \
         bool(zs.psi0_harmonics)
     if topo.kind == "isolated" or (not regulated and 0.0 <= sp <= 1.0):
@@ -710,7 +738,7 @@ def _feasible_mask(D, Q, ev, drive, topo: OewTopology | None, k: DriveKernel, V_
     th = (np.arange(n_theta) + 0.5) * TWO_PI / n_theta
     al = np.arctan2(ucq, ucd)
     u0 = k.omega_e * zs.dpsi0(th) if regulated else np.zeros(n_theta)
-    dpsi = abs(k.omega_e) * sum(n * n * a for n, a, _ in zs.psi0_harmonics) if regulated else 0.0
+    dpsi = abs(k.omega_e) * sum(n * n * abs(a) for n, a, _ in zs.psi0_harmonics) if regulated else 0.0
     sa, sb = sp, sp - 1.0                                   # a = s u, b = (s - 1) u
     mx = lambda c, umax, umin: c * umax if c >= 0 else c * umin
     mn = lambda c, umax, umin: c * umin if c >= 0 else c * umax

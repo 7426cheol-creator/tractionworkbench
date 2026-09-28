@@ -21,10 +21,14 @@ def battery(dis=100e3, chg=30e3, ocv=400.0, R=0.05, uv=250.0):
 
 @pytest.fixture(scope="module")
 def joint():
+    # a 600 V bus from a 400 V battery needs a converter: the boost regulates the bus and is solved on the battery
+    # side with the battery's own sag (review R2 CT-02; without a converter the bus IS the battery terminal)
     d = synthetic_drive()
     m1 = H.BusMachine("EM1", d, 3000.0, "generator / starter")
     m2 = H.BusMachine("EM2", d, 6000.0, "traction")
-    return H.joint_torque_set([m1, m2], 600.0, battery(chg=0.0), aux_W=1500.0, n_levels=11, request=(250.0, -110.0))
+    boost = H.BoostStage(D_max=0.6, I_L_max_A=1000.0, basis="ideal test boost")
+    return H.joint_torque_set([m1, m2], 600.0, battery(chg=0.0), aux_W=1500.0, boost=boost, n_levels=11,
+                              request=(250.0, -110.0))
 
 
 # ------------------------------------------------------------------ H-01 branch stress vs net
@@ -140,8 +144,11 @@ def test_h05_example_9_4_capacitor_margin_is_counted_once():
     fast = H.load_rejection(500.0, 400.0, 450.0, [70e3], [20e3], t_react_s=100e-6)
     assert fast["claim"]["status"] == "FEASIBLE" and fast["V_peak_V"] < 450.0
     # two generating branches share ONE margin: time to limit uses the summed excess
-    two = H.load_rejection(500.0, 400.0, 450.0, [70e3, 30e3], [20e3], t_react_s=0.0)
+    two = H.load_rejection(500.0, 400.0, 450.0, [70e3, 30e3], [20e3], t_react_s=1e-3)
     assert two["time_to_limit_s"] == pytest.approx(10.625 / 80e3)
+    # an instantaneous source cut leaves no excess energy: the limit is never reached
+    cut = H.load_rejection(500.0, 400.0, 450.0, [70e3, 30e3], [20e3], t_react_s=0.0)
+    assert cut["time_to_limit_s"] == math.inf and cut["claim"]["status"] == "FEASIBLE"
     # energy ledger closes: 1/2 C (V_end^2 - V0^2) = integral of the excess
     tr = r["trace"]
     E = (getattr(np, "trapezoid", None) or np.trapz)(tr["P_excess_W"], tr["t_s"])

@@ -146,15 +146,16 @@ def _iq_sets_constant(k: DriveKernel, d: float, include_dc: bool):
     B = 2 * rv * we * kd
     C = rv * rv * d * d + (we * (k.psi + k.Ld * d)) ** 2 - k.Vb ** 2
     ivs = _intersect(ivs, _quad_interval(A, B, C, 1e-12))
-    if include_dc and k.inv_loss is not None and ivs:
-        c2 = 1.5 * k.Rs + k.inv_loss.ipk2_coeff_W_per_A2
-        base = c2 * d * d + k.inv_loss.offset_W
+    if include_dc and k.i2_dc is not None and ivs:
+        c2 = k.i2_dc.c2_W_per_A2
+        base = c2 * d * d + k.i2_dc.a0_W
         Bp = 1.5 * we * kd
-        if k.P_dis_eff is not None:
-            ivs = _intersect(ivs, _quad_interval(c2, Bp, base - k.P_dis_eff, 1e-12))
-        if k.P_chg_eff is not None and ivs:
-            # P_dc >= -P_chg  <=>  NOT (c2 q^2 + Bp q + base + P_chg < 0)
-            hole = _quad_interval(c2, Bp, base + k.P_chg_eff, 0.0)
+        hi_w, lo_w = k.dc_accept_hi_W, k.dc_accept_lo_W      # the gate's acceptance set (tolerances included)
+        if hi_w is not None:
+            ivs = _intersect(ivs, _quad_interval(c2, Bp, base - hi_w, 1e-12))
+        if lo_w is not None and ivs:
+            # P_dc >= lo_w  <=>  NOT (c2 q^2 + Bp q + base - lo_w < 0)
+            hole = _quad_interval(c2, Bp, base - lo_w, 0.0)
             if hole:
                 h0, h1 = hole[0]
                 new = []
@@ -256,7 +257,7 @@ def _physical_map(ev: PolicyEvaluator, direction: int, include_dc: bool):
     D, Q = np.meshgrid(tr.ids, tr.iqs, indexing="ij")
     e = k.evaluate(D, Q)
     ok = electrical_ok(k, D, Q, e)
-    if include_dc and k.inv_loss is not None:
+    if include_dc and k.i2_dc is not None:
         ok &= dc_ok(k, e["pdc"])
     if not np.any(ok):
         return None, "no feasible grid node"
@@ -310,9 +311,16 @@ def physical_capability(ev: PolicyEvaluator, direction: int, include_dc: bool = 
         wit, how = _physical_map(ev, direction, include_dc)
     evidence = []
     notes = [how]
+    if include_dc and k.pointwise_loss:
+        notes.append(f"the {k.loss_label} is evaluated point by point: the witness search and the upper bound do "
+                     "not contain the DC limits (the bound is the electrical one, still an upper bound); the witness "
+                     "itself is checked against them directly")
     bound = None
     certified = False
     if wit is None:
+        inherited = _inherit_policy_witness(ev, direction, include_dc, None, notes, scope, tol, kind)
+        if inherited is not None:
+            return inherited
         return CapabilityResult(kind, direction, k.speed_rpm, k.Vdc, include_dc, None, None, False, tol, None,
                                 evidence=(Evidence.make(EvidenceKind.SAMPLED, how),), scope=scope, notes=tuple(notes))
     val = wit.Tshaft_Nm
@@ -321,7 +329,8 @@ def physical_capability(ev: PolicyEvaluator, direction: int, include_dc: bool = 
     if k.kind == "constant_dq":
         cert = certify_torque(k, direction, (wit.id_A, wit.iq_A), include_dc)
         if cert.valid:
-            bound = cert.upper_bound
+            # the physics bound plus the gate's numerical allowance: no accepted witness can exceed it (R2 C03)
+            bound = cert.upper_bound + direction * cert.numerical_allowance
             evidence.append(Evidence.make(EvidenceKind.CERTIFIED_BOUND, cert.note, **cert.to_dict()))
     if bound is None or abs(bound - val) > tol:
         cb = ev.bounds.torque_bound(direction, val, include_dc)
@@ -338,8 +347,30 @@ def physical_capability(ev: PolicyEvaluator, direction: int, include_dc: bool = 
     if gate_msgs:
         certified = False
         notes.append("diagnostic only (failed the common witness gate): " + "; ".join(gate_msgs))
+        inherited = _inherit_policy_witness(ev, direction, include_dc, bound, notes, scope, tol, kind)
+        if inherited is not None:
+            return inherited
     return CapabilityResult(kind, direction, k.speed_rpm, k.Vdc, include_dc, val, bound, certified, tol, wit,
                             evidence=tuple(evidence), scope=scope, notes=tuple(notes), gate_messages=gate_msgs)
+
+
+def _inherit_policy_witness(ev: PolicyEvaluator, direction: int, include_dc: bool, upper, notes: list, scope: str,
+                            tol: float, kind: str):
+    """Any control includes the minimum-current policy: an accepted policy witness is an ACHIEVED lower bound of the
+    physical capability (review R2, A1.4).  Used when the any-control search - which with a pointwise loss model has
+    no DC-aware iq sets - ends without an accepted witness; the gap to the upper bound stays open (not certified)."""
+    k = ev.k
+    if not (include_dc and k.pointwise_loss):
+        return None
+    pc = policy_capability(ev, direction, certify=False)
+    if pc.value_Nm is None or pc.witness is None or pc.gate_messages:
+        return None
+    notes = list(notes) + [
+        f"achieved lower bound from the accepted minimum-current policy witness ({pc.value_Nm:.6g} N*m; any control "
+        f"includes that policy); with the {k.loss_label} the DC-limited any-control maximum is not searched beyond "
+        "it - the gap to the upper bound (electrical, DC relaxed) is unresolved"]
+    return CapabilityResult(kind, direction, k.speed_rpm, k.Vdc, include_dc, pc.value_Nm, upper, False, tol,
+                            pc.witness, evidence=pc.evidence, scope=scope, notes=tuple(notes), gate_messages=())
 
 
 # ---------------------------------------------------------------------------

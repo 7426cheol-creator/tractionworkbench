@@ -177,21 +177,21 @@ class PolicyEvaluator:
                 "coverage_distance_A": None if math.isinf(curve.coverage_distance_A) else curve.coverage_distance_A}
 
     def _pdc_at(self, T: float, I2: float) -> float:
+        """P_dc on the torque curve at I^2 (quadratic surrogate identity ``DriveKernel.i2_dc``)."""
         k = self.k
-        return (T + k.tau_rot_or_zero) * k.omega_m + (1.5 * k.Rs + k.inv_loss.ipk2_coeff_W_per_A2) * I2 \
-            + k.inv_loss.offset_W
+        return k.i2_dc.pdc(T + k.tau_rot_or_zero, k.omega_m, I2)
 
     def dc_status(self, T: float, I2_found: float, i2_lb: float, certified: bool,
                   pdc_found: float | None = None) -> tuple[str, str]:
         """DC-limit status of the (possibly uncertified) policy point; P_dc is monotone in I^2 on the curve.
 
-        With the datasheet module loss model P_dc is taken from the evaluated point (``pdc_found``); the
-        I^2-monotonicity argument belongs to the quadratic surrogate, so an uncertified point is UNKNOWN.
+        With a pointwise loss model (datasheet module) P_dc is taken from the evaluated point (``pdc_found``);
+        the I^2-monotonicity argument belongs to the quadratic surrogate, so an uncertified point is UNKNOWN.
         """
         k = self.k
         if not k.limits.any_declared:
             return "UNKNOWN", "no DC source limits declared"
-        if k.module is not None:
+        if k.pointwise_loss:
             if pdc_found is None:
                 return "UNKNOWN", "module loss not established at the policy point"
             if not certified:
@@ -234,13 +234,13 @@ class PolicyEvaluator:
         if c.empty:
             return ("INFEASIBLE" if c.exact and not c.coverage_limited else "UNKNOWN"), None
         p = c.min_point
-        if (k.inv_loss is None and k.module is None) or k.tau_rot is None:
+        if not k.dc_defined:
             return "UNKNOWN", p
         cert = self.certify_min_point(T, c)
         if not cert["certified"]:
             return "UNKNOWN", p
         pdc = None
-        if k.module is not None:
+        if k.pointwise_loss:
             try:
                 pdc = evaluate_point(k, p.id_A, p.iq_A).Pdc_W
             except OutsideModelDomain:
@@ -436,39 +436,46 @@ class PolicyEvaluator:
         relevant_missing = set()
         if point.Pdc_W is not None:
             relevant_missing.update(missing_relevant_dc_limits(k, point.Pdc_W))
-            if not certified and i2_lb is not None and k.inv_loss is not None:
+            if not certified and i2_lb is not None and k.i2_dc is not None:
                 relevant_missing.update(missing_relevant_dc_limits(k, self._pdc_at(T, i2_lb)))
-        if k.module is not None and point.Pdc_W is not None and not certified:
+        if k.pointwise_loss and point.Pdc_W is not None and not certified:
             return Claim("dc_source", Status.UNKNOWN, q, scope, POLICY_NAME, reasons=(Reason.NUMERICAL_UNRESOLVED,),
-                         detail="the policy point is not certified and the datasheet module loss has no I^2 "
+                         detail=f"the policy point is not certified and the {k.loss_label} has no I^2 "
                                 "monotonicity argument: DC compatibility of the true policy point is not established")
         extra_q = tuple(f"{m} limit not declared (cannot bind at this point)" for m in missing
                         if m not in relevant_missing)
         if point.Pdc_W is None:
             # P_inv in [0, inf): P_dc >= P_ac only (loss model missing or module loss not established here)
             pac = point.Pac_W
-            viol = k.P_dis_eff is not None and pac > k.P_dis_eff
-            chg_ok = k.P_chg_eff is None or pac >= -k.P_chg_eff
+            viol = k.dc_accept_hi_W is not None and pac > k.dc_accept_hi_W
+            chg_ok = k.dc_accept_lo_W is None or pac >= k.dc_accept_lo_W
             if viol:
                 return Claim("dc_source", Status.INFEASIBLE, q, scope, POLICY_NAME,
                              reasons=(Reason.CONSTRAINT_VIOLATION,),
                              evidence=(Evidence.make(EvidenceKind.ANALYTIC_BOUND,
                                                      f"P_ac = {pac:.6g} W already exceeds the discharge cap; P_inv >= 0"),),
                              detail="discharge limit exceeded for any passive inverter loss")
-            return Claim("dc_source", Status.UNKNOWN, q, scope, POLICY_NAME, reasons=(Reason.MISSING_INPUT,),
+            if k.has_inverter_loss:
+                # a loss model IS declared: its data do not cover this point (e.g. Vdc away from the switching
+                # test voltage without a declared scaling law) - say so instead of calling the model missing
+                probs = (point.inverter_loss_detail or {}).get("problems") or []
+                why = f"{k.loss_label} not established at this point" + (f" ({'; '.join(probs)})" if probs else "")
+                reason = Reason.OUTSIDE_MODEL_DOMAIN
+            else:
+                why, reason = "inverter loss model missing", Reason.MISSING_INPUT
+            return Claim("dc_source", Status.UNKNOWN, q, scope, POLICY_NAME, reasons=(reason,),
                          evidence=(Evidence.make(EvidenceKind.ANALYTIC_BOUND,
                                                  f"inverter loss unknown: P_dc in [{pac:.6g}, inf) W",
                                                  charge_side_satisfied=chg_ok),),
-                         detail="inverter loss model missing; electrical-only claims are not promoted to DC claims")
+                         detail=why + "; electrical-only claims are not promoted to DC claims")
         dcs = [c for c in point.constraints if c.group in ("DISCHARGE_SOURCE", "CHARGE_SOURCE")]
         viol = [c for c in dcs if c.state == "VIOLATED"]
         active = [c for c in dcs if c.state == "ACTIVE"]
         ev = [Evidence.make(EvidenceKind.DIRECT_EVALUATION, f"{c.name}: demand {c.demand:.6g} vs limit {c.limit:.6g} "
                             f"{c.unit} (slack {c.slack:.6g})") for c in dcs]
         tem = T + k.tau_rot_or_zero
-        if not certified and i2_lb is not None and k.inv_loss is not None:
-            c2 = 1.5 * k.Rs + k.inv_loss.ipk2_coeff_W_per_A2
-            pdc_lb = tem * k.omega_m + c2 * i2_lb + k.inv_loss.offset_W
+        if not certified and i2_lb is not None and k.i2_dc is not None:
+            pdc_lb = k.i2_dc.pdc(tem, k.omega_m, i2_lb)
             dis_viol = any(c.group == "DISCHARGE_SOURCE" for c in viol)
             chg_viol = any(c.group == "CHARGE_SOURCE" for c in viol)
             certain_violation = chg_viol or (dis_viol and not bool(dc_ok(k, np.array([pdc_lb]))[0]))
@@ -550,8 +557,8 @@ class PolicyEvaluator:
                          "any control",
                          reasons=(Reason.CONSTRAINT_VIOLATION,) if proven else (Reason.NUMERICAL_UNRESOLVED,),
                          detail="no electrical solution, hence none with DC limits"), None
-        if k.module is not None and k.tau_rot is not None:
-            # the I^2-band certificate belongs to the quadratic surrogate: with the datasheet module model only a
+        if k.pointwise_loss and k.tau_rot is not None:
+            # the I^2-band certificate belongs to the quadratic surrogate: with a pointwise loss model only a
             # directly verified witness counts (here the policy point); otherwise the claim stays open
             if point is not None:
                 chk = check_witness(k, point.id_A, point.iq_A, T_request=T, require_dc=True, point=point,
@@ -569,19 +576,26 @@ class PolicyEvaluator:
                          detail="with the datasheet module loss model the I^2-band certificate does not apply; no "
                                 "verified DC-compatible witness at the policy point"), None
         band = dc_band_I2(k, curve.target_Tem_Nm) if k.tau_rot is not None else None
-        if band is None or (k.P_dis_eff is None and k.P_chg_eff is None):
+        if band is None or not k.limits.any_declared:
+            # declared-unlimited limits (math.inf) are declarations: the band is then the whole axis and the gate
+            # decides; only UNDECLARED limits make this UNKNOWN (review R2 C03: 'policy FEASIBLE => physical
+            # FEASIBLE' also with infinite caps)
             return Claim("physical_existence_with_dc", Status.UNKNOWN, q, scope, "any control",
-                         reasons=(Reason.MISSING_INPUT,), detail="loss model or DC limits missing"), None
-        lo, hi = band
+                         reasons=(Reason.MISSING_INPUT,),
+                         detail="loss model missing" if band is None else "no DC source limit declared"), None
+        lo, hi = band                                           # acceptance band: decides exclusion
+        nom = dc_band_I2(k, curve.target_Tem_Nm, nominal=True)  # declared limits: where an edge witness is placed
         cands = []
         for seg in curve.segments:
             if seg.max_point.I2 >= lo and seg.min_point.I2 <= hi:
                 if seg.min_point.I2 >= lo:
                     cands.append(seg.min_point)
                 elif curve.exact:
-                    w = point_on_curve_with_I2(k, T, seg, lo)
-                    if w is not None:
-                        cands.append(w)
+                    for target in dict.fromkeys(((max(lo, nom[0]),) if nom is not None and
+                                                 lo <= nom[0] <= seg.max_point.I2 else ()) + (lo,)):
+                        w = point_on_curve_with_I2(k, T, seg, target)
+                        if w is not None:
+                            cands.append(w)
                 elif seg.max_point.I2 <= hi:
                     cands.append(seg.max_point)
         if not curve.segments:
@@ -623,6 +637,18 @@ class PolicyEvaluator:
                                     "gate: not proven either way"), None
         else:
             notes_rej = None
+        if curve.exact and curve.coverage_limited:
+            # R2 C01: the enumeration covers the model DATA only; allowed controls outside the data are not
+            # excluded by it (an exclusion needs the whole allowed domain, a witness needs only one point)
+            return Claim("physical_existence_with_dc", Status.UNKNOWN, q, scope, "any control",
+                         reasons=tuple(dict.fromkeys((Reason.OUTSIDE_MODEL_DOMAIN,) + tuple(cond_reasons))),
+                         evidence=(Evidence.make(EvidenceKind.EXACT_ENUMERATION,
+                                                 f"no DC-compatible point inside the covered data (I^2 band "
+                                                 f"[{lo:.6g}, {hi:.6g}] A^2 missed by every covered segment)",
+                                                 nearest_uncovered_allowed_A=curve.coverage_distance_A),)
+                         + scr_ev, qualifiers=cond_q,
+                         detail="no DC-compatible control inside the covered model data; allowed controls outside "
+                                "the data are not excluded (supply data there before claiming infeasibility)"), None
         if curve.exact:
             st = Status.UNKNOWN if conditional else Status.INFEASIBLE
             return Claim("physical_existence_with_dc", st, q, scope, "any control",

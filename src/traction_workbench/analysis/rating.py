@@ -21,16 +21,23 @@ Typed duration semantics (independent review F04):
   authoritative envelopes that disagree give UNKNOWN (CONFLICTING_EVIDENCE);
 * outside a validated envelope the requirement is not *rated*
   (RATING_NOT_MET); that is not a proof of physical impossibility;
-* approval comes from the provenance, not from the declared ``evidence_kind``
-  (review DV-05): a synthetic or estimated envelope, or one whose validation
-  status says it is unvalidated / illustrative, is still evaluated but reported
-  as a model experiment and never answers a requirement.
+* approval is an explicit TYPED state (second review R2, D-R2-01), default not
+  approved, tied to an evidence identity (document id and revision) and a
+  declared intended use.  A synthetic / estimated origin, a missing, rejected,
+  not-approved or unknown state, or a blank evidence identity is evaluated as a
+  model experiment and never answers a requirement.  Free-text provenance
+  (``validation_status``) describes the data; it never approves them;
+* the motoring table applies when torque and speed have the same sign (P >= 0),
+  the braking table when they differ - also at negative speed (signed quadrants);
+* a stated condition that is not a finite number never matches (NaN compares
+  false, it is not "within tolerance").
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from enum import Enum
 
 import numpy as np
 
@@ -38,6 +45,41 @@ from ..errors import InputValidationError
 from ..validation import finite as _finite
 from ..models.provenance import DataOrigin, Provenance
 from ..status import Claim, Evidence, EvidenceKind, Reason, Status
+
+
+class ApprovalState(str, Enum):
+    APPROVED = "approved"
+    NOT_APPROVED = "not_approved"
+    REJECTED = "rejected"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class RatingApproval:
+    """Explicit approval of a rating envelope as evidence: a typed state linked to the evidence that approves it.
+
+    Only ``APPROVED`` with a non-blank evidence id, evidence revision and intended use approves; everything else
+    (the default included) leaves the envelope a model experiment."""
+
+    state: ApprovalState = ApprovalState.UNKNOWN
+    evidence_id: str = ""          # rating sheet / test report / release note that approves the envelope
+    evidence_revision: str = ""
+    intended_use: str = ""         # what the approval covers, e.g. "10 s peak rating for requirement verification"
+    approved_by: str = ""          # organisation / role
+
+    def __post_init__(self):
+        try:
+            object.__setattr__(self, "state", ApprovalState(self.state))
+        except ValueError:
+            raise InputValidationError(f"approval state must be one of {[s.value for s in ApprovalState]}",
+                                       field="approval.state") from None
+        for name in ("evidence_id", "evidence_revision", "intended_use", "approved_by"):
+            object.__setattr__(self, name, str(getattr(self, name) or "").strip())
+
+    def to_dict(self) -> dict:
+        return {"state": self.state.value, "evidence_id": self.evidence_id,
+                "evidence_revision": self.evidence_revision, "intended_use": self.intended_use,
+                "approved_by": self.approved_by}
 
 
 @dataclass(frozen=True)
@@ -55,8 +97,20 @@ class RatingEnvelope:
     port: str = "motor_shaft"
     evidence_kind: str = "supplier_rated"
     priority: int = 0                  # authority when several envelopes apply (higher wins); ties must agree
+    approval: RatingApproval | None = None   # typed approval; None = not approved (a model experiment)
 
     def __post_init__(self):
+        if self.approval is not None and not isinstance(self.approval, RatingApproval):
+            raise InputValidationError("approval must be a RatingApproval", field="approval")
+        for key, want in self.conditions:
+            vals = want if isinstance(want, tuple) else (want,)
+            for v in vals:
+                if not isinstance(v, str) and not math.isfinite(float(v)):
+                    raise InputValidationError(f"rating condition {key!r} must be finite", field="conditions")
+        for key, t in self.condition_tolerances:
+            if not math.isfinite(float(t)) or float(t) < 0:
+                raise InputValidationError(f"condition tolerance {key!r} must be finite and >= 0",
+                                           field="condition_tolerances")
         d = float(self.duration_s)
         if math.isnan(d) or d <= 0:
             raise InputValidationError("rating duration must be > 0 (math.inf for continuous)", field="duration_s")
@@ -97,6 +151,7 @@ class RatingEnvelope:
             "provenance": self.provenance.to_dict(),
             "evidence_kind": self.evidence_kind,
             "priority": self.priority,
+            "approval": None if self.approval is None else self.approval.to_dict(),
         }
 
 
@@ -109,6 +164,14 @@ def _match_conditions(env: RatingEnvelope, stated: dict) -> tuple[bool, list[str
         if have is None:
             missing.append(key)
             continue
+        if not isinstance(want, str):
+            try:
+                finite = math.isfinite(float(have))
+            except (TypeError, ValueError):
+                finite = False
+            if not finite:
+                mismatch.append(f"{key}={have!r} is not a finite value (never within tolerance)")
+                continue
         if isinstance(want, tuple):
             if not (want[0] <= have <= want[1]):
                 mismatch.append(f"{key}={have!r} outside {list(want)}")
@@ -123,18 +186,23 @@ def _match_conditions(env: RatingEnvelope, stated: dict) -> tuple[bool, list[str
 
 COLD_STARTS = ("cold", "ambient", "equilibrium_at_coolant", "coolant_equilibrium")
 
-_NOT_APPROVED_WORDS = ("unvalidated", "not validated", "illustrative", "example", "synthetic", "placeholder", "draft")
-
-
 def approval(env: RatingEnvelope) -> tuple[bool, str]:
-    """Is this envelope approved rating evidence?  Derived from the provenance (conservative wording check)."""
+    """Is this envelope approved rating evidence?  Only an explicit typed APPROVED state with its evidence identity
+    and intended use approves (review R2, D-R2-01); a text in the provenance never does."""
     prov = env.provenance
     if prov.origin in (DataOrigin.SYNTHETIC, DataOrigin.ESTIMATED):
         return False, f"{prov.origin.value} envelope: a model experiment, not an approved rating"
-    status = (prov.validation_status or "").strip().lower()
-    if not status or any(w in status for w in _NOT_APPROVED_WORDS):
-        return False, f"validation status {prov.validation_status!r} does not approve the envelope as a rating"
-    return True, f"{prov.origin.value} envelope, validation status {prov.validation_status!r}"
+    a = env.approval
+    if a is None or a.state is not ApprovalState.APPROVED:
+        state = "not declared" if a is None else a.state.value
+        return False, (f"approval state {state}: not approved rating evidence (a validation-status text such as "
+                       f"{prov.validation_status!r} describes the data, it does not approve them)")
+    missing = [n for n, v in (("evidence_id", a.evidence_id), ("evidence_revision", a.evidence_revision),
+                              ("intended_use", a.intended_use)) if not v]
+    if missing:
+        return False, f"approved state without its evidence identity ({', '.join(missing)} blank): not approved"
+    return True, (f"{prov.origin.value} envelope approved by {a.evidence_id} rev {a.evidence_revision} for "
+                  f"'{a.intended_use}'")
 
 
 def applicability(env: RatingEnvelope, duration_s: float, stated_conditions: dict) -> tuple[bool, str]:
@@ -167,7 +235,8 @@ def _evaluate_envelope(env: RatingEnvelope, speed_rpm: float, torque_Nm: float, 
     sp = np.array(env.speed_rpm)
     if not (sp[0] <= speed_rpm <= sp[-1]):
         return None, f"{env.envelope_id}: speed {speed_rpm:g} rpm outside the envelope axis (no extrapolation)"
-    table = env.max_motoring_torque_Nm if torque_Nm >= 0 else env.min_braking_torque_Nm
+    motoring = torque_Nm * speed_rpm >= 0 if speed_rpm != 0 else torque_Nm >= 0    # signed quadrant (P = T*n)
+    table = env.max_motoring_torque_Nm if motoring else env.min_braking_torque_Nm
     if table is None:
         return None, f"{env.envelope_id}: no braking-side table"
     tb = np.array(table)
@@ -186,9 +255,16 @@ def _evaluate_envelope(env: RatingEnvelope, speed_rpm: float, torque_Nm: float, 
     else:
         kind = EvidenceKind.VALIDATED_DOMAIN
     ev = Evidence.make(kind, f"{env.envelope_id} rev {env.revision} ({env.duration_text}): |T| limit {lim:.6g} N*m "
-                             f"at {speed_rpm:g} rpm ({env.interpolation})",
+                             f"at {speed_rpm:g} rpm ({env.interpolation}, {'motoring' if motoring else 'braking'} "
+                             f"quadrant)",
                        conservative_limit_Nm=cons, linear_limit_Nm=abs(lin), optimistic_limit_Nm=opt,
-                       priority=env.priority, provenance=env.provenance.to_dict())
+                       priority=env.priority, provenance=env.provenance.to_dict(),
+                       approval=None if env.approval is None else env.approval.to_dict(),
+                       interpolation_meaning=("the smaller bracketing table value: a bound between the speed points "
+                                              "only if the declared envelope does not dip between them (staircase "
+                                              "or monotone declaration by the supplier)"
+                                              if env.interpolation == "conservative" else
+                                              "linear between the declared points (the supplier declares linearity)"))
     if mag <= lim:
         return (Status.FEASIBLE, ev), None
     if mag > opt:

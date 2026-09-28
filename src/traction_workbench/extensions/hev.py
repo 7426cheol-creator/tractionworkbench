@@ -9,6 +9,10 @@ One topology family at a time, from its declared connection graph - the position
 * joint capability K = {(T_1, T_2, ...): every component AND the common constraints hold together} - never the
   Cartesian box of the separate maxima; branch stress (each machine's DC current, losses) is kept next to the net
   source power (a small net does not hide an 80 / 70 kW branch pair);
+* the common bus voltage is part of the solution (review R2 CT-02): without a converter the bus IS the battery
+  terminal, V = OCV - R I with V I = sum P_dc,k(V) + aux + bus loss solved together with every machine; a declared
+  boost regulates the bus and is solved on the battery side with the battery's own sag (duty, inductor current,
+  loss, direction, UV at the battery);
 * engine cranking as a time-domain replay of a declared crank-angle load (compression peak, initial angle, Vdc sag,
   traction reserve) - "cranking requirement met" is not "engine start guaranteed" (combustion needs engine evidence);
 * load rejection: a generator that keeps feeding the bus after a traction trip; the common capacitor energy is
@@ -161,6 +165,39 @@ class BoostStage:
         out.update({"I_L_A": iL, "P_bat_W": P_bus_W + loss, "P_loss_W": loss})
         return out
 
+    def solve(self, P_bus_W: float, V_bus_V: float, battery: "Battery") -> dict:
+        """Battery side of a regulated bus WITH the battery's own sag (review R2 CT-02):
+        V_bat = OCV - R I_L and V_bat I_L = P_bus + a0 + a2 I_L^2, so (R + a2) I_L^2 - OCV I_L + P_bus + a0 = 0
+        (the smaller root is the normal operating branch); D = 1 - V_bat / V_bus."""
+        ocv, R = battery.ocv_V, battery.R_int_ohm
+        k, c = R + self.a2_W_per_A2, P_bus_W + self.a0_W
+        out = {"problems": [], "collapse": False, "duty": None, "I_L_A": None, "V_bat_V": None, "P_bat_W": None,
+               "P_loss_W": None, "residual_W": None}
+        if k == 0:
+            iL = c / ocv
+        else:
+            disc = ocv * ocv - 4.0 * k * c
+            if disc < 0:
+                out["problems"].append(f"battery + boost cannot deliver {P_bus_W:.4g} W to the bus (battery-side "
+                                       f"voltage collapse: OCV^2 < 4 (R + a2) (P + a0))")
+                out["collapse"] = True
+                return out
+            iL = (ocv - math.sqrt(disc)) / (2.0 * k)
+        vbat = ocv - R * iL
+        loss = self.a0_W + self.a2_W_per_A2 * iL * iL
+        D = 1.0 - vbat / V_bus_V
+        if D < -1e-12:
+            out["problems"].append(f"bus {V_bus_V:g} V below the battery terminal {vbat:.4g} V (boost cannot buck)")
+        if D > self.D_max:
+            out["problems"].append(f"duty {D:.4f} > D_max {self.D_max:g}")
+        if P_bus_W < 0 and not self.bidirectional:
+            out["problems"].append("regenerative bus power but the boost is not bidirectional")
+        if abs(iL) > self.I_L_max_A:
+            out["problems"].append(f"|I_L| {abs(iL):.4g} A > {self.I_L_max_A:g} A")
+        out.update({"duty": D, "I_L_A": iL, "V_bat_V": vbat, "P_bat_W": vbat * iL, "P_loss_W": loss,
+                    "residual_W": vbat * iL - (P_bus_W + loss)})
+        return out
+
 
 def _source_check(P_W: float, V_V: float, lim: DcSourceLimits) -> tuple[Status, str]:
     I = P_W / V_V
@@ -189,18 +226,23 @@ class BusMachine:
     role: str = ""               # a name only: 'generator' does not guarantee generation
 
 
-def _machine_table(m: BusMachine, Vdc: float, torques) -> list[dict]:
-    ev = PolicyEvaluator(m.drive, Scenario(m.name, m.speed_rpm, Vdc, UNLIMITED))
-    rows = []
-    for T in torques:
-        sol = ev.solve(float(T))
+def _machine_point(m: BusMachine, T: float, V: float, cache: dict) -> dict:
+    key = (m.name, float(T), float(V))
+    r = cache.get(key)
+    if r is None:
+        sol = PolicyEvaluator(m.drive, Scenario(m.name, m.speed_rpm, V, UNLIMITED)).solve(float(T))
         pt = sol.point
-        st = sol.policy_claim.status
-        rows.append({"T_Nm": float(T), "status": st.value,
-                     "P_dc_W": None if pt is None else pt.Pdc_W, "I_peak_A": None if pt is None else pt.i_peak_A,
-                     "loss_W": None if (pt is None or pt.Pdc_W is None or pt.Pshaft_W is None) else pt.Pdc_W - pt.Pshaft_W,
-                     "detail": sol.policy_claim.detail})
-    return rows
+        r = {"T_Nm": float(T), "status": sol.policy_claim.status.value, "electrical": sol.electrical.status.value,
+             "P_dc_W": None if pt is None else pt.Pdc_W, "I_peak_A": None if pt is None else pt.i_peak_A,
+             "loss_W": None if (pt is None or pt.Pdc_W is None or pt.Pshaft_W is None) else pt.Pdc_W - pt.Pshaft_W,
+             "detail": sol.policy_claim.detail}
+        cache[key] = r
+    return r
+
+
+def _machine_table(m: BusMachine, Vdc: float, torques, cache: dict | None = None) -> list[dict]:
+    cache = {} if cache is None else cache
+    return [dict(_machine_point(m, float(T), Vdc, cache)) for T in torques]
 
 
 def machine_range(m: BusMachine, Vdc: float) -> tuple[float | None, float | None]:
@@ -210,20 +252,101 @@ def machine_range(m: BusMachine, Vdc: float) -> tuple[float | None, float | None
     return (lo.value_Nm if lo.accepted else None), (hi.value_Nm if hi.accepted else None)
 
 
+VBUS_REL_TOL = 1e-7          # bus-voltage identity tolerance (relative to OCV)
+
+
+def unregulated_bus(machines: list, torques: list, battery: Battery, aux_W: float = 0.0, bus_loss_W: float = 0.0,
+                    cache: dict | None = None, max_iter: int = 40) -> dict:
+    """Bus = battery terminal (no converter): V and every machine point solved together (review R2 CT-02).
+
+    V = OCV - R I and V I = sum_k P_dc,k(V) + aux + bus loss.  Impossibility proof: every machine is passive
+    (P_dc >= T w), so the bus cannot exceed V_ub = V_terminal(sum T w + aux + bus loss); a machine without an
+    electrical solution at V_ub has none at any attainable bus voltage (a lower bus voltage only tightens its
+    voltage limit), and V_ub below UV or no terminal voltage at all is a collapse.  A witness is a converged fixed
+    point re-evaluated independently: voltage identity and power identity within tolerance.  Anything else is
+    UNKNOWN (not proved impossible)."""
+    cache = {} if cache is None else cache
+    ocv, R = battery.ocv_V, battery.R_int_ohm
+    tol = VBUS_REL_TOL * ocv
+    p_lb = sum(float(T) * m.speed_rpm * TWO_PI / 60.0 for m, T in zip(machines, torques)) + aux_W + bus_loss_W
+    v_ub, _ = battery.terminal(p_lb)
+    base = {"V_ub_V": v_ub, "P_lower_bound_W": p_lb, "V_bus_V": None, "I_bat_A": None, "P_bus_W": None,
+            "rows": None, "residual_V": None, "residual_P_W": None, "iterations": 0}
+    if v_ub is None:
+        return {**base, "status": "INFEASIBLE",
+                "reason": f"the battery cannot deliver even the mechanical power + aux {p_lb:.4g} W "
+                          f"(OCV^2 < 4 R P: voltage collapse)"}
+    if battery.uv_min_V is not None and v_ub < battery.uv_min_V:
+        return {**base, "status": "INFEASIBLE",
+                "reason": f"the highest attainable bus voltage {v_ub:.4g} V (mechanical power only) is below the "
+                          f"UV limit {battery.uv_min_V:g} V"}
+    lim = battery.limits
+    if p_lb > 0:
+        for what, cap, low in (("discharge power", lim.discharge_power_max_W, p_lb),
+                               ("discharge current", lim.discharge_current_max_A, p_lb / v_ub)):
+            if cap is not None and not math.isinf(cap) and low > cap * (1 + 1e-9) + 1e-9:
+                return {**base, "status": "INFEASIBLE",
+                        "reason": f"{what} is at least {low:.4g} (mechanical power + aux at the highest attainable "
+                                  f"bus voltage) > {cap:.4g}"}
+    for m, T in zip(machines, torques):
+        r = _machine_point(m, T, v_ub, cache)
+        if r["electrical"] == "INFEASIBLE":
+            return {**base, "status": "INFEASIBLE",
+                    "reason": f"{m.name}: no electrical solution at {v_ub:.4g} V, the highest bus voltage attainable "
+                              f"while the machines deliver their mechanical power (a lower bus voltage only tightens "
+                              f"the voltage limit)"}
+    V, it = v_ub, 0
+    for it in range(1, max_iter + 1):
+        rows = [_machine_point(m, T, V, cache) for m, T in zip(machines, torques)]
+        bad = [m.name for m, r in zip(machines, rows) if r["status"] != "FEASIBLE" or r["P_dc_W"] is None]
+        if bad:
+            return {**base, "status": "UNKNOWN", "iterations": it,
+                    "reason": f"coupled bus: {', '.join(bad)} not feasible at the iterate {V:.6g} V - no consistent "
+                              f"bus voltage witnessed (not proved impossible)"}
+        P = sum(r["P_dc_W"] for r in rows) + aux_W + bus_loss_W
+        Vn, _ = battery.terminal(P)
+        if Vn is None:
+            return {**base, "status": "UNKNOWN", "iterations": it,
+                    "reason": f"coupled bus: terminal-voltage collapse at the iterate ({P:.4g} W)"}
+        done = abs(Vn - V) <= tol
+        V = Vn
+        if done:
+            break
+    else:
+        return {**base, "status": "UNKNOWN", "iterations": it, "reason": "coupled bus iteration not converged"}
+    rows = [_machine_point(m, T, V, cache) for m, T in zip(machines, torques)]
+    if any(r["status"] != "FEASIBLE" or r["P_dc_W"] is None for r in rows):
+        return {**base, "status": "UNKNOWN", "iterations": it,
+                "reason": "coupled bus: a machine is not feasible at the converged voltage"}
+    P = sum(r["P_dc_W"] for r in rows) + aux_W + bus_loss_W
+    Vt, I = battery.terminal(P)
+    res_v = None if Vt is None else V - Vt
+    res_p = (V * (ocv - V) / R - P) if R > 0 else 0.0
+    if Vt is None or abs(res_v) > tol:
+        return {**base, "status": "UNKNOWN", "iterations": it, "residual_V": res_v,
+                "reason": "coupled bus: the voltage identity does not close at the returned state"}
+    return {**base, "status": "WITNESS", "V_bus_V": V, "I_bat_A": I, "P_bus_W": P, "rows": rows, "residual_V": res_v,
+            "residual_P_W": res_p, "iterations": it, "reason": ""}
+
+
 def joint_torque_set(machines: list, Vdc_V: float, battery: Battery, aux_W: float = 0.0, bus_loss_W: float = 0.0,
                      boost: BoostStage | None = None, n_levels: int = 21, request: tuple | None = None,
                      cooling_heat_max_W: float | None = None) -> dict:
-    """Jointly feasible torque pairs of two machines on one bus (H-01, H-02).
+    """Jointly feasible torque pairs of two machines on one bus (H-01, H-02; review R2 CT-02).
 
     Each machine runs its minimum-current policy at its own speed (a fixed policy: an INFEASIBLE cell is a policy
     counterexample, not a proof over every control); the common constraints are the one source (battery, through the
     boost when declared) and an optional shared coolant heat budget.  The same source power is never allocated to
-    both branches.
+    both branches.  With a boost the bus is regulated at ``Vdc_V`` and the battery side is solved with its sag;
+    WITHOUT a boost the bus is the battery terminal and is solved with the machines (``Vdc_V`` is then not an
+    independent input: the machines see the coupled voltage).
     """
     if len(machines) != 2:
         raise InputValidationError("the joint torque set is computed for two machines on one bus", field="machines")
     m1, m2 = machines
-    rng1, rng2 = machine_range(m1, Vdc_V), machine_range(m2, Vdc_V)
+    regulated = boost is not None
+    V_grid = float(Vdc_V) if regulated else battery.ocv_V
+    rng1, rng2 = machine_range(m1, V_grid), machine_range(m2, V_grid)
     if None in rng1 or None in rng2:
         raise InputValidationError("machine capability not established at this speed / Vdc (check the model issues)",
                                    field="machines")
@@ -232,47 +355,63 @@ def joint_torque_set(machines: list, Vdc_V: float, battery: Battery, aux_W: floa
     if request is not None:
         t1 = np.unique(np.append(t1, request[0]))
         t2 = np.unique(np.append(t2, request[1]))
-    tab1, tab2 = _machine_table(m1, Vdc_V, t1), _machine_table(m2, Vdc_V, t2)
+    cache: dict = {}
+    tab1, tab2 = _machine_table(m1, V_grid, t1, cache), _machine_table(m2, V_grid, t2, cache)
     status = np.empty((t1.size, t2.size), dtype=object)
     psrc = np.full((t1.size, t2.size), np.nan)
+    vbus = np.full((t1.size, t2.size), np.nan)
     reason = np.empty((t1.size, t2.size), dtype=object)
+    cells = {}
     for i, r1 in enumerate(tab1):
         for j, r2 in enumerate(tab2):
-            if r1["status"] == "INFEASIBLE" or r2["status"] == "INFEASIBLE":
-                status[i, j], reason[i, j] = "INFEASIBLE", "component"
-                continue
-            if r1["status"] != "FEASIBLE" or r2["status"] != "FEASIBLE" or r1["P_dc_W"] is None or r2["P_dc_W"] is None:
-                status[i, j], reason[i, j] = "UNKNOWN", "component unresolved"
-                continue
-            p_bus = r1["P_dc_W"] + r2["P_dc_W"] + aux_W + bus_loss_W
-            probs = []
-            if boost is not None:
-                bs = boost.battery_side(p_bus, Vdc_V, battery.ocv_V)
-                probs += bs["problems"]
-                p_bat = bs["P_bat_W"]
-            else:
-                p_bat = p_bus
-            if p_bat is None:
-                status[i, j], reason[i, j] = "INFEASIBLE", "boost"
-                continue
-            psrc[i, j] = p_bat
-            vt, _ = battery.terminal(p_bat)
-            if vt is None:
-                probs.append("battery cannot deliver this power (terminal voltage collapse)")
-            else:
-                st, why = _source_check(p_bat, vt, battery.limits)
-                if st is Status.INFEASIBLE:
-                    probs.append(why)
-                elif st is Status.UNKNOWN:
-                    status[i, j], reason[i, j] = "UNKNOWN", why
+            probs, info = [], {}
+            if regulated:
+                if r1["status"] == "INFEASIBLE" or r2["status"] == "INFEASIBLE":
+                    status[i, j], reason[i, j] = "INFEASIBLE", "component"
                     continue
-                if boost is None and battery.uv_min_V is not None and vt < battery.uv_min_V:
-                    probs.append(f"bus {vt:.4g} V < UV {battery.uv_min_V:g} V")
-            if cooling_heat_max_W is not None and r1["loss_W"] is not None and r2["loss_W"] is not None:
-                if r1["loss_W"] + r2["loss_W"] > cooling_heat_max_W:
+                if (r1["status"] != "FEASIBLE" or r2["status"] != "FEASIBLE" or r1["P_dc_W"] is None
+                        or r2["P_dc_W"] is None):
+                    status[i, j], reason[i, j] = "UNKNOWN", "component unresolved"
+                    continue
+                rows = [r1, r2]
+                p_bus = r1["P_dc_W"] + r2["P_dc_W"] + aux_W + bus_loss_W
+                bs = boost.solve(p_bus, float(Vdc_V), battery)
+                if bs["collapse"]:
+                    status[i, j], reason[i, j] = "INFEASIBLE", "; ".join(bs["problems"])
+                    continue
+                probs += bs["problems"]
+                p_bat, v_src, v_bus = bs["P_bat_W"], bs["V_bat_V"], float(Vdc_V)
+                info = {"boost": {k: bs[k] for k in ("duty", "I_L_A", "V_bat_V", "P_bat_W", "P_loss_W",
+                                                     "residual_W")}}
+            else:
+                u = unregulated_bus([m1, m2], [float(t1[i]), float(t2[j])], battery, aux_W, bus_loss_W, cache)
+                if u["status"] != "WITNESS":
+                    status[i, j], reason[i, j] = u["status"], u["reason"]
+                    cells[(i, j)] = u
+                    continue
+                rows = u["rows"]
+                p_bus = p_bat = u["P_bus_W"]
+                v_src = v_bus = u["V_bus_V"]
+                info = {"coupled_bus": {k: u[k] for k in ("V_bus_V", "I_bat_A", "residual_V", "residual_P_W",
+                                                          "iterations", "V_ub_V")}}
+            psrc[i, j], vbus[i, j] = p_bat, v_bus
+            st, why = _source_check(p_bat, v_src, battery.limits)
+            if st is Status.INFEASIBLE:
+                probs.append(why)
+            if battery.uv_min_V is not None and v_src < battery.uv_min_V:
+                probs.append(f"battery terminal {v_src:.4g} V < UV {battery.uv_min_V:g} V")
+            if cooling_heat_max_W is not None and rows[0]["loss_W"] is not None and rows[1]["loss_W"] is not None:
+                if rows[0]["loss_W"] + rows[1]["loss_W"] > cooling_heat_max_W:
                     probs.append("shared coolant heat budget exceeded")
+            cells[(i, j)] = {"rows": rows, "P_bus_W": p_bus, "V_bus_V": v_bus, **info}
             if probs:
-                status[i, j], reason[i, j] = "INFEASIBLE", "; ".join(probs)
+                # with a regulated bus the machine points do not depend on the source: a violated common constraint
+                # is a counterexample of this policy; on an unregulated bus the witness state is the unique upper-
+                # branch fixed point found - a violation there is reported, not claimed over every other state
+                status[i, j] = "INFEASIBLE" if regulated else "UNKNOWN"
+                reason[i, j] = "; ".join(probs)
+            elif st is Status.UNKNOWN:
+                status[i, j], reason[i, j] = "UNKNOWN", why
             else:
                 status[i, j], reason[i, j] = "FEASIBLE", ""
     # conditional envelope: for every T1 the feasible T2 segments (a set, possibly disconnected)
@@ -294,27 +433,39 @@ def joint_torque_set(machines: list, Vdc_V: float, battery: Battery, aux_W: floa
     box_cells = sum(1 for i in range(t1.size) for j in range(t2.size)
                     if tab1[i]["status"] == "FEASIBLE" and tab2[j]["status"] == "FEASIBLE")
     joint_cells = int(np.sum(status == "FEASIBLE"))
+    bus = ({"topology": "regulated by the declared boost", "V_bus_V": float(Vdc_V),
+            "note": "the battery side is solved with its sag: duty, inductor current, loss, UV at the battery"}
+           if regulated else
+           {"topology": "battery terminal (no converter)", "Vdc_input_V_not_used": float(Vdc_V),
+            "note": "V = OCV - R I and V I = sum P_dc,k(V) + aux + bus loss solved with every machine; the machine "
+                    "tables here are at the open-circuit voltage (the 'alone' reference)"})
     out = {"machines": [{"name": m.name, "speed_rpm": m.speed_rpm, "role": m.role, "drive_id": m.drive.drive_id,
                          "range_Nm": list(r)} for m, r in ((m1, rng1), (m2, rng2))],
            "T1_Nm": t1.tolist(), "T2_Nm": t2.tolist(), "status": status.tolist(), "reason": reason.tolist(),
            "P_source_W": np.where(np.isnan(psrc), None, psrc).tolist(),
+           "V_bus_V": np.where(np.isnan(vbus), None, vbus).tolist(),
            "tables": {m1.name: tab1, m2.name: tab2}, "conditional_envelope": envelope,
            "separate_maxima_box": box, "box_cells_feasible_separately": box_cells, "joint_cells_feasible": joint_cells,
-           "Vdc_V": Vdc_V, "aux_W": aux_W, "bus_loss_W": bus_loss_W, "boost": boost is not None,
+           "Vdc_V": V_grid, "bus": bus, "aux_W": aux_W, "bus_loss_W": bus_loss_W, "boost": regulated,
            "policy": "minimum-current per machine (fixed policy); common source counted once",
-           "meaning": "sampled joint set: FEASIBLE cells are witnesses; the rectangle of separate maxima is not an "
-                      "available torque set"}
+           "meaning": "sampled joint set: FEASIBLE cells are witnesses (every port's voltage identity closed); the "
+                      "rectangle of separate maxima is not an available torque set"}
     if request is not None:
         i = int(np.argmin(np.abs(t1 - request[0])))
         j = int(np.argmin(np.abs(t2 - request[1])))
-        r1, r2 = tab1[i], tab2[j]
-        branch = [r1["P_dc_W"], r2["P_dc_W"]]
+        c = cells.get((i, j), {})
+        rows = c.get("rows") or [tab1[i], tab2[j]]
+        branch = [rows[0]["P_dc_W"], rows[1]["P_dc_W"]]
+        v_b = c.get("V_bus_V")
         net = None if None in branch else branch[0] + branch[1]
         circ = None if None in branch else (min(abs(branch[0]), abs(branch[1])) if branch[0] * branch[1] < 0 else 0.0)
         out["request"] = {"T1_Nm": float(t1[i]), "T2_Nm": float(t2[j]), "status": status[i, j], "reason": reason[i, j],
-                          "branch_P_dc_W": branch, "branch_I_dc_A": [None if b is None else b / Vdc_V for b in branch],
+                          "V_bus_V": v_b, "branch_P_dc_W": branch,
+                          "branch_I_dc_A": [None if (b is None or v_b is None) else b / v_b for b in branch],
                           "net_machines_W": net, "circulating_W": circ,
                           "P_source_W": None if np.isnan(psrc[i, j]) else float(psrc[i, j]),
+                          "coupled_bus": c.get("coupled_bus"), "boost_state": c.get("boost"),
+                          "proof_or_diagnosis": None if status[i, j] == "FEASIBLE" else c.get("reason", reason[i, j]),
                           "note": "branch stress (currents, losses, capacitor ripple) follows the branch powers, not "
                                   "the net"}
     return out
@@ -380,10 +531,13 @@ def _starter_tables(drive: DriveModel, ratio: float, n_crank_max: float, V_floor
 
 
 def _interp_tables(tab: dict, n_em: float, T: float) -> tuple[float, float | None, float | None]:
-    """Capability: the lower of the two neighbouring speed samples (screening lower envelope); P_dc and current:
-    bilinear on the solved grid."""
+    """Capability: the lower of the two neighbouring speed samples (a SCREENING envelope - an interior capability
+    valley is not excluded); P_dc and current: bilinear on the solved grid.  Outside the solved speed range nothing
+    is returned (no clamp to the table edge)."""
     sp = tab["speeds_rpm"]
-    n = min(max(n_em, 0.0), sp[-1])
+    n = max(n_em, 0.0)
+    if n > sp[-1] * (1 + 1e-12):
+        return 0.0, None, None
     j = int(np.clip(np.searchsorted(sp, n, side="right") - 1, 0, sp.size - 2))
     caps = [tab["Tmax_Nm"][j], tab["Tmax_Nm"][j + 1]]
     if None in caps:
@@ -405,13 +559,18 @@ def _interp_tables(tab: dict, n_em: float, T: float) -> tuple[float, float | Non
 
 def cranking_replay(drive: DriveModel, ratio: float, load: CrankLoad, battery: Battery, T_cmd_Nm: float,
                     n_target_rpm: float, t_max_s: float, V_floor_V: float, theta0_deg=None, traction_reserve_W: float = 0.0,
-                    aux_elec_W: float = 0.0, dt_s: float = 5e-4, T_comb=None) -> dict:
+                    aux_elec_W: float = 0.0, dt_s: float = 5e-4, T_comb=None, backstop: bool = False) -> dict:
     """Engine cranking replay (H-03): J w' = T_EM->e + T_comb - T_comp(theta) - T_f(w) - T_aux, theta' = w.
 
     ``ratio``: machine speed / crank speed (fixed, declared engaged mode; a slipping clutch needs its own state).
     The starter torque is limited by its capability at the declared UV floor ``V_floor_V`` (the replay checks that
     the bus stays above it); the battery supplies the starter DC power plus ``aux_elec_W`` while holding
     ``traction_reserve_W`` for traction.  Initial crank angles are sampled (coverage evidence).
+    Coulomb friction sticks at rest; the crank may turn backwards under compression (rebound) unless a one-way
+    ``backstop`` is declared.  Failures are classified (review R2): a violated source / floor / time requirement of
+    the declared model is a counterexample (source violations re-verified with an exact starter solve); a starter
+    point that is not established, a speed outside the solved table or a miss while the torque was clipped by the
+    screening capability envelope is UNRESOLVED - never an INFEASIBLE.
     """
     for name, v in (("ratio", ratio), ("n_target_rpm", n_target_rpm), ("t_max_s", t_max_s), ("V_floor_V", V_floor_V),
                     ("dt_s", dt_s)):
@@ -422,37 +581,79 @@ def cranking_replay(drive: DriveModel, ratio: float, load: CrankLoad, battery: B
     tab = _starter_tables(drive, ratio, n_target_rpm, V_floor_V)
     runs = []
     wt = n_target_rpm * TWO_PI / 60
+
+    def exact_source(n_em, Tem, p_bat_interp):
+        """Re-verify a source-side failure with an exact starter solve at the declared floor voltage."""
+        sol = PolicyEvaluator(drive, Scenario("crank", float(n_em), V_floor_V, UNLIMITED)).solve(float(Tem))
+        if sol.point is None or sol.point.Pdc_W is None:
+            return None
+        return sol.point.Pdc_W + aux_elec_W
+
     for th0 in thetas:
         th, w, t = math.radians(th0), 0.0, 0.0
         tr = {"t_s": [], "n_rpm": [], "T_em_Nm": [], "T_comp_Nm": [], "P_dc_W": [], "V_bus_V": [], "I_peak_A": []}
-        reached, fail = None, []
+        reached, fail, kind = None, [], None
+        clipped = reversed_ = False
         vmin, pmax, imax, energy = math.inf, -math.inf, 0.0, 0.0
         steps = int(math.ceil(t_max_s / dt_s))
         for _ in range(steps):
             n_em = abs(w) * 60 / TWO_PI * ratio
             Tem, pdc, ipk = _interp_tables(tab, n_em, T_cmd_Nm)
             if pdc is None:
-                fail.append(f"starter point not established at {n_em:.0f} rpm")
+                fail.append(f"starter point not established at {n_em:.0f} rpm (outside the solved table or no "
+                            f"solution)")
+                kind = "unresolved"
                 break
+            clipped = clipped or Tem < T_cmd_Nm - 1e-12
+            if w < 0:
+                # braking quadrant (forward torque, backward rotation): same current magnitude, generating
+                pdc = pdc - 2.0 * Tem * abs(w) * ratio
             p_bat = pdc + aux_elec_W
-            v, _i = battery.terminal(p_bat + traction_reserve_W)
-            if v is None:
-                fail.append("battery cannot supply starter + reserve (terminal voltage collapse)")
-                break
-            st, why = _source_check(p_bat + traction_reserve_W, v, battery.limits)
+
+            def source_state(p):
+                vv, _ = battery.terminal(p + traction_reserve_W)
+                if vv is None:
+                    return None, Status.INFEASIBLE, "battery cannot supply starter + reserve (terminal voltage collapse)"
+                stt, wh = _source_check(p + traction_reserve_W, vv, battery.limits)
+                if stt is Status.INFEASIBLE:
+                    return vv, stt, (f"t = {t:.3f} s: {wh} (starter {p:.4g} W + reserve {traction_reserve_W:.4g} W)")
+                if vv < V_floor_V:
+                    return vv, Status.INFEASIBLE, (f"t = {t:.3f} s: bus {vv:.4g} V < floor {V_floor_V:g} V (the "
+                                                   f"starter capability assumed the floor)")
+                return vv, stt, ""
+
+            v, st, why = source_state(p_bat)
             if st is Status.INFEASIBLE:
-                fail.append(f"t = {t:.3f} s: {why} (starter {p_bat:.4g} W + reserve {traction_reserve_W:.4g} W)")
-                break
-            if v < V_floor_V:
-                fail.append(f"t = {t:.3f} s: bus {v:.4g} V < floor {V_floor_V:g} V (the starter capability assumed "
-                            f"the floor)")
-                break
+                # the tables interpolate between exact solves: a crossing counts only when the exact solve confirms it
+                pe = exact_source(n_em, Tem, p_bat) if w >= 0 else None
+                if pe is None:
+                    fail += [why, "not confirmed: no exact starter solve at this state"]
+                    kind = "unresolved"
+                    break
+                ve, ste, whye = source_state(pe)
+                if ste is Status.INFEASIBLE:
+                    fail.append(whye + " (exact starter solve)")
+                    kind = "violation"
+                    break
+                p_bat, v = pe, ve
             tcomb = 0.0 if T_comb is None else float(T_comb(math.degrees(th), w))
             Tc = load.comp(math.degrees(th))
-            acc = (Tem * ratio + tcomb - Tc - load.friction(w) - load.aux_Nm) / load.J_kgm2
-            if w <= 0 and acc < 0:
-                acc = 0.0                          # static: the crank does not turn backwards under this model
-            w = max(w + acc * dt_s, 0.0)
+            drive_T = Tem * ratio + tcomb - Tc - load.aux_Nm
+            if w == 0.0:
+                if abs(drive_T) <= load.f0_Nm or (backstop and drive_T < 0):
+                    acc = 0.0                                  # static friction holds (or the declared backstop)
+                else:
+                    acc = (drive_T - math.copysign(load.f0_Nm, drive_T)) / load.J_kgm2
+            else:
+                acc = (drive_T - load.friction(w)) / load.J_kgm2
+            w_new = w + acc * dt_s
+            if w != 0.0 and w_new * w < 0:
+                w_new = 0.0                                    # friction stops the crank before it reverses
+            if backstop and w_new < 0:
+                w_new = 0.0
+            if w_new < 0:
+                reversed_ = True
+            w = w_new
             th += w * dt_s
             t += dt_s
             energy += p_bat * dt_s
@@ -464,10 +665,18 @@ def cranking_replay(drive: DriveModel, ratio: float, load: CrankLoad, battery: B
             if w >= wt and reached is None:
                 reached = t
                 break
+        if reached is None and not fail:
+            fail.append(f"target {n_target_rpm:g} rpm not reached within {t_max_s:g} s")
+            kind = "unresolved" if clipped else "violation"
+            if clipped:
+                fail.append("the starter torque was clipped by the screening capability envelope (lower of the "
+                            "neighbouring speed samples): not a counterexample")
         ok = reached is not None and not fail
-        runs.append({"theta0_deg": th0, "reached_s": reached, "ok": ok, "failures": fail, "V_bus_min_V": vmin,
-                     "P_bat_max_W": pmax, "I_peak_max_A": imax, "energy_J": energy, "trace": tr})
-    bad = [r for r in runs if not r["ok"]]
+        runs.append({"theta0_deg": th0, "reached_s": reached, "ok": ok, "failures": fail, "failure_kind": kind,
+                     "reversed": reversed_, "torque_clipped": clipped, "V_bus_min_V": vmin, "P_bat_max_W": pmax,
+                     "I_peak_max_A": imax, "energy_J": energy, "trace": tr})
+    bad = [r for r in runs if r["failure_kind"] == "violation"]
+    open_ = [r for r in runs if r["failure_kind"] == "unresolved"]
     worst = max(runs, key=lambda r: (r["reached_s"] is None, r["reached_s"] or 0.0))
     q = f"crank to {n_target_rpm:g} rpm within {t_max_s:g} s from every sampled initial crank angle"
     scope = "cranking replay with the declared crank-angle load (not an engine-start guarantee)"
@@ -475,10 +684,14 @@ def cranking_replay(drive: DriveModel, ratio: float, load: CrankLoad, battery: B
         b = bad[0]
         claim = Claim("cranking", Status.INFEASIBLE, q, scope, reasons=(Reason.CONSTRAINT_VIOLATION,),
                       evidence=(Evidence.make(EvidenceKind.NUMERICAL_WITNESS,
-                                              f"initial angle {b['theta0_deg']:g} deg: " +
-                                              ("; ".join(b["failures"]) or "target speed not reached in time")),),
+                                              f"initial angle {b['theta0_deg']:g} deg: " + "; ".join(b["failures"])),),
                       detail=f"{len(bad)} of {len(runs)} sampled initial angles fail (a counterexample under the "
                              f"declared load and battery)")
+    elif open_:
+        b = open_[0]
+        claim = Claim("cranking", Status.UNKNOWN, q, scope, reasons=(Reason.NUMERICAL_UNRESOLVED,),
+                      detail=f"{len(open_)} of {len(runs)} sampled initial angles unresolved (initial angle "
+                             f"{b['theta0_deg']:g} deg: " + "; ".join(b["failures"]) + ")")
     else:
         claim = Claim("cranking", Status.UNKNOWN, q, scope, reasons=(Reason.SAMPLED_COVERAGE,),
                       evidence=(Evidence.make(EvidenceKind.SAMPLED, f"{len(runs)} initial angles"),),
@@ -491,9 +704,12 @@ def cranking_replay(drive: DriveModel, ratio: float, load: CrankLoad, battery: B
                                    "V_floor_V": V_floor_V},
             "inputs": {"ratio": ratio, "T_cmd_Nm": T_cmd_Nm, "n_target_rpm": n_target_rpm, "t_max_s": t_max_s,
                        "traction_reserve_W": traction_reserve_W, "aux_elec_W": aux_elec_W, "J_kgm2": load.J_kgm2,
-                       "period_deg": load.period_deg, "load_basis": load.basis},
+                       "period_deg": load.period_deg, "load_basis": load.basis, "backstop": backstop},
             "notes": ["starter capability evaluated at the UV floor and taken as the lower of neighbouring speed samples "
-                      "(screening lower envelope); DC power / current interpolated between exact policy solves",
+                      "(a screening envelope: an interior capability valley is not excluded); DC power / current "
+                      "interpolated between exact policy solves",
+                      "Coulomb friction holds the crank at rest; compression rebound is modelled unless a one-way "
+                      "backstop is declared",
                       "engaged fixed-ratio connection assumed; clutch slip, combustion, NVH are outside this replay",
                       "result named 'cranking requirement', not 'engine start'"]}
 
@@ -502,9 +718,14 @@ def cranking_replay(drive: DriveModel, ratio: float, load: CrankLoad, battery: B
 
 def load_rejection(C_uF: float, V0_V: float, V_max_V: float, sources_W: list, sinks_W: list, t_react_s: float,
                    t_ramp_s: float = 0.0, horizon_s: float | None = None, n: int = 400) -> dict:
-    """Energy ledger after a traction trip (H-05): generators keep feeding the bus until their reaction completes
-    (detection + fuel cut / torque removal, then a linear ramp); sinks that still accept power are subtracted once;
-    the one common capacitor absorbs the excess: 1/2 C (V^2 - V0^2) = integral of the excess.
+    """Energy ledger after a traction trip (H-05; review R2 CT-05).
+
+    Generators G = sum(sources) keep feeding the bus for ``t_react_s``, then ramp linearly to zero over
+    ``t_ramp_s``; the sinks S = sum(sinks) keep drawing; the one common capacitor absorbs the excess:
+    1/2 C (V^2 - V0^2) = E(t) = integral of (G g(t) - S).  ONE piecewise function gives the peak, the events and the
+    trace: for G > S >= 0 the excess ends at t* = td + tr (G - S) / G and E_peak = (G - S) td + tr (G - S)^2 / (2 G);
+    the threshold crossing is solved on the same function.  A constant-power sink that would empty the capacitor
+    ends the model domain (stated), it is not continued through zero energy.
     """
     C = _finite("C_uF", C_uF) * 1e-6
     for name, v in (("V0_V", V0_V), ("V_max_V", V_max_V)):
@@ -512,36 +733,83 @@ def load_rejection(C_uF: float, V0_V: float, V_max_V: float, sources_W: list, si
             raise InputValidationError(f"{name} must be > 0", field=name)
     if V_max_V <= V0_V:
         raise InputValidationError("V_max must exceed V0", field="V_max_V")
-    if t_react_s < 0 or t_ramp_s < 0:
+    td, tr = _finite("t_react_s", t_react_s), _finite("t_ramp_s", t_ramp_s)
+    if td < 0 or tr < 0:
         raise InputValidationError("reaction / ramp times must be >= 0", field="t_react_s")
-    P_ex = float(sum(sources_W)) - float(sum(sinks_W))
+    G, S = float(sum(sources_W)), float(sum(sinks_W))
+    if G < 0 or S < 0:
+        raise InputValidationError("source and sink powers are magnitudes >= 0", field="sources_W")
+    P_ex = G - S
     E_margin = 0.5 * C * (V_max_V ** 2 - V0_V ** 2)
-    horizon = horizon_s or max(2.0 * (t_react_s + t_ramp_s), 1e-4)
-    t = np.linspace(0.0, horizon, n)
-    gen = np.where(t <= t_react_s, 1.0, np.clip(1.0 - (t - t_react_s) / t_ramp_s, 0.0, 1.0) if t_ramp_s > 0 else 0.0)
-    src = float(sum(sources_W)) * gen
-    ex = src - float(sum(sinks_W))
-    E = np.concatenate([[0.0], np.cumsum(0.5 * (ex[1:] + ex[:-1]) * np.diff(t))])
+    E_empty = -0.5 * C * V0_V ** 2
+
+    def energy(t: float) -> float:
+        if t <= td:
+            return P_ex * t
+        E1 = P_ex * td
+        if tr == 0.0:
+            return E1 - S * (t - td)
+        if t <= td + tr:
+            tau = t - td
+            return E1 + G * (tau - tau * tau / (2.0 * tr)) - S * tau
+        return E1 + 0.5 * G * tr - S * (t - td)
+
+    def excess(t: float) -> float:
+        if t <= td:
+            return P_ex
+        if tr > 0.0 and t <= td + tr:
+            return G * (1.0 - (t - td) / tr) - S
+        return -S
+
+    if P_ex > 0:
+        t_peak = td + (tr * P_ex / G if tr > 0 else 0.0)
+        E_peak = P_ex * td + (tr * P_ex * P_ex / (2.0 * G) if tr > 0 else 0.0)
+    else:
+        t_peak, E_peak = 0.0, 0.0
+    V_peak = math.sqrt(V0_V ** 2 + 2.0 * E_peak / C)
+    t_lim = None
+    if E_peak > E_margin:
+        if P_ex * td >= E_margin:
+            t_lim = E_margin / P_ex
+        else:
+            a, b, c = G / (2.0 * tr), P_ex, E_margin - P_ex * td       # a tau^2 - b tau + c = 0 (smaller root)
+            t_lim = td + (b - math.sqrt(max(b * b - 4.0 * a * c, 0.0))) / (2.0 * a)
+    # the constant-power sink empties the capacitor after the source is gone: the model domain ends there
+    E_end = energy(td + tr)
+    t_empty = (td + tr + (E_end - E_empty) / S) if S > 0 else math.inf
+    horizon = horizon_s or max(2.0 * (td + tr), 1e-4)
+    domain_end = t_empty < horizon
+    t_stop = min(horizon, t_empty)
+    marks = [0.0, td, td + tr, t_peak] + ([t_lim] if t_lim is not None else [])
+    grid = np.unique(np.concatenate([np.linspace(0.0, t_stop, n), [m for m in marks if 0.0 <= m <= t_stop]]))
+    ex = np.array([excess(float(x)) for x in grid])
+    if tr == 0.0 and 0.0 < td < t_stop:
+        # the source is cut at td: the step is represented by both values at the same instant, so the trace's
+        # piecewise-linear integral equals the ledger exactly
+        k = int(np.searchsorted(grid, td)) + 1
+        grid, ex = np.insert(grid, k, td), np.insert(ex, k, -S)
+    E = np.array([energy(float(x)) for x in grid])
     V = np.sqrt(np.maximum(V0_V ** 2 + 2.0 * E / C, 0.0))
-    E_total = max(P_ex, 0.0) * t_react_s + 0.5 * max(P_ex, 0.0) * t_ramp_s if P_ex > 0 else 0.0
-    V_peak = math.sqrt(V0_V ** 2 + 2.0 * E_total / C) if E_total > 0 else V0_V
-    t_lim = E_margin / P_ex if P_ex > 0 else math.inf
     q = f"DC bus stays below {V_max_V:g} V after the load rejection"
     if P_ex <= 0:
         st, det = Status.FEASIBLE, "the remaining sinks absorb the generated power: no excess energy"
     elif V_peak <= V_max_V:
-        st, det = Status.FEASIBLE, (f"peak {V_peak:.4g} V: the excess {P_ex:.4g} W is removed after {t_react_s:g} s "
-                                    f"(+{t_ramp_s:g} s ramp) before the {E_margin:.4g} J margin is used")
+        st, det = Status.FEASIBLE, (f"peak {V_peak:.6g} V at {t_peak * 1e6:.4g} us (the excess ends when the ramping "
+                                    f"source falls to the sink power): below {V_max_V:g} V")
     else:
-        st, det = Status.INFEASIBLE, (f"the {E_margin:.4g} J capacitor margin is used in {t_lim * 1e6:.4g} us at "
-                                      f"{P_ex:.4g} W excess, but the generator reaction takes {t_react_s * 1e3:.4g} ms: "
-                                      f"peak would be {V_peak:.4g} V")
+        st, det = Status.INFEASIBLE, (f"the {E_margin:.4g} J capacitor margin is used at {t_lim * 1e6:.4g} us, before "
+                                      f"the excess ends at {t_peak * 1e6:.4g} us: peak {V_peak:.6g} V")
     claim = Claim("load_rejection", st, q, "lossless energy ledger of the one common capacitor",
                   reasons=() if st is Status.FEASIBLE else (Reason.CONSTRAINT_VIOLATION,),
-                  evidence=(Evidence.make(EvidenceKind.ANALYTIC_BOUND, "1/2 C (V^2 - V0^2) = integral of the excess"),),
+                  evidence=(Evidence.make(EvidenceKind.DIRECT_EVALUATION,
+                                          "exact integral of the declared piecewise source / sink power"),),
                   qualifiers=("screening: declared powers and reaction; ESR, inductance, protection clamps and "
                               "converter dynamics not modelled",), detail=det)
-    return {"claim": claim.to_dict(), "P_excess_W": P_ex, "E_margin_J": E_margin, "time_to_limit_s": t_lim,
-            "V_peak_V": V_peak, "trace": {"t_s": t.tolist(), "V_V": V.tolist(), "P_excess_W": ex.tolist()},
+    return {"claim": claim.to_dict(), "P_excess_W": P_ex, "E_margin_J": E_margin, "E_peak_J": E_peak,
+            "t_peak_s": t_peak, "time_to_limit_s": t_lim if t_lim is not None else math.inf,
+            "V_peak_V": V_peak, "domain_end_s": t_empty if domain_end else None,
+            "trace": {"t_s": grid.tolist(), "V_V": V.tolist(), "P_excess_W": ex.tolist()},
             "ledger": {"sources_W": list(sources_W), "sinks_W": list(sinks_W), "capacitor_uF": C_uF,
-                       "note": "the common capacitor margin is counted once for all fault branches"}}
+                       "note": "the common capacitor margin is counted once for all fault branches" +
+                               ("; the constant-power sink empties the capacitor at the end of the trace (model "
+                                "domain end)" if domain_end else "")}}

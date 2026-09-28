@@ -43,7 +43,7 @@ def _task(progress, body, spec):
     progress(0.05, tr("가용 토크 (지속시간별 bisection)", "availability (bisection per duration)"))
     res = api.thermal(body)
     progress(0.9, tr("노드 온도", "node temperatures"))
-    model = api._thermal_model(spec, body["coolant_temp_C"])
+    model = api.thermal_model_from_dict(spec, body["coolant_temp_C"])
     req = res.get("request") or {}
     curves = None
     if req.get("nodes"):
@@ -111,6 +111,8 @@ class ThermalPage(QWidget):
         self.p_net = PlotPanel(min_height=420)
         self.p_zth = PlotPanel()
         self.editor = ThermalModelEditor()
+        self.editor.reset_source = lambda: self.win.state.example("THERMAL")
+        self.editor.load(self.win.state.example("THERMAL"))
         self.tabs.addTab(res, tr("결과", "results"))
         net_scroll = QScrollArea()
         net_scroll.setWidgetResizable(True)
@@ -268,7 +270,7 @@ class ThermalPage(QWidget):
     def run(self):
         try:
             spec = self.full_spec()
-            api._thermal_model(spec, self.c_in.value())
+            api.thermal_model_from_dict(spec, self.c_in.value())
         except Exception as exc:  # noqa: BLE001
             error_box(self, tr("열 모델 입력 오류", "thermal model input error"), str(exc))
             return
@@ -326,6 +328,11 @@ class ThermalPage(QWidget):
                          fmt(r["torque_Nm"]), r["limited_by"]))
         self.table.set_rows(rows)
         self._refresh_diagrams()
+
+    def apply_project(self, _project=None):
+        """Thermal networks and cooling system of the active project."""
+        self.editor.load(self.win.state.example("THERMAL"))
+        self._apply_coolant_spec(self.editor.coolant_spec)
 
     def redraw(self):
         for p in (self.plot, self.p_net, self.p_zth):

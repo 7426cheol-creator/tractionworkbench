@@ -24,6 +24,34 @@ def finite(name: str, value: float) -> float:
 
 
 
+def integer(name: str, value, lo: int | None = None) -> int:
+    """An integer as entered: 4 or 4.0 (or "4"), never 4.7 truncated to 4."""
+    v = value
+    if isinstance(v, bool):
+        raise InputValidationError(f"expected an integer, got {value!r}", field=name)
+    if isinstance(v, str):
+        try:
+            v = float(v)
+        except ValueError:
+            raise InputValidationError(f"expected an integer, got {value!r}", field=name) from None
+    if isinstance(v, float):
+        if not (math.isfinite(v) and v.is_integer()):
+            raise InputValidationError(f"expected an integer, got {value!r} (never truncated)", field=name)
+        v = int(v)
+    if not isinstance(v, int):
+        try:
+            import numbers
+            if isinstance(v, numbers.Integral):
+                v = int(v)
+            else:
+                raise TypeError
+        except TypeError:
+            raise InputValidationError(f"expected an integer, got {value!r}", field=name) from None
+    if lo is not None and v < lo:
+        raise InputValidationError(f"must be >= {lo}, got {v}", field=name)
+    return v
+
+
 def interval(name: str, pair) -> tuple[float, float]:
     try:
         lo, hi = pair

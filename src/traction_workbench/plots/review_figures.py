@@ -191,18 +191,20 @@ def fig_asc_transient(fig, res: dict, title: str | None = None):
         ax2.plot(tm, w[ph], color=col, lw=1.1, label=ph[:2])
     t_asc = w["t_asc_s"]
     for k, (rid, r) in enumerate((res.get("requirements") or {}).items()):
-        if not r or r.get("status") == "REQUIREMENT_INCOMPLETE":
+        if not r or r.get("status") in ("REQUIREMENT_INCOMPLETE", "NOT_COVERED"):
             continue
         off = t_asc if r["origin"] == "asc_established" else 0.0
         a, b = (r["window_s"][0] + off) * 1e3, (r["window_s"][1] + off) * 1e3
-        col = "#1a7f37" if r["screening_verdict"] == "PASS" else "#cf222e"
+        col = {"PASS": "#1a7f37", "FAIL": "#cf222e"}.get(r["screening_verdict"], "#b7791f")
         ax2.axvspan(a, b, color=col, alpha=0.08)
         if r["operator"] in ("abs_peak", "envelope_after"):
             ax2.hlines([r["limit"], -r["limit"]], a, b, colors=col, lw=1.6)
         elif r["operator"] == "rms":        # an RMS limit is not an instantaneous band: value vs limit, positive side
             ax2.hlines(r["value"], a, b, colors=col, lw=2.0)
             ax2.hlines(r["limit"], a, b, colors=col, lw=1.2, ls="--")
-        ax2.text(a, 0.98 - 0.09 * k, f" {rid}: {r['operator']} {r['value']:.4g} / {r['limit']:g} A",
+        elif r.get("level_A") is not None:   # time above: the current level is drawn, the limit is a duration
+            ax2.hlines([r["level_A"], -r["level_A"]], a, b, colors=col, lw=1.0, ls=":")
+        ax2.text(a, 0.98 - 0.09 * k, f" {rid}: {r['operator']} {r['value']:.4g} / {r['limit']:g} {r.get('unit', 'A')}",
                  transform=ax2.get_xaxis_transform(), fontsize=6.5, va="top", color=col, zorder=8,
                  bbox=dict(boxstyle="round,pad=0.15", fc=t["bg"], ec="none", alpha=0.8))
     ax2.set_xlabel(tr("고장 발생 후 시간 [ms]", "time after fault [ms]"))
@@ -290,15 +292,23 @@ def fig_ripple(fig, res: dict, title: str | None = None):
     f = np.asarray(sp["f_Hz"])[1:] / 1e3
     ax2.bar(f, np.asarray(sp["I_inv_rms_A"])[1:], width=(f[1] - f[0]) * 0.8 if f.size > 1 else 0.1, color=t["muted"],
             alpha=0.6, label=tr("인버터 AC 성분", "inverter AC harmonics"))
-    ax2.plot(f, np.asarray(sp["I_cap_rms_A"])[1:], ls="none", marker="o", ms=3, color="#cf222e",
+    ax2.plot(f, np.asarray(sp["I_cap_rms_A"], dtype=float)[1:], ls="none", marker="o", ms=3, color="#cf222e",
              label=tr("커패시터 가지 전류", "capacitor branch"))
     ax2.set_xlabel(tr("주파수 [kHz]", "frequency [kHz]"))
     ax2.set_ylabel(tr("고조파 RMS [A]", "harmonic RMS [A]"))
     ax2.legend(fontsize=7)
     ax2.set_title(tr("스펙트럼과 가지 분배 (Z_s vs Z_C)", "spectrum and branch split (Z_s vs Z_C)"), fontsize=9)
     cl = res.get("claims", {})
-    lines = [f"I_C,rms = {res['I_cap_rms_A']:.1f} A · I_inv,ac = {res['I_inv_ac_rms_A']:.1f} A",
-             f"V_pp = {res['V_ripple_pp_V']:.2f} V · P_cap = " + ("—" if res["P_cap_W"] is None else f"{res['P_cap_W']:.2f} W")]
+    def val(k, unit, digits):
+        v, b = res.get(k), res.get(k.rsplit("_", 1)[0] + "_bounds_" + k.rsplit("_", 1)[1]) or [None, None]
+        if v is not None:
+            return f"{v:.{digits}f} {unit}"
+        return f"[{b[0]:.{digits}f}, {b[1]:.{digits}f}] {unit}" if b[0] is not None and np.isfinite(b[1]) else "—"
+    stt = res.get("state") or {}
+    lines = [f"I_C,rms = {val('I_cap_rms_A', 'A', 1)} · I_inv,ac = {res['I_inv_ac_rms_A']:.1f} A",
+             f"V_pp = {val('V_ripple_pp_V', 'V', 2)} · P_cap = " + ("—" if res["P_cap_W"] is None else f"{res['P_cap_W']:.2f} W")]
+    if stt.get("T_C") is not None:
+        lines.append(tr(f"커패시터 상태 {stt['T_C']:.1f} °C", f"capacitor state {stt['T_C']:.1f} °C"))
     for k, v in cl.items():
         lines.append(f"{k}: {v['status']}")
     if res.get("assumption"):
@@ -313,12 +323,19 @@ def fig_lifetime(fig, res: dict, title: str | None = None):
     t = S.theme()
     ax1, ax2 = fig.subplots(1, 2, gridspec_kw={"width_ratios": [1.6, 1.0]})
     tr_ = res["trace"]
-    ax1.plot(tr_["t_s"], tr_["T_C"], color="#cf222e", lw=1.2, label=tr("최고 발열 소자 Tj(t)", "hottest-device Tj(t)"))
+    per = tr_.get("per_device_T_C") or {}
+    for i, (name, Tn) in enumerate(per.items()):
+        if name != tr_.get("device"):
+            ax1.plot(tr_["t_s"], Tn, lw=0.8, alpha=0.75, color=(S.ACCENT, S.MTPA, S.MTPV, S.REQUEST)[i % 4],
+                     label=f"Tj {name}")
+    ax1.plot(tr_["t_s"], tr_["T_C"], color="#cf222e", lw=1.2,
+             label=(f"Tj {tr_['device']} " + tr("(지배)", "(governing)")) if tr_.get("device") else
+             tr("최고 발열 포락선 (한 소자 아님)", "hottest-die envelope (not one device)"))
     ax1.set_xlabel(tr("시간 [s]", "time [s]"))
     ax1.set_ylabel("Tj [°C]")
     ax1.legend(fontsize=7, loc="lower right")
-    ax1.set_title(tr("미션 → 손실 → Tj 이력 (스크리닝 전열 체인)", "mission -> losses -> Tj history (screening chain)"),
-                  fontsize=9)
+    ax1.set_title(tr("미션 → 다이별 손실 → 다이별 Tj 이력 (스크리닝 전열 체인)",
+                     "mission -> per-die losses -> per-die Tj histories (screening chain)"), fontsize=9)
     h = res.get("histogram", [])
     if h:
         x = [0.5 * (r["range_K"][0] + r["range_K"][1]) for r in h]

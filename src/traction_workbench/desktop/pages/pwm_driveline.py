@@ -9,7 +9,6 @@ the capability torque window; sampled-loop stability over gain and delay.
 
 from __future__ import annotations
 
-import copy
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QFormLayout, QGroupBox, QHBoxLayout, QLineEdit, QPushButton, QScrollArea, QSplitter,
@@ -62,6 +61,12 @@ NOTE_DAMP = lambda: tr(
 RULE_HEAD = ["schedule", "rule", "fsw [kHz]", "n lo", "n hi", "|T| lo", "|T| hi", "T_ntc lo", "T_ntc hi", "prot."]
 
 
+def _set(w, data):
+    i = w.findData(data)
+    if i >= 0:
+        w.setCurrentIndex(i)
+
+
 def _task(fn):
     def run(progress, body):
         progress(0.1, tr("계산 중", "computing"))
@@ -97,14 +102,15 @@ class PwmDrivelinePage(QWidget):
 
     # ================================================================== variable PWM
     def _pwm_tab(self):
-        ex = api.EXAMPLE_PWM
+        ex = self.win.state.example("PWM")
         split = QSplitter(Qt.Horizontal)
         form = QWidget()
         v = QVBoxLayout(form)
         v.setContentsMargins(0, 0, 6, 0)
         g = QGroupBox(tr("모듈·냉각·기준", "module · cooling · baseline"))
         f = QFormLayout(g)
-        self.p_mod = combo([(tr("예시 IGBT", "example IGBT"), "igbt"), (tr("예시 SiC", "example SiC"), "sic"),
+        self.p_mod = combo([(tr("프로젝트 모듈", "project module"), "igbt"),
+                            (tr("프로젝트 대안 모듈", "project alternative"), "sic"),
                             (tr("전력변환 페이지 모듈", "power page module"), "power")], "igbt")
         self.p_rth = number(ex["Rth_K_per_W"], 0.001, 10, "K/W", 4, 0.01)
         self.p_cool = number(ex["coolant_C"], -40, 120, "°C", 1, 5)
@@ -279,10 +285,11 @@ class PwmDrivelinePage(QWidget):
         return split
 
     def pwm_body(self) -> dict:
-        b = copy.deepcopy(api.EXAMPLE_PWM)
+        b = self.win.state.example("PWM")             # product data of the active project; widgets overlay it
         key = self.p_mod.currentData()
-        b["module"] = {"igbt": api.EXAMPLE_MODULE, "sic": api.EXAMPLE_MODULE_SIC}.get(key) or \
-            self.win.pages["power"].module_spec()
+        b["module"] = {"igbt": lambda: self.win.state.example("MODULE"),
+                       "sic": lambda: self.win.state.example("MODULE_SIC")}.get(
+            key, lambda: self.win.pages["power"].module_spec())()
         scheds = {}
         for r in self.t_rules.values():
             name, rule, fsw, nlo, nhi, tlo, thi, slo, shi, prot = r
@@ -304,19 +311,19 @@ class PwmDrivelinePage(QWidget):
         b.update({"Rth_K_per_W": self.p_rth.value(), "coolant_C": self.p_cool.value(), "modulation": self.p_mdl.currentData(),
                   "L_hf_uH": self.p_lhf.value(), "baseline_fsw_kHz": self.p_base.value(),
                   "use_capacitor": self.p_cap.isChecked(), "harmonic": b["harmonic"] if self.p_harm.isChecked() else None})
-        b["timing"] = {"sample_to_latch_us": self.tm_lat.value(), "filter_delay_us": self.tm_flt.value(),
+        b["timing"] = {**b["timing"], "sample_to_latch_us": self.tm_lat.value(), "filter_delay_us": self.tm_flt.value(),
                        "updates_per_period": self.tm_upd.currentData(), "modulator_delay_fraction": self.tm_mod.value(),
                        "min_pulse_us": self.tm_pul.value(), "wcet_source": "declared estimate",
                        "basis": self.tm_basis.text().strip()}
-        b["loop"] = {"Ld_uH": self.lp_Ld.value(), "Lq_uH": self.lp_Lq.value(), "R_mohm": self.lp_R.value(),
+        b["loop"] = {**b["loop"], "Ld_uH": self.lp_Ld.value(), "Lq_uH": self.lp_Lq.value(), "R_mohm": self.lp_R.value(),
                      "bandwidth_Hz": self.lp_bw.value(),
-                     "gain_mapping": self.lp_map.currentData(), "reference_fsw_kHz": self.p_base.value(), "basis": "UI",
+                     "gain_mapping": self.lp_map.currentData(), "reference_fsw_kHz": self.p_base.value(),
                      "integrator_storage": self.lp_int.currentData(), "on_transition": self.lp_tr.currentData(),
                      "anti_windup": self.lp_aw.isChecked()}
         kind = self.sn_kind.currentData()
         pts = "valley_and_peak" if (kind == "inline_phase" and self.tm_upd.currentData() == 2) else "valley"
         pol = self.sn_pol.currentData()
-        b["sensing"] = {"kind": kind, "settle_us": self.sn_settle.value(), "aperture_us": self.sn_ap.value(),
+        b["sensing"] = {**b["sensing"], "kind": kind, "settle_us": self.sn_settle.value(), "aperture_us": self.sn_ap.value(),
                         "sample_points": pts, "edge_noise": self.sn_noise.currentData(),
                         "reconstruct_from_two": self.sn_two.isChecked(), "channel_skew_ns": self.sn_skew.value(),
                         "invalid_policy": pol, "predict_error_fraction": self.sn_pred.value() if pol == "predict" else None,
@@ -336,6 +343,52 @@ class PwmDrivelinePage(QWidget):
         for b in (self.p_btn, self.t_btn, self.r_btn, self.x_btn, self.d_btn, self.s_btn):
             b.setEnabled(True)
         error_box(self, tr("계산 실패", "failed"), msg, tb)
+
+    def apply_project(self, _project=None):
+        """Controller (timing, current loop, sensing, fsw, modulation), module Rth and the gearbox from the active
+        project; schedules, trajectories, limits and manoeuvres stay."""
+        ex = self.win.state.example("PWM")
+        self.p_rth.setValue(float(ex["Rth_K_per_W"]))
+        self.p_base.setValue(float(ex["baseline_fsw_kHz"]))
+        _set(self.p_mdl, ex["modulation"])
+        tm, lp, sn = ex["timing"], ex["loop"], ex["sensing"]
+        self.tm_lat.setValue(float(tm["sample_to_latch_us"]))
+        self.tm_flt.setValue(float(tm.get("filter_delay_us") or 0.0))
+        _set(self.tm_upd, int(tm.get("updates_per_period") or 1))
+        self.tm_mod.setValue(float(tm.get("modulator_delay_fraction", 0.5)))
+        self.tm_pul.setValue(float(tm.get("min_pulse_us") or 0.0))
+        self.tm_basis.setText(str(tm.get("basis", "")))
+        self.lp_Ld.setValue(float(lp.get("Ld_uH") or lp.get("L_uH")))
+        self.lp_Lq.setValue(float(lp.get("Lq_uH") or lp.get("L_uH")))
+        self.lp_R.setValue(float(lp["R_mohm"]))
+        self.lp_bw.setValue(float(lp["bandwidth_Hz"]))
+        _set(self.lp_map, lp.get("gain_mapping", "continuous"))
+        _set(self.lp_int, lp.get("integrator_storage", "output"))
+        _set(self.lp_tr, lp.get("on_transition", "keep"))
+        self.lp_aw.setChecked(bool(lp.get("anti_windup", True)))
+        _set(self.sn_kind, sn["kind"])
+        self.sn_settle.setValue(float(sn["settle_us"]))
+        self.sn_ap.setValue(float(sn["aperture_us"]))
+        _set(self.sn_noise, sn["edge_noise"])
+        self.sn_two.setChecked(bool(sn["reconstruct_from_two"]))
+        self.sn_skew.setValue(float(sn["channel_skew_ns"]))
+        _set(self.sn_pol, sn["invalid_policy"])
+        self.sn_age.setValue(float(sn["max_sample_age_us"]))
+        self.sn_err.setValue(float(sn["current_error_max_A"]))
+        self.sn_basis.setText(str(sn.get("basis", "")))
+        dl = self.win.state.example("DRIVELINE")
+        dd, cc = dl["driveline"], dl["controller"]
+        self.d_Jm.setValue(float(dd["Jm_kgm2"]))
+        self.d_Jo.setValue(float(dd["J_out_kgm2"]))
+        self.d_k.setValue(float(dd["k_out_Nm_per_rad"]))
+        self.d_c.setValue(float(dd["c_out_Nms_per_rad"]))
+        self.d_g.setValue(float(dd["ratio"]))
+        self.d_r.setValue(float(dd["wheel_radius_m"]))
+        _set(self.d_ct, dd["contact"])
+        self.d_basis.setText(str(dd.get("basis", "")))
+        self.c_ts.setValue(float(cc["sample_ms"]))
+        self.c_dl.setValue(float(cc["delay_ms"]))
+        self.c_act.setValue(float(cc.get("actuator_tau_ms") or 0.0))
 
     def _run_pwm(self, key, label, fn, show, btn):
         try:
@@ -482,7 +535,7 @@ class PwmDrivelinePage(QWidget):
 
     # ================================================================== anti-jerk
     def _dl_tab(self):
-        ex = api.EXAMPLE_DRIVELINE
+        ex = self.win.state.example("DRIVELINE")
         dd, mm, cc = ex["driveline"], ex["maneuver"], ex["controller"]
         split = QSplitter(Qt.Horizontal)
         form = QWidget()
@@ -575,8 +628,12 @@ class PwmDrivelinePage(QWidget):
         self.q_st = number(rq["settle_max_s"], 0.001, 30, "s", 3, 0.05)
         self.q_safe = number(1e3 * rq.get("safety_reaction_max_s", 0.02), 0.01, 1e4, "ms", 2, 1,
                              tr("보호 시간: comfort 지표와 별도로 판정 (상쇄 안 함)", "protection time: judged apart from comfort (never traded)"))
+        self.q_band = number(rq.get("safety_band_Nm") or 2.0, 0.01, 1e4, "N·m", 2, 0.5,
+                             tr("안전 토크 도달 판정 대역 (선언 필요: 휴리스틱 대역은 승인 근거가 아님)",
+                                "safe-torque band (must be declared: a heuristic band never approves)"))
         for lab, w in ((tr("90% 응답 시간 max", "time to 90 % max"), self.q_t90), (tr("차량 저크 max", "vehicle jerk max"), self.q_j),
-                       (tr("정착 시간 max", "settling time max"), self.q_st), (tr("안전 반응 max", "safety reaction max"), self.q_safe)):
+                       (tr("정착 시간 max", "settling time max"), self.q_st), (tr("안전 반응 max", "safety reaction max"), self.q_safe),
+                       (tr("안전 토크 대역", "safe-torque band"), self.q_band)):
             f.addRow(lab, w)
         v.addWidget(g)
         row = QHBoxLayout()
@@ -609,29 +666,29 @@ class PwmDrivelinePage(QWidget):
         return split
 
     def dl_body(self) -> dict:
-        b = copy.deepcopy(api.EXAMPLE_DRIVELINE)
-        b["driveline"] = {"Jm_kgm2": self.d_Jm.value(), "J_out_kgm2": self.d_Jo.value(), "k_out_Nm_per_rad": self.d_k.value(),
+        b = self.win.state.example("DRIVELINE")       # product data of the active project; widgets overlay it
+        b["driveline"] = {**b["driveline"], "Jm_kgm2": self.d_Jm.value(), "J_out_kgm2": self.d_Jo.value(), "k_out_Nm_per_rad": self.d_k.value(),
                           "c_out_Nms_per_rad": self.d_c.value(), "ratio": self.d_g.value(), "wheel_radius_m": self.d_r.value(),
-                          "contact": self.d_ct.currentData(), "backlash_out_rad": None, "basis": self.d_basis.text().strip()}
+                          "contact": self.d_ct.currentData(), "basis": self.d_basis.text().strip()}
         b["maneuver"] = {"T0_Nm": self.m_T0.value(), "T1_Nm": self.m_T1.value(), "t_step_s": self.m_ts.value(),
                          "t_end_s": self.m_te.value(), "speed_rpm": self.m_n.value(), "Vdc_V": self.m_vdc.value(),
                          "TL_out_Nm": 0.0, "window": "capability" if self.m_win.currentData() == "capability" else
                          [self.m_lo.value(), self.m_hi.value()],
                          "emergency_t_s": self.m_em_t.value() if self.m_em.isChecked() else None,
                          "emergency_T_Nm": self.m_em_T.value() if self.m_em.isChecked() else None}
-        b["controller"] = {"sample_ms": self.c_ts.value(), "delay_ms": self.c_dl.value(), "actuator_tau_ms": self.c_act.value(),
-                           "basis": "UI"}
+        b["controller"] = {**b["controller"], "sample_ms": self.c_ts.value(), "delay_ms": self.c_dl.value(),
+                           "actuator_tau_ms": self.c_act.value()}
         kind = self.c_sh.currentData()
         sh = {"kind": kind, "rate_Nm_per_s": self.c_rate.value(), "tau_s": self.c_tau.value()}
         if kind == "zv":
-            md = api._driveline(b["driveline"]).modal()
+            md = api.driveline_from_dict(b["driveline"]).modal()
             sh.update({"zv_f_Hz": md["f_n_Hz"], "zv_zeta": md["zeta"]})
         dp = {"kind": self.c_dp.currentData(), "Kd_Nms_per_rad": self.c_kd.value(), "hpf_Hz": self.c_hpf.value()}
         b["variants"] = {"off": {}, "shaping": {"shaper": sh}, "feedback": {"damping": dp},
                          "combined": {"shaper": sh, "damping": dp}}
         b["requirement"] = {"t_to_90_max_s": self.q_t90.value(), "peak_vehicle_jerk_max_m_s3": self.q_j.value(),
                             "settle_max_s": self.q_st.value(), "safety_reaction_max_s": 1e-3 * self.q_safe.value(),
-                            "basis": "UI"}
+                            "safety_band_Nm": self.q_band.value(), "basis": "UI"}
         drops = []
         for part in self.sg_drop.text().replace(",", ";").split(";"):
             part = part.strip()

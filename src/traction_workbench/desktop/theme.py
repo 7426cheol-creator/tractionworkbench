@@ -113,6 +113,10 @@ def stylesheet() -> str:
                              border-top-left-radius: 4px; border-top-right-radius: 4px; font-weight: 600; }}
     QFrame#Card {{ background: {c['panel']}; border: 1px solid {c['border']}; border-radius: 6px; }}
     QLabel#Hint {{ color: {c['muted']}; }}
+    QLabel#ProjectBanner {{ padding: 4px 12px; border-bottom: 1px solid {c['border']}; background: {c['panel']};
+                            color: {c['muted']}; }}
+    QLabel#ProjectBanner[state="local"] {{ background: {c['accent_bg']}; color: {c['fg']}; }}
+    QLabel#ProjectBanner[state="stale"] {{ background: #fff8c5; color: #7d4e00; border-bottom: 1px solid #d4a72c; }}
     QLabel#Readout {{ color: {c['muted']}; font-family: Consolas, "DejaVu Sans Mono", monospace; font-size: 8.5pt; }}
     QTableWidget, QTreeWidget, QTextBrowser, QPlainTextEdit {{ background: {c['bg']}; border: 1px solid {c['border']};
                                                                border-radius: 4px; }}

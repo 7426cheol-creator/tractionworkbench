@@ -55,12 +55,17 @@ class SizingResult:
             "samples": self.samples,
             "feasible_ranges": [list(r) for r in self.feasible_ranges],
             "minimal_feasible_value": self.minimal_feasible,
-            "minimal_meaning": ("bracketed boundary: proven excluded just below (sampled between samples)"
-                                if self.minimal_is_bracketed else
+            "minimal_is_bracketed": self.minimal_is_bracketed,
+            "minimal_label": "local bracket" if self.minimal_is_bracketed else "smallest witnessed",
+            "minimal_meaning": ("local bracket: the edge found by bisection between a witnessed and an excluded "
+                                "sample; excluded at the samples below (sampled, not a continuous proof of a "
+                                "global minimum)" if self.minimal_is_bracketed else
                                 "smallest feasible value FOUND - not a proven minimum (unresolved or unexplored below)"),
             "maximal_feasible_value": self.maximal_feasible,
-            "maximal_meaning": ("bracketed boundary: proven excluded just above" if self.maximal_is_bracketed else
-                                "largest feasible value FOUND - not a proven maximum"),
+            "maximal_is_bracketed": self.maximal_is_bracketed,
+            "maximal_label": "local bracket" if self.maximal_is_bracketed else "largest witnessed",
+            "maximal_meaning": ("local bracket: excluded at the samples above (sampled)" if self.maximal_is_bracketed
+                                else "largest feasible value FOUND - not a proven maximum"),
             "regions": [{"range": [a, b], "status": st} for a, b, st in self.regions],
             "solution_at_minimal_value": self.solution_at_minimal,
             "status_samples": [list(s) for s in self.status_samples],
@@ -92,18 +97,24 @@ def size_parameter(drive: DriveModel, scenario: Scenario, T_request: float, para
     tol = 1e-9 * max(abs(lo), abs(hi), 1.0)
 
     def bisect(a, b, keep):
-        # status(a) == keep, status(b) != keep: move a towards b while the status stays `keep`
+        """status(a) == keep, status(b) != keep: move a towards b while the status stays `keep`.  Returns the last
+        kept point and every OTHER status met on the way (review R2 D-R2-04: an edge between FEASIBLE and UNKNOWN
+        is not a bracket, and a status met between the samples is recorded, not filled in)."""
+        seen = set()
         for _ in range(100):
             if abs(b - a) <= tol:
                 break
             m = 0.5 * (a + b)
-            if status(m) == keep:
+            st_m = status(m)
+            if st_m == keep:
                 a = m
             else:
                 b = m
-        return a
+                seen.add(st_m)
+        return a, b, seen
 
-    # runs of equal status -> regions; only FEASIBLE <-> INFEASIBLE transitions are bisected
+    # runs of equal status -> regions; every FEASIBLE edge is bisected (the witnessed side is extended); only an
+    # edge whose other side is excluded throughout is a bracket
     runs = []
     i = 0
     while i < samples:
@@ -113,22 +124,46 @@ def size_parameter(drive: DriveModel, scenario: Scenario, T_request: float, para
         runs.append([i, j, st[i]])
         i = j + 1
     regions = []
+    gap_lo, gap_hi = {}, {}              # statuses met between a FEASIBLE run's bisected edge and its neighbour
     for r, (i, j, sti) in enumerate(runs):
         a, b = float(xs[i]), float(xs[j])
         if sti == "FEASIBLE":
             if i > 0:
-                a = float(bisect(xs[i], xs[i - 1], "FEASIBLE"))
+                a0, _b, seen = bisect(xs[i], xs[i - 1], "FEASIBLE")
+                a, gap_lo[r] = float(a0), seen | {runs[r - 1][2]}
             if j < samples - 1:
-                b = float(bisect(xs[j], xs[j + 1], "FEASIBLE"))
+                b0, _a, seen = bisect(xs[j], xs[j + 1], "FEASIBLE")
+                b, gap_hi[r] = float(b0), seen | {runs[r + 1][2]}
         regions.append((a, b, sti))
+    # every stretch between two regions is stated explicitly: the one status met there, else UNKNOWN (never left
+    # unlabelled, never filled in as feasible)
+    full = []
+    for r, (a, b, sti) in enumerate(regions):
+        if full and full[-1][1] < a:
+            pa, pb, pst = full[-1]
+            met = gap_hi.get(r - 1) if pst == "FEASIBLE" else (gap_lo.get(r) if sti == "FEASIBLE" else {pst, sti})
+            met = set(met or ())
+            full.append((pb, a, next(iter(met)) if len(met) == 1 else "UNKNOWN"))
+        full.append((a, b, sti))
+    merged = []                          # adjacent stretches of one status are one region
+    for a, b, sti in full:
+        if merged and merged[-1][2] == sti:
+            merged[-1] = (merged[-1][0], b, sti)
+        else:
+            merged.append((a, b, sti))
+    regions = merged
     ranges = [(a, b) for a, b, sti in regions if sti == "FEASIBLE"]
     notes = [f"one-parameter change of {parameter} ({PARAMETERS[parameter][0]}); coupled constraints and losses "
              f"recomputed at every sample; searched only inside [{lo:g}, {hi:g}] (no extrapolation)",
              "regions: FEASIBLE = witnessed, INFEASIBLE = proven excluded at the samples, UNKNOWN = unresolved; "
              "between samples every statement is sampled, not a continuous proof"]
     if parameter == "Vdc_V":
-        notes.append("the synthetic inverter-loss surrogate has no Vdc dependence; switching-loss change with Vdc "
-                     "needs loss data before this becomes a hardware proposal")
+        if drive.inverter.module_loss is not None:
+            notes.append("the datasheet module model scales switching losses with Vdc only through a declared scaling "
+                         "law; without one, samples away from the switching test voltage are UNKNOWN (no extrapolation)")
+        else:
+            notes.append("the synthetic inverter-loss surrogate has no Vdc dependence; switching-loss change with Vdc "
+                         "needs loss data before this becomes a hardware proposal")
     if PARAMETERS[parameter][0] == "diagnostic":
         notes.append("diagnostic change: indicates the cause, not a realisable design proposal")
     if len(ranges) > 1:
@@ -142,10 +177,9 @@ def size_parameter(drive: DriveModel, scenario: Scenario, T_request: float, para
         notes.append("feasible at the lower end of the range: smaller values were not explored")
     first = next((r for r, (*_, sti) in enumerate(regions) if sti == "FEASIBLE"), None)
     last = max((r for r, (*_, sti) in enumerate(regions) if sti == "FEASIBLE"), default=None)
-    min_br = first is not None and first > 0 and all(sti in ("INFEASIBLE", "INVALID")
-                                                       for *_, sti in regions[:first])
-    max_br = last is not None and last < len(regions) - 1 and all(sti in ("INFEASIBLE", "INVALID")
-                                                                   for *_, sti in regions[last + 1:])
+    excluded = ("INFEASIBLE", "INVALID")
+    min_br = first is not None and first > 0 and all(sti in excluded for *_, sti in regions[:first])
+    max_br = last is not None and last < len(regions) - 1 and all(sti in excluded for *_, sti in regions[last + 1:])
     sol = None
     mn = ranges[0][0] if ranges else None
     mx = ranges[-1][1] if ranges else None

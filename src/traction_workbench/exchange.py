@@ -83,6 +83,22 @@ def conventions() -> dict:
     }
 
 
+def _e05() -> dict:
+    """E-05 from the evaluated point itself (full precision; review R2: an expected value may not carry more rounding
+    than its own tolerance - the former literal 0.74099 missed the computed 0.7409882 by 1.8e-6 at tol 1e-6)."""
+    from . import spec_fixtures as sf
+    from .analysis.efficiency import point_ledger
+    from .physics import DriveKernel, evaluate_point
+    from .scenario import Scenario
+    d = sf.synthetic_drive()
+    pt = evaluate_point(DriveKernel(d, Scenario("E-05", 1000.0, 600.0, sf.synthetic_limits())), 0.0, -1.0)
+    b = point_ledger(pt, d)["boundaries"]
+    return {"inputs": {"drive": "SYNTH_IPMSM_200KW_REF_V1 (built-in)", "speed_rpm": 1000.0, "Vdc_V": 600.0,
+                       "id_A_peak": 0.0, "iq_A_peak": -1.0},
+            "P_m_W": pt.Pshaft_W, "P_ac_W": pt.Pac_W, "P_dc_W": pt.Pdc_W, "motor_eta": b["motor"]["eta"],
+            "inverter": "N/A (mixed flow)", "tol_abs": 1e-9}
+
+
 def fixtures() -> dict:
     """Reference fixtures with the values this implementation computes (inputs, outputs, tolerance)."""
     from .analysis.efficiency import five_boundaries, mission_energy
@@ -115,8 +131,7 @@ def fixtures() -> dict:
         "E-02": {"inputs_W": [-87e3, -90e3, -95e3, -100e3], "result": eff(-87e3, -90e3, -95e3, -100e3),
                  "tol_abs": 1e-12},
         "E-03": {"inputs_W": [6300.0, 4500.0, 0.0, 0.0], "result": eff(6300.0, 4500.0, 0.0, 0.0), "tol_abs": 1e-12},
-        "E-05": {"note": "synthetic drive, 1000 rpm, id 0 A, iq -1 A", "P_m_W": -84.764307, "P_ac_W": -62.809353,
-                 "P_dc_W": 137.198647, "motor_eta": 0.74099, "inverter": "N/A (mixed flow)", "tol_abs": 1e-6},
+        "E-05": _e05(),
         "E-06": {"eta_traction": e06["eta_traction"], "eta_regeneration": e06["eta_regeneration"],
                  "E_dc_net_kWh": e06["E_dc_net_J"] / 3.6e6, "E_out_net_kWh": e06["E_out_net_J"] / 3.6e6,
                  "tol_rel": 1e-12},

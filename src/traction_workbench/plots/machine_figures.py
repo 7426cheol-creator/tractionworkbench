@@ -124,7 +124,10 @@ def fig_winding(fig, w: dict, title: str | None = None):
         ax.text(1.16 * math.cos(th), 1.16 * math.sin(th), f"{lab}\n{ph}", ha="center", va="center", fontsize=5.8,
                 color=col)
     for k, ph in enumerate(("A", "B", "C")):
-        ang = math.radians(w["phase_axes_deg"][ph])
+        a_deg = w["phase_axes_deg"][ph]
+        if not isinstance(a_deg, (int, float)) or not math.isfinite(a_deg):
+            continue                                   # a phase without coil sides has no axis (invalid layout)
+        ang = math.radians(a_deg)
         ax.plot([0, 0.62 * math.cos(ang)], [0, 0.62 * math.sin(ang)], color=PH[ph], lw=3.2, alpha=0.55,
                 solid_capstyle="round", label=tr(f"상 {ph} 축", f"phase {ph} axis"))
     ax.set_xlim(-1.45, 1.45)

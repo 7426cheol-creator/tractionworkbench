@@ -26,6 +26,7 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 
 from ..errors import InputValidationError
+from ..models.module_loss import ModuleLossModel
 from ..validation import finite as _finite, interval as _interval
 
 BOUNDARIES = (
@@ -161,11 +162,15 @@ class LossMap:
 class ReducerModel:
     """Single fixed-ratio reducer, calibrated PER DIRECTION (motoring efficiency is never inverted for regen).
 
-    Parametric form (drag at the motor side, mesh efficiency on the power through the mesh):
-      forward (P_m > 0):  P_o = eta_forward * (P_m - P_drag)
-      reverse (P_o < 0):  |P_m| = eta_reverse * |P_o| - P_drag
+    Parametric form (drag at the motor side, mesh efficiency on the power THROUGH the mesh, review R2 PT-08):
+      mesh input  Q = P_m - P_drag
+      Q >= 0 (forward through the mesh):  P_o = eta_forward * Q
+      Q <  0 (reverse through the mesh):  P_o = Q / eta_reverse
       P_drag = (c0 + c1 |w| + c2 w^2) |w|   (w = motor-side rad/s; zero at standstill - no P/omega divergence)
-    or directional loss maps. Outside the declared speed / torque / oil-temperature domain: UNKNOWN.
+    The branch follows Q, not the sign of P_m: a motor supplying less than the drag (P_m > 0, Q < 0) is fed from the
+    output, and the inverse P_m = P_o / eta_forward + P_drag (P_o >= 0), P_m = eta_reverse P_o + P_drag (P_o < 0) is
+    exact on both branches.  Directional loss maps do not define the mixed-flow region (forward map with P_o < 0):
+    UNKNOWN there.  Outside the declared speed / torque / oil-temperature domain: UNKNOWN.
     """
 
     ratio: float                                   # g = omega_motor / omega_output > 0
@@ -239,6 +244,10 @@ class ReducerModel:
                 if L is None:
                     return {"status": UNKNOWN, "P_o_W": None, "loss_W": None, "reason": "outside the forward loss map"}
                 P_o = P_m - L
+                if P_o < 0:
+                    return {"status": UNKNOWN, "P_o_W": None, "loss_W": None,
+                            "reason": "mixed-flow region (motor input below the loss, output power negative): the "
+                                      "directional loss maps do not define this direction"}
             else:
                 # reverse: the map is indexed by the motor-side torque magnitude; |P_o| = |P_m| + L
                 L = self.map_reverse.at(abs(n_rpm), abs(T_m))
@@ -248,12 +257,11 @@ class ReducerModel:
             return {"status": DEFINED, "P_o_W": P_o, "loss_W": L, "T_o_Nm": P_o / (w / self.ratio),
                     "reason": "directional loss map"}
         Pd = self._drag_W(w)
-        if P_m > tol_W:
-            P_o = self.eta_forward * (P_m - Pd)
-        else:
-            P_o = -(abs(P_m) + Pd) / self.eta_reverse if P_m < -tol_W else -Pd / self.eta_reverse
+        Q = P_m - Pd                                   # power into the mesh from the motor side
+        P_o = self.eta_forward * Q if Q >= 0.0 else Q / self.eta_reverse
         return {"status": DEFINED, "P_o_W": P_o, "loss_W": P_m - P_o, "T_o_Nm": P_o / (w / self.ratio),
-                "reason": "directional efficiencies + drag", "P_drag_W": Pd}
+                "reason": "directional efficiencies + drag", "P_drag_W": Pd, "mesh_power_W": Q,
+                "mesh_direction": "forward" if Q >= 0.0 else "reverse"}
 
     def motor_torque_for_output(self, n_rpm: float, T_o: float, oil_C: float | None) -> dict:
         """Motor-shaft torque that delivers T_o at the output (inverse of ``output_from_motor``; parametric form)."""
@@ -265,10 +273,8 @@ class ReducerModel:
             return {"status": UNKNOWN, "T_m_Nm": None, "reason": "standstill: the static torque ratio is not modelled"}
         Pd = self._drag_W(w)
         P_o = T_o * w / self.ratio
-        if P_o > 0:
-            P_m = P_o / self.eta_forward + Pd
-        else:
-            P_m = self.eta_reverse * P_o + Pd            # |P_m| = eta_r |P_o| - P_drag  (P_o < 0)
+        Q = P_o / self.eta_forward if P_o >= 0 else self.eta_reverse * P_o     # mesh input for that output
+        P_m = Q + Pd
         T_m = P_m / w
         bad = self._domain(n_rpm, T_m, oil_C)
         if bad:
@@ -488,12 +494,14 @@ class ModuleCandidate:
     """One module design in a comparison: its OWN datasheet model, gate / dead time, thermal path and error budget."""
 
     name: str
-    model: object                              # extensions.module_loss.ModuleLossModel
+    model: ModuleLossModel                     # its own datasheet module model
     Rth_K_per_W: float                         # hottest position junction -> coolant (its own thermal path)
     loss_error_rel: float | None = None        # declared loss error budget (NOT a statistical confidence)
     error_basis: str = ""
 
     def __post_init__(self):
+        if not isinstance(self.model, ModuleLossModel):
+            raise InputValidationError("a module candidate needs its datasheet ModuleLossModel", field="model")
         if _finite("Rth_K_per_W", self.Rth_K_per_W) <= 0:
             raise InputValidationError("Rth must be > 0", field="Rth_K_per_W")
         if self.loss_error_rel is not None:
@@ -571,10 +579,13 @@ def compare_modules(base_drive, candidates: list, requests: list, limits, coolan
                     oil_temp_C: float | None = None, mission: list | None = None) -> dict:
     """SiC / IGBT (or any two module designs) on the same delivered requirement.
 
-    ``fixed_policy``: same motor, source, demand, PWM frequency and coolant; each module keeps its own data, gate /
-    dead time and thermal path (Tj is a RESULT, not forced equal). ``design_specific``: each candidate runs its own
-    declared PWM frequency - EMC, ripple and timing constraints must then be re-evaluated for each design (not
-    done here), so the result is a loss comparison under declared policies, not an approval.
+    ``fixed_policy``: same motor, source, demand, modulation and PWM frequency and coolant - a candidate pair with
+    different modulation is rejected, never represented as one policy (review R2 PT-09); each module keeps its own
+    data, legal gate / dead time and thermal path (Tj is a RESULT, not forced equal).  ``design_specific``: each
+    candidate runs its own declared policy - EMC, ripple and timing constraints must then be re-evaluated for each
+    design (not done here), so the result is a loss comparison under declared policies, not a global optimisation
+    and not an approval.  Either way the ranking is of the SEMICONDUCTOR (module) loss: the motor PWM-harmonic,
+    capacitor and auxiliary losses are not evaluated and are never asserted to cancel between technologies.
     ``requests``: [(speed_rpm, torque_Nm, Vdc_V)], ``mission``: [(duration_s, speed_rpm, torque_Nm, Vdc_V)].
     """
     from ..scenario import Scenario
@@ -586,6 +597,10 @@ def compare_modules(base_drive, candidates: list, requests: list, limits, coolan
         raise InputValidationError("the fixed-policy comparison needs the common PWM frequency", field="common_fsw_Hz")
     fsw = common_fsw_Hz if mode == "fixed_policy" else None
     A, B = candidates
+    if mode == "fixed_policy" and A.model.modulation != B.model.modulation:
+        raise InputValidationError(f"a fixed-policy comparison fixes the modulation: {A.name} uses "
+                                   f"{A.model.modulation}, {B.name} uses {B.model.modulation} - declare one modulation "
+                                   f"for both, or compare the declared policies design-specifically", field="modulation")
     kinds = {A.model.device.value_kind, B.model.device.value_kind}
     rows = []
     for (n, T, vdc) in requests:
@@ -607,18 +622,31 @@ def compare_modules(base_drive, candidates: list, requests: list, limits, coolan
                               "reason": "both candidates must deliver the same requirement (FEASIBLE) before any "
                                         "efficiency ranking"}
         rows.append(row)
+    diffs = [k for k, a, b in (("dead time", A.model.deadtime_s, B.model.deadtime_s),
+                               ("switching edges / technology", A.model.device.technology, B.model.device.technology))
+             if a != b]
+    harm = ("motor PWM-harmonic losses: not evaluated and not asserted to cancel (" +
+            ("same modulation and carrier, but " + " and ".join(diffs) + " differ" if (mode == "fixed_policy" and diffs)
+             else "same modulation and carrier; no evidence that the edge-dependent part cancels"
+             if mode == "fixed_policy" else "the pulse policies differ") + ")")
     out = {"mode": mode, "common_fsw_Hz": fsw, "coolant_C": coolant_C, "rows": rows,
+           "common_modulation": A.model.modulation if mode == "fixed_policy" else None,
+           "ranking_scope": "semiconductor (module) loss only - not an eDrive ranking: motor PWM-harmonic, capacitor "
+                            "and auxiliary losses are not in it; the eDrive efficiency deltas cover the modelled parts "
+                            "only",
            "candidates": [{"name": c.name, "technology": c.model.device.technology, "value_kind": c.model.device.value_kind,
-                           "fsw_Hz": fsw or c.model.fsw_Hz, "deadtime_s": c.model.deadtime_s,
-                           "Rth_K_per_W": c.Rth_K_per_W, "loss_error_rel": c.loss_error_rel,
-                           "error_basis": c.error_basis} for c in candidates],
+                           "modulation": c.model.modulation, "fsw_Hz": fsw or c.model.fsw_Hz,
+                           "deadtime_s": c.model.deadtime_s, "Rth_K_per_W": c.Rth_K_per_W,
+                           "loss_error_rel": c.loss_error_rel, "error_basis": c.error_basis} for c in candidates],
            "not_evaluated": (["EMC / dv/dt / overshoot after a gate or frequency change", "DC-link ripple and capacitor "
-                              "heating at the new frequency", "control timing at the new period",
-                              "motor PWM harmonic losses"] if mode == "design_specific" else
-                             ["motor PWM harmonic losses (identical PWM: common to both)"]) +
-                            ["SOA / short-circuit withstand / lifetime (efficiency does not approve them)"],
-           "meaning": "fixed-policy: the module change under one policy; design-specific: module + declared policy "
-                      "changes. No technology is better by rule; typical data do not rank a production population."}
+                              "heating at the new frequency", "control timing at the new period"]
+                             if mode == "design_specific" else []) +
+                            [harm, "DC-link capacitor losses", "SOA / short-circuit withstand / lifetime (efficiency "
+                                                               "does not approve them)"],
+           "meaning": "fixed-policy: the module change under one declared modulation and carrier; design-specific: "
+                      "module + declared policy changes (a comparison of declared policies, not a global "
+                      "optimisation). No technology is better by rule; typical data do not rank a production "
+                      "population."}
     if mission:
         out["mission"] = _mission_compare(base_drive, candidates, mission, limits, coolant_C, fsw, reducer, oil_temp_C,
                                           kinds)

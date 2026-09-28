@@ -244,6 +244,7 @@ def simulate(dl: Driveline, ctl: Controller, man: Maneuver) -> dict:
         K = math.exp(-z * math.pi / math.sqrt(1 - z * z))
         zv = (1 / (1 + K), K / (1 + K), math.pi / wd)
     emerg_active = False
+    applied = []                        # (t_apply, command, actuator torque at that instant): exact event data
 
     def request(tk):
         return man.T1_Nm if tk >= man.t_step_s else man.T0_Nm
@@ -277,6 +278,7 @@ def simulate(dl: Driveline, ctl: Controller, man: Maneuver) -> dict:
             continue
         if t_next_apply <= t_next_sample:
             _t, u_new, _r = pending.pop(0)
+            applied.append((t, float(u_new), float(x[3]) if n == 4 else float(u_cmd)))
             u_cmd = u_new
             continue
         # sample event: measure, shape, damp, arbitrate
@@ -382,6 +384,7 @@ def simulate(dl: Driveline, ctl: Controller, man: Maneuver) -> dict:
     return {"t_s": t_out, "omega_m": wm_, "omega_l": wl_, "delta": dl_, "T_act": Tact, "T_shaft": Ts, "dTact_dt": dTact,
             "acc_l": acc_l, "jerk_l": jerk_l, "E_J": E, "dE_budget_W": P_in, "record": {k: np.array(v) for k, v in rec.items()},
             "referred": r, "modal": md, "TL_motor_Nm": TL, "wheel_radius_m": dl.wheel_radius_m,
+            "applied": applied, "actuator_tau_s": ctl.actuator_tau_s, "T0_Nm": man.T0_Nm,
             "jerk_definition": "exact d/dt of the load angular acceleration from the plant state (motor coordinates); "
                                "no numerical differentiation, no filter"}
 
@@ -566,9 +569,26 @@ def clip_bias(base_Nm: float, amplitude_Nm: float, window: tuple, n: int = 20000
                                                                                        amplitude_Nm * np.sin(th)) > 1e-12))}
 
 
+def _bracket(t: np.ndarray, cond: np.ndarray):
+    """[last sample where cond is False, first later sample where it holds for good] - the output grid only
+    brackets the event; None when it never holds for good."""
+    bad = np.nonzero(~cond)[0]
+    if bad.size == 0:
+        return (float(t[0]), float(t[0]))
+    if bad[-1] >= t.size - 1:
+        return None
+    return (float(t[bad[-1]]), float(t[bad[-1] + 1]))
+
+
 def response_metrics(sim: dict, man: Maneuver, settle_band: float = 0.05) -> dict:
-    """Comfort / response metrics of the maneuver.  With a safety request inside the window the metrics cover the
-    window BEFORE the request (the comfort question); the safety reaction is judged on its own."""
+    """Comfort / response metrics of the maneuver against the REQUESTED target (review R2 CT-03).
+
+    The reference is the common acceleration the requested torque produces, a_target = (T1 - T_L) / (J_m + J_l)
+    (motor coordinates) - never the plateau a controller happened to reach: a response that delivers half the
+    request does not reach 90 %.  Crossing instants are bracketed by the output grid ([last outside, first inside]),
+    the bracket is part of the result.  With a safety request inside the window the metrics cover the window
+    BEFORE the request (the comfort question); the safety reaction is judged on its own.  Peak jerk and shaft
+    torque are maxima on the output grid (sampled, not certified)."""
     t_all = sim["t_s"]
     cut = man.emergency_t_s if (man.emergency_t_s is not None and man.emergency_t_s > man.t_step_s) else None
     keep = t_all < cut if cut is not None else np.ones(t_all.size, bool)
@@ -576,22 +596,43 @@ def response_metrics(sim: dict, man: Maneuver, settle_band: float = 0.05) -> dic
     a = sim["acc_l"][keep]
     j = sim["jerk_l"][keep]
     post = t >= man.t_step_s
+    r = sim["referred"]
     a0 = float(a[0])
+    a_target = (man.T1_Nm - sim["TL_motor_Nm"]) / (r["Jm"] + r["Jl"])
     a_end = float(np.mean(a[-max(3, int(0.05 * t.size)):]))
-    span = a_end - a0
-    out = {"a_initial": a0, "a_final": a_end, "peak_jerk_abs": float(np.max(np.abs(j[post]))) if post.any() else None}
+    span = a_target - a0
+    out = {"a_initial": a0, "a_target": a_target, "a_final": a_end,
+           "peak_jerk_abs": float(np.max(np.abs(j[post]))) if post.any() else None,
+           "peak_basis": "maximum on the output grid (sampled, not a certified maximum)",
+           "horizon_after_step_s": float(t[-1] - man.t_step_s)}
     if abs(span) > 1e-9:
         frac = (a - a0) / span
-        t10 = t[post][np.argmax(frac[post] >= 0.1)] if np.any(frac[post] >= 0.1) else None
-        t90 = t[post][np.argmax(frac[post] >= 0.9)] if np.any(frac[post] >= 0.9) else None
-        out["t_10_90_s"] = None if (t10 is None or t90 is None) else float(t90 - t10)
-        out["t_to_90_s"] = None if t90 is None else float(t90 - man.t_step_s)
-        out["overshoot"] = float(np.max(frac[post]) - 1.0) if post.any() else None
-        outside = np.nonzero(np.abs(frac - 1.0) > settle_band)[0]
-        out["t_settle_s"] = float(t[outside[-1]] - man.t_step_s) if outside.size and t[outside[-1]] > man.t_step_s \
-            else 0.0
-        if outside.size and outside[-1] >= t.size - 2:
-            out["t_settle_s"] = None                        # not settled within the horizon
+        out["achieved_fraction"] = (a_end - a0) / span
+        tp, fp = t[post], frac[post]
+        b10 = _bracket(tp, fp >= 0.1) if tp.size else None
+        # first reaching of a level (not 'for good'): the first sample at or above it brackets the crossing
+        def first(level):
+            idx = np.nonzero(fp >= level)[0]
+            if idx.size == 0:
+                return None
+            k = int(idx[0])
+            return (float(tp[k - 1]) if k > 0 else float(tp[0]), float(tp[k]))
+        f10, f90 = first(0.1), first(0.9)
+        out["t_to_90_bracket_s"] = None if f90 is None else [f90[0] - man.t_step_s, f90[1] - man.t_step_s]
+        out["t_to_90_s"] = None if f90 is None else f90[1] - man.t_step_s
+        out["t_10_90_s"] = None if (f10 is None or f90 is None) else float(f90[1] - f10[1])
+        out["overshoot"] = float(np.max(fp) - 1.0) if post.any() else None
+        sb = _bracket(t, np.abs(frac - 1.0) <= settle_band)
+        if sb is None:
+            out["t_settle_s"], out["t_settle_bracket_s"] = None, None
+        else:
+            lo, hi = max(sb[0] - man.t_step_s, 0.0), max(sb[1] - man.t_step_s, 0.0)
+            out["t_settle_s"], out["t_settle_bracket_s"] = hi, [lo, hi]
+        a_rel = a_end - a0
+        if abs(a_rel) > 1e-9:
+            fr = (a[post] - a0) / a_rel
+            idx = np.nonzero(fr >= 0.9)[0]
+            out["rise_time_relative_to_achieved_value_s"] = (float(tp[idx[0]] - man.t_step_s) if idx.size else None)
     rec = sim["record"]
     rk = rec["t_s"] < cut if cut is not None else np.ones(rec["t_s"].size, bool)
     if rk.any():
@@ -602,8 +643,6 @@ def response_metrics(sim: dict, man: Maneuver, settle_band: float = 0.05) -> dic
     if cut is not None:
         out["evaluated_until_s"] = float(cut)
         out["note"] = "comfort metrics up to the safety request; the reaction is judged separately"
-        if out.get("t_settle_s") is None:
-            out["t_settle_s"] = None                        # not settled before the safety request
     Ts = sim["T_shaft"]
     out["shaft_torque_peak_Nm"] = float(np.max(np.abs(Ts)))
     tol = 1e-6 * max(float(np.max(np.abs(Ts))), 1e-9)
@@ -611,10 +650,11 @@ def response_metrics(sim: dict, man: Maneuver, settle_band: float = 0.05) -> dic
     nz = sgn[sgn != 0]
     out["torque_reversal"] = bool(nz.size > 1 and np.any(nz[1:] != nz[:-1]))
     out["min_shaft_torque_Nm"] = float(np.min(Ts))
-    r = sim["referred"]
+    out["T_act_final_Nm"] = float(sim["T_act"][keep][-1])
     if sim.get("wheel_radius_m"):
         k = sim["wheel_radius_m"] / r["g"]                 # vehicle a = r * omega_w' = r * omega_l' / g (no slip)
         out["vehicle_acc_final_m_s2"] = a_end * k
+        out["vehicle_acc_target_m_s2"] = a_target * k
         out["peak_vehicle_jerk_m_s3"] = None if out["peak_jerk_abs"] is None else out["peak_jerk_abs"] * k
     return out
 
@@ -738,21 +778,39 @@ def evaluate_variants(dl: Driveline, variants: dict, man: Maneuver, requirement:
                 if bad:
                     unknown("voltage headroom: the actuator ROM slews faster than the q-axis headroom allows ("
                             + "; ".join(bad) + ") - nonlinear electrical dynamics or a validated response envelope needed")
+        if man.window_Nm is not None and not (man.window_Nm[0] <= man.T1_Nm <= man.window_Nm[1]):
+            status = "INFEASIBLE"
+            reasons.append(f"the requested torque {man.T1_Nm:g} N m lies outside the declared authority "
+                           f"[{man.window_Nm[0]:g}, {man.window_Nm[1]:g}] N m: the request cannot be delivered "
+                           f"(achieved {met.get('achieved_fraction', float('nan')):.3g} of the requested change)")
         jk = ("peak_vehicle_jerk_max_m_s3", "peak_vehicle_jerk_m_s3", "peak vehicle jerk") if dl.wheel_radius_m else \
             ("peak_jerk_max", "peak_jerk_abs", "peak load angular jerk")
-        for key, mkey, label in (("t_to_90_max_s", "t_to_90_s", "response time"), jk,
-                                 ("settle_max_s", "t_settle_s", "settling time")):
+        covered = met.get("horizon_after_step_s", 0.0)
+        for key, mkey, label, bkey in (("t_to_90_max_s", "t_to_90_s", "response time (to 90 % of the request)",
+                                        "t_to_90_bracket_s"), (*jk, None),
+                                       ("settle_max_s", "t_settle_s", "settling time (on the requested target)",
+                                        "t_settle_bracket_s")):
             lim = req.get(key)
             val = met.get(mkey)
+            br = met.get(bkey) if bkey else None
             if lim is None:
                 unknown(f"{label}: no requirement declared")
             elif val is None:
-                unknown(f"{label}: not reached within the horizon")
-            elif val > lim and status != "UNKNOWN":
-                status = "INFEASIBLE"
+                if bkey and covered >= lim:
+                    # a miss computed on a model whose validity is open stays UNKNOWN (the reason is kept)
+                    status = "INFEASIBLE" if status != "UNKNOWN" else status
+                    reasons.append(f"{label}: not reached by {lim:g} s (horizon covers it)")
+                else:
+                    unknown(f"{label}: not reached within the horizon")
+            elif br is not None and br[0] <= lim < br[1]:
+                unknown(f"{label}: the output grid brackets it in [{br[0]:.4g}, {br[1]:.4g}] s around the limit "
+                        f"{lim:g} s")
+            elif (br[0] if br is not None else val) > lim:
+                status = "INFEASIBLE" if status != "UNKNOWN" else status
                 reasons.append(f"{label} {val:.4g} > {lim:g}")
         if man.emergency_t_s is not None:
-            res["safety"] = _safety_reaction(sim, man, req.get("safety_reaction_max_s"))
+            res["safety"] = _safety_reaction(sim, man, req.get("safety_reaction_max_s"),
+                                             req.get("safety_band_Nm"))
             notes.append("a safety interruption is in the window: comfort metrics include it and are reported "
                          "separately from the protection time (never traded)")
         tr = getattr(np, "trapezoid", None) or np.trapz
@@ -783,27 +841,70 @@ def evaluate_variants(dl: Driveline, variants: dict, man: Maneuver, requirement:
                        "improvement by itself; the linear model holds only while contact is maintained"}
 
 
-def _safety_reaction(sim: dict, man: Maneuver, limit_s: float | None) -> dict:
-    """Time from the safety request until the ACTUAL torque stays within a band around the safe torque; judged on
-    its own (a protection time is never traded against comfort)."""
-    t, T = sim["t_s"], sim["T_act"]
+def _safety_reaction(sim: dict, man: Maneuver, limit_s: float | None, band_Nm: float | None = None) -> dict:
+    """Time from the safety request until the ACTUAL torque enters the declared band around the safe torque and
+    stays there - from the exact actuator solution between command applications, independent of the output grid
+    (review R2 CT-04).  First-order actuator ROM: T(t) = u + (T(t_i) - u) exp(-(t - t_i) / tau) on each command
+    segment; without it the torque follows the commands.  An undeclared band never approves a reaction."""
     target = float(man.emergency_T_Nm)
-    band = max(0.02 * abs(man.T1_Nm - target), 1.0)
-    after = t >= man.emergency_t_s
-    outside = np.nonzero(after & (np.abs(T - target) > band))[0]
-    if outside.size and outside[-1] >= t.size - 1:
+    te = float(man.emergency_t_s)
+    tau = float(sim.get("actuator_tau_s") or 0.0)
+    t_end = float(sim["t_s"][-1])
+    band = None if band_Nm is None else _finite("safety_band_Nm", band_Nm)
+    b = band if band is not None else max(0.02 * abs(man.T1_Nm - target), 1.0)
+    segs = [(ta, u, Tb) for (ta, u, Tb) in sim.get("applied", [])]
+    # actuator torque at the request and the command in force then
+    prior = [s_ for s_ in segs if s_[0] <= te]
+    u_now = prior[-1][1] if prior else float(sim.get("T0_Nm", man.T0_Nm))
+    t_i = prior[-1][0] if prior else 0.0
+    T_i = prior[-1][2] if prior else float(sim.get("T0_Nm", man.T0_Nm))
+
+    def value(t0, T0, u, t):
+        return u if tau <= 0 else u + (T0 - u) * math.exp(-(t - t0) / tau)
+
+    T_now = value(t_i, T_i, u_now, te) if prior else T_i
+    pieces, t0, T0, u = [], te, T_now, u_now
+    for (ta, un, _Tb) in [s_ for s_ in segs if te < s_[0] <= t_end]:
+        pieces.append((t0, ta, T0, u))
+        T0, t0, u = value(t0, T0, u, ta), ta, un
+    pieces.append((t0, t_end, T0, u))
+    last_out = None
+    for (a_, b_, T0, u) in pieces:
+        # |T - target| is monotone on each piece (exponential toward u): check the start and the end
+        f0 = abs(value(a_, T0, u, a_) - target) > b
+        f1 = abs(value(a_, T0, u, b_) - target) > b
+        if f1:
+            last_out = b_
+        elif f0:
+            if tau <= 0:
+                exit_t = a_
+            else:
+                d0 = T0 - u
+                lvl = [(target + s_ * b - u) / d0 for s_ in (1.0, -1.0) if d0 != 0]
+                cand = [a_ - tau * math.log(x) for x in lvl if 0 < x < 1]
+                cand = [c for c in cand if a_ <= c <= b_]
+                exit_t = max(cand) if cand else a_
+            last_out = exit_t
+    settled_inside = abs(value(*pieces[-1][:1], pieces[-1][2], pieces[-1][3], t_end) - target) <= b
+    if not settled_inside or last_out == t_end:
         t_react = None
     else:
-        t_react = float(t[outside[-1]] - man.emergency_t_s) if outside.size else 0.0
-    if limit_s is None:
+        t_react = 0.0 if last_out is None else last_out - te
+    if band is None:
+        st, why = "UNKNOWN", "no safe-torque band declared (a heuristic band never approves a safety reaction)"
+    elif limit_s is None:
         st, why = "UNKNOWN", "no protection (safety reaction) time declared"
     elif t_react is None:
-        st, why = "INFEASIBLE", "the safe torque is not reached within the horizon"
+        st, why = "INFEASIBLE", "the safe torque band is not reached for good within the horizon"
     elif t_react > limit_s:
-        st, why = "INFEASIBLE", f"reaction {1e3 * t_react:.4g} ms > {1e3 * limit_s:.4g} ms"
+        st, why = "INFEASIBLE", f"reaction {1e3 * t_react:.6g} ms > {1e3 * limit_s:.4g} ms"
     else:
-        st, why = "FEASIBLE", f"reaction {1e3 * t_react:.4g} ms <= {1e3 * limit_s:.4g} ms"
+        st, why = "FEASIBLE", f"reaction {1e3 * t_react:.6g} ms <= {1e3 * limit_s:.4g} ms"
+    after = sim["t_s"] >= te
     jk = np.abs(sim["jerk_l"][after])
-    return {"status": st, "reason": why, "reaction_s": t_react, "band_Nm": band, "target_Nm": target,
-            "limit_s": limit_s, "peak_load_jerk_during_reaction": float(jk.max()) if jk.size else None,
-            "note": "comfort functions are bypassed during the reaction; its jerk is reported, not traded"}
+    return {"status": st, "reason": why, "reaction_s": t_react, "band_Nm": b, "band_declared": band is not None,
+            "target_Nm": target, "limit_s": limit_s,
+            "event_basis": "exact actuator solution between command applications (independent of the output grid)",
+            "peak_load_jerk_during_reaction": float(jk.max()) if jk.size else None,
+            "note": "comfort functions are bypassed during the reaction; its jerk is reported (output-grid maximum), "
+                    "not traded"}

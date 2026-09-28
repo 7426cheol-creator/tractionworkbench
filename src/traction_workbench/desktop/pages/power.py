@@ -42,26 +42,39 @@ NOTE_MODULE = lambda: tr(
 NOTE_RIPPLE = lambda: tr(
     "<b>DC-link 리플</b>: 캐리어 한 주기의 정확한 모멘트로 커패시터 RMS 전류를 구하고(SPWM에서 Kolar 식과 일치), "
     "스위칭 함수 파형과 FFT(Parseval 확인)로 고조파를 얻습니다. 고조파마다 소스 임피던스 Z_s와 커패시터 Z_C로 전류가 "
-    "나뉘며(공진 근처에선 커패시터 전류가 인버터 AC 전류보다 클 수 있음), ESR(f) 표 범위 밖 주파수는 외삽하지 않습니다.<br>"
-    "요구는 <b>위치·물리량·한계·측정 대역폭</b>이 모두 있어야 판정합니다. 수명은 공급사 수명 데이터가 있을 때만 "
+    "나뉘며(공진 근처에선 커패시터 전류가 인버터 AC 전류보다 클 수 있음), ESR(T)·전류 분배·발열은 <b>한 온도</b>에서 함께 "
+    "풉니다(경계 온도에서 출발해 처음 만나는 평형; 종료 사유와 독립 잔차를 표시, 미수렴은 온도·수명 없음). "
+    "ESR(f) 표 범위 밖은 임피던스를 모르는 것으로 보고 손실은 미확정, 리플은 모든 수동 임피던스에 대한 범위로만 판정합니다.<br>"
+    "요구는 <b>위치·물리량·한계·측정 대역폭</b>이 모두 있어야 하고, 위치×물리량은 정확한 가지/노드로 매핑됩니다 "
+    "(capacitor_branch의 current_ac_rms = capacitor_current_rms). 수명은 공급사 수명 데이터가 있을 때만 "
     "('10 K마다 절반' 같은 일반 규칙 미적용).",
     "<b>DC-link ripple</b>: the capacitor RMS current from exact carrier-period moments (matches Kolar's SPWM formula), "
     "harmonics from the switching-function waveform and an FFT (Parseval checked). Each harmonic splits between the "
     "source impedance Z_s and the capacitor Z_C (near resonance the capacitor current can exceed the inverter AC "
-    "current); ESR(f) is never extrapolated.<br>A requirement is judged only with <b>location, quantity, limit and "
-    "measurement bandwidth</b>. Life only from supplier data (no generic '10 K halves the life').")
+    "current); ESR(T), the split and the heat are solved at <b>one temperature</b> (the first equilibrium above the "
+    "boundary temperature; termination and an independent residual shown, no temperature or life without "
+    "convergence). Outside the ESR(f) table the impedance is unknown: the loss is not established and ripple is "
+    "judged only by its range over every passive impedance.<br>A requirement is judged only with <b>location, "
+    "quantity, limit and measurement bandwidth</b>, mapped to an exact branch / node (current_ac_rms at "
+    "capacitor_branch = capacitor_current_rms). Life only from supplier data (no generic '10 K halves the life').")
 
 NOTE_LIFE = lambda: tr(
-    "<b>열 사이클 수명</b>: 미션 구간마다 정책 운전점에서 최고 발열 소자 손실(모듈 탭의 데이터시트 모델)을 구하고, "
-    "Foster 망 중첩으로 Tj(t)를 만든 뒤 ASTM E1049 rainflow로 사이클을 셉니다(반복 미션은 최대점에서 시작해 잔여 없음). "
+    "<b>열 사이클 수명</b>: 미션 구간마다 정책 운전점에서 <b>물리 다이별</b> 손실(IGBT/다이오드 각각, SiC는 채널·바디다이오드를 "
+    "한 다이로; 모듈 탭의 데이터시트 모델)을 구하고, 다이마다 Foster 망으로 Tj(t)를 만든 뒤 ASTM E1049 rainflow로 셉니다. "
+    "최고 발열 포락선은 한 소자의 이력이 아니므로 피로 입력으로 쓰지 않습니다. 유한 미션은 냉각수 온도에서 출발해 식을 때까지의 "
+    "닫힌 블록(시동·정지 1회), 주기 미션은 주기 정상상태 한 주기입니다(워밍업 제외). t_on '상승 시간' 규칙은 각 범위의 "
+    "<b>가열 구간</b>(하한을 마지막으로 떠난 때부터 상한 도달까지)이며, 알 수 없으면 1 s로 바꾸지 않고 미확립입니다. "
     "손상은 <b>공급사 사이클링 모델</b>(N_f = A·ΔT^a·exp(b/T)·t_on^c, 근거·유효범위·scatter 필수)이 있을 때만 계산하며, "
-    "유효범위 밖 사이클은 0으로 두지 않고 '미확립'으로 남깁니다. D는 [D/s, D·s] 구간으로 비교합니다. "
-    "스크리닝 전열 체인에서 나온 Tj 이력이므로 결과도 스크리닝입니다. 측정 Tj CSV(t_s, T_C)를 가져올 수도 있습니다.",
-    "<b>Thermal cycling</b>: per mission segment the hottest-device loss at the policy point (datasheet model of the "
-    "module tab), Tj(t) by Foster superposition, then ASTM E1049 rainflow (a repeating mission starts at the maximum: "
-    "no residue). Damage only with a <b>supplier cycling model</b> (N_f = A·dT^a·exp(b/T)·t_on^c with basis, validity "
-    "and scatter); cycles outside its validity are reported, never set to zero. D is compared as [D/s, D·s]. The Tj "
-    "history comes from a screening chain, so the result is screening. A measured Tj CSV (t_s, T_C) can be imported.")
+    "생성된 스크리닝 체인(고정 Tj 손실)의 이력은 스크리닝 손상일 뿐입니다(판정 UNKNOWN). 자격을 선언한 측정 Tj CSV만 판정에 쓰입니다.",
+    "<b>Thermal cycling</b>: per mission segment the loss of each <b>physical die</b> at the policy point (IGBT and "
+    "diode separately, SiC channel and body diode as one die; datasheet model of the module tab), one Tj(t) per die "
+    "by Foster superposition, then ASTM E1049 rainflow. The hottest-device envelope is not one device's history and "
+    "is never a fatigue input. A finite mission is a closed block from the coolant temperature back to it (one "
+    "start-up and shutdown); a periodic mission is one period at its periodic steady state (warm-up excluded). The "
+    "'rise time' t_on rule is each range's <b>heating interval</b> (last departure from its lower level to arrival at "
+    "its upper level); when unknown it stays unknown, never 1 s. Damage only with a <b>supplier cycling model</b> "
+    "(N_f = A·dT^a·exp(b/T)·t_on^c with basis, validity and scatter); a history from the generated screening chain "
+    "(losses at a fixed Tj) gives screening damage only (UNKNOWN). Only a measured Tj CSV declared qualified is judged.")
 
 CURVES = (("v_on", lambda: tr("순방향 전압 V_on (스위치)", "forward voltage V_on (switch)"), True),
           ("v_rev", lambda: tr("역방향 전압 (다이오드/body)", "reverse voltage (diode / body)"), True),
@@ -262,7 +275,49 @@ class PowerPage(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
         lay.addWidget(self.tabs)
-        self.load_module(api.EXAMPLE_MODULE)
+        self.load_module(self.win.state.example("MODULE"))
+        self.load_ripple(self.win.state.example("RIPPLE"))
+
+    def apply_project(self, _project=None):
+        """Product inputs from the active project (module, capacitor, source impedance, switching, junction
+        network); operating points, missions and requirements stay."""
+        self.load_module(self.win.state.example("MODULE"))
+        self.load_ripple(self.win.state.example("RIPPLE"))
+        net = self.win.state.example("MISSION").get("junction_network")
+        self.l_net.load([] if not net else list(zip(net["R_K_per_W"], net["tau_s"])))
+
+    def load_ripple(self, ex: dict):
+        """Capacitor, source impedance and switching of the ripple analysis; fields without a widget (bank count,
+        layout, Rth basis, source text) pass through to the request unchanged."""
+        cap, src = ex["capacitor"], ex.get("source")
+        self._cap_base = dict(cap)
+        k = 1e3 if cap.get("ESR_unit") == "ohm" else 1.0                 # the table widget is in mOhm
+        self.r_fsw.setValue(float(ex["fsw_kHz"]))
+        i = self.r_mod.findData(ex["modulation"])
+        if i >= 0:
+            self.r_mod.setCurrentIndex(i)
+        self.r_C.setValue(float(cap["C_uF"]))
+        self.r_esl.setValue(float(cap.get("ESL_nH") or 0.0))
+        self.r_rth_on.setChecked(cap.get("Rth_K_per_W") is not None)
+        if cap.get("Rth_K_per_W") is not None:
+            self.r_rth.setValue(float(cap["Rth_K_per_W"]))
+        self.r_tref.setValue(float(cap.get("T_ref_C") or 65.0))
+        self.r_alpha.setValue(float(cap.get("ESR_temp_coeff_per_K") or 0.0))
+        self.r_tesr.setValue(float(cap["ESR_table_T_C"]) if cap.get("ESR_table_T_C") is not None else 25.0)
+        dom = cap.get("T_valid_C")
+        self.r_dom_on.setChecked(bool(dom))
+        if dom:
+            self.r_tmin.setValue(float(dom[0]))
+            self.r_tmax.setValue(float(dom[1]))
+        self.r_esr.load([[f, r * k] for f, r in cap["ESR_table"]])
+        self.r_life.load(cap.get("life_hours_table") or [])
+        self.r_life_v.setValue(float(cap.get("life_voltage_V") or 0.0))
+        self.r_life_basis.setText(str(cap.get("life_basis") or ""))
+        self.r_src_on.setChecked(src is not None)
+        if src:
+            self.r_srcR.setValue(float(src["R_mohm"]))
+            self.r_srcL.setValue(float(src["L_uH"]))
+            self.r_src_basis.setText(str(src.get("basis", "")))
 
     # ================================================================== module tab
     def _module_tab(self):
@@ -322,7 +377,7 @@ class PowerPage(QWidget):
         v.addWidget(g)
         g = QGroupBox(tr("곡선 (온도 × 전류)", "curves (temperature x current)"))
         gl = QVBoxLayout(g)
-        self.grid = CurveGrid(api.EXAMPLE_MODULE["curves"])
+        self.grid = CurveGrid(self.win.state.example("MODULE")["curves"])
         gl.addWidget(self.grid)
         v.addWidget(g)
         g = QGroupBox(tr("열·판정", "thermal · judgement"))
@@ -342,7 +397,8 @@ class PowerPage(QWidget):
         row = QHBoxLayout()
         for text, fn in ((tr("JSON 불러오기", "load JSON"), self.load_module_file),
                          (tr("JSON 저장", "save JSON"), self.save_module_file),
-                         (tr("예시로 초기화", "reset to example"), lambda: self.load_module(api.EXAMPLE_MODULE))):
+                         (tr("프로젝트 값으로 초기화", "reset to the project"),
+                          lambda: self.load_module(self.win.state.example("MODULE")))):
             b = QPushButton(text)
             b.clicked.connect(fn)
             row.addWidget(b)
@@ -507,7 +563,7 @@ class PowerPage(QWidget):
 
     # ================================================================== ripple tab
     def _ripple_tab(self):
-        ex = api.EXAMPLE_RIPPLE
+        ex = self.win.state.example("RIPPLE")
         split = QSplitter(Qt.Horizontal)
         form = QWidget()
         v = QVBoxLayout(form)
@@ -530,9 +586,22 @@ class PowerPage(QWidget):
         self.r_esl = number(cap["ESL_nH"], 0, 1e4, "nH", 2, 1)
         self.r_rth_on = check(tr("핫스팟 Rth 선언", "declare hotspot Rth"), cap.get("Rth_K_per_W") is not None)
         self.r_rth = number(cap.get("Rth_K_per_W") or 0.35, 0.0001, 100, "K/W", 4, 0.05)
-        self.r_tref = number(cap.get("T_ref_C") or 65, -40, 150, "°C", 1, 1)
+        self.r_tref = number(cap.get("T_ref_C") or 65, -40, 150, "°C", 1, 1,
+                             tip=tr("Rth 가 가리키는 경계 온도 (냉각수/주변)", "boundary temperature Rth refers to (coolant / ambient)"))
+        self.r_alpha = number(cap.get("ESR_temp_coeff_per_K") or 0.0, -0.1, 0.1, "1/K", 5, 0.001,
+                              tip=tr("ESR(T) = ESR 표 × (1 + a (T − 표 온도)); 0 = 온도 무관",
+                                     "ESR(T) = table ESR × (1 + a (T − table temperature)); 0 = temperature independent"))
+        self.r_tesr = number(cap.get("ESR_table_T_C") if cap.get("ESR_table_T_C") is not None else 25.0, -40, 150, "°C", 1, 1)
+        dom = cap.get("T_valid_C")
+        self.r_dom_on = check(tr("온도 도메인 선언 (ESR(T)·데이터 유효 범위)", "declare temperature domain (ESR(T) / data validity)"),
+                              bool(dom))
+        self.r_tmin = number(dom[0] if dom else -40.0, -60, 200, "°C", 1, 1)
+        self.r_tmax = number(dom[1] if dom else 105.0, -60, 250, "°C", 1, 1)
         for lab, w in (("C", self.r_C), ("ESL", self.r_esl), ("", self.r_rth_on), ("Rth(hotspot-ref)", self.r_rth),
-                       (tr("기준 온도", "reference temperature"), self.r_tref)):
+                       (tr("경계 온도", "boundary temperature"), self.r_tref),
+                       (tr("ESR 온도계수", "ESR temperature coefficient"), self.r_alpha),
+                       (tr("ESR 표 온도", "ESR table temperature"), self.r_tesr), ("", self.r_dom_on),
+                       ("T_min", self.r_tmin), ("T_max", self.r_tmax)):
             f.addRow(lab, w)
         self.r_esr = NumTable([tr("주파수 [Hz]", "frequency [Hz]"), "ESR [mΩ]"], cap["ESR_table"], min_height=150)
         f.addRow(QLabel(tr("ESR(f) 표 (범위 밖 외삽 안 함)", "ESR(f) table (no extrapolation)")))
@@ -585,8 +654,10 @@ class PowerPage(QWidget):
         esr = self.r_esr.values()
         if len(esr) < 2 or any(len(r) != 2 for r in esr):
             raise ValueError(tr("ESR 표에는 (주파수, ESR) 두 행 이상이 필요합니다", "the ESR table needs at least two (f, ESR) rows"))
-        cap = {"C_uF": self.r_C.value(), "ESL_nH": self.r_esl.value(),
+        cap = {**getattr(self, "_cap_base", {}), "C_uF": self.r_C.value(), "ESL_nH": self.r_esl.value(),
                "Rth_K_per_W": self.r_rth.value() if self.r_rth_on.isChecked() else None, "T_ref_C": self.r_tref.value(),
+               "ESR_temp_coeff_per_K": self.r_alpha.value(), "ESR_table_T_C": self.r_tesr.value(),
+               "T_valid_C": [self.r_tmin.value(), self.r_tmax.value()] if self.r_dom_on.isChecked() else None,
                "ESR_table": esr, "ESR_unit": "mohm", "life_hours_table": self.r_life.values(),
                "life_voltage_V": self.r_life_v.value() or None, "life_basis": self.r_life_basis.text().strip()}
         cfg = {"capacitor": cap, "fsw_kHz": self.r_fsw.value(), "modulation": self.r_mod.currentData(),
@@ -615,23 +686,51 @@ class PowerPage(QWidget):
         self.p_rip.draw(RF.fig_ripple, res, name="dclink_ripple",
                         csv=lambda sp=sp: {k: sp[k] for k in ("f_Hz", "I_inv_rms_A", "I_cap_rms_A")})
         op = res["operating_point"]
+        stt = res.get("state") or {}
+
+        def val(k, unit, b):
+            v, bd = res.get(k), res.get(b) or [None, None]
+            if v is not None:
+                return f"{fmt(v)} {unit}"
+            if bd[0] is not None:
+                return tr(f"ESR 표 밖 임피던스 미정: [{fmt(bd[0])}, {fmt(bd[1])}] {unit}",
+                          f"impedance unknown outside the ESR table: [{fmt(bd[0])}, {fmt(bd[1])}] {unit}")
+            return tr("— (운전 온도의 ESR 미확정)", "— (ESR at the operating temperature not established)")
+
         rows = [(tr("운전점", "operating point"), f"{fmt(op['speed_rpm'])} rpm, {fmt(op['torque_Nm'])} N·m, "
                                                  f"P_dc {fmt(op['Pdc_W'])} W, I_dc {fmt(op['Idc_avg_A'])} A"),
-                (tr("커패시터 RMS 전류", "capacitor RMS current"), f"{fmt(res['I_cap_rms_A'])} A"),
-                (tr("인버터 AC 성분 / 소스 AC", "inverter AC / source AC"),
-                 f"{fmt(res['I_inv_ac_rms_A'])} A / {fmt(res['I_source_ac_rms_A'])} A"),
+                (tr("커패시터 상태 온도", "capacitor state temperature"), f"{fmt(stt.get('T_C'))} °C — {stt.get('basis', '')}"),
+                (tr("커패시터 RMS 전류", "capacitor RMS current"), val("I_cap_rms_A", "A", "I_cap_rms_bounds_A")),
+                (tr("인버터 AC 성분", "inverter AC"), f"{fmt(res['I_inv_ac_rms_A'])} A"),
+                (tr("소스 AC", "source AC"), val("I_source_ac_rms_A", "A", "I_source_ac_rms_bounds_A")),
                 (tr("평균 모델 (캐리어 모멘트)", "average model (carrier moments)"), str(res.get("average_model"))),
-                (tr("전압 리플 p-p / RMS", "voltage ripple p-p / RMS"),
-                 f"{fmt(res['V_ripple_pp_V'])} V / {fmt(res['V_ripple_ac_rms_V'])} V"),
+                (tr("전압 리플 p-p", "voltage ripple p-p"), val("V_ripple_pp_V", "V", "V_ripple_pp_bounds_V")),
+                (tr("전압 리플 RMS", "voltage ripple RMS"), val("V_ripple_ac_rms_V", "V", "V_ripple_ac_rms_bounds_V")),
                 (tr("ESR 손실", "ESR loss"), "—" if res["P_cap_W"] is None else f"{fmt(res['P_cap_W'])} W"),
-                (tr("ESR 표 밖 전류 비중", "current share outside ESR table"), fmt(res["current_share_outside_ESR_band"], 3)),
-                ("Parseval", fmt(res["parseval_residual_A"], 3))]
-        if res.get("requirement_value") is not None:
-            rows.append((tr("요구 대상 값 (대역 제한)", "requirement value (band-limited)"), fmt(res["requirement_value"])))
+                (tr("ESR 표 밖 인버터 전류² 비중", "inverter current² share outside ESR table"),
+                 fmt(res["current_share_outside_ESR_band"], 3)),
+                ("KCL / Parseval", f"{fmt(res.get('kcl_residual_rel'), 3)} / {fmt(res['parseval_residual_A'], 3)}")]
+        rq = res.get("requirement")
+        if rq:
+            rows.append((tr("요구 대상 (가지/노드)", "requirement target (branch / node)"), rq["branch"]))
+            rows.append((tr("요구 대상 값 (대역 제한)", "requirement value (band-limited)"),
+                         f"{fmt(rq['value'])} · [{fmt(rq['bounds'][0])}, {fmt(rq['bounds'][1])}] · "
+                         + tr(f"샘플 분해능 {fmt(rq['resolution_delta'], 3)}", f"sampling resolution {fmt(rq['resolution_delta'], 3)}")))
         for k, c in (res.get("claims") or {}).items():
             rows.append((k, _claim_text(c)))
-        if res.get("hotspot"):
-            rows.append((tr("핫스팟", "hotspot"), str(res["hotspot"])))
+        hs = res.get("hotspot")
+        if hs:
+            if hs.get("converged"):
+                txt = (f"{fmt(hs['T_hot_C'])} °C, P {fmt(hs['P_W'])} W ({hs['termination']}; "
+                       + tr(f"잔차 {fmt(hs['residual_K'], 3)} K", f"residual {fmt(hs['residual_K'], 3)} K") + ")")
+            else:
+                txt = tr(f"정착 상태 없음: {hs['termination']}", f"no settled state: {hs['termination']}")
+            an = hs.get("analytic_fixed_current")
+            if an:
+                txt += tr(f" · 해석 검사 (고정 전류): 기울기 {fmt(an['slope'], 4)}, 평형 {'있음' if an['equilibrium_exists'] else '없음'}",
+                          f" · analytic check (fixed current): slope {fmt(an['slope'], 4)}, equilibrium "
+                          f"{'exists' if an['equilibrium_exists'] else 'none'}")
+            rows.append((tr("핫스팟", "hotspot"), txt))
         if res.get("assumption"):
             rows.append((tr("가정", "assumption"), str(res["assumption"])))
         rows.append((tr("모델 밖", "not modelled"), ", ".join(res.get("not_modelled", []))))
@@ -639,7 +738,7 @@ class PowerPage(QWidget):
 
     # ================================================================== lifetime tab
     def _life_tab(self):
-        ex = api.EXAMPLE_MISSION
+        ex = self.win.state.example("MISSION")
         split = QSplitter(Qt.Horizontal)
         form = QWidget()
         v = QVBoxLayout(form)
@@ -798,11 +897,22 @@ class PowerPage(QWidget):
         self.p_life.draw(RF.fig_lifetime, res, name="thermal_cycling",
                          csv=lambda tr_=tr_: {"t_s": tr_["t_s"], "Tj_C": tr_["T_C"]})
         d = res["damage"]
-        rows = [(tr("손상 판정", "damage claim"), _claim_text(d["claim"])),
+        rows = [(tr("손상 판정 (모든 다이)", "damage claim (every die)"), _claim_text(d["claim"])),
                 (tr("출처", "source"), res["source"]),
-                (tr("반전점 / 계수 사이클", "reversals / counted cycles"), f"{res['reversals']} / {fmt(d['cycles_counted'])}"),
-                (tr("최대 ΔTj", "max ΔTj"), f"{fmt(res['max_range_K'])} K"),
-                ("Tj max / min", f"{fmt(res['T_max_C'])} / {fmt(res['T_min_C'])} °C")]
+                (tr("미션 종류", "mission kind"), f"{res.get('mission_kind', '')} — {res.get('count_basis', '')}")]
+        if res.get("governing_device"):
+            rows.append((tr("지배 다이 (그림)", "governing die (plot)"), res["governing_device"]))
+        for name, dv in (res.get("devices") or {}).items():
+            rows.append((tr(f"다이 {name}", f"die {name}"),
+                         f"ΔTj max {fmt(dv['max_range_K'])} K, Tj {fmt(dv['T_min_C'])}–{fmt(dv['T_max_C'])} °C, "
+                         f"{fmt(dv['cycles_counted'])} " + tr("사이클", "cycles") +
+                         ("" if dv.get("D") is None else f", D {fmt(dv['D'])}") + f" ({dv['claim']})"))
+        rows += [
+                 (tr("반전점 / 계수 사이클", "reversals / counted cycles"), f"{res['reversals']} / {fmt(d['cycles_counted'])}"),
+                 (tr("최대 ΔTj", "max ΔTj"), f"{fmt(res['max_range_K'])} K"),
+                 ("Tj max / min", f"{fmt(res['T_max_C'])} / {fmt(res['T_min_C'])} °C")]
+        for q in res.get("qualifiers") or []:
+            rows.append((tr("한정", "qualifier"), q))
         if "D" in d:
             rows.append(("D [D/s, D·s]", f"{fmt(d['D'])} [{fmt(d['D_lower'])}, {fmt(d['D_upper'])}]"))
             if d.get("uncovered_cycles"):
@@ -811,7 +921,8 @@ class PowerPage(QWidget):
                                        for u in d["uncovered_cycles"][:6])))
         for s in res.get("segments") or []:
             rows.append((f"{fmt(s['duration_s'])} s @ {fmt(s['speed_rpm'])} rpm, {fmt(s['torque_Nm'])} N·m",
-                         f"{s['policy']}, P_hot {fmt(s['P_hot_device_W'])} W"))
+                         f"{s['policy']}{'' if s.get('achieved', True) else ' (NOT achieved)'}, "
+                         f"P_hot {fmt(s['P_hot_device_W'])} W ({s.get('hottest_die', '')})"))
         for n in res.get("notes") or []:
             rows.append((tr("주의", "note"), n))
         self.t_life.set_rows(rows)

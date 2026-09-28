@@ -119,26 +119,45 @@ def spectrum(x: np.ndarray, f0_Hz: float) -> dict:
     return {"f_Hz": f, "rms_A": rms, "complex": X, "parseval_residual": parseval}
 
 
+RTH_BASES = ("", "per_capacitor", "bank")
+
+
 @dataclass(frozen=True)
 class CapacitorBank:
+    """``count`` identical capacitors in parallel; C_F, ESR_ohm_table and ESL_H are PER CAPACITOR.
+
+    The ESR table band [f_min, f_max] is the frequency range over which the capacitor impedance is characterised.
+    Outside it the branch impedance is not known and the table edge value is never used as data: the ESR loss is
+    not established there and ripple quantities are bounded over every passive capacitor impedance.
+    ESR(T) = ESR_table(f) (1 + a (T - T_ref_C)) holds on the declared temperature domain T_valid_C (required when
+    a != 0; the law must stay positive on it).  Rth is the hotspot-to-boundary resistance with a declared basis:
+    "per_capacitor" (one capacitor, heated by its share of the loss) or "bank" (heated by the bank loss)."""
+
     C_F: float
-    ESR_ohm_table: tuple                  # ((f_Hz, ESR_ohm), ...) at the reference temperature
+    ESR_ohm_table: tuple                  # ((f_Hz, ESR_ohm), ...) per capacitor, at T_ref_C
     ESL_H: float = 0.0
-    Rth_K_per_W: float | None = None      # hotspot-to-reference thermal resistance
+    Rth_K_per_W: float | None = None      # hotspot-to-boundary thermal resistance (basis: Rth_basis)
     ESR_temp_coeff_per_K: float = 0.0     # ESR(T) = ESR_ref * (1 + a (T - T_ref)), declared
-    T_ref_C: float = 25.0
+    T_ref_C: float = 25.0                 # temperature at which the ESR table holds
     life_hours_table: tuple = ()          # ((T_hot_C, hours), ...) supplier life data for this exact series
     life_voltage_V: float | None = None   # voltage at which the life table holds
     life_basis: str = ""                  # supplier document / revision / failure criterion
     count: int = 1                        # identical capacitors in parallel (equal split only with symmetry declared)
     symmetric_layout: bool = False
+    T_valid_C: tuple | None = None        # declared temperature domain of the ESR(T) law and the capacitor data
+    Rth_basis: str = ""                   # "per_capacitor" | "bank" (required when count > 1)
 
     def __post_init__(self):
         if _finite("C_F", self.C_F) <= 0:
             raise InputValidationError("capacitance must be > 0", field="C_F")
-        tab = tuple((float(f), float(r)) for f, r in self.ESR_ohm_table)
-        if len(tab) < 1 or any(f <= 0 or r <= 0 for f, r in tab) or any(b[0] <= a[0] for a, b in zip(tab, tab[1:])):
-            raise InputValidationError("ESR table needs increasing frequencies > 0 and ESR > 0", field="ESR_ohm_table")
+        try:
+            tab = tuple((float(f), float(r)) for f, r in self.ESR_ohm_table)
+        except (TypeError, ValueError):
+            raise InputValidationError("ESR table rows are (f_Hz, ESR_ohm)", field="ESR_ohm_table") from None
+        if (len(tab) < 1 or any(not (math.isfinite(f) and math.isfinite(r)) or f <= 0 or r <= 0 for f, r in tab)
+                or any(b[0] <= a[0] for a, b in zip(tab, tab[1:]))):
+            raise InputValidationError("ESR table needs increasing finite frequencies > 0 and ESR > 0",
+                                       field="ESR_ohm_table")
         object.__setattr__(self, "ESR_ohm_table", tab)
         if _finite("ESL_H", self.ESL_H) < 0:
             raise InputValidationError("ESL must be >= 0", field="ESL_H")
@@ -147,9 +166,49 @@ class CapacitorBank:
         if self.count > 1 and not self.symmetric_layout:
             raise InputValidationError("several capacitors: an equal current split needs a declared symmetric layout "
                                        "(otherwise give each branch)", field="symmetric_layout")
+        t_ref = _finite("T_ref_C", self.T_ref_C)
+        a = _finite("ESR_temp_coeff_per_K", self.ESR_temp_coeff_per_K)
+        if self.Rth_K_per_W is not None and _finite("Rth_K_per_W", self.Rth_K_per_W) < 0:
+            raise InputValidationError("Rth must be >= 0", field="Rth_K_per_W")
+        if self.Rth_basis not in RTH_BASES:
+            raise InputValidationError(f"Rth basis must be one of {RTH_BASES[1:]}", field="Rth_basis")
+        if self.count > 1 and self.Rth_K_per_W is not None and not self.Rth_basis:
+            raise InputValidationError("several capacitors: state whether Rth belongs to one capacitor (heated by its "
+                                       "share of the loss) or to the bank (heated by the bank loss)",
+                                       field="Rth_basis")
+        if self.T_valid_C is not None:
+            try:
+                lo, hi = (float(v) for v in self.T_valid_C)
+            except (TypeError, ValueError):
+                raise InputValidationError("temperature domain is (T_min_C, T_max_C)", field="T_valid_C") from None
+            if not (math.isfinite(lo) and math.isfinite(hi) and -273.15 < lo < hi):
+                raise InputValidationError("temperature domain needs finite -273.15 < T_min < T_max",
+                                           field="T_valid_C")
+            if not lo <= t_ref <= hi:
+                raise InputValidationError("the ESR table temperature must lie in the declared domain",
+                                           field="T_valid_C")
+            if a and min(1.0 + a * (lo - t_ref), 1.0 + a * (hi - t_ref)) <= 0:
+                raise InputValidationError("the declared ESR(T) law is not positive over its declared domain",
+                                           field="ESR_temp_coeff_per_K")
+            object.__setattr__(self, "T_valid_C", (lo, hi))
+        elif a:
+            raise InputValidationError("an ESR temperature coefficient needs the temperature domain it holds on "
+                                       "(T_valid_C)", field="T_valid_C")
+        for row in self.life_hours_table:
+            T, h = (float(v) for v in row)
+            if not (math.isfinite(T) and math.isfinite(h) and h > 0):
+                raise InputValidationError("life table rows are finite (T_hot_C, hours > 0)", field="life_hours_table")
+
+    def esr_factor(self, T_C: float | None) -> float:
+        """ESR(T) / ESR(T_ref_C) of the declared law (NaN where the law is not positive: not a physical ESR)."""
+        if T_C is None or not self.ESR_temp_coeff_per_K:
+            return 1.0
+        k = 1.0 + self.ESR_temp_coeff_per_K * (T_C - self.T_ref_C)
+        return k if k > 0 else math.nan
 
     def esr(self, f: np.ndarray, T_C: float | None = None) -> tuple[np.ndarray, np.ndarray]:
-        """ESR at f (log-frequency interpolation inside the table) and a coverage mask (no extrapolation)."""
+        """Bank ESR at f (log-frequency interpolation inside the table) and the coverage mask.  Outside the table
+        band the returned value is the edge value and is NOT data: callers must honour the mask."""
         fs = np.array([a for a, _ in self.ESR_ohm_table])
         rs = np.array([b for _, b in self.ESR_ohm_table])
         f = np.asarray(f, dtype=float)
@@ -158,9 +217,7 @@ class CapacitorBank:
             r = np.full_like(f, rs[0])
         else:
             r = np.interp(np.log(np.clip(f, fs[0], fs[-1])), np.log(fs), rs)
-        if T_C is not None and self.ESR_temp_coeff_per_K:
-            r = r * (1.0 + self.ESR_temp_coeff_per_K * (T_C - self.T_ref_C))
-        return r / self.count, inside
+        return r * self.esr_factor(T_C) / self.count, inside
 
     def impedance(self, f: np.ndarray, T_C: float | None = None) -> np.ndarray:
         w = TWO_PI * np.asarray(f, dtype=float)
@@ -175,6 +232,13 @@ class SourceImpedance:
     L_H: float
     basis: str = ""
 
+    def __post_init__(self):
+        if _finite("R_ohm", self.R_ohm) < 0 or _finite("L_H", self.L_H) < 0:
+            raise InputValidationError("source resistance and inductance must be >= 0", field="source")
+        if self.R_ohm == 0 and self.L_H == 0:
+            raise InputValidationError("a zero source impedance is an ideal voltage source (no capacitor current): "
+                                       "declare the battery / harness impedance", field="source")
+
     def z(self, f: np.ndarray) -> np.ndarray:
         return self.R_ohm + 1j * TWO_PI * np.asarray(f, dtype=float) * self.L_H
 
@@ -183,166 +247,487 @@ REQUIRED_REQ_FIELDS = ("location", "quantity", "limit", "bandwidth_Hz")
 MODEL_BAND_CARRIERS = 10          # ideal-switch spectrum used up to 10 carrier groups (edges/ringing beyond)
 LOCATIONS = ("dc_link_bus", "capacitor_branch", "inverter_dc_input", "battery_terminal")
 QUANTITIES = ("voltage_pp", "voltage_ac_rms", "current_ac_rms", "capacitor_current_rms")
+# location x quantity -> branch / node of the lumped network.  The network has ONE bus node: the capacitor branch
+# and the inverter input terminals are the same node (no busbar impedance between them is modelled).
+BRANCH_MAP = {
+    ("capacitor_branch", "current_ac_rms"): "capacitor_current",
+    ("capacitor_branch", "capacitor_current_rms"): "capacitor_current",
+    ("inverter_dc_input", "current_ac_rms"): "inverter_current",
+    ("battery_terminal", "current_ac_rms"): "source_current",
+    **{(loc, q): "bus_voltage" for loc in ("dc_link_bus", "capacitor_branch", "inverter_dc_input")
+       for q in ("voltage_pp", "voltage_ac_rms")},
+}
+UNSUPPORTED = {
+    ("dc_link_bus", "current_ac_rms"): (
+        Reason.REQUIREMENT_INCOMPLETE, "a bus node carries no single current: name the branch (capacitor_branch, "
+                                       "inverter_dc_input or battery_terminal)"),
+    **{("battery_terminal", q): (
+        Reason.OUTSIDE_MODEL_DOMAIN, "the declared source impedance lumps the battery and the harness: the battery "
+                                     "terminal voltage is not a node of this network (declare the split)")
+       for q in ("voltage_pp", "voltage_ac_rms")},
+    **{(loc, "capacitor_current_rms"): (
+        Reason.REQUIREMENT_INCOMPLETE, "capacitor_current_rms is the capacitor branch current: its location is "
+                                       "capacitor_branch")
+       for loc in ("dc_link_bus", "inverter_dc_input", "battery_terminal")},
+}
+BRANCH_TEXT = {"capacitor_current": "capacitor branch current I_C",
+               "inverter_current": "inverter input current I_inv (independent of the network)",
+               "source_current": "source (battery + harness) branch current I_s",
+               "bus_voltage": "bus node voltage (across the capacitor branch = inverter input terminals)"}
+RMS_FLOOR = 1e-9                  # harmonics below this share of the inverter AC RMS are rounding level (no current)
+THERMAL_TOL_K = 1e-9              # bracket width at which the equilibrium temperature is accepted
+RESIDUAL_BUDGET_K = 1e-6          # |T - T_b - Rth P(T)| re-evaluated independently at the returned state
+SCAN_STEP_K = 0.5                 # scan step for the first equilibrium above the boundary temperature
+
+
+def _rms_weights(n_time: int, n_bins: int) -> np.ndarray:
+    """One-sided RMS weight of each rfft bin: DC and the Nyquist bin (even n) count once, the others sqrt(2)."""
+    w = np.full(n_bins, math.sqrt(2.0))
+    w[0] = 1.0
+    if n_time % 2 == 0:
+        w[-1] = 1.0
+    return w
+
+
+class _Network:
+    """Frequency-wise split of the inverter current between the source branch and the capacitor branch.
+
+    KCL per harmonic I_inv,h = I_C,h + I_s,h with the node voltage v_h = -I_C,h Z_C,h = -I_s,h Z_s,h; the DC
+    component flows in the source.  Z_C depends on the capacitor temperature through ESR(T), so every quantity is
+    evaluated at ONE stated temperature (``at``).  Outside the ESR table band the capacitor impedance is unknown;
+    ``bounds`` gives each harmonic's range over every passive capacitor impedance (Re Z_C >= 0)."""
+
+    def __init__(self, wave: dict, bank: CapacitorBank, source: SourceImpedance | None):
+        x = wave["i_inv_A"]
+        sp = spectrum(x, wave["f_e_Hz"])
+        self.n = x.size
+        self.f, self.X = sp["f_Hz"], sp["complex"]
+        self.parseval_residual = sp["parseval_residual"]
+        self.bank, self.Zs = bank, (None if source is None else source.z(sp["f_Hz"]))
+        nb = self.f.size
+        self.ac = np.arange(nb) > 0
+        self.wt = _rms_weights(self.n, nb)
+        self.amp = np.where(self.wt > 1.0, math.sqrt(2.0), 1.0)          # peak amplitude / RMS of each bin
+        fa = np.where(self.ac, self.f, 1.0)
+        esr_ref, inside = bank.esr(fa)
+        self.esr_ref = np.where(self.ac, esr_ref, 0.0)                     # bank ESR at the table temperature
+        w = TWO_PI * fa
+        self.B = np.where(self.ac, w * bank.ESL_H / bank.count - 1.0 / (w * bank.C_F * bank.count), 0.0)
+        self.inv_rms_h = np.abs(self.X) * self.wt
+        self.I_inv_ac = math.sqrt(float(np.sum(self.inv_rms_h[self.ac] ** 2)))
+        self.uncovered = self.ac & ~inside
+        self.carrying = self.ac & (self.inv_rms_h > RMS_FLOOR * max(self.I_inv_ac, 1e-300))
+        self.complete = not bool(np.any(self.uncovered & self.carrying))
+
+    def loss(self, T_C: float | None) -> float:
+        """ESR loss over the characterised harmonics with the capacitor at T_C (current split re-solved at T_C)."""
+        esr = self.esr_ref * self.bank.esr_factor(T_C)
+        if self.Zs is None:
+            ic = np.abs(self.X)
+        else:
+            ic = np.abs(self.X * self.Zs / (self.Zs + esr + 1j * self.B))
+        cov = self.ac & ~self.uncovered
+        return float(np.sum(((ic * self.wt) ** 2 * esr)[cov]))
+
+    def at(self, T_C: float | None) -> dict:
+        """Branch phasors, node voltage and ESR loss with the capacitor at T_C (None: the ESR table temperature)."""
+        esr = self.esr_ref * self.bank.esr_factor(T_C)
+        Zc = esr + 1j * self.B
+        X, ac = self.X, self.ac
+        if self.Zs is None:                   # stiff current source: every AC harmonic into the capacitor
+            Ic = np.where(ac, X, 0.0)
+            Is = np.where(ac, 0.0, X)
+        else:
+            Zs = self.Zs
+            with np.errstate(divide="ignore", invalid="ignore"):
+                Ic = np.where(ac, X * Zs / (Zs + Zc), 0.0)
+                Is = np.where(ac, Ic * Zc / Zs, X)                   # from the node voltage, not from KCL
+        V = np.where(ac, -Ic * Zc, 0.0)
+        ic_h = np.abs(Ic) * self.wt
+        cov = ac & ~self.uncovered
+        kcl = float(np.max(np.abs(X - Ic - Is)[ac], initial=0.0)) / max(float(np.max(np.abs(X))), 1e-300)
+        return {"T_C": T_C, "esr": esr, "Ic": Ic, "Is": Is, "V": V, "ic_rms_h": ic_h,
+                "P_W": float(np.sum((ic_h ** 2 * esr)[cov])), "kcl_residual_rel": kcl}
+
+    def bounds(self, branch: str) -> tuple[np.ndarray, np.ndarray]:
+        """Per-harmonic RMS range of a branch quantity over every passive capacitor impedance.
+
+        With w = Z_s + Z_C in {Re w >= R_s}, 1/w lies in the disk centred 1/(2 R_s) with radius 1/(2 R_s), so
+        |I_C| <= |I_inv| |Z_s| / R_s (reached by a lossless branch resonating the source reactance) with infimum 0,
+        and I_s / I_inv = 1 - Z_s / w lies in the disk centred 1 - Z_s / (2 R_s) with radius |Z_s| / (2 R_s);
+        |v| = |Z_s| |I_s|.  A lossless source gives no bound."""
+        a = self.inv_rms_h
+        if branch == "inverter_current":
+            return a, a
+        if self.Zs is None:
+            if branch == "capacitor_current":
+                return a, a
+            if branch == "source_current":
+                return np.zeros_like(a), np.zeros_like(a)
+            return np.zeros_like(a), np.full_like(a, np.inf)
+        Rs, mag = self.Zs.real, np.abs(self.Zs)
+        pos = Rs > 0
+        with np.errstate(divide="ignore", invalid="ignore"):
+            if branch == "capacitor_current":
+                return np.zeros_like(a), np.where(pos, a * mag / Rs, np.inf)
+            c = np.abs(1.0 - self.Zs / (2.0 * Rs))
+            rho = mag / (2.0 * Rs)
+            lo = np.where(pos, a * np.maximum(c - rho, 0.0), 0.0)
+            hi = np.where(pos, a * (c + rho), np.inf)
+        if branch == "source_current":
+            return lo, hi
+        return lo * mag, hi * mag
+
+
+def _band_quantity(net: _Network, st: dict, branch: str, qty: str, keep: np.ndarray) -> dict:
+    """A band-limited branch quantity: exact where the capacitor impedance is characterised, bounded over every
+    passive capacitor impedance at the harmonics outside the ESR table (the edge value is never used)."""
+    phasor = {"inverter_current": net.X, "capacitor_current": st["Ic"], "source_current": st["Is"],
+              "bus_voltage": st["V"]}[branch]
+    independent = branch == "inverter_current" or (branch == "capacitor_current" and net.Zs is None)
+    unc = np.zeros_like(keep) if independent else (keep & net.uncovered)
+    exact = keep & ~unc
+    lo_h, hi_h = net.bounds(branch)
+    unknown = bool(np.any(unc & net.carrying))
+    if qty == "voltage_pp":
+        def pp(mask):
+            vt = np.fft.irfft(np.where(mask, phasor, 0.0) * net.n, net.n)
+            return float(vt.max() - vt.min())
+        pp_e = pp(exact)
+        amp = float(np.sum((hi_h * net.amp)[unc]))
+        lo, hi = max(pp_e - 2.0 * amp, 0.0), pp_e + 2.0 * amp
+        value = None if unknown else pp(keep)
+    else:
+        mag = np.abs(phasor) * net.wt
+        e2 = float(np.sum(mag[exact] ** 2))
+        lo = math.sqrt(e2 + float(np.sum(lo_h[unc] ** 2)))
+        hi = math.sqrt(e2 + float(np.sum(hi_h[unc] ** 2)))
+        value = None if unknown else math.sqrt(e2 + float(np.sum(mag[unc] ** 2)))
+    f_unc = net.f[unc & net.carrying]
+    return {"value": value, "lo": lo, "hi": hi, "uncovered_harmonics": int(f_unc.size),
+            "uncovered_band_Hz": [float(f_unc.min()), float(f_unc.max())] if f_unc.size else None}
+
+
+def _thermal_state(net: _Network, bank: CapacitorBank, T_b: float | None, max_iter: int) -> dict | None:
+    """Capacitor hotspot with ESR(T), the current split and the heat solved at ONE temperature.
+
+    g(T) = T - T_b - Rth_eff P_cap(T).  g(T_b) <= 0, and a scalar thermal state starting at the boundary temperature
+    rises until the FIRST zero of g above T_b and cannot pass it: that is the settled state.  It is located by a
+    scan over the declared domain and refined by bisection; the residual is re-evaluated independently at the
+    returned temperature.  Termination is explicit - converged / closed_form, max_iter, nonfinite, out_of_domain,
+    no_equilibrium_in_domain, loss_not_established, no_boundary_temperature - and only a converged state carries a
+    temperature (non-convergence is not asserted as physical runaway)."""
+    if bank.Rth_K_per_W is None:
+        return None
+    per_cap = bank.Rth_basis == "per_capacitor"
+    R = float(bank.Rth_K_per_W) / (bank.count if per_cap else 1)
+    dom = bank.T_valid_C
+    out = {"T_hot_C": None, "P_W": None, "converged": False, "termination": None, "residual_K": None,
+           "iterations": 0, "scan_points": 0, "boundary_T_C": T_b, "domain_C": None if dom is None else list(dom),
+           "Rth_basis": bank.Rth_basis or "bank", "Rth_eff_K_per_W": R, "stable_from_below": None,
+           "analytic_fixed_current": None,
+           "equation": "T = T_b + Rth_eff P_cap(T); P_cap(T) = sum_h |I_C,h(T)|^2 ESR(f_h, T); "
+                       "I_C,h(T) = I_inv,h Z_s,h / (Z_s,h + Z_C,h(T))"}
+    if T_b is None:
+        return {**out, "termination": "no_boundary_temperature"}
+    if not net.complete:
+        return {**out, "termination": "loss_not_established"}
+    lo, hi = dom if dom is not None else (-math.inf, math.inf)
+    if not lo <= T_b <= hi:
+        return {**out, "termination": "out_of_domain"}
+    a = bank.ESR_temp_coeff_per_K
+
+    def g(T: float) -> float:
+        return T - T_b - R * net.loss(T)
+
+    if net.Zs is None and a:
+        P_ref = net.loss(bank.T_ref_C)
+        s = R * a * P_ref
+        T_an = (T_b + R * P_ref * (1.0 - a * bank.T_ref_C)) / (1.0 - s) if s < 1.0 else None
+        out["analytic_fixed_current"] = {
+            "slope": s, "equilibrium_exists": s < 1.0, "T_hot_C": T_an,
+            "within_domain": T_an is not None and lo <= T_an <= hi,
+            "basis": "stiff source: the capacitor current does not depend on its ESR, so P(T) is affine and "
+                     "dT = Rth P(T_b) / (1 - Rth a P_ref) exists only for Rth a P_ref < 1"}
+    if not a:
+        T = T_b + R * net.loss(T_b)
+        if not math.isfinite(T):
+            return {**out, "termination": "nonfinite"}
+        if T > hi:
+            return {**out, "termination": "out_of_domain", "T_unconstrained_C": T}
+        term, it, pts = "closed_form", 0, 1
+    else:
+        n_scan = max(1, math.ceil((hi - T_b) / SCAN_STEP_K))
+        grid = np.linspace(T_b, hi, n_scan + 1)
+        g0, pts = g(T_b), 1
+        if not math.isfinite(g0):
+            return {**out, "termination": "nonfinite", "scan_points": pts}
+        it = 0
+        if g0 >= 0.0:
+            T, term = T_b, "converged"
+        else:
+            bracket, T0 = None, T_b
+            for T1 in grid[1:]:
+                g1 = g(float(T1))
+                pts += 1
+                if not math.isfinite(g1):
+                    return {**out, "termination": "nonfinite", "scan_points": pts, "T_last_C": float(T1)}
+                if g1 >= 0.0:
+                    bracket = (T0, float(T1))
+                    break
+                T0 = float(T1)
+            if bracket is None:
+                return {**out, "termination": "no_equilibrium_in_domain", "scan_points": pts,
+                        "note": f"T - T_b - Rth P(T) < 0 at every scanned temperature up to {hi:g} degC: from the "
+                                f"boundary temperature the hotspot heats past the declared domain in this model "
+                                f"(no settled state; not asserted as physical runaway)"}
+            a_, b_ = bracket
+            while b_ - a_ > THERMAL_TOL_K and it < max_iter:
+                mid = 0.5 * (a_ + b_)
+                gm = g(mid)
+                it += 1
+                if not math.isfinite(gm):
+                    return {**out, "termination": "nonfinite", "iterations": it, "scan_points": pts}
+                if gm < 0.0:
+                    a_ = mid
+                else:
+                    b_ = mid
+            if b_ - a_ > THERMAL_TOL_K:
+                return {**out, "termination": "max_iter", "iterations": it, "scan_points": pts,
+                        "bracket_C": [a_, b_]}
+            T, term = 0.5 * (a_ + b_), "converged"
+    st = net.at(T)
+    r = T - T_b - R * st["P_W"]
+    ok = math.isfinite(r) and abs(r) <= RESIDUAL_BUDGET_K
+    return {**out, "T_hot_C": T if ok else None, "P_W": st["P_W"] if ok else None, "converged": ok,
+            "termination": term if ok else "residual", "residual_K": r, "iterations": it, "scan_points": pts,
+            "stable_from_below": True, "kcl_residual_rel": st["kcl_residual_rel"],
+            "scan_step_K": None if not a else SCAN_STEP_K}
+
+
+def _state(hot: dict | None, bank: CapacitorBank, T_b: float | None) -> tuple[float, str, bool]:
+    """Temperature the network is reported at, its basis, and whether the ESR there is established."""
+    dom = bank.T_valid_C
+    if hot is not None and hot["converged"]:
+        return hot["T_hot_C"], "settled hotspot (ESR(T), current split and heat at one temperature)", True
+    T = bank.T_ref_C if T_b is None else T_b
+    what = "ESR table temperature (no temperature given)" if T_b is None else "boundary temperature"
+    inside = dom is None or dom[0] <= T <= dom[1]
+    if hot is None:
+        return T, what + " - self-heating not modelled (no Rth)", (not bank.ESR_temp_coeff_per_K) and inside
+    return (T, f"{what} - thermal state not established ({hot['termination']})",
+            (not bank.ESR_temp_coeff_per_K) and dom is None)
+
+
+_NUMERICAL = ("max_iter", "nonfinite", "residual")
 
 
 def ripple_analysis(I_pk: float, m: float, phi_rad: float, f_e_Hz: float, fsw_Hz: float, Vdc_V: float,
                     bank: CapacitorBank, source: SourceImpedance | None = None, modulation: str = "svpwm",
                     requirement: dict | None = None, T_ref_C: float | None = None,
-                    samples_per_carrier: int = 128) -> dict:
+                    samples_per_carrier: int = 128, max_iter: int = 100) -> dict:
+    """Capacitor current, ripple, ESR loss, hotspot and life at one operating point.
+
+    ``T_ref_C`` is the boundary temperature Rth refers to (coolant / ambient).  Every reported current, voltage and
+    loss belongs to ONE capacitor temperature (``state``): the settled hotspot when the thermal state is solved,
+    otherwise the stated temperature with the claims that depend on the ESR there gated."""
     wave = switching_waveform(I_pk, m, phi_rad, f_e_Hz, fsw_Hz, modulation, samples_per_carrier)
-    sp = spectrum(wave["i_inv_A"], wave["f_e_Hz"])
-    f = sp["f_Hz"]
-    X = sp["complex"]
-    ac = np.arange(f.size) > 0
-    Zc = np.where(ac, bank.impedance(np.where(ac, f, 1.0), T_ref_C), np.inf)
+    net = _Network(wave, bank, source)
+    T_b = None if T_ref_C is None else _finite("T_ref_C", T_ref_C)
+    hot = _thermal_state(net, bank, T_b, int(max_iter))
+    T_state, basis, known = _state(hot, bank, T_b)
+    st = net.at(T_state)
+    f, X, ac, n = net.f, net.X, net.ac, net.n
     assumption = None
     if source is None:
-        k = np.where(ac, 1.0 + 0j, 0.0)                      # stiff current source: all AC into the capacitor
         assumption = ("source impedance not declared: capacitor current computed for a stiff current-source "
                       "battery (all AC into the capacitor) - an assumption, not a bound (resonance can exceed it)")
-    else:
-        Zs = source.z(f)
-        k = np.where(ac, Zs / (Zs + Zc), 0.0)
-    Ic = X * k                                                # complex capacitor-branch current (one-sided)
-    Is = X * (1 - k)                                          # source current (incl. DC)
-    ic_rms_h = np.abs(Ic) * math.sqrt(2.0)
-    ic_rms_h[0] = 0.0
-    I_c_rms = float(np.sqrt(np.sum(ic_rms_h ** 2)))
-    is_rms_h = np.abs(Is) * math.sqrt(2.0)
-    is_rms_h[0] = 0.0
-    I_s_ac = float(np.sqrt(np.sum(is_rms_h ** 2)))
-    # capacitor dielectric voltage and bus terminal voltage ripple (time domain via inverse FFT)
-    n = wave["i_inv_A"].size
-    Vc = -Ic * np.where(ac, Zc, 0.0)                          # current out of the capacitor into the bridge
-    Vc[0] = 0.0
-    v_full = np.fft.irfft(Vc * n, n)
-    v_pp = float(v_full.max() - v_full.min())
-    v_rms = float(np.sqrt(np.mean(v_full ** 2)))
-    esr_h, inside = bank.esr(np.where(ac, f, 1.0), T_ref_C)
-    covered = inside | ~ac
-    share_out = float(np.sum(ic_rms_h[~covered] ** 2) / max(np.sum(ic_rms_h ** 2), 1e-300))
-    loss_h = ic_rms_h ** 2 * esr_h
-    p_cap = float(np.sum(loss_h[covered]))
-    loss_established = share_out <= 1e-6
-    hot = None
-    if bank.Rth_K_per_W is not None and loss_established and T_ref_C is not None:
-        T = T_ref_C
-        for _ in range(50):
-            esr_T, _ = bank.esr(np.where(ac, f, 1.0), T)
-            P = float(np.sum((ic_rms_h ** 2 * esr_T)[covered]))
-            T_new = T_ref_C + bank.Rth_K_per_W * P
-            if abs(T_new - T) < 1e-4:
-                break
-            T = T_new
-        hot = {"T_hot_C": T_new, "P_W": P, "converged": abs(T_new - T) < 1e-4}
+    full = {k: _band_quantity(net, st, br, q, ac) for k, br, q in
+            (("icap", "capacitor_current", "current_ac_rms"), ("isrc", "source_current", "current_ac_rms"),
+             ("vpp", "bus_voltage", "voltage_pp"), ("vrms", "bus_voltage", "voltage_ac_rms"))}
+    # operating-state values: a quantity that depends on the capacitor impedance is reported only where the ESR at
+    # the stated temperature is established (the values at an unsettled temperature stay a labelled diagnostic)
+    op = {k: v if (known or (k == "icap" and source is None)) else {"value": None, "lo": None, "hi": None}
+          for k, v in full.items()}
+    unc_share = float(np.sum(net.inv_rms_h[net.uncovered] ** 2) / max(net.I_inv_ac ** 2, 1e-300))
+    loss_ok = net.complete and known
     life = {"status": "UNKNOWN", "reason": "no supplier life data for this capacitor series (no generic '10 K halves "
                                             "the life' rule is applied)"}
-    if bank.life_hours_table and hot is not None:
-        tab = sorted(bank.life_hours_table)
-        Ts = [a for a, _ in tab]
-        if Ts[0] <= hot["T_hot_C"] <= Ts[-1]:
-            hrs = float(np.exp(np.interp(hot["T_hot_C"], Ts, [math.log(b) for _, b in tab])))
-            vok = bank.life_voltage_V is None or Vdc_V <= bank.life_voltage_V
-            life = {"status": "CONDITIONAL" if vok else "UNKNOWN",
-                    "hours_at_hotspot": hrs if vok else None,
-                    "basis": bank.life_basis or "supplier life table (basis not stated)",
-                    "note": ("supplier table interpolated at the hotspot for constant conditions; a variable mission "
-                             "needs the supplier's accumulation rule" if vok else
-                             f"Vdc {Vdc_V:g} V above the life-table voltage {bank.life_voltage_V:g} V")}
+    if bank.life_hours_table:
+        if hot is None or not hot["converged"]:
+            life = {"status": "UNKNOWN", "reason": "no settled hotspot temperature (" +
+                    ("no Rth declared" if hot is None else hot["termination"]) + "): no life at an unsettled state"}
         else:
-            life = {"status": "UNKNOWN", "reason": f"hotspot {hot['T_hot_C']:.4g} degC outside the life table "
-                                                   f"[{Ts[0]:g}, {Ts[-1]:g}] degC (no extrapolation)"}
+            tab = sorted(bank.life_hours_table)
+            Ts = [a for a, _ in tab]
+            if Ts[0] <= hot["T_hot_C"] <= Ts[-1]:
+                hrs = float(np.exp(np.interp(hot["T_hot_C"], Ts, [math.log(b) for _, b in tab])))
+                vok = bank.life_voltage_V is None or Vdc_V <= bank.life_voltage_V
+                life = {"status": "CONDITIONAL" if vok else "UNKNOWN",
+                        "hours_at_hotspot": hrs if vok else None,
+                        "basis": bank.life_basis or "supplier life table (basis not stated)",
+                        "note": ("supplier table interpolated at the hotspot for constant conditions; a variable "
+                                 "mission needs the supplier's accumulation rule" if vok else
+                                 f"Vdc {Vdc_V:g} V above the life-table voltage {bank.life_voltage_V:g} V")}
+            else:
+                life = {"status": "UNKNOWN", "reason": f"hotspot {hot['T_hot_C']:.4g} degC outside the life table "
+                                                       f"[{Ts[0]:g}, {Ts[-1]:g}] degC (no extrapolation)"}
+    k_show = min(f.size, 4 * wave["carrier_ratio"] + 8)
+    ic_show = np.where(net.uncovered & (net.Zs is not None), np.nan, st["ic_rms_h"])
+    step = max(1, n // 4000)
+    v_mask = ac if full["vpp"]["value"] is not None else (ac & ~net.uncovered)
+    v_full = np.fft.irfft(np.where(v_mask, st["V"], 0.0) * n, n)
+    esr_band = (bank.ESR_ohm_table[0][0], bank.ESR_ohm_table[-1][0])
     out = {
         "operating": {"I_pk_A": I_pk, "modulation_index": m, "phi_deg": math.degrees(phi_rad), "f_e_Hz": f_e_Hz,
                       "fsw_requested_Hz": fsw_Hz, "fsw_used_Hz": wave["fsw_used_Hz"],
                       "carrier_ratio": wave["carrier_ratio"], "modulation": modulation, "Vdc_V": Vdc_V},
         "average_model": average_model(I_pk, m, phi_rad, modulation),
-        "I_dc_A": float(X[0].real), "I_inv_ac_rms_A": float(np.sqrt(np.sum(np.abs(X[1:]) ** 2) * 2.0)),
-        "I_cap_rms_A": I_c_rms, "I_source_ac_rms_A": I_s_ac,
-        "V_ripple_pp_V": v_pp, "V_ripple_ac_rms_V": v_rms,
-        "P_cap_W": p_cap if loss_established else None, "P_cap_covered_W": p_cap,
-        "current_share_outside_ESR_band": share_out, "hotspot": hot, "life": life,
-        "parseval_residual_A": sp["parseval_residual"], "assumption": assumption,
-        "spectrum": {"f_Hz": f[: min(f.size, 4 * wave["carrier_ratio"] + 8)].tolist(),
-                     "I_inv_rms_A": (np.abs(X) * math.sqrt(2.0))[: min(f.size, 4 * wave["carrier_ratio"] + 8)].tolist(),
-                     "I_cap_rms_A": ic_rms_h[: min(f.size, 4 * wave["carrier_ratio"] + 8)].tolist()},
-        "waveform": {"t_s": wave["t_s"][:: max(1, n // 4000)].tolist(),
-                     "i_inv_A": wave["i_inv_A"][:: max(1, n // 4000)].tolist(),
-                     "v_ripple_V": v_full[:: max(1, n // 4000)].tolist()},
+        "state": {"T_C": T_state, "basis": basis, "esr_established": known},
+        "I_dc_A": float(X[0].real), "I_inv_ac_rms_A": net.I_inv_ac,
+        "I_cap_rms_A": op["icap"]["value"], "I_cap_rms_bounds_A": [op["icap"]["lo"], op["icap"]["hi"]],
+        "I_source_ac_rms_A": op["isrc"]["value"], "I_source_ac_rms_bounds_A": [op["isrc"]["lo"], op["isrc"]["hi"]],
+        "V_ripple_pp_V": op["vpp"]["value"], "V_ripple_pp_bounds_V": [op["vpp"]["lo"], op["vpp"]["hi"]],
+        "V_ripple_ac_rms_V": op["vrms"]["value"], "V_ripple_ac_rms_bounds_V": [op["vrms"]["lo"], op["vrms"]["hi"]],
+        "P_cap_W": st["P_W"] if loss_ok else None, "P_cap_covered_W": st["P_W"],
+        "at_stated_temperature": None if known else {
+            "T_C": T_state, "note": "diagnostic only: the ESR at the operating temperature is not established",
+            "I_cap_rms_A": full["icap"]["value"], "I_source_ac_rms_A": full["isrc"]["value"],
+            "V_ripple_pp_V": full["vpp"]["value"], "V_ripple_ac_rms_V": full["vrms"]["value"],
+            "P_cap_covered_W": st["P_W"]},
+        "esr_coverage": {"table_band_Hz": list(esr_band), "complete": net.complete,
+                         "uncovered_harmonics": int(np.count_nonzero(net.uncovered & net.carrying)),
+                         "inverter_I2_share_outside": unc_share},
+        "current_share_outside_ESR_band": unc_share,
+        "hotspot": hot, "life": life, "kcl_residual_rel": st["kcl_residual_rel"],
+        "parseval_residual_A": net.parseval_residual, "assumption": assumption,
+        "spectrum": {"f_Hz": f[:k_show].tolist(), "I_inv_rms_A": net.inv_rms_h[:k_show].tolist(),
+                     "I_cap_rms_A": [None if not math.isfinite(v) else float(v) for v in ic_show[:k_show]],
+                     "ESR_covered": (~net.uncovered[:k_show]).tolist()},
+        "waveform": {"t_s": wave["t_s"][::step].tolist(), "i_inv_A": wave["i_inv_A"][::step].tolist(),
+                     "v_ripple_V": v_full[::step].tolist(),
+                     "v_basis": ("all harmonics" if v_mask is ac else
+                                 "harmonics inside the ESR table band only (impedance unknown elsewhere)")},
         "not_modelled": ["phase-current ripple", "dead time", "device edges / ringing", "overmodulation",
-                         "asynchronous-carrier sidebands (synchronous ratio used)"],
+                         "asynchronous-carrier sidebands (synchronous ratio used)",
+                         "C / ESL / ESR tolerances", "busbar impedance between capacitor and inverter terminals"],
     }
-    def band_value(qty: str, loc: str, bw: float) -> float:
-        """Requirement quantity with harmonics up to the measurement bandwidth (ideal brick-wall filter)."""
-        keep = f <= bw * (1 + 1e-12)
-        if qty in ("voltage_pp", "voltage_ac_rms"):
-            vb = np.where(keep, Vc, 0.0)
-            vt = np.fft.irfft(vb * n, n)
-            return float(vt.max() - vt.min()) if qty == "voltage_pp" else float(np.sqrt(np.mean(vt ** 2)))
-        if qty == "capacitor_current_rms":
-            return float(np.sqrt(np.sum(np.where(keep, ic_rms_h, 0.0) ** 2)))
-        src = is_rms_h if loc == "battery_terminal" else np.abs(X) * math.sqrt(2.0)
-        return float(np.sqrt(np.sum(np.where(keep & ac, src, 0.0) ** 2)))
 
-    out["band_value"] = band_value
-    out["claims"] = _claims(out, requirement, source, loss_established)
-    del out["band_value"]
+    def refine(branch: str, qty: str, bw: float) -> dict:
+        net2 = _Network(switching_waveform(I_pk, m, phi_rad, f_e_Hz, fsw_Hz, modulation, 2 * samples_per_carrier),
+                        bank, source)
+        return _band_quantity(net2, net2.at(T_state), branch, qty, net2.ac & (net2.f <= bw * (1 + 1e-12)))
+
+    out["claims"] = _claims(out, requirement, net, st, source, refine)
     return out
 
 
-def _claims(out: dict, req: dict | None, source, loss_established: bool) -> dict:
-    claims = {}
+def _state_reason(hot: dict | None) -> Reason:
+    if hot is not None and hot["termination"] in _NUMERICAL:
+        return Reason.NUMERICAL_UNRESOLVED
+    if hot is not None and hot["termination"] == "no_boundary_temperature":
+        return Reason.MISSING_INPUT
+    if hot is None:
+        return Reason.MISSING_INPUT
+    return Reason.OUTSIDE_MODEL_DOMAIN
+
+
+def _requirement_claim(out: dict, req: dict | None, net: _Network, st: dict, source, refine) -> dict:
+    title = "customer DC ripple requirement"
     if not req:
-        claims["ripple_requirement"] = Claim("ripple_requirement", Status.UNKNOWN, "customer DC ripple requirement",
-                                             "not stated", reasons=(Reason.REQUIREMENT_INCOMPLETE,),
-                                             detail="no ripple requirement stated").to_dict()
-    else:
-        missing = [k for k in REQUIRED_REQ_FIELDS if req.get(k) in (None, "")]
-        loc, qty = req.get("location"), req.get("quantity")
-        if loc not in (None, "") and loc not in LOCATIONS:
-            missing.append(f"location one of {LOCATIONS}")
-        if qty not in (None, "") and qty not in QUANTITIES:
-            missing.append(f"quantity one of {QUANTITIES}")
-        if missing:
-            claims["ripple_requirement"] = Claim(
-                "ripple_requirement", Status.UNKNOWN, "customer DC ripple requirement", "requirement definition",
-                reasons=(Reason.REQUIREMENT_INCOMPLETE,),
-                detail="requirement incomplete: " + ", ".join(missing) + " (a limit without location, quantity and "
-                       "measurement bandwidth cannot be judged)").to_dict()
+        return Claim("ripple_requirement", Status.UNKNOWN, title, "not stated",
+                     reasons=(Reason.REQUIREMENT_INCOMPLETE,), detail="no ripple requirement stated").to_dict()
+    missing = [k for k in REQUIRED_REQ_FIELDS if req.get(k) in (None, "")]
+    loc, qty = req.get("location"), req.get("quantity")
+    if loc not in (None, "") and loc not in LOCATIONS:
+        missing.append(f"location one of {LOCATIONS}")
+    if qty not in (None, "") and qty not in QUANTITIES:
+        missing.append(f"quantity one of {QUANTITIES}")
+    lim = bw = None
+    if not missing:
+        try:
+            lim, bw = float(req["limit"]), float(req["bandwidth_Hz"])
+        except (TypeError, ValueError):
+            missing.append("numeric limit and bandwidth")
         else:
-            lim = float(req["limit"])
-            bw = float(req["bandwidth_Hz"])
-            val = out["band_value"](qty, loc, bw)
-            needs_source = loc in ("battery_terminal", "dc_link_bus") or qty in ("voltage_pp", "voltage_ac_rms",
-                                                                                "capacitor_current_rms")
-            q = f"{qty} at {loc} <= {lim:g} (harmonics up to {bw:g} Hz)"
-            out["requirement_value"] = val
-            if needs_source and source is None:
-                st, rs = Status.UNKNOWN, (Reason.MISSING_INPUT,)
-                det = f"model value {val:.4g} computed with an assumed stiff source: the source impedance is needed"
-            elif bw > out["operating"]["fsw_used_Hz"] * MODEL_BAND_CARRIERS:
-                st, rs = Status.UNKNOWN, (Reason.OUTSIDE_MODEL_DOMAIN,)
-                det = (f"measurement bandwidth {bw:g} Hz reaches beyond {MODEL_BAND_CARRIERS} carrier groups of the "
-                       f"ideal-switch model (edges / ringing / parasitics not modelled)")
-            else:
-                st = Status.FEASIBLE if val <= lim else Status.INFEASIBLE
-                rs = () if st is Status.FEASIBLE else (Reason.CONSTRAINT_VIOLATION,)
-                det = (f"{val:.4g} vs limit {lim:g} (declared network; ideal brick-wall measurement filter at "
-                       f"{bw:g} Hz; sampled operating point)")
-            claims["ripple_requirement"] = Claim("ripple_requirement", st, q, "switching-function network model",
-                                                 reasons=rs, evidence=(Evidence.make(EvidenceKind.DIRECT_EVALUATION,
-                                                                                     det),), detail=det).to_dict()
-    if loss_established:
-        claims["capacitor_loss"] = Claim("capacitor_loss", Status.FEASIBLE if out["hotspot"] is None or
-                                         out["hotspot"]["converged"] else Status.UNKNOWN,
-                                         "capacitor ESR loss", "harmonic sum with ESR(f)",
-                                         detail=f"{out['P_cap_W']:.4g} W").to_dict()
+            if not (math.isfinite(lim) and lim >= 0 and math.isfinite(bw) and bw > 0):
+                missing.append("a finite limit >= 0 and a bandwidth > 0")
+    if missing:
+        return Claim("ripple_requirement", Status.UNKNOWN, title, "requirement definition",
+                     reasons=(Reason.REQUIREMENT_INCOMPLETE,),
+                     detail="requirement incomplete: " + ", ".join(missing) + " (a limit without location, quantity "
+                            "and measurement bandwidth cannot be judged)").to_dict()
+    q = f"{qty} at {loc} <= {lim:g} (harmonics up to {bw:g} Hz)"
+    if (loc, qty) in UNSUPPORTED:
+        rs, why = UNSUPPORTED[(loc, qty)]
+        return Claim("ripple_requirement", Status.UNKNOWN, q, "location x quantity mapping", reasons=(rs,),
+                     detail=why).to_dict()
+    branch = BRANCH_MAP[(loc, qty)]
+    method = f"switching-function network model: {BRANCH_TEXT[branch]}"
+    state = out["state"]
+    depends = branch != "inverter_current"
+    if bw > out["operating"]["fsw_used_Hz"] * MODEL_BAND_CARRIERS:
+        return Claim("ripple_requirement", Status.UNKNOWN, q, method, reasons=(Reason.OUTSIDE_MODEL_DOMAIN,),
+                     detail=f"measurement bandwidth {bw:g} Hz reaches beyond {MODEL_BAND_CARRIERS} carrier groups of "
+                            f"the ideal-switch model (edges / ringing / parasitics not modelled)").to_dict()
+    if depends and source is None:
+        return Claim("ripple_requirement", Status.UNKNOWN, q, method, reasons=(Reason.MISSING_INPUT,),
+                     detail="the branch split needs the source impedance: a stiff source is an assumption, not a "
+                            "bound (resonance can exceed it)").to_dict()
+    if depends and not state["esr_established"]:
+        return Claim("ripple_requirement", Status.UNKNOWN, q, method, reasons=(_state_reason(out["hotspot"]),),
+                     detail=f"the capacitor impedance depends on its temperature and the operating temperature is not "
+                            f"established ({state['basis']})").to_dict()
+    b = _band_quantity(net, st, branch, qty, net.ac & (net.f <= bw * (1 + 1e-12)))
+    b2 = refine(branch, qty, bw)
+    delta = max((abs(b2[k] - b[k]) for k in ("lo", "hi") if math.isfinite(b[k]) and math.isfinite(b2[k])),
+                default=0.0)
+    lo, hi = b["lo"], b["hi"]
+    rng = (f"{b['value']:.4g}" if b["value"] is not None else "impedance-dependent") + \
+          (f" in [{lo:.4g}, {hi:.4g}]" if b["uncovered_harmonics"] else "")
+    unc_txt = (f"; {b['uncovered_harmonics']} harmonics in the band ({b['uncovered_band_Hz'][0]:g}-"
+               f"{b['uncovered_band_Hz'][1]:g} Hz) lie outside the ESR table: bounded over every passive capacitor "
+               f"impedance" if b["uncovered_harmonics"] else "")
+    det = (f"{rng} vs limit {lim:g} at {state['T_C']:.4g} degC ({state['basis']}); sampling resolution "
+           f"{delta:.2g} (value change at twice the samples per carrier){unc_txt}; ideal brick-wall filter at "
+           f"{bw:g} Hz; sampled operating point")
+    if hi + delta <= lim:
+        st_, rs = Status.FEASIBLE, ()
+    elif lo - delta > lim:
+        st_, rs = Status.INFEASIBLE, (Reason.CONSTRAINT_VIOLATION,)
     else:
-        claims["capacitor_loss"] = Claim("capacitor_loss", Status.UNKNOWN, "capacitor ESR loss",
-                                         "harmonic sum with ESR(f)", reasons=(Reason.OUTSIDE_MODEL_DOMAIN,),
-                                         detail=f"{out['current_share_outside_ESR_band'] * 100:.3g} % of the "
-                                                f"current-squared lies outside the ESR table band: not established"
-                                         ).to_dict()
+        st_ = Status.UNKNOWN
+        rs = (Reason.BOUND_INCONCLUSIVE,) if b["uncovered_harmonics"] else (Reason.UNCERTAINTY_OVERLAP,)
+    kind = EvidenceKind.CERTIFIED_BOUND if b["uncovered_harmonics"] else EvidenceKind.DIRECT_EVALUATION
+    out["requirement_value"] = b["value"]
+    out["requirement"] = {"location": loc, "quantity": qty, "branch": branch, "bandwidth_Hz": bw, "limit": lim,
+                          "value": b["value"], "bounds": [lo, hi], "resolution_delta": delta,
+                          "uncovered_harmonics_in_band": b["uncovered_harmonics"],
+                          "uncovered_band_Hz": b["uncovered_band_Hz"], "state_T_C": state["T_C"]}
+    return Claim("ripple_requirement", st_, q, method, reasons=rs, evidence=(Evidence.make(kind, det),),
+                 detail=det).to_dict()
+
+
+def _claims(out: dict, req: dict | None, net: _Network, st: dict, source, refine) -> dict:
+    claims = {"ripple_requirement": _requirement_claim(out, req, net, st, source, refine)}
+    hot, state = out["hotspot"], out["state"]
+    title, method = "capacitor ESR loss", "harmonic sum with ESR(f, T) at the stated capacitor temperature"
+    if not net.complete:
+        cov = out["esr_coverage"]
+        claims["capacitor_loss"] = Claim(
+            "capacitor_loss", Status.UNKNOWN, title, method, reasons=(Reason.OUTSIDE_MODEL_DOMAIN,),
+            detail=f"{cov['uncovered_harmonics']} current-carrying harmonics lie outside the ESR table "
+                   f"[{cov['table_band_Hz'][0]:g}, {cov['table_band_Hz'][1]:g}] Hz "
+                   f"({cov['inverter_I2_share_outside'] * 100:.3g} % of the inverter AC current-squared): the ESR "
+                   f"there is unknown and a current fraction does not bound its heating - not established").to_dict()
+    elif not state["esr_established"]:
+        claims["capacitor_loss"] = Claim(
+            "capacitor_loss", Status.UNKNOWN, title, method, reasons=(_state_reason(hot),),
+            detail=f"ESR depends on the capacitor temperature, which is not established ({state['basis']})").to_dict()
+    else:
+        claims["capacitor_loss"] = Claim(
+            "capacitor_loss", Status.FEASIBLE, title, method,
+            detail=f"{out['P_cap_W']:.4g} W at {state['T_C']:.4g} degC ({state['basis']})").to_dict()
     life = out["life"]
     claims["capacitor_life"] = Claim("capacitor_life", Status.UNKNOWN if life["status"] != "CONDITIONAL" else
                                      Status.FEASIBLE, "capacitor life at this operating point",

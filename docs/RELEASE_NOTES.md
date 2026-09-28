@@ -1,7 +1,39 @@
-# Traction Workbench v0.3.0 — Release / Handback Notes
+# Traction Workbench v0.4.0 — Release / Handback Notes
 
 기준선: `reference/traction_workbench_spec_v1` (Blueprint, Implementation Handoff, Reference Cases, golden JSON; manifest SHA-256 일치 확인).
 이 문서는 Handoff H12가 요구한 실행 방법, model contract, 제약 목록, 알려진 한계, 검증 실행 결과, 실패/미구현 항목, data provenance, 재현 조건을 담습니다.
+
+## 0.4.0 변경 사항 (v0.3.0 대비)
+
+두 번째 독립 리뷰(기준 main f6f166b)의 결함 45건을 모두 재현하고 고쳤으며, 권고 R2(프로젝트 데이터 패키지)를 이행했습니다.
+항목별 수정·확인 테스트는 [`TRACEABILITY.md`](TRACEABILITY.md) 10절, R2 이행은 [`SYSTEM_REVIEW.md`](SYSTEM_REVIEW.md) 8절에 있습니다.
+모든 수치 fixture는 여전히 구현 검증(V0–V3)입니다.
+
+**정확성 (리뷰 R2)**
+- 코어·결정 기록: 배제 증명은 증명한 영역에만, 폭 0 제어 집합의 커버리지, DC 대역과 gate의 한 허용오차, 비수동 온도 법칙 거부, typed 정격 승인,
+  모든 필드의 content hash, band 요구의 accepted witness, 데이터 경계를 최소 sizing으로 표시하지 않음, 0 cap 유지.
+- 전력·열: SiC 물리 다이 소유권, 정지 시 실제 듀티, 커패시터의 한 온도 결합해(발산을 수렴으로 보고하지 않음, 종료 종류 명시), ESR(T)와
+  전류 분배의 동시 해, 리플 위치 매핑·수동성 경계, 다이별 열 사이클, 가열 구간 t_on, 감속기 맞물림 동력 분기, A/B의 공통 변조.
+- 보호·ASC: 경계 유효성, 같은 궤적의 경고 선행시간, 지평 안의 사건, 전각 포괄 하나(상·소자 증거 공통), 부호 있는 기계 동역학, 안전 평형 containment,
+  실제 궤적의 샘플.
+- 제어: 열린 필수 검사는 UNKNOWN(승인 아님), 비조정 공유 DC 버스 전압을 기계와 동시 해, 요청 목표 기준 anti-jerk 응답, 격자와 무관한 안전 반응 시각,
+  실제 샘플 전류 루프의 안정성, OEW 고조파 표현 불변.
+- **EMI**: 연속 수신 대역의 정확 열거(창 변화점·한계 꼭짓점 — 표시 격자와 무관, 조밀 스윕과 1e-6 dB 일치), claim 영역 = 대역 ∩ 보정 구간 ∩
+  망 유효 ∩ RBW ∩ 한계(승인된 공백만 제외), **보정 기록**의 완전성(근거·holdout·취득·오차 모델·유한 한계·구간·set-up·망 식별자·소스 범위)과
+  매 실행 적용성 재검사, 방법·단위 게이트, 하한 초과 증인만 INFEASIBLE, 측정 trace의 자체 메타데이터·읽음값 사이 손실·검출기 순위·적합/여유
+  분리, 데드타임 턴온 지연·다이오드 클램프의 **스위칭 순서 소스**(독립 스위칭 시뮬레이션과 일치; 요청/평가 fsw 표시).
+- **모터 설계**: k_N 인계는 두 권선 배치 모두 유효하고 극쌍수가 기계와 같을 때만; 선택적 `WindingDefinition`으로 기준 권선을 선언하면 계보가 파생
+  기계로 이어지고, 선언이 없으면 '일반 k_N 사고 실험'으로 표시. 입력한 0은 기본값 1로 바뀌지 않고, 정수는 절삭 없이 검증.
+- 함께 찾은 결함: PWM 게이트 이벤트 검사가 관측 창이 자른 펄스를 최소 펄스 위반으로 판정하던 것.
+
+**프로젝트 데이터 패키지 (R2)**
+- `twb-project/1`: 한 제품의 제품 데이터를 섹션(드라이브·DC 전원·모듈·대안·DC-link·제어기·열망·감속기·안전·EMI set-up)으로 한 번만 보관,
+  섹션별 parser 검증·digest·provenance, 섹션 간 일관성 규칙(PRJ-01…12), 개정과 영향 분석.
+- 내장 합성 프로젝트가 **모든 페이지 예시의 제품 데이터 출처**입니다(`api.example(name, project)`). 통합하며 데드타임(EMI·PWM 전환 1.0 µs ↔
+  손실 1.5 µs)과 EMI 소스의 최소 펄스를 제어기의 한 값으로 맞췄습니다.
+- 데스크톱: 프로젝트 페이지(섹션·일관성·이력·개정 비교, 열기·저장·새 개정), 헤더 배지, 결과가 있는 페이지의 띠 — 프로젝트 데이터 / **로컬 변경** /
+  **stale**(결과 뒤에 그 섹션이 바뀜). 프로젝트를 바꾸면 페이지가 제품 입력을 다시 읽습니다. 의사결정 기록(JSON·Markdown·PDF)에 프로젝트 맥락.
+- CLI: `twb project show | check | diff | export`.
 
 ## 0.3.0 변경 사항 (v0.2.0 대비)
 
@@ -64,6 +96,10 @@ fsw 전환 과도(이득 매핑·적분기 저장·리셋·포화), 임계 채�
 **시스템 검토** ([`SYSTEM_REVIEW.md`](SYSTEM_REVIEW.md)): 정적 import 그래프·중복 물리·의미론·예시 데이터 교차 검사로 찾은 결함 수정 —
 전류 루프를 두 기계 축(운전점의 차동 인덕턴스)으로 판정(단일 평균 L은 d축에서 낙관적), 한 평가 한 변조, 미션 효율의 부분 비율을
 UNKNOWN으로, 예시 모듈 열 경로 통일, 변조 법칙 통합(`modulation.py`), 숫자 검증 분리(`validation.py`), 패키지 경계를 넘는 비공개 결합 0.
+R1 이행: 데이터시트 모듈 손실 모델을 **드라이브 모델 층**(`models/module_loss.py`, 타입 계약)으로 옮기고, 커널의 **손실 계약**
+(`loss_kind`·`i2_dc`·`pointwise_loss`) 한 곳에서 DC 논증을 분기합니다(2차 항등식 7벌 → 1벌). 모듈 모델이 켜진 코어 경로에 회귀 기준을 두었고,
+그 과정에서 찾은 두 결함을 고쳤습니다 — 모듈 데이터가 점을 덮지 못할 때 DC claim이 "손실 모델 없음"이라 하던 사유, 모듈 모델에서 id–iq 지도와
+격자 envelope가 격자 P_dc(NaN)를 위반으로 비교하던 것(이제 '격자 미평가'와 사유). 층 규칙·비공개 결합·순환은 아키텍처 테스트가 강제합니다.
 
 **데스크톱**
 - 새 페이지 7개: 보호·고장, 전력변환·수명, 효율·모듈 비교, 가변 PWM·Anti-jerk, OEW·HEV, EMI(전도성), 모터 설계.
@@ -287,9 +323,9 @@ fixture E01(1-node 열) 값 77.6424 °C / 138.6294 s를 재현합니다.
 - 참조 패키지 manifest: 10/10 일치.
 - 독립 검산(production 비의존, 다른 방법): 136/136.
 - Production vs golden: 정방향 6건 정규화 오차 ≤ 2e-16, 역문제 11건 id/iq 최대 오차 5.5e-6 A(경계해는 ~1e-13 A), 라벨 일치, capability 4건 오차 ≤ 3e-7 N·m(구동 3건 certified, 인증 상한 = golden 1e-13 이내), fixture의 Lagrangian 승수·Hessian 고유값 상대오차 < 1e-6.
-- pytest 488개 통과(리뷰 재현 F01–F13·감사 재현·P0-B, P1 모듈, OEW/HEV, EMI, 효율 E-01..E-06, 가변 PWM, 드라이브라인 D-01..D-05,
+- pytest 628개 통과(리뷰 재현 F01–F13·감사 재현·P0-B, 두 번째 리뷰 R2 수용 테스트, 모듈 코어 anchor·층 구조, 프로젝트 데이터 패키지, P1 모듈, OEW/HEV, EMI, 효율 E-01..E-06, 가변 PWM, 드라이브라인 D-01..D-05,
   모터 설계, 교환 패키지, 그래프 데이터의 물리 일관성, 냉각수·Cauer·유량 보정, 패시브 방전, 회로도, PDF 보고서, 데스크톱 headless smoke 포함).
-- 데스크톱 self-test 50/50. Windows CI에서 PyInstaller exe를 빌드하고 **동결된 exe로** acceptance 21/21과 self-test를 통과했습니다
+- 데스크톱 self-test 54/54. Windows CI에서 PyInstaller exe를 빌드하고 **동결된 exe로** acceptance 21/21과 self-test를 통과했습니다
   (아티팩트 `TractionWorkbench-windows-x64`).
 - 관찰: MTPA 내부점 golden(I00/I09/I10)은 평탄한 목적함수 때문에 정확 해와 최대 5.5e-6 A 차이(50자리 계산으로 확인). 허용오차 1e-3 A 이내이며 expected 값은 그대로 둡니다.
 
@@ -319,6 +355,8 @@ fixture E01(1-node 열) 값 77.6424 °C / 138.6294 s를 재현합니다.
 - 추가 명세의 missing/partial 항목(OEW R-02/R-03, 측정 파형 ⟨v·i⟩, 저장에너지 자동 계산, 동기 PWM·random PWM, 샘플 유효창·stale 샘플,
   차동 인덕턴스 기반 동적 전압 여유, 센서 dropout·wheel slip, 다관성 협조)과 §14 디스커넥터(P2 보류) — [`TRACEABILITY.md`](TRACEABILITY.md).
 - 물리 검증 증거(DPT·열량계·동력계, HIL, EMC 측정 보정, 차량 FRF) 없음: 해당 항목은 evidence_missing으로 표시됩니다.
+- 리뷰 R2의 다음 fidelity 권고(P1-A/B): 측정 DPT 에지 family(전류·Vdc·Tj별 tr/tf), 측정 부품 임피던스·다중 포트 망 import, FEA/공급사 dq 자속·손실
+  데이터 정규화와 holdout 비교 — 미구현(현재 판정은 선언 모델 + 보정 기록의 범위 안에서만).
 - 모든 실패 항목: 없음(검증 실행에서 FAIL 0).
 
 ## 12. 재현 조건
@@ -358,7 +396,7 @@ fixture E01(1-node 열) 값 77.6424 °C / 138.6294 s를 재현합니다.
 | 배포 | `packaging/` (PyInstaller spec, 빌드·동결 self-test), `.github/workflows/build.yml` | CI Windows job |
 | 리뷰 P0-A F01–F13, 감사 재현 | `solvers/gate.py`, `requirement.py`, `extensions/timing.py`·`thermal.py`·`dclink.py`, `io.py`, `models/flux.py`, `analysis/sizing.py`·`uncertainty.py`·`rating.py`, `decision.py`(claim 층) | `test_review_p0a.py` |
 | 리뷰 P0-B 데이터 계약·data audit | `io.py`, `models/`, `service.data_audit` | `test_review_p0b.py` |
-| P1: 모듈 손실·DC-link 리플·수명·보호·ASC 과도·전도 EMI | `extensions/module_loss.py`·`dclink_ripple.py`·`lifetime.py`·`protection.py`·`asc_transient.py`·`emi.py` | `test_module_loss.py`, `test_dclink_ripple.py`, `test_lifetime.py`, `test_protection.py`, `test_asc_transient.py`, `test_emi.py` |
+| P1: 모듈 손실·DC-link 리플·수명·보호·ASC 과도·전도 EMI | `models/module_loss.py`, `extensions/dclink_ripple.py`·`lifetime.py`·`protection.py`·`asc_transient.py`·`emi.py` | `test_module_loss.py`, `test_dclink_ripple.py`, `test_lifetime.py`, `test_protection.py`, `test_asc_transient.py`, `test_emi.py` |
 | 모터 설계 (§10) | `analysis/machine_design.py` | `test_machine_design.py` (권선계수 교과서 값, dq 스케일링 항등식) |
 | OEW·HEV | `extensions/oew.py`, `extensions/hev.py` | `test_oew.py`, `test_hev.py` |
 | 경계별 효율·감속기·미션·모듈 A/B | `analysis/efficiency.py` | `test_efficiency.py` (E-01..E-06) |

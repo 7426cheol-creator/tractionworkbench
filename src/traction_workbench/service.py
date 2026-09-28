@@ -310,7 +310,7 @@ def idiq_map(drive: DriveModel, limits: DcSourceLimits, speed_rpm: float, Vdc_V:
             "torque_request": contour_segments(x, y, nanify(e["tsh"]), T) if k.tau_rot is not None else [],
         },
     }
-    if k.inv_loss is not None:
+    if k.i2_dc is not None:                 # grid P_dc only through the surrogate's I^2 identity
         pdc = nanify(e["pdc"])
         if k.P_dis_eff is not None:
             out["contours"]["dc_discharge_limit"] = contour_segments(x, y, pdc, k.P_dis_eff)
@@ -323,8 +323,11 @@ def idiq_map(drive: DriveModel, limits: DcSourceLimits, speed_rpm: float, Vdc_V:
     ec = k.evaluate(Xc, Yc)
     el = electrical_ok(k, Xc, Yc, ec)
     out["regions"] = {"electrical_feasible": _runs(xc, yc, el)}
-    if k.inv_loss is not None:
+    if k.i2_dc is not None:
         out["regions"]["all_limits_feasible"] = _runs(xc, yc, el & dc_ok(k, ec["pdc"]))
+    elif k.pointwise_loss:
+        out["dc_grid_note"] = (f"DC limit contours and regions not drawn: the {k.loss_label} is evaluated point by "
+                               "point (no grid P_dc); DC compatibility is judged at the policy point")
     if k.kind == "flux_map":
         out["regions"]["model_coverage"] = _runs(xc, yc, np.asarray(ec["ok"], bool))
     sol = ev.solve(T)

@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from traction_workbench.errors import InputValidationError
-from traction_workbench.extensions.module_loss import (ModuleLossModel, SwitchDevice, Table2D, electrothermal_fixed_point,
+from traction_workbench.models.module_loss import (ModuleLossModel, SwitchDevice, Table2D, electrothermal_fixed_point,
                                                         inverter_losses, leg_losses, linear_table, loss_claim,
                                                         standstill_hotspot)
 
