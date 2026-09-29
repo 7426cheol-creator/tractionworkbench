@@ -167,6 +167,25 @@ def _case_body(case: dict) -> dict:
     return {"drive": case.get("drive"), "limits": lim}
 
 
+def ask(parent, title: str, text: str, buttons: list) -> str | None:
+    """A question with named answers: ``buttons`` = [(key, label), ...], the first is the default.  The key of the
+    answer, or None when the dialog is closed."""
+    from PySide6.QtWidgets import QMessageBox
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Question)
+    box.setWindowTitle(title)
+    box.setText(text)
+    keys = {}
+    for i, (key, label) in enumerate(buttons):
+        b = box.addButton(label, QMessageBox.AcceptRole if i == 0 else QMessageBox.RejectRole
+                          if key == "cancel" else QMessageBox.DestructiveRole)
+        keys[id(b)] = key
+        if i == 0:
+            box.setDefaultButton(b)
+    box.exec()
+    return keys.get(id(box.clickedButton()))
+
+
 class MainWindow(QMainWindow):
     def __init__(self, state: AppState | None = None):
         super().__init__()
@@ -243,6 +262,7 @@ class MainWindow(QMainWindow):
         for key in self.pages:
             self._refresh_run_action(key)
         self._restore_session()
+        self._init_workspace()
 
     # ------------------------------------------------------------------ navigation
     def _build_nav(self):
@@ -548,6 +568,19 @@ class MainWindow(QMainWindow):
     def _menus(self):
         mb = self.menuBar()
         m = mb.addMenu(tr("파일", "File"))
+        a = QAction(tr("작업 공간 열기…", "Open workspace…"), self)
+        a.setShortcut(QKeySequence("Ctrl+Shift+O"))
+        a.triggered.connect(lambda: self.open_workspace())
+        m.addAction(a)
+        a = QAction(tr("작업 공간 저장", "Save workspace"), self)
+        a.setShortcut(QKeySequence.Save)
+        a.triggered.connect(lambda: self.save_workspace())
+        m.addAction(a)
+        a = QAction(tr("작업 공간을 다른 이름으로 저장…", "Save workspace as…"), self)
+        a.setShortcut(QKeySequence.SaveAs)
+        a.triggered.connect(lambda: self.save_workspace_as())
+        m.addAction(a)
+        m.addSeparator()
         a = QAction(tr("case 파일 열기…", "Open case file…"), self)
         a.setShortcut(QKeySequence.Open)
         a.triggered.connect(self.open_case)
@@ -804,7 +837,204 @@ class MainWindow(QMainWindow):
         self.settings.setValue("window/geometry", self.saveGeometry())
         self.settings.setValue("window/page", self.current_page())
 
+    # ------------------------------------------------------------------ workspace: inputs, page data and project
+    def _init_workspace(self) -> None:
+        """A workspace file (open / save) and, for a person's session, a recovery copy every minute and at the end."""
+        from PySide6.QtCore import QTimer
+        from . import workspace as WS
+        self._ws_path: str | None = None
+        self._ws_saved = None                   # content of the file as last saved or opened
+        self._ws_baseline = WS.content(WS.build(self))      # a fresh window: nothing to keep
+        self._ws_autosaved = None
+        self._ws_discard = False
+        self._ws_timer = QTimer(self)
+        self._ws_timer.setSingleShot(True)
+        self._ws_timer.setInterval(400)
+        self._ws_timer.timeout.connect(self._refresh_title)
+        for key in WS.pages_with_inputs(self):
+            from .inputs import connect_changes
+            for r in WS.input_roots(self, key):
+                connect_changes(r, self._ws_timer.start)
+        self.state.project_changed.connect(self._ws_timer.start)
+        if self._session_kept():
+            self._autosave_timer = QTimer(self)
+            self._autosave_timer.setInterval(60_000)
+            self._autosave_timer.timeout.connect(self._autosave)
+            self._autosave_timer.start()
+        self._refresh_title()
+
+    def _refresh_title(self) -> None:
+        from pathlib import Path
+        name = Path(self._ws_path).name if self._ws_path else tr("새 작업 공간", "new workspace")
+        self.setWindowTitle(f"Traction Workbench {__version__} — {name}[*]")
+        self.setWindowModified(self.workspace_dirty())
+
+    def workspace_dirty(self) -> bool:
+        """Inputs, page data or project differ from the workspace file (or, without a file, from a fresh window)."""
+        from . import workspace as WS
+        ref = self._ws_saved if self._ws_path else self._ws_baseline
+        return WS.content(WS.build(self)) != ref
+
+    def save_workspace(self, path: str | None = None) -> bool:
+        from . import workspace as WS
+        path = path or self._ws_path
+        if not path:
+            return self.save_workspace_as()
+        ws = WS.build(self)
+        try:
+            WS.save(ws, path)
+        except OSError as exc:
+            error_box(self, tr("작업 공간 저장 실패", "workspace not saved"), str(exc))
+            return False
+        self._ws_path, self._ws_saved = str(path), WS.content(ws)
+        self._refresh_title()
+        self.statusBar().showMessage(tr(f"작업 공간 저장: {path}", f"workspace saved: {path}"), 6000)
+        return True
+
+    def save_workspace_as(self) -> bool:
+        from PySide6.QtWidgets import QFileDialog
+        from . import workspace as WS
+        path, _ = QFileDialog.getSaveFileName(self, tr("작업 공간 저장", "save workspace"),
+                                              self._ws_path or ("work" + WS.SUFFIX),
+                                              tr("작업 공간", "workspace") + f" (*{WS.SUFFIX})")
+        if not path:
+            return False
+        if not path.endswith(WS.SUFFIX):
+            path += WS.SUFFIX
+        return self.save_workspace(path)
+
+    def open_workspace(self, path: str | None = None) -> bool:
+        from PySide6.QtWidgets import QFileDialog
+        from . import workspace as WS
+        if not self._confirm_discard():
+            return False
+        if not path:
+            path, _ = QFileDialog.getOpenFileName(self, tr("작업 공간 열기", "open workspace"), "",
+                                                  tr("작업 공간", "workspace") + f" (*{WS.SUFFIX});;JSON (*.json)")
+            if not path:
+                return False
+        try:
+            ws = WS.load(path)
+            problems = WS.apply(self, ws)
+        except (OSError, ValueError) as exc:
+            error_box(self, tr("작업 공간 열기 실패", "workspace not opened"), str(exc))
+            return False
+        self._ws_path, self._ws_saved = str(path), WS.content(ws)
+        self._refresh_title()
+        self._report_restore(problems, path)
+        return True
+
+    def _report_restore(self, problems: list, where) -> None:
+        """What was restored and what was not (never guessed): the status bar, or a list when something is left."""
+        from PySide6.QtWidgets import QApplication, QMessageBox
+        if not problems:
+            self.statusBar().showMessage(tr(f"작업 공간을 복원했습니다: {where} — 결과는 다시 실행하면 계산됩니다 (Ctrl+Enter)",
+                                            f"workspace restored: {where} - results are computed when you run "
+                                            f"(Ctrl+Enter)"), 10000)
+            return
+        text = "\n".join(f"· {p}" for p in problems[:30]) + (tr(f"\n… 외 {len(problems) - 30}개", f"\n… and "
+                                                                  f"{len(problems) - 30} more")
+                                                               if len(problems) > 30 else "")
+        if QApplication.instance().property("twb_selftest"):
+            error_box(self, tr("작업 공간 복원", "workspace restore"), text)
+            return
+        QMessageBox.information(self, tr("작업 공간 복원", "workspace restore"),
+                                tr("나머지는 복원했습니다. 다음 항목은 저장된 값을 쓸 수 없어 그대로 두었습니다:\n\n",
+                                   "Everything else is restored. These saved values could not be used and were left "
+                                   "unchanged:\n\n") + text)
+
+    def _confirm_discard(self) -> bool:
+        """Before the work on screen is replaced or the window closes: a workspace file with unsaved changes is
+        saved, discarded or kept open (cancel).  Work without a file is kept for recovery instead of asking."""
+        if not self._session_kept() or not self._ws_path or not self.workspace_dirty():
+            return True
+        from pathlib import Path
+        a = ask(self, tr("저장하지 않은 변경", "unsaved changes"),
+                tr(f"작업 공간 '{Path(self._ws_path).name}'에 저장하지 않은 변경이 있습니다.",
+                   f"The workspace '{Path(self._ws_path).name}' has unsaved changes."),
+                [("save", tr("저장", "Save")), ("discard", tr("저장하지 않음", "Don't save")),
+                 ("cancel", tr("취소", "Cancel"))])
+        if a == "save":
+            return self.save_workspace()
+        if a == "discard":
+            self._ws_discard = True
+            return True
+        return False
+
+    def confirm_close(self) -> bool:
+        return self._confirm_discard()
+
+    def _autosave(self) -> None:
+        """Every minute: the work of this session, for recovery after a crash (only when it changed)."""
+        from . import workspace as WS
+        ws = WS.build(self)
+        c = WS.content(ws)
+        if c == self._ws_autosaved or c == self._ws_baseline:
+            return
+        try:
+            WS.save(ws, WS.recovery_path())
+            self._ws_autosaved = c
+        except OSError:
+            pass
+
+    def _write_recovery(self) -> None:
+        """At the end: keep the session for recovery unless it holds nothing new (fresh, saved, or discarded)."""
+        if not self._session_kept():
+            return
+        from . import workspace as WS
+        try:
+            p = WS.recovery_path()
+            ws = WS.build(self)
+            c = WS.content(ws)
+            if self._ws_discard or c == self._ws_baseline or (self._ws_path and c == self._ws_saved):
+                if p.exists():
+                    p.unlink()
+                return
+            WS.save(ws, p)
+        except OSError:
+            pass
+
+    def offer_recovery(self) -> None:
+        """At start: the last session's work, when it was not saved, is offered back (declined: kept aside)."""
+        if not self._session_kept() or getattr(self, "_recovery_offered", False):
+            return
+        self._recovery_offered = True
+        from . import workspace as WS
+        p = WS.recovery_path()
+        if not p.is_file():
+            return
+        try:
+            ws = WS.load(p)
+        except (OSError, ValueError):
+            p.replace(p.with_suffix(".broken.json"))
+            return
+        if WS.content(ws) == self._ws_baseline:
+            p.unlink()
+            return
+        labels = {k: lab() for k, lab, _cls in PAGES}
+        fresh = self._ws_baseline["pages"]
+        changed = [labels.get(k, k) for k, v in ws["pages"].items()
+                   if {"fields": v.get("fields"), "data": v.get("data")} != fresh.get(k)]
+        when = ws.get("saved_at", "")
+        a = ask(self, tr("이전 작업 복원", "restore previous work"),
+                tr(f"저장하지 않은 이전 작업이 있습니다 ({when}).\n바뀐 입력: {', '.join(changed) or '프로젝트'}\n\n"
+                   f"복원할까요? 새로 시작하면 이 작업은 {p.with_suffix('.previous.json').name}로 남겨 둡니다.",
+                   f"There is unsaved work from the last session ({when}).\nChanged inputs: "
+                   f"{', '.join(changed) or 'project'}\n\nRestore it? Starting fresh keeps it as "
+                   f"{p.with_suffix('.previous.json').name}."),
+                [("restore", tr("복원", "Restore")), ("fresh", tr("새로 시작", "Start fresh"))])
+        if a == "restore":
+            problems = WS.apply(self, ws)
+            self._refresh_title()
+            self._report_restore(problems, tr("이전 세션", "the last session"))
+        else:
+            p.replace(p.with_suffix(".previous.json"))
+
     def closeEvent(self, ev):
+        if not self.confirm_close():
+            ev.ignore()
+            return
+        self._write_recovery()
         self._save_session()
         self.runner.cancel_all()
         super().closeEvent(ev)

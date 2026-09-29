@@ -229,11 +229,17 @@ def _cell(x):
 # ---------------------------------------------------------------------------
 
 class VerdictBanner(QFrame):
+    """The verdict, its one-line conclusion and reasons; the requirement text, scope and record identity fold away
+    under [details] (they stay one click away and in every saved record)."""
+
+    details_toggled = Signal(bool)
+
     def __init__(self, parent=None):
         super().__init__(parent)
+        from PySide6.QtWidgets import QToolButton
         self.setObjectName("Verdict")
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(14, 10, 14, 10)
+        lay.setContentsMargins(14, 8, 10, 8)
         self.big = QLabel("—")
         f = QFont(theme.app_font())
         f.setPointSizeF(20)
@@ -243,21 +249,51 @@ class VerdictBanner(QFrame):
         self.text = QLabel(tr("요구를 입력하고 [판정 실행]을 누르세요.", "Enter a requirement and press Evaluate."))
         self.text.setWordWrap(True)
         self.text.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.more = QLabel("")
+        self.more.setWordWrap(True)
+        self.more.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.more.hide()
+        col = QVBoxLayout()
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(3)
+        col.addWidget(self.text)
+        col.addWidget(self.more)
+        self.more_btn = QToolButton()
+        self.more_btn.setAutoRaise(True)
+        self.more_btn.setCheckable(True)
+        self.more_btn.toggled.connect(self._toggled)
+        self.more_btn.hide()
         lay.addWidget(self.big)
-        lay.addWidget(self.text, 1)
+        lay.addLayout(col, 1)
+        lay.addWidget(self.more_btn, 0, Qt.AlignTop)
+        self._toggled(False)
         self.set("NONE", "")
+
+    def _toggled(self, on: bool):
+        self.more_btn.setText(tr("접기 ▴", "less ▴") if on else tr("자세히 ▾", "details ▾"))
+        self.more_btn.setToolTip(tr("요구 원문, 한정, 사유 코드, 범위, 기록 ID와 입력 해시", "requirement text, qualifiers, "
+                                    "reason codes, scope, record id and input hash"))
+        self.more.setVisible(on and bool(self.more.text()))
+        self.details_toggled.emit(on)
+
+    def set_details_shown(self, on: bool):
+        self.more_btn.setChecked(bool(on))
 
     def restyle(self):
         self.set(*self._last)
 
-    def set(self, verdict: str, html: str):
-        self._last = (verdict, html or self.text.text())
+    def set(self, verdict: str, html: str, details: str = ""):
+        self._last = (verdict, html or self.text.text(), details)
         bg, fg = theme.verdict_colors(verdict)
         self.setStyleSheet(f"QFrame#Verdict {{ background: {bg}; border: 1px solid {fg}; border-radius: 8px; }}"
                            f"QLabel {{ background: transparent; }}")
         self.big.setStyleSheet(f"color: {fg};")
         self.text.setStyleSheet(f"color: {theme.colors()['fg']};")
+        self.more.setStyleSheet(f"color: {theme.colors()['fg']};")
         self.big.setText({"NONE": "—"}.get(verdict, verdict))
+        self.more.setText(details)
+        self.more_btn.setVisible(bool(details))
+        self.more.setVisible(bool(details) and self.more_btn.isChecked())
         if html:
             self.text.setText(html)
 
@@ -308,8 +344,12 @@ class ClaimTree(QTreeWidget):
 
 
 class KeyValueTable(QTableWidget):
-    def __init__(self, parent=None, headers=None):
+    """Read-only rows of (item, value, ...).  ``fit_rows``: the table is as tall as its rows (in a scrolling column
+    every row stays readable, whatever the window size)."""
+
+    def __init__(self, parent=None, headers=None, fit_rows: bool = False):
         super().__init__(parent)
+        self._fit_rows = fit_rows
         headers = headers or [tr("항목", "item"), tr("값", "value")]
         self.setColumnCount(len(headers))
         self.setHorizontalHeaderLabels(headers)
@@ -331,6 +371,29 @@ class KeyValueTable(QTableWidget):
                     it.setForeground(QColor(colors[(i, j)]))
                 self.setItem(i, j, it)
         self.resizeRowsToContents()
+        self._fit_height()
+
+    def _fit_height(self):
+        if not self._fit_rows:
+            return
+        hh = self.horizontalHeader()                 # short columns wrap past 28 % of the width: the last column (the
+        cap = max(90, int(self.viewport().width() * 0.28))           # explanation) keeps the room it needs
+        for j in range(self.columnCount() - 1):
+            hh.setSectionResizeMode(j, QHeaderView.Interactive)
+            self.resizeColumnToContents(j)
+            if hh.sectionSize(j) > cap:
+                hh.resizeSection(j, cap)
+        self.resizeRowsToContents()
+        head = self.horizontalHeader().sizeHint().height()
+        rows = sum(self.rowHeight(r) for r in range(self.rowCount()))
+        bar = self.horizontalScrollBar().sizeHint().height() if self.horizontalHeader().length() > self.viewport().width() \
+            else 0                                   # columns wider than the table: keep the last row above the bar
+        self.setFixedHeight(head + max(rows, 24) + bar + 2 * self.frameWidth() + 2)
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        if self._fit_rows and ev.size().width() != ev.oldSize().width():   # wrapped rows re-flow with the width
+            self._fit_height()
 
 
 def parse_clipboard_grid(text: str) -> list[list[str]]:

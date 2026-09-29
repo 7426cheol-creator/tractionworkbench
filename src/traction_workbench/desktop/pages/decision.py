@@ -115,13 +115,30 @@ def _envelope_task(progress, drive, limits, Vdc, magnet_temp_C=None):
     return SW.envelope(drive, limits, Vdc, n=33, progress=progress, magnet_temp_C=magnet_temp_C)
 
 
+class _AdaptiveSplitter(QSplitter):
+    """Side by side when at least ``threshold`` px wide, one above the other when narrower (each part keeps a
+    readable width instead of two slivers)."""
+
+    def __init__(self, threshold: int):
+        super().__init__(Qt.Horizontal)
+        self._threshold = threshold
+
+    def resizeEvent(self, ev):
+        want = Qt.Horizontal if ev.size().width() >= self._threshold else Qt.Vertical
+        if self.orientation() != want:
+            self.setOrientation(want)
+            total = ev.size().width() if want == Qt.Horizontal else ev.size().height()
+            self.setSizes([total // 2, total - total // 2] if want == Qt.Horizontal else [total * 2 // 5, total * 3 // 5])
+        super().resizeEvent(ev)
+
+
 class DecisionPage(QWidget):
     def __init__(self, win):
         super().__init__()
         self.win = win
         self.result = None
         self._env_cache = {}
-        self._banner_last = ("NONE", "")
+        self._banner_last = ("NONE", "", "")        # verdict, the lines always shown, the folded details
         self._inputs_note = ""
         split = QSplitter(Qt.Horizontal)
         form = self._build_form()
@@ -141,9 +158,9 @@ class DecisionPage(QWidget):
         if key != "decision" or outcome != "cancelled":
             return
         if self.result is not None:
-            v, html = self._banner_last
-            self._set_banner(v, html, tr("새 계산은 취소됨 — 이전 결과를 표시 중입니다.",
-                                         "the new evaluation was cancelled - showing the previous result."))
+            v, html, details = self._banner_last
+            self._set_banner(v, html, details, tr("새 계산은 취소됨 — 이전 결과를 표시 중입니다.",
+                                                  "the new evaluation was cancelled - showing the previous result."))
         else:
             self.banner.set("NONE", tr("계산을 취소했습니다. 입력을 확인하고 다시 실행하세요 (Ctrl+Enter).",
                                        "Evaluation cancelled. Check the inputs and run again (Ctrl+Enter)."))
@@ -168,9 +185,10 @@ class DecisionPage(QWidget):
         """The source resistance row (label and fields) is shown only when Vdc is a battery OCV."""
         self._req_form.setRowVisible(self.src_row, self.vdc_kind.currentData() == "battery_ocv")
 
-    def _set_banner(self, verdict: str, html: str, note: str = "") -> None:
+    def _set_banner(self, verdict: str, html: str, details: str = "", note: str = "") -> None:
+        """Notes (inputs changed since, a cancelled re-run) always show; the record details fold away."""
         extra = "".join(f"<br><span style='color:#b35900'><b>{x}</b></span>" for x in (self._inputs_note, note) if x)
-        self.banner.set(verdict, html + extra)
+        self.banner.set(verdict, html + extra, details)
 
     # ------------------------------------------------------------------ form
     def _build_form(self):
@@ -438,6 +456,10 @@ class DecisionPage(QWidget):
         v = QVBoxLayout(w)
         v.setContentsMargins(6, 0, 0, 0)
         self.banner = VerdictBanner()
+        kept = self.win._session_kept()                      # the details stay folded or open as the person left them
+        self.banner.set_details_shown(kept and self.win.settings.value("decision/banner_details", False, type=bool))
+        self.banner.details_toggled.connect(
+            lambda on: self.win.settings.setValue("decision/banner_details", on) if self.win._session_kept() else None)
         v.addWidget(self.banner)
         row = QHBoxLayout()
         row.addWidget(QLabel(tr("표시 조건:", "condition:")))
@@ -461,11 +483,12 @@ class DecisionPage(QWidget):
                                        "item, what limits at the operating point, power and losses, the bottleneck "
                                        "contributions, what would make it pass and what the result does not cover."))
         self.tabs.addTab(self.insight, tr("엔지니어링 분석", "engineering reading"))
-        # summary
-        summ = QSplitter(Qt.Horizontal)
+        # summary: the claim tree beside the four sections on a wide result area, above them on a narrow one
+        summ = _AdaptiveSplitter(800)
         self.claims = ClaimTree()
-        self.key_table = KeyValueTable()
-        self.layers_table = KeyValueTable(headers=[tr("층", "layer"), tr("상태", "status"), tr("의미", "meaning")])
+        self.key_table = KeyValueTable(fit_rows=True)
+        self.layers_table = KeyValueTable(headers=[tr("층", "layer"), tr("상태", "status"), tr("의미", "meaning")],
+                                          fit_rows=True)
         self.layers_table.setToolTip(tr("서로 다른 진술을 하나의 판정으로 합치지 않습니다: 수치 증거 / 이 모델의 요구 판정 / "
                                         "요구의 완결성 / 데이터의 qualification",
                                         "Separate statements never merged into one verdict: numerical evidence / the "
@@ -475,7 +498,12 @@ class DecisionPage(QWidget):
         for lw in (self.limiting, self.actions):
             lw.setWordWrap(True)
             lw.setAlternatingRowColors(True)
-        right = QSplitter(Qt.Vertical)                 # four titled sections the user can resize
+        # four titled sections in one scrolling column; the tables are as tall as their rows, so no row is ever cut
+        # to a bare header (a short window scrolls instead)
+        right = QWidget()
+        rl = QVBoxLayout(right)
+        rl.setContentsMargins(0, 0, 4, 0)
+        rl.setSpacing(4)
         for title, body in ((tr("<b>판정 층</b> (수학 · 모델 · 요구 · qualification — 서로 다른 진술)",
                              "<b>claim layers</b> (mathematical · model · requirement · qualification — separate)"),
                           self.layers_table),
@@ -483,18 +511,19 @@ class DecisionPage(QWidget):
                          (tr("<b>제한 요인</b>", "<b>limiting factors</b>"), self.limiting),
                          (tr("<b>다음 조치 · 결론을 바꿀 자료</b>", "<b>next actions · data that would change the decision</b>"),
                           self.actions)):
-            box = QWidget()
-            bl = QVBoxLayout(box)
-            bl.setContentsMargins(0, 0, 0, 0)
-            bl.setSpacing(2)
             head = QLabel(title)
             head.setWordWrap(True)
-            bl.addWidget(head)
-            bl.addWidget(body, 1)
-            right.addWidget(box)
-        right.setSizes([170, 250, 150, 230])
+            rl.addWidget(head)
+            rl.addWidget(body)
+        for lw in (self.limiting, self.actions):
+            lw.setMinimumHeight(120)
+        rl.addStretch(1)
+        right_scroll = QScrollArea()
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setFrameShape(QScrollArea.NoFrame)
+        right_scroll.setWidget(right)
         summ.addWidget(self.claims)
-        summ.addWidget(right)
+        summ.addWidget(right_scroll)
         summ.setSizes([560, 560])
         self.summary_tab = summ
         self.tabs.addTab(summ, tr("요약·근거", "summary · evidence"))
@@ -521,27 +550,32 @@ class DecisionPage(QWidget):
         self.result = res
         rec = res["record"]
         v = rec["verdict"]
-        reasons = ", ".join(f"{reason_label(r)} ({r})" for r in v["reasons"]) or "—"
+        reasons = ", ".join(reason_label(r) for r in v["reasons"]) or "—"
         qual = "".join(f"<br>· {q}" for q in v.get("qualifiers", []))
         cls = classify(v["status"], v["reasons"])
-        why = ""
+        why = why_more = ""
         if v["status"] != "FEASIBLE":           # the class of the answer says which kind of work could change it
-            why = (f"<br>{tr('분류', 'class')}: <b>{tr(cls['label_ko'], cls['label_en'])}</b>"
-                   + (f" — {engine_text(cls['hint'])}" if cls["hint"] else "")
-                   + (tr(f" (원인 {len(cls['classes'])}개: {', '.join(cls['classes'])})",
-                         f" ({len(cls['classes'])} causes: {', '.join(cls['classes'])})")
-                      if len(cls.get("classes") or []) > 1 else ""))
+            why = f" · {tr('분류', 'class')}: <b>{tr(cls['label_ko'], cls['label_en'])}</b>"
+            why_more = ((f"<br>{tr('분류', 'class')}: {engine_text(cls['hint'])}" if cls["hint"] else "")
+                        + (tr(f" (원인 {len(cls['classes'])}개: {', '.join(cls['classes'])})",
+                              f" ({len(cls['classes'])} causes: {', '.join(cls['classes'])})")
+                           if len(cls.get("classes") or []) > 1 else ""))
         ins = decision_insight(rec, res.get("pwm_risk"))
         self.insight.show_insight(ins)
         deciding = ", ".join(dict.fromkeys(claim_label(n) for n in v.get("deciding_claims", []))) or "—"
+        # always shown: the conclusion with its numbers, the requirement id, why, and (not proven) what kind of work
+        # could change it; folded: the requirement text, qualifiers, reason codes, scope and the record identity
         html = (f"<span style='font-size:10.5pt'>{ins.headline}</span><br>"
-                f"<b>{rec['requirement'].get('req_id', '')}</b> — {rec['requirement'].get('original_text', '')}<br>"
-                f"{tr('사유', 'reasons')}: <b>{reasons}</b> · {tr('결정 항목', 'deciding items')}: {deciding}{why}{qual}<br>"
-                f"<span style='font-size:8.5pt'>{tr('범위', 'scope')}: {v.get('scope', '')}<br>record {rec['record_id']} · "
-                f"input SHA-256 {rec['input_sha256'][:16]}… · {rec.get('elapsed_s', 0):.2f} s</span>")
-        self._banner_last = (v["verdict"], html)
+                f"<b>{rec['requirement'].get('req_id', '')}</b> · {tr('사유', 'reasons')}: <b>{reasons}</b> · "
+                f"{tr('결정 항목', 'deciding items')}: {deciding}{why}")
+        codes = ", ".join(v["reasons"]) or "—"
+        details = (f"<b>{rec['requirement'].get('req_id', '')}</b> — {rec['requirement'].get('original_text', '')}{qual}"
+                   f"{why_more}<br>{tr('사유 코드', 'reason codes')}: {codes}"
+                   f"<br><span style='font-size:8.5pt'>{tr('범위', 'scope')}: {v.get('scope', '')}<br>record "
+                   f"{rec['record_id']} · input SHA-256 {rec['input_sha256'][:16]}… · {rec.get('elapsed_s', 0):.2f} s</span>")
+        self._banner_last = (v["verdict"], html, details)
         self._inputs_note = ""
-        self._set_banner(v["verdict"], html)
+        self._set_banner(*self._banner_last)
         self.cond_combo.blockSignals(True)
         self.cond_combo.clear()
         for i, c in enumerate(rec["conditions"]):

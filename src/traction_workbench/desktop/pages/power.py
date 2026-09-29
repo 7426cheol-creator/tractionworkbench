@@ -106,6 +106,7 @@ class CurveGrid(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(4)
         self.pick = combo([(label(), key) for key, label, _ in CURVES])
+        self.pick.setProperty("twb_not_input", True)        # which curve is shown; the curves are the input
         self.pick.currentIndexChanged.connect(self._switch)
         self.use = check(tr("이 곡선 사용", "use this curve"), True)
         top = QHBoxLayout()
@@ -125,6 +126,7 @@ class CurveGrid(QWidget):
         f.addRow(tr("출처", "source"), self.src)
         lay.addLayout(f)
         self.table = NumTable(["—"], min_height=150)
+        self.table.setProperty("twb_dynamic_columns", True)     # one column per current
         lay.addWidget(self.table)
         row = QHBoxLayout()
         b = QPushButton(tr("전체 표 붙여넣기 (첫 행=전류, 첫 열=온도)", "paste full grid (row 1 = currents, col 1 = temps)"))
@@ -219,6 +221,24 @@ class CurveGrid(QWidget):
         self.currents.setText(", ".join(fmt(a) for a in cur))
         self._fill(temps, cur, vals)
 
+    # -- workspace: every stored curve, and the shown one as typed (it may not be stored yet)
+    def workspace_state(self) -> dict:
+        from ..workspace import capture_fields
+        return {"curves": copy.deepcopy(self.curves), "current": self.current, "shown": capture_fields(self)}
+
+    def restore_workspace(self, v: dict) -> list:
+        from ..workspace import restore_fields
+        self.curves = copy.deepcopy(v.get("curves") or {})
+        i = self.pick.findData(v.get("current"))
+        self.pick.blockSignals(True)
+        self.pick.setCurrentIndex(max(i, 0))
+        self.pick.blockSignals(False)
+        self.current = self.pick.currentData()
+        self._load(self.current)
+        problems = [] if i >= 0 else [tr(f"곡선 '{v.get('current')}'이 이 앱에 없음", f"curve '{v.get('current')}' "
+                                                                              f"does not exist in this app")]
+        return problems + restore_fields(self, v.get("shown") or {})
+
     # -- all curves
     def spec(self) -> dict:
         self._store()
@@ -269,6 +289,10 @@ def _claim_text(c: dict) -> str:
 
 
 class PowerPage(QWidget):
+    # an imported junction-temperature trace, and fields of the module / capacitor without a widget (they pass
+    # through to the request): all reach a calculation
+    workspace_data = ("trace", "_cap_base", "_test_conditions")
+
     def __init__(self, win):
         super().__init__()
         self.win = win
@@ -923,6 +947,15 @@ class PowerPage(QWidget):
     def clear_trace(self):
         self.trace = None
         self.l_trace_lab.setText(tr("가져온 이력 없음 — 미션에서 계산", "no imported trace - computed from the mission"))
+
+    def after_workspace_restore(self):
+        """The label of a restored trace (its file path is not part of the workspace)."""
+        t = (self.trace or {}).get("t_s") or []
+        if len(t) < 2:
+            self.clear_trace()
+            return
+        self.l_trace_lab.setText(tr(f"가져온 이력: {len(t)}점, {t[-1] - t[0]:.4g} s (작업 공간에서 복원)",
+                                    f"imported: {len(t)} points, {t[-1] - t[0]:.4g} s (restored from the workspace)"))
 
     def life_body(self) -> dict:
         segs = self.l_seg.values()

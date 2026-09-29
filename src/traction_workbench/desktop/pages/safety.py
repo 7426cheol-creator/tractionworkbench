@@ -113,6 +113,33 @@ class RulesTable(QTableWidget):
         for row in sorted({i.row() for i in self.selectedIndexes()}, reverse=True):
             self.removeRow(row)
 
+    def workspace_state(self) -> list:
+        """The rules as typed: text cells, the three choices, the basis."""
+        k = len(RULE_NUM) + 1
+        return [{"cells": [(self.item(r, j).text() if self.item(r, j) else "") for j in range(k)],
+                 "choices": [self.cellWidget(r, k + i).currentData() for i in range(3)],
+                 "basis": self.item(r, k + 3).text() if self.item(r, k + 3) else ""} for r in range(self.rowCount())]
+
+    def restore_workspace(self, rows: list) -> list:
+        k = len(RULE_NUM) + 1
+        problems = []
+        self.setRowCount(0)
+        for n, row in enumerate(rows or []):
+            self.add({"rule_id": "", "when": {}, "basis": ""})
+            r = self.rowCount() - 1
+            for j, txt in enumerate((row.get("cells") or [])[:k]):
+                self.setItem(r, j, QTableWidgetItem(str(txt)))
+            for i, data in enumerate((row.get("choices") or [])[:3]):
+                c = self.cellWidget(r, k + i)
+                idx = next((q for q in range(c.count()) if c.itemData(q) == data), None)
+                if idx is None:
+                    problems.append(tr(f"규칙 {n + 1}: 선택 '{data}'이 현재 선택지에 없음", f"rule {n + 1}: choice "
+                                                                               f"'{data}' is not offered now"))
+                else:
+                    c.setCurrentIndex(idx)
+            self.setItem(r, k + 3, QTableWidgetItem(str(row.get("basis", ""))))
+        return problems
+
     def rules(self) -> list:
         out = []
         k = len(RULE_NUM) + 1

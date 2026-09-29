@@ -173,3 +173,25 @@ def test_the_window_session_is_kept_for_people_not_for_the_self_test(win, tmp_pa
         win.settings = orig
         win.show_page("decision")
         _settle()
+
+
+def test_the_verdict_banner_folds_its_record_details_and_the_summary_keeps_every_row(win):
+    """UX review E2/E4: the banner says the conclusion and why; the requirement text, scope and record identity fold
+    under [details]; the summary tables are as tall as their rows (a short window scrolls, never a bare header)."""
+    page = win.pages["decision"]
+    if page.result is None:
+        page.run()
+    _settle()
+    b, rec = page.banner, page.result["record"]
+    assert rec["record_id"] not in b.text.text() and rec["record_id"] in b.more.text()
+    assert b.more_btn.isVisible() and not b.more.isVisible()
+    b.set_details_shown(True)
+    _settle()
+    assert b.more.isVisible()
+    b.set_details_shown(False)
+    page.tabs.setCurrentWidget(page.summary_tab)
+    _settle()
+    for t in (page.layers_table, page.key_table):
+        assert t.rowCount() and sum(t.rowHeight(r) for r in range(t.rowCount())) <= t.viewport().height() + 1
+    page.tabs.setCurrentIndex(0)
+    _settle()

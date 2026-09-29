@@ -79,6 +79,8 @@ def _scroll(w):
 
 
 class EfficiencyPage(QWidget):
+    workspace_data = ("_file_modules",)                  # module JSON files loaded for the A/B candidates
+
     def __init__(self, win):
         super().__init__()
         self.win = win

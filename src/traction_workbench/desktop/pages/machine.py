@@ -101,6 +101,8 @@ def _floats(text: str, name: str) -> list[float]:
 
 
 class MachinePage(QWidget):
+    workspace_data = ("cand_lineage",)                   # a candidate handed over by the winding gate keeps its lineage
+
     def __init__(self, win):
         super().__init__()
         self.win = win

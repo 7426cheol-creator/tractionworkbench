@@ -485,6 +485,13 @@ def run_self_test(app, out_dir) -> int:
         shot(win, "20_flux_map_decision")
         win.set_theme("dark", persist=False)
         shot(win, "21_dark_theme")
+        # workspace (J1): every page's inputs, page data and the project written to a file and read back in place
+        from . import workspace as WS
+        ws_file = WS.save(WS.build(win), out / ("selftest" + WS.SUFFIX))
+        ws_back = WS.load(ws_file)
+        ws_problems = WS.apply(win, ws_back)
+        check("workspace:roundtrip", not ws_problems and WS.content(WS.build(win)) == WS.content(ws_back),
+              "; ".join(ws_problems[:5]) or f"{len(ws_back['pages'])} pages, {ws_file.stat().st_size // 1024} KB")
         errs = app.property("twb_errors") or []
         check("no_error_dialogs", not errs, "; ".join(errs))
     except Exception:  # noqa: BLE001

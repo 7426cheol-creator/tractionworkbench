@@ -90,6 +90,8 @@ def _scroll(w):
 
 
 class EmiPage(QWidget):
+    workspace_data = ("measured", "cal_binding")        # an imported trace and a calibration binding reach the request
+
     def __init__(self, win):
         super().__init__()
         self.win = win
@@ -376,13 +378,33 @@ class EmiPage(QWidget):
                                                              "compute EMI first (a record binds to a computed configuration)"))
             return
         self.cal_binding = copy.deepcopy(self.last["configuration"])
+        self._cal_label()
+
+    def _cal_label(self):
         c = self.cal_binding
+        if not c:
+            self.e_cal_lab.setText(tr("구성에 결속 안 됨 (결속 전에는 적용 불가)", "not bound to a configuration (not "
+                                                                        "applicable until bound)"))
+            return
         src = c["source_ranges"]
         self.e_cal_lab.setText(tr("결속: ", "bound: ") + f"network {c['network_sha256'][:12]}…, "
                                f"Vdc {fmt(src['Vdc_V'][0])} V, |i| {fmt(src['I_pk_A'][0])} A, fe {fmt(src['fe_Hz'][0])} Hz, "
                                f"fsw {fmt(src['fsw_Hz'][0] / 1e3)} kHz, tr/tf {fmt(src['t_rise_s'][0] * 1e9)}/{fmt(src['t_fall_s'][0] * 1e9)} ns, "
                                f"{c['setup']['method']} / {c['setup']['detector']} / RBW {c['setup']['rbw_Hz']}"
                                + tr(" — 입력이 바뀌면 적용되지 않습니다", " — any changed input makes it inapplicable"))
+
+    def after_workspace_restore(self):
+        """The labels of the restored trace and binding (the file path is not part of the workspace)."""
+        self._cal_label()
+        m = self.measured
+        if not m:
+            self.e_meas_lab.setText(tr("가져온 trace 없음", "no trace imported"))
+            return
+        f = m["f_Hz"]
+        self.e_meas_lab.setText(tr(f"{len(f)}점 ({f[0] / 1e6:.3g}–{f[-1] / 1e6:.3g} MHz) · 작업 공간에서 복원",
+                                   f"{len(f)} points ({f[0] / 1e6:.3g}-{f[-1] / 1e6:.3g} MHz) · restored from the "
+                                   f"workspace") + "\n" + tr("set-up: ", "set-up: ")
+                                + " · ".join(f"{k} {v}" for k, v in (m.get("setup") or {}).items()))
 
     def apply_project(self, _project=None):
         """Switching source (controller: fsw, gate edges, dead time, carrier, minimum pulse) and the HV network /
