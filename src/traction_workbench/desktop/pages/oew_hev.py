@@ -175,6 +175,7 @@ class OewHevPage(QWidget):
         v.addWidget(ConceptNote(NOTE_OEW()))
         v.addStretch(1)
         split.addWidget(_scroll(form))
+        self.win.track_inputs(('oew', 'oew_compare'), form)
         right = QWidget()
         rl = QVBoxLayout(right)
         rl.setContentsMargins(0, 0, 0, 0)
@@ -348,6 +349,7 @@ class OewHevPage(QWidget):
                        ("V_bus", self.h_vdc), (tr("보조 전력", "auxiliary"), self.h_aux), (tr("격자 수", "grid levels"), self.h_lv)):
             f.addRow(lab, w)
         v.addWidget(g)
+        hev_m = g
         bt = ex["battery"]
         g = QGroupBox(tr("배터리·부스트", "battery · boost"))
         f = QFormLayout(g)
@@ -365,6 +367,7 @@ class OewHevPage(QWidget):
                        ("D_max", self.h_Dmax), ("I_L,max", self.h_IL)):
             f.addRow(lab, w)
         v.addWidget(g)
+        hev_b = g
         self.h_btn = primary_button(tr("동시 토크 집합", "joint torque set"))
         self.h_btn.clicked.connect(self.run_joint)
         v.addWidget(self.h_btn)
@@ -396,6 +399,7 @@ class OewHevPage(QWidget):
         self.c_btn.clicked.connect(self.run_crank)
         f.addRow(self.c_btn)
         v.addWidget(g)
+        hev_c = g
         rj = ex["rejection"]
         g = QGroupBox(tr("부하 차단 에너지 (공통 커패시터)", "load rejection energy (common capacitor)"))
         f = QFormLayout(g)
@@ -414,6 +418,7 @@ class OewHevPage(QWidget):
         self.r_btn.clicked.connect(self.run_rej)
         f.addRow(self.r_btn)
         v.addWidget(g)
+        hev_r = g
         pl = ex["planetary"]
         g = QGroupBox(tr("단순 유성기어 (동력 분배)", "simple planetary (power split)"))
         f = QFormLayout(g)
@@ -432,9 +437,14 @@ class OewHevPage(QWidget):
         self.pl_btn.clicked.connect(self.run_planetary)
         f.addRow(self.pl_btn)
         v.addWidget(g)
+        hev_p = g
         v.addWidget(ConceptNote(NOTE_HEV()))
         v.addStretch(1)
         split.addWidget(_scroll(form))
+        self.win.track_inputs("hev_joint", hev_m, hev_b)
+        self.win.track_inputs("hev_crank", hev_m, hev_b, hev_c)
+        self.win.track_inputs("hev_rejection", hev_r)
+        self.win.track_inputs("hev_planetary", hev_p)
         right = QWidget()
         rl = QVBoxLayout(right)
         rl.setContentsMargins(0, 0, 0, 0)

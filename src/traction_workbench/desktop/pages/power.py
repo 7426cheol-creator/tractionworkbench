@@ -422,6 +422,7 @@ class PowerPage(QWidget):
         v.addWidget(ConceptNote(NOTE_MODULE()))
         v.addStretch(1)
         split.addWidget(_scroll(form))
+        self.win.track_inputs(('module',), form)
         self.p_mod = PlotPanel(hint=tr("소자 위치별 손실 · 토크 스윕 (모듈 vs 대리식) · 정지 핫스팟",
                                        "per-position loss · torque sweep (module vs surrogate) · standstill hotspot"))
         self.t_mod = KeyValueTable()
@@ -688,6 +689,7 @@ class PowerPage(QWidget):
         v.addWidget(ConceptNote(NOTE_RIPPLE()))
         v.addStretch(1)
         split.addWidget(_scroll(form))
+        self.win.track_inputs(('ripple',), form)
         self.p_rip = PlotPanel(hint=tr("스위칭 함수 파형 · 스펙트럼과 가지 분배", "switching-function waveform · spectrum and split"))
         self.t_rip = KeyValueTable()
         split.addWidget(_result_side(self.p_rip, self.t_rip))
@@ -862,6 +864,7 @@ class PowerPage(QWidget):
         v.addWidget(ConceptNote(NOTE_LIFE()))
         v.addStretch(1)
         split.addWidget(_scroll(form))
+        self.win.track_inputs(('lifetime',), form)
         self.p_life = PlotPanel(hint=tr("Tj 이력과 rainflow 히스토그램", "Tj history and rainflow histogram"))
         self.t_life = KeyValueTable()
         split.addWidget(_result_side(self.p_life, self.t_life))

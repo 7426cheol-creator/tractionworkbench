@@ -50,22 +50,27 @@ def run_self_test(app, out_dir) -> int:
             got = page.result["record"]["verdict"]["verdict"] if page.result else None
             check(f"decision:{p['key']}", got == EXPECTED.get(p["key"]), f"verdict {got}, expected {EXPECTED.get(p['key'])}")
             if p["key"] == "ts012_600":
-                shot(win, "01_decision_summary")
-                page.tabs.setCurrentIndex(1)
+                page.tabs.setCurrentWidget(page.insight)
+                shot(win, "01_decision_summary")        # the engineering reading (first tab)
+                page.tabs.setCurrentWidget(page.summary_tab)
+                shot(win, "01b_decision_evidence")
+                page.tabs.setCurrentWidget(page.views)
                 for k in range(page.views.tabs.count()):
                     page.views.tabs.setCurrentIndex(k)
                     shot(win, f"02_decision_view_{k}")
-                page.tabs.setCurrentIndex(2)            # T-n position (computes the envelope)
+                page.tabs.setCurrentWidget(page.env_panel)  # T-n position (computes the envelope)
                 shot(win, "03_decision_tn")
-                page.tabs.setCurrentIndex(0)
+                page.tabs.setCurrentWidget(page.insight)
             if p["key"] == "ts012_450":
-                page.tabs.setCurrentIndex(3)
+                page.tabs.setCurrentWidget(page.insight)
+                shot(win, "04a_decision_fail_reading")
+                page.tabs.setCurrentWidget(page.an_tab)
                 shot(win, "04_decision_analyses")
                 from ..report_pdf import build_pdf
                 res = page.result
                 pdf = build_pdf(out / "report_REQ-TS-012-LV.pdf", res["record"], res["rec"], res["case"])
                 check("pdf_report", pdf.is_file() and pdf.stat().st_size > 50_000, f"{pdf.stat().st_size} bytes")
-                page.tabs.setCurrentIndex(0)
+                page.tabs.setCurrentWidget(page.insight)
 
         # PWM consequences at the decision point (review priority 3) and a Vdc stated as battery OCV (priority 2)
         page.presets.setCurrentIndex(0)
@@ -396,7 +401,7 @@ def run_self_test(app, out_dir) -> int:
         page.run()
         got = page.result["record"]["verdict"]["verdict"] if page.result else None
         check("decision:flux_map", got in ("PASS", "FAIL", "UNKNOWN") and page.result["record"]["model"]["fidelity"] == "D2", got)
-        page.tabs.setCurrentIndex(1)
+        page.tabs.setCurrentWidget(page.views)
         shot(win, "20_flux_map_decision")
         win.set_theme("dark", persist=False)
         shot(win, "21_dark_theme")

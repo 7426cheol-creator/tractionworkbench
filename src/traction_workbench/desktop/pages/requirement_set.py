@@ -200,6 +200,7 @@ class RequirementSetPage(QWidget):
         lay.setContentsMargins(8, 8, 8, 8)
         lay.addWidget(split)
         self.fill_example()
+        self.win.track_inputs("requirement_set", form)
 
     # -- inputs ------------------------------------------------------------------------------------------------------
     def fill_example(self):

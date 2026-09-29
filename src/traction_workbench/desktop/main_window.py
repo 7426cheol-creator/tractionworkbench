@@ -5,10 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, QUrl
-from PySide6.QtGui import QAction, QDesktopServices, QKeySequence
+from PySide6.QtGui import QAction, QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QLabel, QListWidget,
-                               QListWidgetItem, QMainWindow, QMessageBox, QProgressBar, QPushButton, QStackedWidget,
-                               QTextBrowser, QVBoxLayout, QWidget)
+                               QListWidgetItem, QMainWindow, QMenu, QMessageBox, QProgressBar, QPushButton,
+                               QStackedWidget, QTabWidget, QTextBrowser, QToolButton, QVBoxLayout, QWidget)
 
 from .. import __version__
 from ..i18n import language, tr
@@ -34,7 +34,7 @@ from .pages.thermal import ThermalPage
 from .pages.trajectory import TrajectoryPage
 from .pages.verification import VerificationPage
 from .state import AppState
-from .widgets import error_box, tidy_inputs
+from .widgets import ElidedLabel, error_box, tidy_inputs
 from .worker import TaskRunner
 
 PAGES = (
@@ -126,7 +126,33 @@ TASK_PAGE = {"decision": "decision", "decision-env": "decision", "requirement_se
              "oew_compare": "oew_hev", "hev_joint": "oew_hev", "hev_crank": "oew_hev", "hev_rejection": "oew_hev",
              "hev_planetary": "oew_hev", "emi": "emi", "emi_oew": "emi", "machine_trade": "machine",
              "winding": "machine", "concept_sizing": "machine", "ftti": "safety", "passive": "safety",
-             "discharge": "safety", "overvoltage": "safety", "safe_state": "safety"}
+             "discharge": "safety", "overvoltage": "safety", "safe_state": "safety", "pdf": "decision",
+             "acceptance": "verification"}
+# what a task is called on screen (a running task uses the label it was started with)
+TASK_LABELS = {
+    "decision": lambda: tr("요구 판정", "decision"), "decision-env": lambda: tr("T–n 곡선", "T–n envelope"),
+    "pdf": lambda: tr("PDF 보고서", "PDF report"), "requirement_set": lambda: tr("요구 묶음 판정", "requirement set"),
+    "explorer": lambda: tr("운전점 탐색", "operating point"), "trajectory": lambda: tr("궤적", "trajectory"),
+    "performance": lambda: tr("성능 곡선·맵", "envelope & maps"), "design-sweep": lambda: tr("역설계", "sizing"),
+    "design-dom": lambda: tr("병목 분석", "bottleneck analysis"), "thermal": lambda: tr("열 가용성", "thermal availability"),
+    "thermal_cycle": lambda: tr("반복 부하", "repeated load"), "protection": lambda: tr("보호 검토", "protection review"),
+    "asc": lambda: tr("ASC 과도", "ASC transient"), "module": lambda: tr("모듈 손실", "module losses"),
+    "ripple": lambda: tr("DC-link 리플", "DC-link ripple"), "lifetime": lambda: tr("열 사이클 수명", "thermal-cycle life"),
+    "efficiency": lambda: tr("경계별 효율", "boundary efficiency"), "efficiency_map": lambda: tr("효율 지도", "efficiency maps"),
+    "efficiency_mission": lambda: tr("미션 에너지", "mission energy"), "module_compare": lambda: tr("모듈 A/B", "module A/B"),
+    "pwm_policies": lambda: tr("PWM 정책 비교", "PWM policies"), "pwm_timing": lambda: tr("타이밍·전환", "timing"),
+    "pwm_ripple": lambda: tr("PWM 리플", "PWM ripple"), "pwm_transients": lambda: tr("샘플링·전환 과도", "transients"),
+    "driveline": lambda: tr("anti-jerk 변형", "anti-jerk variants"), "driveline_stability": lambda: tr("감쇠 안정성", "stability"),
+    "oew": lambda: tr("OEW 운전점", "OEW point"), "oew_compare": lambda: tr("OEW T–n 비교", "OEW T–n comparison"),
+    "hev_joint": lambda: tr("HEV 동시 토크 집합", "HEV joint torque set"), "hev_crank": lambda: tr("크랭킹", "cranking"),
+    "hev_rejection": lambda: tr("부하 차단 에너지", "load rejection"), "hev_planetary": lambda: tr("유성기어", "planetary"),
+    "emi": lambda: tr("EMI", "EMI"), "emi_oew": lambda: tr("OEW 공통모드", "OEW common mode"),
+    "machine_trade": lambda: tr("트레이드 스터디", "trade study"), "winding": lambda: tr("권선", "winding"),
+    "concept_sizing": lambda: tr("개념 사이징", "concept sizing"), "ftti": lambda: tr("FTTI", "FTTI"),
+    "passive": lambda: tr("패시브 방전", "passive discharge"), "discharge": lambda: tr("능동 방전", "active discharge"),
+    "overvoltage": lambda: tr("회생 과전압", "regen overvoltage"), "safe_state": lambda: tr("안전 상태", "safe state"),
+    "acceptance": lambda: tr("acceptance", "acceptance"),
+}
 # tasks whose argument is not a request body: they run on the state's drive and limits
 STATE_TASKS = ("decision-env", "requirement_set", "explorer", "trajectory", "performance", "design-sweep",
                "design-dom")
@@ -164,8 +190,18 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.pages = {}
         self.banners = {}
+        self.run_actions: dict[str, QToolButton] = {}
         self.usages: dict = {}                      # page -> task -> what the last result ran on
+        # inputs of each task (MainWindow.track_inputs): roots, the snapshot a running task started from and the
+        # snapshot of the result on screen; ``_changed`` holds the tasks whose inputs differ from their shown result
+        self._input_roots: dict[str, list] = {}
+        self._inputs_started: dict = {}
+        self._inputs_before_show: dict = {}
+        self._inputs_shown: dict = {}
+        self._changed: dict[str, list] = {}
+        self._check_pending = False
         self.runner.result_hook = self._on_result
+        self.runner.shown_hook = self._on_shown
         for key, label, cls in PAGES:
             page = cls(self)
             self.pages[key] = page
@@ -173,6 +209,7 @@ class MainWindow(QMainWindow):
             hv = QVBoxLayout(holder)
             hv.setContentsMargins(0, 0, 0, 0)
             hv.setSpacing(0)
+            hv.addWidget(self._page_bar(key, label))
             ban = QLabel()
             ban.setObjectName("ProjectBanner")
             ban.setWordWrap(True)
@@ -185,16 +222,26 @@ class MainWindow(QMainWindow):
         self._build_nav()
         self.nav.currentRowChanged.connect(self._nav_changed)
         tidy_inputs(self.stack)
+        for key, page in self.pages.items():          # the run action follows the tab a page shows
+            for tw in page.findChildren(QTabWidget):
+                tw.currentChanged.connect(lambda _i, k=key: self._refresh_run_action(k))
         body.addWidget(self.nav)
         body.addWidget(self.stack, 1)
         outer.addLayout(body, 1)
         self.setCentralWidget(central)
         self._status_bar()
         self._menus()
+        for seq in ("Ctrl+Return", "Ctrl+Enter"):
+            QShortcut(QKeySequence(seq), self).activated.connect(self.run_current)
+        QShortcut(QKeySequence(Qt.Key_Escape), self).activated.connect(self.cancel_current)
+        self.runner.task_started.connect(self._task_started_key)
+        self.runner.task_finished.connect(self._task_finished_key)
         self.state.drive_changed.connect(self._update_badges)
         self.state.project_changed.connect(self._project_changed)
         self._update_badges()
         self.show_page("decision")
+        for key in self.pages:
+            self._refresh_run_action(key)
 
     # ------------------------------------------------------------------ navigation
     def _build_nav(self):
@@ -222,6 +269,7 @@ class MainWindow(QMainWindow):
         key = it.data(Qt.UserRole) if it is not None else None
         if key in self._page_index:
             self.stack.setCurrentIndex(self._page_index[key])
+            self._refresh_run_action(key)
 
     def show_page(self, key: str):
         """Show page ``key`` (the navigation and the page stack stay in step)."""
@@ -230,6 +278,193 @@ class MainWindow(QMainWindow):
     def current_page(self) -> str:
         it = self.nav.currentItem()
         return it.data(Qt.UserRole) if it is not None else ""
+
+    # ------------------------------------------------------------------ page bar: title, purpose, run / cancel
+    def _page_bar(self, key: str, label) -> QWidget:
+        bar = QWidget()
+        bar.setObjectName("PageBar")
+        h = QHBoxLayout(bar)
+        h.setContentsMargins(12, 4, 8, 4)
+        h.setSpacing(10)
+        title = QLabel(label())
+        title.setObjectName("PageTitle")
+        info = ElidedLabel(PAGE_INFO[key]())
+        info.setObjectName("PageInfo")
+        btn = QToolButton()
+        btn.setObjectName("RunAction")
+        btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        btn.clicked.connect(lambda _=False, k=key: self._run_action(k))
+        self.run_actions[key] = btn
+        h.addWidget(title)
+        h.addWidget(info, 1)
+        h.addWidget(btn)
+        return bar
+
+    def page_tasks(self, key: str) -> list[str]:
+        """Running tasks whose result this page shows."""
+        return [k for k in self.runner.running() if TASK_PAGE.get(k) == key]
+
+    def run_targets(self, key: str) -> list:
+        """The page's run buttons on the tab it shows (the first is what Ctrl+Enter and the page bar run)."""
+        page = self.pages[key]
+        return [b for b in page.findChildren(QPushButton) if b.objectName() == "Primary" and b.isVisibleTo(page)]
+
+    @staticmethod
+    def _run_text(b) -> str:
+        return b.text().replace("(Ctrl+Enter)", "").strip()
+
+    def _refresh_run_action(self, key: str | None = None):
+        key = key or self.current_page()
+        btn = self.run_actions.get(key)
+        if btn is None:
+            return
+        busy = self.page_tasks(key)
+        old = btn.menu()
+        btn.setMenu(None)
+        if old is not None:
+            old.deleteLater()
+        if busy:
+            names = ", ".join(self.runner.labels.get(k, k) for k in busy)
+            btn.setText("■ " + tr(f"취소 — {names}", f"Cancel — {names}"))
+            btn.setToolTip(tr("이 페이지에서 진행 중인 계산을 취소합니다 (Esc)", "cancel this page's calculation (Esc)"))
+            btn.setPopupMode(QToolButton.DelayedPopup)
+            btn.setProperty("busy", True)
+            btn.setEnabled(True)
+            btn.show()
+        else:
+            targets = self.run_targets(key)
+            btn.setProperty("busy", False)
+            if not targets:
+                btn.hide()
+            else:
+                first = targets[0]
+                btn.setText("▶ " + self._run_text(first))
+                btn.setToolTip(tr("이 페이지의 계산을 실행합니다 (Ctrl+Enter) — 입력 칸이 길어 버튼이 가려져도 여기서 실행",
+                                  "run this page's calculation (Ctrl+Enter), wherever its button is scrolled"))
+                btn.setEnabled(first.isEnabled())
+                if len(targets) > 1:
+                    menu = QMenu(btn)
+                    for b in targets:
+                        a = menu.addAction(self._run_text(b))
+                        a.setEnabled(b.isEnabled())
+                        a.triggered.connect(lambda _=False, b=b: b.click())
+                    btn.setMenu(menu)
+                    btn.setPopupMode(QToolButton.MenuButtonPopup)
+                else:
+                    btn.setPopupMode(QToolButton.DelayedPopup)
+                btn.show()
+        btn.style().unpolish(btn)
+        btn.style().polish(btn)
+
+    def _run_action(self, key: str):
+        if self.page_tasks(key):
+            for k in self.page_tasks(key):
+                self.runner.cancel(k)
+            self.statusBar().showMessage(tr("취소 요청됨 — 다음 계산 단계에서 멈춥니다", "cancel requested - it stops at the "
+                                                                                 "next calculation step"), 5000)
+            return
+        targets = [b for b in self.run_targets(key) if b.isEnabled()]
+        if targets:
+            targets[0].click()
+
+    def run_current(self):
+        """Ctrl+Enter: run the current page's calculation (its first run button on the shown tab)."""
+        key = self.current_page()
+        if key and not self.page_tasks(key):
+            self._run_action(key)
+
+    def cancel_current(self):
+        """Esc: cancel the current page's running calculations (other pages keep running)."""
+        key = self.current_page()
+        if key and self.page_tasks(key):
+            self._run_action(key)
+
+    def _task_started_key(self, key: str, _label: str):
+        if key in self._input_roots:
+            self._inputs_started[key] = self._snapshot(key)
+        page = TASK_PAGE.get(key)
+        if page:
+            self._refresh_run_action(page)
+
+    def _task_finished_key(self, key: str, outcome: str):
+        """Every task end (result, error or cancel) gives the page its run buttons back and tells it the outcome."""
+        self._inputs_started.pop(key, None)
+        self._inputs_before_show.pop(key, None)
+        page = TASK_PAGE.get(key)
+        if not page:
+            return
+        pg = self.pages.get(page)
+        if pg is not None and not self.page_tasks(page):
+            for b in pg.findChildren(QPushButton):
+                if b.objectName() == "Primary" and not b.isEnabled():
+                    b.setEnabled(True)
+        hook = getattr(pg, "task_finished", None)
+        if hook is not None:
+            hook(key, outcome)
+        self._refresh_run_action(page)
+
+    # ------------------------------------------------------------------ inputs behind the shown results
+    def track_inputs(self, keys, *roots) -> None:
+        """Tell the window which widgets hold the inputs of tasks ``keys``; a result shown for one of them is marked
+        as computed from earlier inputs as soon as those widgets change."""
+        from .inputs import connect_changes
+        keys = (keys,) if isinstance(keys, str) else tuple(keys)
+        for k in keys:
+            self._input_roots[k] = list(roots)
+        for r in roots:
+            connect_changes(r, self._schedule_input_check)
+
+    def _snapshot(self, key: str):
+        from .inputs import Snapshot, connect_changes
+        roots = self._input_roots.get(key) or []
+        for r in roots:                              # rows, nodes or tabs added since registration
+            connect_changes(r, self._schedule_input_check)
+        return Snapshot(roots)
+
+    def _on_shown(self, key: str):
+        if key not in self._input_roots:
+            return
+        start = self._inputs_started.get(key)
+        before = self._inputs_before_show.pop(key, None)
+        after = self._snapshot(key)
+        # edits made while the task ran keep the start snapshot (the result is already older than the inputs);
+        # otherwise what the page set while showing the result (e.g. a synced field) belongs to the result
+        self._inputs_shown[key] = start if (start is not None and before is not None and before != start) else after
+        self._check_inputs(TASK_PAGE.get(key))
+
+    def _schedule_input_check(self):
+        if self._check_pending:
+            return
+        self._check_pending = True
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, self._check_all_inputs)
+
+    def _check_all_inputs(self):
+        self._check_pending = False
+        for page in {TASK_PAGE.get(k) for k in self._inputs_shown}:
+            self._check_inputs(page)
+
+    def input_changes(self, key: str) -> list:
+        """(field, value then, value now) for the inputs of task ``key`` that changed since its shown result."""
+        shown = self._inputs_shown.get(key)
+        if shown is None:
+            return []
+        now = self._snapshot(key)
+        page = self.pages.get(TASK_PAGE.get(key, ""))
+        return [] if now == shown else shown.diff(now, [page] if page is not None else self._input_roots.get(key) or [])
+
+    def _check_inputs(self, page: str | None):
+        if not page:
+            return
+        changed = {k: self.input_changes(k) for k in self._inputs_shown if TASK_PAGE.get(k) == page}
+        changed = {k: v for k, v in changed.items() if v}
+        if changed == self._changed.get(page, {}):
+            return
+        self._changed[page] = changed
+        hook = getattr(self.pages.get(page), "inputs_changed", None)
+        if hook is not None:
+            hook(changed)
+        self._refresh_banner(page)
 
     # ------------------------------------------------------------------ chrome
     def _header(self):
@@ -277,7 +512,9 @@ class MainWindow(QMainWindow):
         self.progress.setRange(0, 1000)
         self.progress.setTextVisible(False)
         self.progress.hide()
-        self.cancel_btn = QPushButton(tr("취소", "cancel"))
+        self.cancel_btn = QPushButton(tr("모두 취소", "cancel all"))
+        self.cancel_btn.setToolTip(tr("모든 페이지의 진행 중인 계산을 취소합니다 (한 페이지만: 페이지 위 버튼 또는 Esc)",
+                                      "cancel the calculations of every page (one page: its bar button or Esc)"))
         self.cancel_btn.hide()
         self.cancel_btn.clicked.connect(self.runner.cancel_all)
         sb.addPermanentWidget(self.progress)
@@ -298,11 +535,14 @@ class MainWindow(QMainWindow):
         self.progress.setValue(int(1000 * max(0.0, min(1.0, frac))))
         self.statusBar().showMessage(msg)
 
-    def _task_done(self, label, elapsed, ok):
+    def _task_done(self, label, elapsed, outcome):
         if not self.runner.busy():
             self.progress.hide()
             self.cancel_btn.hide()
-        self.statusBar().showMessage(f"{label}: {'OK' if ok else tr('중단/오류', 'stopped/error')} ({elapsed:.2f} s)", 10000)
+        if outcome == "replaced":                    # a newer run of the same calculation took over: no news
+            return
+        word = {"ok": "OK", "cancelled": tr("취소됨", "cancelled"), "error": tr("오류", "error")}.get(outcome, outcome)
+        self.statusBar().showMessage(f"{label}: {word} ({elapsed:.2f} s)", 10000)
 
     def _menus(self):
         mb = self.menuBar()
@@ -358,17 +598,23 @@ class MainWindow(QMainWindow):
 
     # ----------------------------------------------------------------- project identity of results (R2)
     def _on_result(self, key, args, res):
+        if key in self._input_roots:
+            self._inputs_before_show[key] = self._snapshot(key)
         if key in STATE_TASKS or not args or not isinstance(args[0], dict):
             body = self.state.body()
         elif key == "decision":
             body = _case_body(args[0])
         else:
             body = args[0]
-        self.note_result(key, body, res)
+        self.note_result(key, body, res, from_runner=True)
 
-    def note_result(self, key: str, body: dict, res=None) -> dict | None:
+    def note_result(self, key: str, body: dict, res=None, from_runner: bool = False) -> dict | None:
         """Record what a result ran on (project identity for its sections, per component project data or a local
-        edit) on the result and in the page banner."""
+        edit) on the result and in the page banner.  A page that computes inline calls this after showing the
+        result, which also records the inputs it was computed from."""
+        if not from_runner and key in self._input_roots:
+            self._inputs_shown[key] = self._snapshot(key)
+            self._check_inputs(TASK_PAGE.get(key))
         use = request_usage(self.state.project, key, body)
         if use.get("analysis") is None:
             return None
@@ -385,37 +631,55 @@ class MainWindow(QMainWindow):
             self._refresh_banner(page)
         return use
 
+    def task_label(self, key: str) -> str:
+        return self.runner.labels.get(key) or TASK_LABELS.get(key, lambda: key)()
+
     def _refresh_banner(self, page: str):
+        """One line above the page: which product data its results came from, and whether the project or the page's
+        own inputs changed since (then the results on screen are older than what the page shows as input)."""
+        from ..plots.labels import section_label
         ban = self.banners.get(page)
         uses = self.usages.get(page) or {}
-        if ban is None or not uses:
+        changed = self._changed.get(page) or {}
+        if ban is None or not (uses or changed):
             return
         stale, local, parts = [], [], []
         for task, use in uses.items():
             st = stale_sections(use, self.state.project)
             if st:
-                stale.append(f"{task}: {', '.join(st)}")
+                stale.append(f"{self.task_label(task)} ({', '.join(section_label(s) for s in st)})")
             if use.get("local_edits"):
-                local.append(f"{task}: {', '.join(use['local_edits'])}")
-            parts.append(task)
-        first = next(iter(uses.values()))
+                local.append(f"{self.task_label(task)}: {', '.join(section_label(s) for s in use['local_edits'])}")
+            parts.append(self.task_label(task))
+        lines = []
+        if changed:
+            items = []
+            for task, diffs in changed.items():
+                shown = "; ".join(f"{f} {a} → {b}" for f, a, b in diffs[:3])
+                if len(diffs) > 3:
+                    shown += tr(f" 외 {len(diffs) - 3}개", f" and {len(diffs) - 3} more")
+                items.append(f"<b>{self.task_label(task)}</b> ({shown})")
+            lines.append(tr("⚠ <b>입력이 바뀜</b> — 화면의 결과는 바뀌기 전 입력으로 계산됐습니다: ",
+                            "⚠ <b>inputs changed</b> — the results on screen were computed from the earlier inputs: ")
+                         + "; ".join(items) + tr(" · 다시 실행: Ctrl+Enter", " · run again: Ctrl+Enter"))
+        first = next(iter(uses.values()), None)
         if stale:
-            state = "stale"
-            text = tr(f"<b>stale</b> — 결과 계산 후 프로젝트가 바뀌었습니다 ({'; '.join(stale)}): 다시 계산하세요",
-                      f"<b>stale</b> — the project changed after these results ({'; '.join(stale)}): recompute")
-        elif local:
-            state = "local"
-            text = tr(f"프로젝트 {first['project_label']}의 제품 데이터 + <b>이 페이지의 로컬 변경</b> ({'; '.join(local)})",
-                      f"product data of project {first['project_label']} + <b>local edits on this page</b> "
-                      f"({'; '.join(local)})")
-        else:
-            state = "info"
-            text = tr(f"결과({', '.join(parts)})는 프로젝트 {first['project_label']}의 제품 데이터로 계산됨",
-                      f"results ({', '.join(parts)}) computed from the product data of project {first['project_label']}")
+            lines.append(tr(f"⚠ <b>프로젝트 데이터가 바뀜</b> — 결과 계산 뒤 바뀐 데이터: {'; '.join(stale)}. 다시 계산하세요",
+                            f"⚠ <b>project data changed</b> after these results: {'; '.join(stale)}. Recompute"))
+        elif local and first:
+            lines.append(tr(f"프로젝트 {first['project_label']}의 제품 데이터 + <b>이 페이지의 로컬 변경</b> "
+                            f"({'; '.join(local)})",
+                            f"product data of project {first['project_label']} + <b>local edits on this page</b> "
+                            f"({'; '.join(local)})"))
+        elif first and not changed:
+            lines.append(tr(f"결과({', '.join(parts)})는 프로젝트 {first['project_label']}의 제품 데이터로 계산됨",
+                            f"results ({', '.join(parts)}) computed from the product data of project "
+                            f"{first['project_label']}"))
+        state = "stale" if stale else "inputs" if changed else "local" if local else "info"
         ban.setProperty("state", state)
         ban.style().unpolish(ban)
         ban.style().polish(ban)
-        ban.setText(text)
+        ban.setText("<br>".join(lines))
         ban.show()
 
     def _project_changed(self):

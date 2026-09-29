@@ -118,6 +118,18 @@ def stylesheet() -> str:
                             color: {c['muted']}; }}
     QLabel#ProjectBanner[state="local"] {{ background: {c['accent_bg']}; color: {c['fg']}; }}
     QLabel#ProjectBanner[state="stale"] {{ background: #fff8c5; color: #7d4e00; border-bottom: 1px solid #d4a72c; }}
+    QLabel#ProjectBanner[state="inputs"] {{ background: #fff1e5; color: #953800; border-bottom: 1px solid #fb8f44; }}
+    QWidget#PageBar {{ background: {c['header']}; border-bottom: 1px solid {c['border']}; }}
+    QLabel#PageTitle {{ font-size: 11pt; font-weight: 600; color: {c['fg']}; }}
+    QLabel#PageInfo {{ color: {c['muted']}; }}
+    QToolButton#RunAction {{ background: {c['accent']}; color: #ffffff; border: 1px solid {c['accent']};
+                             border-radius: 5px; font-weight: 600; padding: 4px 12px; }}
+    QToolButton#RunAction:hover {{ border-color: {c['fg']}; }}
+    QToolButton#RunAction:disabled {{ background: {c['border']}; border-color: {c['border']}; color: {c['muted']}; }}
+    QToolButton#RunAction[busy="true"] {{ background: #cf222e; border-color: #cf222e; }}
+    QToolButton#RunAction[popupMode="1"] {{ padding-right: 22px; }}
+    QToolButton#RunAction::menu-button {{ border-left: 1px solid rgba(255, 255, 255, 0.55); width: 18px; }}
+    QFrame#InsightCard {{ background: {c['panel']}; border: 1px solid {c['border']}; border-radius: 6px; }}
     QLabel#Readout {{ color: {c['muted']}; font-family: Consolas, "DejaVu Sans Mono", monospace; font-size: 8.5pt; }}
     QTableWidget, QTreeWidget, QTextBrowser, QPlainTextEdit {{ background: {c['bg']}; border: 1px solid {c['border']};
                                                                border-radius: 4px; }}

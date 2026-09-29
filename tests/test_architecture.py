@@ -29,7 +29,7 @@ LAYERS = {
     **{m: (3, "engines") for m in ("analysis", "extensions")},
     **{m: (4, "services") for m in ("io", "parsers", "examples", "project", "exchange", "service", "decision", "report",
                                     "api", "datasheet", "mathworks", "requirement_set")},
-    **{m: (5, "presentation") for m in ("plots", "viz", "report_pdf", "desktop", "cli", "__main__")},
+    **{m: (5, "presentation") for m in ("plots", "viz", "insight", "report_pdf", "desktop", "cli", "__main__")},
 }
 UPWARD_ALLOWED: dict[tuple[str, str], str] = {}       # (importer, imported) -> reason
 PRIVATE_ALLOWED: dict[tuple[str, str, str], str] = {}  # (importer, source, name) -> reason

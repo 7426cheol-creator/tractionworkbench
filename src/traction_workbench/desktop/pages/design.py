@@ -58,6 +58,7 @@ class DesignPage(QWidget):
         self.magnet.sync(win.state.drive)
         win.state.drive_changed.connect(lambda: self.magnet.sync(self.win.state.drive))
         v.addWidget(g)
+        req_box = g
         g = QGroupBox(tr("1-파라미터 역설계", "one-parameter sizing"))
         f = QFormLayout(g)
         self.param = combo([(f"{param_label(k)} [{v[1]}] · {change_kind_label(v[0])}", k) for k, v in PARAMETERS.items()],
@@ -73,6 +74,7 @@ class DesignPage(QWidget):
         self.kind_hint = hint("")
         f.addRow(self.kind_hint)
         v.addWidget(g)
+        size_box = g
         self.run_sweep = primary_button(tr("capability vs 파라미터 + 역설계", "capability vs parameter + sizing"))
         self.run_sweep.clicked.connect(self.run1)
         v.addWidget(self.run_sweep)
@@ -122,6 +124,8 @@ class DesignPage(QWidget):
         lay.setContentsMargins(8, 8, 8, 8)
         lay.addWidget(split)
         self._param_changed()
+        self.win.track_inputs("design-sweep", req_box, size_box)
+        self.win.track_inputs("design-dom", req_box)
 
     def _param_changed(self, *_):
         key = self.param.currentData()
@@ -188,7 +192,7 @@ class DesignPage(QWidget):
         dom, rel = res["dominance"], res["relaxation"]
         self.p_dom.draw(F.fig_dominance, dom, rel, name="dominance")
         rows = [(r["constraint"], r["classification"], fmt(r["gain_Nm"]), fmt(r["sensitivity_Nm_per_unit"]),
-                 "yes" if r["active_at_base"] else "") for r in dom["single"]]
+                 tr("예", "yes") if r["active_at_base"] else "") for r in dom["single"]]
         self.t_dom.set_rows(rows)
 
     def redraw(self):

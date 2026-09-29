@@ -89,13 +89,16 @@ class ThermalPage(QWidget):
                         (tr("요구 지속시간", "requested duration"), self.dur), (tr("초기 열 상태", "initial thermal state"), self.init)):
             f.addRow(lab, wd)
         v.addWidget(g)
-        v.addWidget(self._coolant_box())
+        op_box = g
+        cool_box = self._coolant_box()
+        v.addWidget(cool_box)
         self.run_btn = primary_button(tr("열 가용성 계산", "compute thermal availability"))
         self.run_btn.clicked.connect(self.run)
         v.addWidget(self.run_btn)
         v.addWidget(hint(tr("열 회로망(노드·단)은 오른쪽 '열 모델 편집' 탭에서 표로 입력합니다.",
                             "Edit the thermal networks (nodes, stages) in the 'thermal model' tab on the right.")))
-        v.addWidget(self._cycle_box())
+        cyc_box = self._cycle_box()
+        v.addWidget(cyc_box)
         v.addWidget(ConceptNote(note_thermal()))
         v.addStretch(1)
         sc = QScrollArea()
@@ -153,6 +156,9 @@ class ThermalPage(QWidget):
         self.editor.changed.connect(self._schedule)
         self._apply_coolant_spec(self.editor.coolant_spec)
         self._refresh_diagrams()
+        # availability: operating point, coolant and the networks; repeated load: its own cycle, speed, Vdc, coolant
+        self.win.track_inputs("thermal", op_box, cool_box, self.editor)
+        self.win.track_inputs("thermal_cycle", cyc_box, self.n, self.vdc, cool_box, self.editor)
 
     # ------------------------------------------------------------------ repeated load
     def _cycle_box(self):

@@ -267,7 +267,9 @@ def test_desktop_smoke(tmp_path):
         assert page.views.plane is not None and page.views.pv is None
         lay = {page.layers_table.item(r, 0).text(): page.layers_table.item(r, 1).text()
                for r in range(page.layers_table.rowCount())}
-        assert set(lay) == {"mathematical", "model", "requirement", "qualification"}   # four separate statements
+        from traction_workbench.desktop.pages.decision import LAYER_NAMES
+        assert set(lay) == {LAYER_NAMES[k]() for k in ("mathematical", "model", "requirement", "qualification")}  # four
+        assert len(lay) == 4                                                   # separate statements, named for people
         ex = win.pages["explorer"]
         ex._picked(-250.0, 120.0)
         assert ex.views.pv.point.id_A == -250.0 and ex.views.pv.point.iq_A == 120.0

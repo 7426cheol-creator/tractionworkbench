@@ -118,6 +118,7 @@ class PerformancePage(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
         lay.addWidget(split)
+        self.win.track_inputs("performance", form)
 
     def run(self):
         try:

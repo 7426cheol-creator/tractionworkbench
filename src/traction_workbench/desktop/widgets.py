@@ -24,8 +24,8 @@ from . import theme
 def fmt(v, digits: int = 6) -> str:
     if v is None:
         return "—"
-    if isinstance(v, bool):
-        return "yes" if v else "no"
+    if isinstance(v, (bool, np.bool_)):
+        return tr("예", "yes") if v else tr("아니오", "no")
     if isinstance(v, (int, np.integer)):
         return f"{int(v):d}"
     if isinstance(v, (float, np.floating)):
@@ -248,7 +248,12 @@ class ClaimTree(QTreeWidget):
             top.setFont(0, f)
             self.addTopLevelItem(top)
             for c in claims:
-                it = QTreeWidgetItem([c["name"], c["status"], ", ".join(c.get("reasons") or []), c.get("detail", "")])
+                from ..plots.labels import claim_label, reason_label, state_label
+                it = QTreeWidgetItem([claim_label(c["name"]), state_label(c["status"]),
+                                      ", ".join(reason_label(r) for r in c.get("reasons") or []), c.get("detail", "")])
+                it.setToolTip(0, c["name"])
+                it.setToolTip(1, c["status"])
+                it.setToolTip(2, ", ".join(c.get("reasons") or []))
                 it.setForeground(1, QColor(theme.status_color(c["status"])))
                 fb = it.font(1)
                 fb.setBold(True)
@@ -524,6 +529,31 @@ def hint(text: str) -> QLabel:
     return lab
 
 
+class ElidedLabel(QLabel):
+    """One line of plain text cut with an ellipsis to the width it gets; the full text is the tooltip."""
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(parent)
+        self._full = ""
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.setText(text)
+
+    def setText(self, text: str) -> None:  # noqa: N802 - Qt override
+        self._full = text
+        self.setToolTip(text)
+        self._elide()
+
+    def full_text(self) -> str:
+        return self._full
+
+    def resizeEvent(self, ev):  # noqa: N802 - Qt override
+        super().resizeEvent(ev)
+        self._elide()
+
+    def _elide(self) -> None:
+        QLabel.setText(self, self.fontMetrics().elidedText(self._full, Qt.ElideRight, max(0, self.width() - 2)))
+
+
 class MagnetTempInput(QWidget):
     """Optional magnet temperature of ONE operating condition (unchecked = not stated).
 
@@ -586,6 +616,46 @@ class MagnetTempInput(QWidget):
         return False
 
 
+class InsightPanel(QWidget):
+    """The engineering reading of a result (``insight.Insight``): the conclusion, key numbers, the judged items,
+    the limiting mechanism and what would change the answer — every number from the result it reads."""
+
+    def __init__(self, placeholder: str = "", parent=None):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QTextBrowser
+        self.view = QTextBrowser()
+        self.view.setOpenExternalLinks(False)
+        self.view.setObjectName("Insight")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(self.view)
+        self.insight = None
+        self._placeholder = placeholder or tr("계산하면 결과의 엔지니어링 해석(결론·항목별 분석·한계 원인·다음 단계)이 여기에 "
+                                              "표시됩니다.", "Run the calculation to read the result here (conclusion, "
+                                                             "item by item, what limits, next steps).")
+        self.redraw()
+
+    def show_insight(self, insight) -> None:
+        self.insight = insight
+        self.redraw()
+
+    def redraw(self) -> None:
+        c = theme.colors()
+        if self.insight is None:
+            self.view.setHtml(f"<p style='color:{c['muted']}'>{self._placeholder}</p>")
+            return
+        cols = {"fg": c["fg"], "muted": c["muted"], "border": c["border"], "panel": c["panel"],
+                "ok": theme.verdict_colors("PASS")[1], "bad": theme.verdict_colors("FAIL")[1],
+                "warn": theme.verdict_colors("UNKNOWN")[1], "open": theme.verdict_colors("UNKNOWN")[1],
+                "info": c["muted"]}
+        bar = self.view.verticalScrollBar().value()
+        self.view.setHtml(self.insight.html(cols))
+        self.view.verticalScrollBar().setValue(bar)
+
+    def text(self) -> str:
+        return self.view.toPlainText()
+
+
 class ConceptNote(QWidget):
     """Collapsible explanation for newcomers (the expert content stays unchanged)."""
 
@@ -610,6 +680,17 @@ class ConceptNote(QWidget):
         lay.setSpacing(2)
         lay.addWidget(self.button)
         lay.addWidget(self.body)
+
+
+def confirm(parent, title: str, text: str) -> bool:
+    """Yes/no question; the headless self-test answers yes and records the question."""
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance()
+    if app is not None and app.property("twb_selftest"):
+        app.setProperty("twb_questions", list(app.property("twb_questions") or []) + [f"{title}: {text}"])
+        return True
+    return QMessageBox.question(parent, title, text, QMessageBox.Yes | QMessageBox.No,
+                                QMessageBox.No) == QMessageBox.Yes
 
 
 def error_box(parent, title: str, msg: str, detail: str = ""):

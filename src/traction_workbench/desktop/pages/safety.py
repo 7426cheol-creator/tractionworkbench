@@ -253,6 +253,7 @@ class SafetyPage(QWidget):
         v.addWidget(b)
         v.addWidget(ConceptNote(NOTE_FTTI()))
         split.addWidget(left)
+        self.win.track_inputs("ftti", left)
         right = QWidget()
         rv = QVBoxLayout(right)
         rv.setContentsMargins(0, 0, 0, 0)
@@ -389,6 +390,7 @@ class SafetyPage(QWidget):
         b.clicked.connect(self.run_discharge)
         f.addRow(b)
         v.addWidget(g)
+        dis_box = g
         v.addWidget(ConceptNote(NOTE_DISCHARGE()))
         g = QGroupBox(tr("패시브 방전 (상시 연결 블리더 저항)", "passive discharge (always-connected bleeder)"))
         f = QFormLayout(g)
@@ -415,6 +417,7 @@ class SafetyPage(QWidget):
         b.clicked.connect(self.run_passive)
         f.addRow(b)
         v.addWidget(g)
+        pas_box = g
         v.addWidget(ConceptNote(NOTE_PASSIVE()))
         g = QGroupBox(tr("회생 중 배터리 차단 과전압", "battery disconnect during regen"))
         f = QFormLayout(g)
@@ -433,12 +436,16 @@ class SafetyPage(QWidget):
         b.clicked.connect(self.run_overvoltage)
         f.addRow(b)
         v.addWidget(g)
+        ov_box = g
         v.addWidget(ConceptNote(NOTE_OV()))
         v.addStretch(1)
         sc = QScrollArea()
         sc.setWidgetResizable(True)
         sc.setWidget(left)
         split.addWidget(sc)
+        self.win.track_inputs("discharge", dis_box)
+        self.win.track_inputs("passive", pas_box)
+        self.win.track_inputs("overvoltage", ov_box)
         right = QTabWidget()
         self.dc_tabs = right
         for key, label in (("dis", tr("능동 방전", "active discharge")), ("pas", tr("패시브 방전", "passive discharge")),
@@ -636,6 +643,7 @@ class SafetyPage(QWidget):
         v.addWidget(b)
         v.addWidget(ConceptNote(NOTE_SAFE()))
         split.addWidget(left)
+        self.win.track_inputs("safe_state", left)
         right = QTabWidget()
         self.s_safe = PlotPanel(min_height=300)
         self.p_safe = PlotPanel()

@@ -107,6 +107,7 @@ class TrajectoryPage(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
         lay.addWidget(split)
+        self.win.track_inputs("trajectory", form)
 
     def run(self):
         s = self.win.state

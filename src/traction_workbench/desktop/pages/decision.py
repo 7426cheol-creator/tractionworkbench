@@ -15,16 +15,24 @@ from ... import api
 from ... import service as S
 from ...analysis.variation import PARAMETERS
 from ...i18n import language, tr
+from ...insight.decision import decision_insight
+from ...insight.texts import engine_text
 from ...plots import figures as F
-from ...plots.labels import change_kind_label, param_label
+from ...plots.labels import change_kind_label, claim_label, constraint_label, param_label, reason_label, yes_no
 from ...requirement_set import classify
 from ...viz import design as DS
 from ...viz import maps as M
 from ...viz import operating as O
 from ...viz import sweeps as SW
 from ..opviews import OperatingViews
-from ..widgets import (ConceptNote, ClaimTree, KeyValueTable, PlotPanel, VerdictBanner, check, combo, error_box, fmt, hint,
-                       number, primary_button)
+from ..widgets import (ConceptNote, ClaimTree, InsightPanel, KeyValueTable, PlotPanel, VerdictBanner, check, combo, confirm,
+                       error_box, fmt, hint, number, primary_button)
+
+
+LAYER_NAMES = {"mathematical": lambda: tr("수학 (수치 증거)", "mathematical (numerical evidence)"),
+               "model": lambda: tr("모델 판정", "model verdict"),
+               "requirement": lambda: tr("요구 완결성", "requirement completeness"),
+               "qualification": lambda: tr("데이터 적격성", "data qualification")}
 
 
 def _evaluate_task(progress, case: dict, analyses_curves: list):
@@ -113,8 +121,11 @@ class DecisionPage(QWidget):
         self.win = win
         self.result = None
         self._env_cache = {}
+        self._banner_last = ("NONE", "")
+        self._inputs_note = ""
         split = QSplitter(Qt.Horizontal)
-        split.addWidget(self._build_form())
+        form = self._build_form()
+        split.addWidget(form)
         split.addWidget(self._build_results())
         split.setStretchFactor(1, 1)
         split.setSizes([330, 1100])
@@ -122,6 +133,40 @@ class DecisionPage(QWidget):
         lay.setContentsMargins(8, 8, 8, 8)
         lay.addWidget(split)
         self._load_preset(0)
+        self.win.track_inputs("decision", form)
+
+    # ------------------------------------------------------------------ window hooks
+    def task_finished(self, key: str, outcome: str) -> None:
+        """A cancelled evaluation leaves the last result (or the empty page) as it was, and says so."""
+        if key != "decision" or outcome != "cancelled":
+            return
+        if self.result is not None:
+            v, html = self._banner_last
+            self._set_banner(v, html, tr("새 계산은 취소됨 — 이전 결과를 표시 중입니다.",
+                                         "the new evaluation was cancelled - showing the previous result."))
+        else:
+            self.banner.set("NONE", tr("계산을 취소했습니다. 입력을 확인하고 다시 실행하세요 (Ctrl+Enter).",
+                                       "Evaluation cancelled. Check the inputs and run again (Ctrl+Enter)."))
+
+    def inputs_changed(self, changed: dict) -> None:
+        """The verdict on screen belongs to the inputs it was computed from: say so when the form differs."""
+        diffs = changed.get("decision") or []
+        if diffs:
+            shown = "; ".join(f"{f}: {a} → {b}" for f, a, b in diffs[:4])
+            if len(diffs) > 4:
+                shown += tr(f" 외 {len(diffs) - 4}개", f" and {len(diffs) - 4} more")
+            self._inputs_note = tr(f"⚠ 입력이 바뀌었습니다 — 이 판정은 바뀌기 전 입력으로 계산됐습니다 ({shown}). "
+                                   f"다시 실행: Ctrl+Enter",
+                                   f"⚠ inputs changed - this verdict was computed from the earlier inputs ({shown}). "
+                                   f"Run again: Ctrl+Enter")
+        else:
+            self._inputs_note = ""
+        if self.result is not None:
+            self._set_banner(*self._banner_last)
+
+    def _set_banner(self, verdict: str, html: str, note: str = "") -> None:
+        extra = "".join(f"<br><span style='color:#b35900'><b>{x}</b></span>" for x in (self._inputs_note, note) if x)
+        self.banner.set(verdict, html + extra)
 
     # ------------------------------------------------------------------ form
     def _build_form(self):
@@ -243,8 +288,7 @@ class DecisionPage(QWidget):
             gl.addWidget(w)
         v.addWidget(g)
         self.run_btn = primary_button(tr("판정 실행  (Ctrl+Enter)", "Evaluate  (Ctrl+Enter)"))
-        self.run_btn.clicked.connect(self.run)
-        self.run_btn.setShortcut("Ctrl+Return")
+        self.run_btn.clicked.connect(self.run)          # Ctrl+Enter is the window's shortcut (every page)
         v.addWidget(self.run_btn)
         v.addWidget(ConceptNote(tr(
             "<b>판정 방식</b>: 요구 하나를 여러 판정 항목(claim)으로 나눕니다 — 전기적 존재(전압·전류·도메인), 최소전류 정책의 "
@@ -405,6 +449,14 @@ class DecisionPage(QWidget):
             row.addWidget(b)
         v.addLayout(row)
         self.tabs = QTabWidget()
+        # the engineering reading of the result (conclusion, item by item, mechanism, what would change it)
+        self.insight = InsightPanel(tr("판정을 실행하면 결과의 엔지니어링 해석이 여기에 표시됩니다 — 결론과 여유, 판정 항목별 근거, "
+                                       "운전점에서 무엇이 한계인지, 전력·손실, 병목 기여도, 요구를 만족시키려면 무엇을 바꿔야 하는지, "
+                                       "이 결과가 말하지 않는 것.",
+                                       "Run the evaluation to read the result here: the conclusion and margin, each judged "
+                                       "item, what limits at the operating point, power and losses, the bottleneck "
+                                       "contributions, what would make it pass and what the result does not cover."))
+        self.tabs.addTab(self.insight, tr("엔지니어링 분석", "engineering reading"))
         # summary
         summ = QSplitter(Qt.Horizontal)
         self.claims = ClaimTree()
@@ -440,6 +492,7 @@ class DecisionPage(QWidget):
         summ.addWidget(self.claims)
         summ.addWidget(right)
         summ.setSizes([560, 560])
+        self.summary_tab = summ
         self.tabs.addTab(summ, tr("요약·근거", "summary · evidence"))
         self.views = OperatingViews()
         self.tabs.addTab(self.views, tr("운전점 그래프", "operating point"))
@@ -450,6 +503,7 @@ class DecisionPage(QWidget):
         al.setContentsMargins(0, 0, 0, 0)
         self.an_tabs = QTabWidget()
         al.addWidget(self.an_tabs)
+        self.an_tab = an
         self.tabs.addTab(an, tr("추가 분석", "analyses"))
         self.record_view = QTextBrowser()
         self.record_view.setOpenExternalLinks(False)
@@ -463,22 +517,27 @@ class DecisionPage(QWidget):
         self.result = res
         rec = res["record"]
         v = rec["verdict"]
-        reasons = ", ".join(v["reasons"]) or "—"
+        reasons = ", ".join(f"{reason_label(r)} ({r})" for r in v["reasons"]) or "—"
         qual = "".join(f"<br>· {q}" for q in v.get("qualifiers", []))
         cls = classify(v["status"], v["reasons"])
         why = ""
         if v["status"] != "FEASIBLE":           # the class of the answer says which kind of work could change it
             why = (f"<br>{tr('분류', 'class')}: <b>{tr(cls['label_ko'], cls['label_en'])}</b>"
-                   + (f" — {cls['hint']}" if cls["hint"] else "")
+                   + (f" — {engine_text(cls['hint'])}" if cls["hint"] else "")
                    + (tr(f" (원인 {len(cls['classes'])}개: {', '.join(cls['classes'])})",
                          f" ({len(cls['classes'])} causes: {', '.join(cls['classes'])})")
                       if len(cls.get("classes") or []) > 1 else ""))
-        html = (f"<b>{rec['requirement'].get('req_id', '')}</b> — {rec['requirement'].get('original_text', '')}<br>"
-                f"{tr('사유', 'reasons')}: <b>{reasons}</b> · {tr('결정 claim', 'deciding claims')}: "
-                f"{', '.join(v.get('deciding_claims', [])) or '—'}{why}{qual}<br>"
-                f"<span style='font-size:8pt'>{tr('범위', 'scope')}: {v.get('scope', '')}<br>record {rec['record_id']} · "
+        ins = decision_insight(rec, res.get("pwm_risk"))
+        self.insight.show_insight(ins)
+        deciding = ", ".join(dict.fromkeys(claim_label(n) for n in v.get("deciding_claims", []))) or "—"
+        html = (f"<span style='font-size:10.5pt'>{ins.headline}</span><br>"
+                f"<b>{rec['requirement'].get('req_id', '')}</b> — {rec['requirement'].get('original_text', '')}<br>"
+                f"{tr('사유', 'reasons')}: <b>{reasons}</b> · {tr('결정 항목', 'deciding items')}: {deciding}{why}{qual}<br>"
+                f"<span style='font-size:8.5pt'>{tr('범위', 'scope')}: {v.get('scope', '')}<br>record {rec['record_id']} · "
                 f"input SHA-256 {rec['input_sha256'][:16]}… · {rec.get('elapsed_s', 0):.2f} s</span>")
-        self.banner.set(v["verdict"], html)
+        self._banner_last = (v["verdict"], html)
+        self._inputs_note = ""
+        self._set_banner(v["verdict"], html)
         self.cond_combo.blockSignals(True)
         self.cond_combo.clear()
         for i, c in enumerate(rec["conditions"]):
@@ -513,7 +572,7 @@ class DecisionPage(QWidget):
                 meaning = "; ".join(L["open_items"])
             if key == "qualification":
                 meaning = f"{L.get('validation_status', '')} · " + " | ".join(L.get("sub_models", []))
-            lrows.append((key, st, meaning))
+            lrows.append((LAYER_NAMES[key](), st, meaning))
             lcol[(i, 1)] = "#1a7f37" if (st in good or st.startswith("FEASIBLE")) else (
                 "#cf222e" if st in ("INFEASIBLE", "UNRESOLVED") else "#b7791f")
         self.layers_table.set_rows(lrows, lcol)
@@ -551,12 +610,13 @@ class DecisionPage(QWidget):
         pcap = c.get("policy_capability") or {}
         rw = c.get("requirement_witness")
         rows = [(tr("요구 판정 (이 조건)", "requirement at condition"), c["requirement_claim_at_this_condition"]["status"]),
-                (tr("요구 witness (정적·DC·지속 모두 같은 점)", "requirement witness (static, DC, duration at one point)"),
+                (tr("요구 근거점 witness (정적·DC·지속 모두 같은 점)", "requirement witness (static, DC, duration at one point)"),
                  "—" if not rw else f"T = {fmt(rw['torque_Nm'])} N·m, id / iq = {fmt(rw['id_A'])} / {fmt(rw['iq_A'])} A"),
                 (tr("토크 capability 여유 [N·m]", "torque capability margin [N·m]"), fmt(margin)),
-                (tr("정책 capability [N·m] / certified", "policy capability [N·m] / certified"),
-                 f"{fmt(pcap.get('achieved_value_Nm'))} / {pcap.get('certified')}"),
-                (tr("capability 제한 제약", "capability limited by"), ", ".join(pcap.get("active_constraints_at_witness") or []) or "—")]
+                (tr("정책 capability [N·m] / 인증", "policy capability [N·m] / certified"),
+                 f"{fmt(pcap.get('achieved_value_Nm'))} / {yes_no(pcap.get('certified'))}"),
+                (tr("capability를 정하는 제약", "capability limited by"),
+                 ", ".join(constraint_label(n) for n in pcap.get("active_constraints_at_witness") or []) or "—")]
         rc = c.get("rejected_band_centre")
         if rc:
             rows.append((tr("밴드 중심 (탈락 후보, 진단용)", "band centre (rejected candidate, diagnostic)"),
@@ -569,7 +629,7 @@ class DecisionPage(QWidget):
                      (tr("전압 여유 [V]", "voltage margin [V]"), fmt(op["voltage"]["remaining_command_margin_V"])),
                      ("P_dc [kW] / I_dc [A]", f"{fmt(None if op['Pdc_W'] is None else op['Pdc_W'] / 1e3)} / {fmt(op['Idc_A_average'])}"),
                      (tr("효율", "efficiency"), f"{fmt(op['efficiency'])} ({op['energy_mode']})"),
-                     (tr("제약 위반", "violated"), ", ".join(op["violated_groups"]) or "—")]
+                     (tr("제약 위반", "violated"), ", ".join(constraint_label(n) for n in op["violated_groups"]) or "—")]
         self.key_table.set_rows(rows)
 
     def _fill_analyses(self, res):
@@ -649,7 +709,21 @@ class DecisionPage(QWidget):
                                                  "electrical_min_Nm": env["min"]["electrical_T_Nm"]})
 
     # ------------------------------------------------------------------- save
+    def _confirm_current(self) -> bool:
+        """Saving a result whose inputs were edited since: say which inputs it belongs to before writing it."""
+        diffs = self.win.input_changes("decision")
+        if not diffs:
+            return True
+        shown = "\n".join(f"· {f}: {a} → {b}" for f, a, b in diffs[:8])
+        return confirm(self, tr("바뀌기 전 입력의 결과", "result of the earlier inputs"),
+                       tr(f"화면의 판정은 바뀌기 전 입력으로 계산됐습니다:\n{shown}\n\n저장되는 기록도 그 입력의 결과입니다. "
+                          f"그대로 저장할까요? (지금 입력으로 저장하려면 먼저 다시 실행하세요.)",
+                          f"The verdict on screen was computed from the earlier inputs:\n{shown}\n\nThe saved record is "
+                          f"that result. Save it anyway? (Run again first to save the current inputs.)"))
+
     def _save_json(self):
+        if not self._confirm_current():
+            return
         rec = self.result["record"]
         path, _ = QFileDialog.getSaveFileName(self, tr("의사결정 기록 저장", "save decision record"), f"{rec['record_id']}.json", "JSON (*.json)")
         if path:
@@ -657,10 +731,14 @@ class DecisionPage(QWidget):
             Path(path).write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
     def _save_md(self):
+        if not self._confirm_current():
+            return
         rec = self.result["record"]
         path, _ = QFileDialog.getSaveFileName(self, tr("Markdown 저장", "save Markdown"), f"{rec['record_id']}.md", "Markdown (*.md)")
         if path:
-            md = rec["markdown"]
+            reading = decision_insight(rec, self.result.get("pwm_risk"))
+            md = ("## " + tr("엔지니어링 분석 (아래 기록의 수치에서 도출)", "Engineering reading (from the record's numbers below)")
+                  + "\n\n" + reading.markdown() + "\n\n---\n\n" + rec["markdown"])
             if rec.get("project_context"):                      # the product data it was computed from (R2)
                 from ...report_pdf import project_line
                 md += "\n\n## " + tr("프로젝트 (제품 데이터)", "Project (product data)") + "\n\n" + \
@@ -668,13 +746,16 @@ class DecisionPage(QWidget):
             Path(path).write_text(md, encoding="utf-8")
 
     def _save_pdf(self):
+        if not self._confirm_current():
+            return
         rec = self.result["record"]
         path, _ = QFileDialog.getSaveFileName(self, tr("PDF 보고서 저장", "save PDF report"), f"{rec['record_id']}.pdf", "PDF (*.pdf)")
         if path:
             from ...report_pdf import build_pdf
             res = self.result
             self.win.runner.run("pdf", tr("PDF 보고서", "PDF report"),
-                                lambda progress: build_pdf(path, res["record"], res["rec"], res["case"], progress=progress),
+                                lambda progress: build_pdf(path, res["record"], res["rec"], res["case"], progress=progress,
+                                                           pwm_risk=res.get("pwm_risk")),
                                 self._pdf_done)
 
     def _pdf_done(self, p):
@@ -684,6 +765,7 @@ class DecisionPage(QWidget):
 
     def redraw(self):
         self.banner.restyle()
+        self.insight.redraw()
         self.views.redraw()
         self.env_panel.redraw()
         for i in range(self.an_tabs.count()):
