@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, Qt, QUrl
+from PySide6.QtCore import QSettings, Qt, QTimer, QUrl
 from PySide6.QtGui import QAction, QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (QApplication, QDialog, QDialogButtonBox, QFileDialog, QHBoxLayout, QLabel, QListWidget,
                                QListWidgetItem, QMainWindow, QMenu, QMessageBox, QProgressBar, QPushButton,
@@ -381,8 +381,8 @@ class MainWindow(QMainWindow):
         if self.page_tasks(key):
             for k in self.page_tasks(key):
                 self.runner.cancel(k)
-            self.statusBar().showMessage(tr("취소 요청됨 — 다음 계산 단계에서 멈춥니다", "cancel requested - it stops at the "
-                                                                                 "next calculation step"), 5000)
+                self._progress_msg = (k, self.runner.labels.get(k, k))
+            self._show_progress()
             return
         targets = [b for b in self.run_targets(key) if b.isEnabled()]
         if targets:
@@ -400,7 +400,9 @@ class MainWindow(QMainWindow):
         if key and self.page_tasks(key):
             self._run_action(key)
 
-    def _task_started_key(self, key: str, _label: str):
+    def _task_started_key(self, key: str, label: str):
+        self._progress_msg = (key, f"{label} …")
+        self._elapsed_timer.start()
         if key in self._input_roots:
             self._inputs_started[key] = self._snapshot(key)
         page = TASK_PAGE.get(key)
@@ -537,7 +539,11 @@ class MainWindow(QMainWindow):
         self.cancel_btn.setToolTip(tr("모든 페이지의 진행 중인 계산을 취소합니다 (한 페이지만: 페이지 위 버튼 또는 Esc)",
                                       "cancel the calculations of every page (one page: its bar button or Esc)"))
         self.cancel_btn.hide()
-        self.cancel_btn.clicked.connect(self.runner.cancel_all)
+        self.cancel_btn.clicked.connect(self._cancel_all)
+        self._progress_msg = None                    # (task key, message) of the calculation the status bar shows
+        self._elapsed_timer = QTimer(self)           # keeps its running time current between progress messages
+        self._elapsed_timer.setInterval(1000)
+        self._elapsed_timer.timeout.connect(self._show_progress)
         sb.addPermanentWidget(self.progress)
         sb.addPermanentWidget(self.cancel_btn)
         self.runner.started.connect(self._task_started)
@@ -552,14 +558,35 @@ class MainWindow(QMainWindow):
         self.cancel_btn.show()
         self.statusBar().showMessage(f"{label} …")
 
-    def _task_progress(self, frac, msg):
+    def _task_progress(self, key, frac, msg):
         self.progress.setValue(int(1000 * max(0.0, min(1.0, frac))))
-        self.statusBar().showMessage(msg)
+        self._progress_msg = (key, msg)
+        self._show_progress()
+
+    def _show_progress(self):
+        """Where the shown calculation is, how long it has run (from one second on) and whether a cancel waits for
+        its next step."""
+        if self._progress_msg is None:
+            return
+        key, msg = self._progress_msg
+        t = self.runner.elapsed(key)
+        if t is None:                                # it has finished: _task_done says how
+            return
+        task = self.runner.active.get(key)
+        if task is not None and task.cancelled:
+            msg += tr(" — 취소 요청됨, 다음 계산 단계에서 멈춥니다", " — cancel requested, it stops at the next step")
+        self.statusBar().showMessage(msg + (f" · {t:.0f} s" if t >= 1.0 else ""))
+
+    def _cancel_all(self):
+        self.runner.cancel_all()
+        self._show_progress()
 
     def _task_done(self, label, elapsed, outcome):
         if not self.runner.busy():
             self.progress.hide()
             self.cancel_btn.hide()
+            self._elapsed_timer.stop()
+            self._progress_msg = None
         if outcome == "replaced":                    # a newer run of the same calculation took over: no news
             return
         word = {"ok": "OK", "cancelled": tr("취소됨", "cancelled"), "error": tr("오류", "error")}.get(outcome, outcome)
@@ -765,8 +792,7 @@ class MainWindow(QMainWindow):
         page: DecisionPage = self.pages["decision"]
         self.show_page("decision")
         page.banner.set("NONE", tr(f"{Path(path).name} 평가 중…", f"evaluating {Path(path).name}…"))
-        from .pages.decision import _evaluate_task
-        self.runner.run("decision", Path(path).name, _evaluate_task, page._show, case, [], on_error=page._failed)
+        page.start(Path(path).name, case, [])
 
     def page_guide_html(self) -> str:
         labels = {key: label for key, label, _cls in PAGES}

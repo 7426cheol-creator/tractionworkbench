@@ -60,7 +60,20 @@ def _torque_words(T: float) -> tuple[str, str]:
     return tr(f"회생 제동 {num(-T)} N·m", f"regenerative braking {num(-T)} N·m"), tr("최대 제동 토크", "maximum braking torque")
 
 
-def decision_insight(rec: dict, pwm_risk: dict | None = None) -> Insight:
+PENDING = {"pwm": ("PWM 영향 (같은 운전점)", "PWM consequences at the same point"), "sizing": ("역설계", "sizing"),
+           "dominance": ("병목 기여도", "bottleneck contribution"), "relaxation": ("요구 완화", "requirement relaxation"),
+           "comparison": ("Vdc 비교", "Vdc comparison"), "curves": ("설계 곡선", "design curves")}
+
+
+def pending_text(pending) -> str:
+    """The stages of a decision still being computed, for people (in order, each once)."""
+    return ", ".join(tr(*PENDING[k]) if k in PENDING else str(k) for k in dict.fromkeys(pending))
+
+
+def decision_insight(rec: dict, pwm_risk: dict | None = None, pending=(), running: bool = True) -> Insight:
+    """``pending``: the stages after the verdict that are still being computed (``running``) or that the run ended
+    without (cancelled, failed): ``pwm``, ``sizing``, ``dominance``, ``relaxation``, ``comparison``, ``curves``.  The
+    reading says so and suggests none of them."""
     v = rec["verdict"]
     req = rec["requirement"]
     conds = rec["conditions"]
@@ -118,6 +131,17 @@ def decision_insight(rec: dict, pwm_risk: dict | None = None) -> Insight:
     if op and op.get("efficiency") is not None:
         ins.metrics.append((tr("효율 (정책점)", "efficiency (policy point)"), f"{100 * op['efficiency']:.1f} %", "info"))
 
+    if pending and running:
+        ins.section(tr("아직 계산 중", "still being computed"),
+                    tr("판정은 위와 같이 확정됐습니다. 아래 항목은 계산이 끝나면 이 해석에 더해집니다.",
+                       "the verdict above is final; these are added to this reading when they finish.")).add(
+            pending_text(pending), "open")
+    elif pending:
+        ins.section(tr("계산되지 않은 항목", "not computed"),
+                    tr("이 실행은 판정 뒤 단계가 끝나기 전에 멈췄습니다 (취소 또는 오류). 판정은 완료된 결과이고, 아래 항목은 다시 "
+                       "실행하면 계산됩니다.",
+                       "this run stopped before the stages after its verdict finished (cancelled or failed). The "
+                       "verdict is complete; these are computed when you run again.")).add(pending_text(pending), "open")
     _claims_section(ins, c, ps, op, T)
     if multi:
         _conditions_section(ins, rec, gi)
@@ -130,7 +154,7 @@ def decision_insight(rec: dict, pwm_risk: dict | None = None) -> Insight:
     if pwm_risk:
         pwm_section(ins, pwm_risk)
     _scope_section(ins, rec, op)
-    _next_section(ins, rec, an, verdict)
+    _next_section(ins, rec, an, verdict, pending)
     return ins.nonempty()
 
 
@@ -565,7 +589,7 @@ def _scope_section(ins: Insight, rec: dict, op: dict | None) -> None:
         s.add(tr("평가 안 함: ", "not evaluated: ") + esc(engine_text(x)), "open")
 
 
-def _next_section(ins: Insight, rec: dict, an: dict, verdict: str) -> None:
+def _next_section(ins: Insight, rec: dict, an: dict, verdict: str, pending=()) -> None:
     s = ins.section(tr("다음 단계", "next steps"))
     for a in rec.get("next_actions") or []:
         s.add(esc(engine_text(a)), "info")
@@ -574,6 +598,6 @@ def _next_section(ins: Insight, rec: dict, an: dict, verdict: str) -> None:
         cls = classify(v["status"], v["reasons"])
         for h in cls.get("hints") or ([cls["hint"]] if cls.get("hint") else []):
             s.add(tr("분류", "class") + f" — {tr(cls['label_ko'], cls['label_en'])}: {esc(engine_text(h))}", "info")
-    if verdict == "PASS" and not an.get("dominance"):
+    if verdict == "PASS" and not an.get("dominance") and "dominance" not in pending:
         s.add(tr("여유를 늘릴 한계를 알려면 '병목 기여도' 분석을 켜고 다시 실행하세요",
                  "turn on the dominance analysis to see which limit would add margin"), "info")

@@ -21,18 +21,19 @@ from ..widgets import (ConceptNote, KeyValueTable, MagnetTempInput, PlotPanel, c
 
 def _sweep_task(progress, drive, limits, n, vdc, T, param, lo, hi, samples, magnet_temp_C=None):
     sc = Scenario("design", n, vdc, limits, magnet_temp_C=magnet_temp_C)
+    progress(0.0, tr("1/2 파라미터 스윕", "1/2 parameter sweep"), 0.7)     # the engine's steps move the bar
     cv = DS.capability_vs_parameter(drive, sc, param, np.linspace(lo, hi, samples), T_request=T,
-                                    direction=1 if T >= 0 else -1, progress=lambda f, m: progress(0.7 * f, m))
-    progress(0.75, tr("역설계 bisection", "sizing bisection"))
+                                    direction=1 if T >= 0 else -1)
+    progress(0.7, tr("2/2 역설계 bisection", "2/2 sizing bisection"), 1.0)
     sz = size_parameter(drive, sc, T, param, (lo, hi), samples).to_dict()
     return {"curve": cv, "sizing": sz}
 
 
 def _dominance_task(progress, drive, limits, n, vdc, T, magnet_temp_C=None):
     sc = Scenario("design", n, vdc, limits, magnet_temp_C=magnet_temp_C)
-    progress(0.1, tr("제약 1% 완화 재계산", "1% relaxation"))
+    progress(0.0, tr("1/2 제약 1% 완화 재계산", "1/2 1% relaxation"), 0.6)
     dom = capability_dominance(drive, sc, 1 if T >= 0 else -1).to_dict()
-    progress(0.6, tr("요구 완화 탐색", "requirement relaxation"))
+    progress(0.6, tr("2/2 요구 완화 탐색", "2/2 requirement relaxation"), 1.0)
     rel = requirement_relaxation(drive, sc, T).to_dict()
     return {"dominance": dom, "relaxation": rel, "T_Nm": T}
 

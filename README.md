@@ -46,7 +46,11 @@
 메커니즘, 전력·손실·시간·에너지가 어디로 가는지, 여유가 가장 작은 항목, 무엇을 바꾸면 답이 바뀌는지, 미확정의 원인과 필요한 자료.
 모든 수치는 그 결과에서 나오고(결과 수치로 만든 항등식은 항을 함께 표시), 해석은 판정을 바꾸지 않습니다. 판정 페이지의 Markdown·PDF
 보고서에도 같은 해석이 들어갑니다. 페이지 머리 막대의 **▶ 버튼**(Ctrl+Enter)은 보이는 탭의 계산을 실행하고, 실행 중에는 그 페이지의
-계산만 취소합니다(Esc). 결과를 만든 뒤 입력을 바꾸면 결과 위 띠와 배너에 바뀐 항목(이전 → 지금)이 표시되고, 되돌리면 사라집니다.
+계산만 취소합니다(Esc). 긴 계산은 상태 표시줄에 어디까지 왔는지(예: "요구 판정: 1/2 판정 · 토크 능력 130/350 (스캔) · 21 s")를
+보여 주고, 취소하면 다음 계산 단계에서 바로 멈춥니다. 요구 판정은 판정을 먼저 보여 주고 PWM 영향·추가 분석을 뒤이어 채웁니다. 결과를
+만든 뒤 입력을 바꾸면 결과 위 띠와 배너에 바뀐 항목(이전 → 지금)이 표시되고, 되돌리면 사라집니다. **작업 공간 파일**(파일 메뉴 →
+작업 공간 저장·열기, `*.twb-workspace.json`)은 모든 페이지의 입력과 프로젝트를 담고, 앱은 작업 중인 입력을 자동으로 남겨 다음 시작 때
+복원할지 묻습니다.
 
 모든 그래프는 확대·이동·PNG/SVG/PDF 저장, 데이터는 CSV로 내보낼 수 있습니다. 한국어/영어, 라이트/다크 테마를 지원합니다.
 각 페이지의 **ⓘ 개념 설명**을 펼치면 그래프 읽는 법과 핵심 식을 짧게 볼 수 있습니다(전문 내용은 그대로, 처음 쓰는 사람을 위한 보조).
@@ -173,7 +177,7 @@
 ```bash
 pip install -e '.[gui,test]'          # numpy, scipy + PySide6-Essentials, matplotlib (+ pytest)
 
-twb gui                               # 데스크톱 앱 (= traction-workbench)
+twb gui [--open 작업.twb-workspace.json]   # 데스크톱 앱 (= traction-workbench); case JSON이면 판정, 작업 공간이면 복원
 twb evaluate examples/cases/req_ts_012_450V_sizing.json --out out/   # 의사결정 기록 JSON + Markdown
 twb report   examples/cases/req_ts_012_450V_sizing.json --pdf out/report.pdf   # 그래프 포함 PDF 보고서
 twb demo | solve | forward | capability | curve | acceptance

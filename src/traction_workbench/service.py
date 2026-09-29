@@ -11,7 +11,7 @@ from functools import lru_cache
 
 import numpy as np
 
-from . import __version__
+from . import __version__, progress
 from . import spec_fixtures as sf
 from .analysis.compare import compare_scenarios
 from .analysis.dominance import capability_dominance, requirement_relaxation
@@ -202,33 +202,70 @@ def resolve_case_source(case_dict: dict):
     return base, info, (claim,)
 
 
-def evaluate_case_full(case_dict: dict):
-    """(record dict, DecisionRecord, Case): the objects are kept for plotting the operating points."""
-    t0 = time.perf_counter()
+def evaluate_decision(case_dict: dict):
+    """(DecisionRecord, Case): the verdict of a case, before the optional analyses it asks for."""
     case_dict, source_info, extra = resolve_case_source(case_dict)
     case = case_from_dict(case_dict)
     rec = evaluate_requirement(case.requirement, case.drive, scenario=case.scenario, source_limits=case.limits,
                                ratings=case.ratings, extra_claims=extra, source_coupling=source_info)
+    return rec, case
+
+
+def pending_analyses(rec, case) -> list[str]:
+    """The optional analyses the case asks for that will run after its verdict (``decision_analyses``), in order."""
+    an = case.analyses
+    out = ["sizing"] * len(an.get("sizing") or ())
+    if an.get("dominance"):
+        out.append("dominance")
+    if an.get("relaxation") and rec.verdict.status.value == "INFEASIBLE":
+        out.append("relaxation")
+    if an.get("compare_Vdc"):
+        out.append("comparison")
+    return out
+
+
+def decision_analyses(rec, case) -> dict:
+    """The optional analyses around a verdict: sizing (one per parameter), dominance, relaxation (only after a proven
+    FAIL) and a Vdc comparison, each at the verdict's first condition."""
     req = case.requirement
-    analyses = {}
     an = case.analyses
     base_sc = rec.conditions[0].scenario
-    if an.get("sizing"):
-        analyses["sizing"] = [size_parameter(case.drive, base_sc, req.target_Nm, s["parameter"], tuple(s["range"]),
-                                             int(s.get("samples", 41))).to_dict() for s in an["sizing"]]
-    if an.get("dominance"):
-        analyses["dominance"] = capability_dominance(case.drive, base_sc, req.direction).to_dict()
-    if an.get("relaxation") and rec.verdict.status.value == "INFEASIBLE":
-        analyses["relaxation"] = requirement_relaxation(case.drive, base_sc, req.target_Nm).to_dict()
-    if an.get("compare_Vdc"):
-        scs = [base_sc.with_(Vdc_V=float(v), scenario_id=f"Vdc={float(v):g} V") for v in an["compare_Vdc"]]
-        analyses["comparison"] = compare_scenarios(case.drive, scs, req.target_Nm)
+    analyses = {}
+    with progress.span(len(pending_analyses(rec, case)), "analyses") as steps:
+        for s in an.get("sizing") or ():
+            steps.step("sizing")
+            analyses.setdefault("sizing", []).append(
+                size_parameter(case.drive, base_sc, req.target_Nm, s["parameter"], tuple(s["range"]),
+                               int(s.get("samples", 41))).to_dict())
+        if an.get("dominance"):
+            steps.step("dominance")
+            analyses["dominance"] = capability_dominance(case.drive, base_sc, req.direction).to_dict()
+        if an.get("relaxation") and rec.verdict.status.value == "INFEASIBLE":
+            steps.step("relaxation")
+            analyses["relaxation"] = requirement_relaxation(case.drive, base_sc, req.target_Nm).to_dict()
+        if an.get("compare_Vdc"):
+            steps.step("comparison")
+            scs = [base_sc.with_(Vdc_V=float(v), scenario_id=f"Vdc={float(v):g} V") for v in an["compare_Vdc"]]
+            analyses["comparison"] = compare_scenarios(case.drive, scs, req.target_Nm)
+    return analyses
+
+
+def decision_record(rec, case, analyses: dict, t0: float) -> dict:
+    """The record dict of a verdict and its analyses (what ``evaluate_case_full`` returns first); ``elapsed_s`` counts
+    from ``t0`` (``time.perf_counter``)."""
     out = rec.to_dict()
     out["analyses"] = _jsonable(analyses)
     out["unit_conversions"] = _jsonable(case.conversions.records)
     out["markdown"] = rec.to_markdown()
     out["elapsed_s"] = time.perf_counter() - t0
-    return out, rec, case
+    return out
+
+
+def evaluate_case_full(case_dict: dict):
+    """(record dict, DecisionRecord, Case): the objects are kept for plotting the operating points."""
+    t0 = time.perf_counter()
+    rec, case = evaluate_decision(case_dict)
+    return decision_record(rec, case, decision_analyses(rec, case), t0), rec, case
 
 
 def forward(drive: DriveModel, limits: DcSourceLimits, speed_rpm: float, Vdc_V: float, id_A: float, iq_A: float) -> dict:

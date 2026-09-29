@@ -132,6 +132,18 @@ _SECTION = {
     "emi_setup": ("EMI 시험 구성", "EMI setup"),
 }
 
+_PROGRESS = {                          # the engine's loop names (traction_workbench.progress) and their step names
+    "operating conditions": ("운전 조건", "operating conditions"),
+    "torque capability": ("토크 능력", "torque capability"), "scan": ("스캔", "scan"),
+    "boundary": ("경계 세분", "boundary refinement"),
+    "analyses": ("추가 분석", "analyses"), "sizing": ("역설계", "sizing"), "dominance": ("병목 기여도", "bottleneck contribution"),
+    "relaxation": ("요구 완화", "requirement relaxation"), "comparison": ("Vdc 비교", "Vdc comparison"),
+    "line spectrum": ("PWM 선 스펙트럼", "PWM line spectrum"), "samples": ("표본", "samples"),
+    "relaxation search": ("완화 탐색", "relaxation search"), "scenarios": ("시나리오", "scenarios"),
+    "parameter values": ("파라미터 값", "parameter values"), "design curves": ("설계 곡선", "design curves"),
+    "candidates": ("후보", "candidates"), "speeds": ("속도점", "speeds"),
+}
+
 
 def _lookup(table: dict, key) -> str:
     ko_en = table.get(key)
@@ -156,6 +168,10 @@ def state_label(state: str) -> str:
 
 def section_label(name: str) -> str:
     return _lookup(_SECTION, name)
+
+
+def progress_label(name: str) -> str:
+    return _lookup(_PROGRESS, name)
 
 
 def yes_no(v) -> str:

@@ -1,6 +1,6 @@
 """Command-line interface: ``twb <command>`` (or ``python -m traction_workbench``).
 
-    twb gui [--open CASE.json]            desktop application (same as TractionWorkbench.exe)
+    twb gui [--open CASE.json|W.twb-workspace.json]   desktop application (same as TractionWorkbench.exe)
     twb evaluate CASE.json [--out DIR]    decision record (JSON + Markdown)
     twb report CASE.json --pdf out.pdf    PDF engineering report with graphs (no GUI needed)
     twb demo [--out DIR]                  representative engineering questions on the synthetic drive
@@ -383,7 +383,7 @@ def build_parser() -> argparse.ArgumentParser:
         return p
 
     p = sub.add_parser("gui", help="start the desktop application")
-    p.add_argument("--open", help="case JSON to evaluate at start")
+    p.add_argument("--open", help="case JSON to evaluate, or a workspace (*.twb-workspace.json) to open, at start")
     p.add_argument("--lang", choices=("ko", "en"))
     p.set_defaults(fn=cmd_gui)
     p = sub.add_parser("report", help="PDF engineering report (graphs + decision record) for a case file")

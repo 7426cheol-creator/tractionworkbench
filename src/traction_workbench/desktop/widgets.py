@@ -121,7 +121,10 @@ class PlotPanel(QWidget):
         t = S.theme()
         self.figure.set_facecolor(t["bg"])
         self.figure.text(0.5, 0.5, text, ha="center", va="center", color=t["muted"], fontsize=10, wrap=True)
-        self.canvas.draw_idle()
+        if self.isVisible():
+            self.canvas.draw_idle()
+        else:                                # a hidden tab draws its note when it is first shown (like a figure):
+            self._stale = True               # text layout is not free, least of all while a calculation runs
         self.csv_button.setEnabled(False)
         for b in self.fig_buttons:                      # nothing to export yet
             b.setEnabled(False)
@@ -165,6 +168,9 @@ class PlotPanel(QWidget):
         super().showEvent(ev)
         if getattr(self, "_pending", False) and self._draw is not None:
             self._render()
+        elif getattr(self, "_stale", False):
+            self.canvas.draw_idle()
+        self._stale = False
 
     # -- interaction -----------------------------------------------------------
     def _on_move(self, ev):

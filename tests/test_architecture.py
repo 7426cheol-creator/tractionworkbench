@@ -23,7 +23,7 @@ ROOT = SRC / PKG
 # top-level name (first component under the package) -> (rank, layer)
 LAYERS = {
     **{m: (0, "base") for m in ("", "errors", "status", "settings", "units", "validation", "modulation", "i18n",
-                                "identity")},
+                                "identity", "progress")},
     **{m: (1, "models") for m in ("models", "scenario", "requirement", "spec_fixtures")},
     **{m: (2, "kernel") for m in ("physics", "solvers")},
     **{m: (3, "engines") for m in ("analysis", "extensions")},

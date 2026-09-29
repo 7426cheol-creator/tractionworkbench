@@ -478,9 +478,22 @@ def run_self_test(app, out_dir) -> int:
         page.dur_none.setChecked(True)
         for w in (page.an_dom, page.an_relax, page.an_size_v, page.an_size_i):
             w.setChecked(False)
+        steps = []
+
+        def step_seen(key, frac, msg):
+            if key == "decision":
+                steps.append((frac, msg))
+        win.runner.progress.connect(step_seen)
         page.run()
+        win.runner.progress.disconnect(step_seen)
         got = page.result["record"]["verdict"]["verdict"] if page.result else None
         check("decision:flux_map", got in ("PASS", "FAIL", "UNKNOWN") and page.result["record"]["model"]["fidelity"] == "D2", got)
+        # the long flux-map scan says where it is (A5): engine steps reach the status bar, the bar never goes back
+        from ..plots.labels import progress_label
+        scan = [m for _f, m in steps if progress_label("torque capability") in m]
+        fr = [f for f, _m in steps]
+        check("progress:engine_steps", len(scan) >= 10 and all(b >= a for a, b in zip(fr, fr[1:])),
+              f"{len(steps)} messages, {len(scan)} in the capability scan; e.g. {scan[len(scan) // 2] if scan else '-'}")
         page.tabs.setCurrentWidget(page.views)
         shot(win, "20_flux_map_decision")
         win.set_theme("dark", persist=False)

@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 import numpy as np
 from scipy.optimize import minimize_scalar
 
+from .. import progress
 from ..errors import OutsideModelDomain
 from ..models.components import DriveModel
 from ..physics import DriveKernel, OperatingPoint, evaluate_point
@@ -378,6 +379,15 @@ def _inherit_policy_witness(ev: PolicyEvaluator, direction: int, include_dc: boo
 # policy capability
 # ---------------------------------------------------------------------------
 
+def _halvings(width: float, tol: float) -> int:
+    """Bisection steps that bring an interval of ``width`` down to ``tol`` (the capability boundary search)."""
+    k = 0
+    while width > tol and k < 200:
+        width *= 0.5
+        k += 1
+    return k
+
+
 def policy_capability(ev: PolicyEvaluator, direction: int, samples: int | None = None,
                       certify: bool = True) -> CapabilityResult:
     k = ev.k
@@ -407,34 +417,42 @@ def policy_capability(ev: PolicyEvaluator, direction: int, samples: int | None =
         other = physical_capability(ev, -direction, include_dc=False)
         t_start = other.value_Nm if other.value_Nm is not None else t_end
     grid = np.linspace(t_start, t_end, n)
-    st = [ev.quick_status(float(t))[0] for t in grid]
     rel = s.capability_bisection_rel_tol * max(abs(t_end), 1.0)
+    halvings = _halvings(abs(grid[1] - grid[0]) if n > 1 else 0.0, rel)
+    # one torque evaluation per step: the scan, then the bisection of each boundary (about two, until counted)
+    with progress.span(n + 2 * halvings, "torque capability") as sp:
+        st = []
+        for t in grid:
+            sp.step("scan")
+            st.append(ev.quick_status(float(t))[0])
+        sp.remaining(halvings * sum((st[i] == "FEASIBLE") != (st[i + 1] == "FEASIBLE") for i in range(n - 1)))
 
-    def bisect(a, b):
-        # a has status FEASIBLE, b does not
-        for _ in range(200):
-            if abs(b - a) <= rel:
-                break
-            m = 0.5 * (a + b)
-            if ev.quick_status(m)[0] == "FEASIBLE":
-                a = m
-            else:
-                b = m
-        return a, b
+        def bisect(a, b):
+            # a has status FEASIBLE, b does not
+            for _ in range(200):
+                if abs(b - a) <= rel:
+                    break
+                sp.step("boundary")
+                m = 0.5 * (a + b)
+                if ev.quick_status(m)[0] == "FEASIBLE":
+                    a = m
+                else:
+                    b = m
+            return a, b
 
-    segments = []
-    i = 0
-    while i < n:
-        if st[i] != "FEASIBLE":
-            i += 1
-            continue
-        j = i
-        while j + 1 < n and st[j + 1] == "FEASIBLE":
-            j += 1
-        a = grid[i] if i == 0 else bisect(grid[i], grid[i - 1])[0]
-        b = grid[j] if j == n - 1 else bisect(grid[j], grid[j + 1])[0]
-        segments.append((float(min(a, b)), float(max(a, b)), i == 0))
-        i = j + 1
+        segments = []
+        i = 0
+        while i < n:
+            if st[i] != "FEASIBLE":
+                i += 1
+                continue
+            j = i
+            while j + 1 < n and st[j + 1] == "FEASIBLE":
+                j += 1
+            a = grid[i] if i == 0 else bisect(grid[i], grid[i - 1])[0]
+            b = grid[j] if j == n - 1 else bisect(grid[j], grid[j + 1])[0]
+            segments.append((float(min(a, b)), float(max(a, b)), i == 0))
+            i = j + 1
     notes = [f"torque scan: {n} samples between {t_start:.6g} and {t_end:.6g} N*m (electrical extreme), "
              f"transitions bisected to {rel:.1e} N*m; contiguity between samples is assumed (sampled)"]
     unknown = sum(1 for x in st if x == "UNKNOWN")

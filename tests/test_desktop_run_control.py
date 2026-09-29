@@ -52,11 +52,11 @@ def _cancel_at_first_step(m, seen=None, win=None):
     from traction_workbench.desktop import worker
     orig = worker.Task._progress
 
-    def progress(self, frac, msg=""):
+    def progress(self, frac, msg="", until=None):
         if seen is not None:
             seen.append(win.run_actions["decision"].text())
         self.cancel()
-        return orig(self, frac, msg)
+        return orig(self, frac, msg, until)
     m.setattr(worker.Task, "_progress", progress)
 
 

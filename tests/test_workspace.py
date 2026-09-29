@@ -93,8 +93,8 @@ def _requests(win, monkeypatch) -> dict:
     app = QApplication.instance()
     calls = []
     with monkeypatch.context() as m:
-        m.setattr(TaskRunner, "run", lambda self, key, label, fn, on_result, *args, on_error=None, **kw:
-                  calls.append(["run", key, _norm(args), _norm(kw)]))
+        m.setattr(TaskRunner, "run", lambda self, key, label, fn, on_result, *args, on_error=None, on_partial=None,
+                  **kw: calls.append(["run", key, _norm(args), _norm(kw)]))          # the request, not its display
         for name in SAFETY_API:
             orig = getattr(api, name)
             m.setattr(api, name, lambda body, *a, _o=orig, _n=name, **k: (calls.append(["api", _n, _norm(body)]),

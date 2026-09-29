@@ -21,6 +21,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .. import progress
 from ..errors import InputValidationError
 from ..models.components import DriveModel
 from ..scenario import Scenario
@@ -74,6 +75,15 @@ class SizingResult:
         }
 
 
+def _halvings(width: float, tol: float) -> int:
+    """Bisection steps that bring an interval of ``width`` down to ``tol`` (at most 100, as in the search)."""
+    k = 0
+    while width > tol and k < 100:
+        width *= 0.5
+        k += 1
+    return k
+
+
 def size_parameter(drive: DriveModel, scenario: Scenario, T_request: float, parameter: str,
                    search_range: tuple[float, float], samples: int = 41,
                    settings: NumericalSettings = DEFAULT_SETTINGS) -> SizingResult:
@@ -93,48 +103,56 @@ def size_parameter(drive: DriveModel, scenario: Scenario, T_request: float, para
         return ev.solve(T_request).policy_claim.status.value
 
     xs = np.linspace(lo, hi, samples)
-    st = [status(float(x)) for x in xs]
     tol = 1e-9 * max(abs(lo), abs(hi), 1.0)
+    halvings = _halvings(abs(xs[1] - xs[0]) if samples > 1 else 0.0, tol)
+    # one policy solve per step: the samples, then the bisection of each FEASIBLE edge (about two, until counted)
+    with progress.span(samples + 2 * halvings, "sizing") as steps:
+        st = []
+        for x in xs:
+            steps.step("samples")
+            st.append(status(float(x)))
+        steps.remaining(halvings * sum((st[i] == "FEASIBLE") != (st[i + 1] == "FEASIBLE") for i in range(samples - 1)))
 
-    def bisect(a, b, keep):
-        """status(a) == keep, status(b) != keep: move a towards b while the status stays `keep`.  Returns the last
-        kept point and every OTHER status met on the way (review R2 D-R2-04: an edge between FEASIBLE and UNKNOWN
-        is not a bracket, and a status met between the samples is recorded, not filled in)."""
-        seen = set()
-        for _ in range(100):
-            if abs(b - a) <= tol:
-                break
-            m = 0.5 * (a + b)
-            st_m = status(m)
-            if st_m == keep:
-                a = m
-            else:
-                b = m
-                seen.add(st_m)
-        return a, b, seen
+        def bisect(a, b, keep):
+            """status(a) == keep, status(b) != keep: move a towards b while the status stays `keep`.  Returns the last
+            kept point and every OTHER status met on the way (review R2 D-R2-04: an edge between FEASIBLE and UNKNOWN
+            is not a bracket, and a status met between the samples is recorded, not filled in)."""
+            seen = set()
+            for _ in range(100):
+                if abs(b - a) <= tol:
+                    break
+                steps.step("boundary")
+                m = 0.5 * (a + b)
+                st_m = status(m)
+                if st_m == keep:
+                    a = m
+                else:
+                    b = m
+                    seen.add(st_m)
+            return a, b, seen
 
-    # runs of equal status -> regions; every FEASIBLE edge is bisected (the witnessed side is extended); only an
-    # edge whose other side is excluded throughout is a bracket
-    runs = []
-    i = 0
-    while i < samples:
-        j = i
-        while j + 1 < samples and st[j + 1] == st[i]:
-            j += 1
-        runs.append([i, j, st[i]])
-        i = j + 1
-    regions = []
-    gap_lo, gap_hi = {}, {}              # statuses met between a FEASIBLE run's bisected edge and its neighbour
-    for r, (i, j, sti) in enumerate(runs):
-        a, b = float(xs[i]), float(xs[j])
-        if sti == "FEASIBLE":
-            if i > 0:
-                a0, _b, seen = bisect(xs[i], xs[i - 1], "FEASIBLE")
-                a, gap_lo[r] = float(a0), seen | {runs[r - 1][2]}
-            if j < samples - 1:
-                b0, _a, seen = bisect(xs[j], xs[j + 1], "FEASIBLE")
-                b, gap_hi[r] = float(b0), seen | {runs[r + 1][2]}
-        regions.append((a, b, sti))
+        # runs of equal status -> regions; every FEASIBLE edge is bisected (the witnessed side is extended); only an
+        # edge whose other side is excluded throughout is a bracket
+        runs = []
+        i = 0
+        while i < samples:
+            j = i
+            while j + 1 < samples and st[j + 1] == st[i]:
+                j += 1
+            runs.append([i, j, st[i]])
+            i = j + 1
+        regions = []
+        gap_lo, gap_hi = {}, {}          # statuses met between a FEASIBLE run's bisected edge and its neighbour
+        for r, (i, j, sti) in enumerate(runs):
+            a, b = float(xs[i]), float(xs[j])
+            if sti == "FEASIBLE":
+                if i > 0:
+                    a0, _b, seen = bisect(xs[i], xs[i - 1], "FEASIBLE")
+                    a, gap_lo[r] = float(a0), seen | {runs[r - 1][2]}
+                if j < samples - 1:
+                    b0, _a, seen = bisect(xs[j], xs[j + 1], "FEASIBLE")
+                    b, gap_hi[r] = float(b0), seen | {runs[r + 1][2]}
+            regions.append((a, b, sti))
     # every stretch between two regions is stated explicitly: the one status met there, else UNKNOWN (never left
     # unlabelled, never filled in as feasible)
     full = []

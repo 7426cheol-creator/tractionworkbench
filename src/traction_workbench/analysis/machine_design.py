@@ -26,6 +26,7 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
+from .. import progress
 from ..errors import InputValidationError
 from ..identity import content_sha256
 from ..models.components import DriveModel, RotationalLossModel, WindingDefinition
@@ -299,39 +300,41 @@ def trade_study(reference: DriveModel, specs: list, checks: list, limits: DcSour
     ``specs`` are ScalingSpec objects or dicts as entered (a dict that fails validation becomes a refused row)."""
     lim = limits or UNLIMITED
     rows = []
-    for spec in specs:
-        name = spec.get("name", "candidate") if isinstance(spec, dict) else spec.name
-        try:                            # a refused candidate is reported in its row; the others are still judged
-            if isinstance(spec, dict):
-                spec = spec_from_dict(spec)
-            d, lin = scale_drive(reference, spec)
-        except InputValidationError as exc:
-            rows.append({"candidate": name, "error": str(exc)})
-            continue
-        res = {}
-        for c in checks:
-            try:
-                res[c.name] = _check(d, c, lim)
-            except Exception as exc:  # noqa: BLE001 - a failed check is reported, never a pass
-                res[c.name] = {"status": "UNKNOWN", "value": None, "margin": None, "unit": "", "detail": str(exc)}
-        rel = {k: v.get("rel_margin") for k, v in res.items() if v.get("rel_margin") is not None}
-        binding = min(rel, key=rel.get) if rel else None
-        row = {"candidate": spec.name, "spec": {"k_turns": spec.k_turns, "k_stack": spec.k_stack, "k_pm": spec.k_pm,
-                                                "end_R_share": spec.end_R_share, "end_L_share": spec.end_L_share},
-               "lineage": lin, "checks": res, "binding": binding,
-               "all_feasible": all(v["status"] == "FEASIBLE" for v in res.values()),
-               "parameters": {"psi_pm_Wb": getattr(d.motor.flux, "psi_pm_Wb", None), "Ld_H": getattr(d.motor.flux, "Ld_H", None),
-                              "Lq_H": getattr(d.motor.flux, "Lq_H", None), "Rs_ohm": d.motor.Rs_ohm}}
-        if envelope_speeds:
-            env = []                    # display envelope: witnessed (gate-accepted) values, not certified bounds
-            vdc = envelope_Vdc or checks[0].Vdc_V
-            for n in envelope_speeds:
-                sc = Scenario("env", float(n), vdc, lim, magnet_temp_C=checks[0].magnet_temp_C)
-                cap = policy_capability(PolicyEvaluator(d, sc), +1, samples=41, certify=False)
-                env.append({"speed_rpm": float(n), "torque_Nm": cap.value_Nm if cap.accepted else None})
-            row["envelope"] = env
-            row["envelope_Vdc_V"] = vdc
-        rows.append(row)
+    with progress.span(len(specs), "candidates") as steps:
+        for spec in specs:
+            steps.step()
+            name = spec.get("name", "candidate") if isinstance(spec, dict) else spec.name
+            try:                            # a refused candidate is reported in its row; the others are still judged
+                if isinstance(spec, dict):
+                    spec = spec_from_dict(spec)
+                d, lin = scale_drive(reference, spec)
+            except InputValidationError as exc:
+                rows.append({"candidate": name, "error": str(exc)})
+                continue
+            res = {}
+            for c in checks:
+                try:
+                    res[c.name] = _check(d, c, lim)
+                except Exception as exc:  # noqa: BLE001 - a failed check is reported, never a pass
+                    res[c.name] = {"status": "UNKNOWN", "value": None, "margin": None, "unit": "", "detail": str(exc)}
+            rel = {k: v.get("rel_margin") for k, v in res.items() if v.get("rel_margin") is not None}
+            binding = min(rel, key=rel.get) if rel else None
+            row = {"candidate": spec.name, "spec": {"k_turns": spec.k_turns, "k_stack": spec.k_stack, "k_pm": spec.k_pm,
+                                                    "end_R_share": spec.end_R_share, "end_L_share": spec.end_L_share},
+                   "lineage": lin, "checks": res, "binding": binding,
+                   "all_feasible": all(v["status"] == "FEASIBLE" for v in res.values()),
+                   "parameters": {"psi_pm_Wb": getattr(d.motor.flux, "psi_pm_Wb", None), "Ld_H": getattr(d.motor.flux, "Ld_H", None),
+                                  "Lq_H": getattr(d.motor.flux, "Lq_H", None), "Rs_ohm": d.motor.Rs_ohm}}
+            if envelope_speeds:
+                env = []                    # display envelope: witnessed (gate-accepted) values, not certified bounds
+                vdc = envelope_Vdc or checks[0].Vdc_V
+                for n in envelope_speeds:
+                    sc = Scenario("env", float(n), vdc, lim, magnet_temp_C=checks[0].magnet_temp_C)
+                    cap = policy_capability(PolicyEvaluator(d, sc), +1, samples=41, certify=False)
+                    env.append({"speed_rpm": float(n), "torque_Nm": cap.value_Nm if cap.accepted else None})
+                row["envelope"] = env
+                row["envelope_Vdc_V"] = vdc
+            rows.append(row)
     return {"rows": rows, "checks": [c.__dict__ for c in checks],
             "meaning": "coupled requirement margins on the same requirements, temperatures and sources; derived "
                        "candidates are scaled references (not validated) with the listed invalidated data"}

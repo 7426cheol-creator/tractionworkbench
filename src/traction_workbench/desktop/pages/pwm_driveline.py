@@ -72,7 +72,7 @@ def _set(w, data):
 
 def _task(fn):
     def run(progress, body):
-        progress(0.1, tr("계산 중", "computing"))
+        progress(0.1, tr("계산 중", "computing"), 1.0)      # the engine's loops, if any, move the rest of the bar
         return fn(body)
     return run
 

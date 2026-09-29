@@ -46,6 +46,7 @@ from dataclasses import fields as dc_fields
 
 import numpy as np
 
+from .. import progress
 from ..errors import InputValidationError
 from ..identity import content_sha256
 from ..modulation import duties
@@ -539,16 +540,30 @@ def pwm_edges(src: SwitchingSource) -> dict:
                          "below_min_pulse": below_min, "ratio_exact": ratio_exact}}
 
 
+LINE_BLOCK = 1 << 18        # lines x edges evaluated at a time (4 MB of complex terms)
+
+
 def edge_lines(t0, tau, dv, freqs, T):
     """One-sided complex line amplitudes (peak) of a periodic piecewise-linear signal made of ramps.
 
     c_n = 1/(j 2 pi f_n T) * sum dv_e exp(-j 2 pi f_n (t_e + tau_e/2)) sinc(f_n tau_e); line amplitude = 2 c_n.
+
+    Evaluated a block of lines at a time: each line is the same sum over the edges as in one lines x edges matrix
+    (bit for bit), without that matrix (at standstill, fe = fsw/400, 24000 x 2400 terms: 3.2 GB at its peak).
     """
-    f = np.asarray(freqs, dtype=float)[:, None]
-    ph = np.exp(-1j * TWO_PI * f * (np.asarray(t0)[None, :] + 0.5 * np.asarray(tau)[None, :]))
-    sinc = np.sinc(f * np.asarray(tau)[None, :])
-    s = (ph * sinc * np.asarray(dv)[None, :]).sum(axis=1)
-    return 2.0 * s / (1j * TWO_PI * f[:, 0] * T)
+    f_all = np.asarray(freqs, dtype=float)
+    t0, tau, dv = np.asarray(t0), np.asarray(tau), np.asarray(dv)
+    out = np.empty(f_all.size, dtype=complex)
+    rows = max(1, LINE_BLOCK // max(1, t0.size))
+    with progress.span(-(-f_all.size // rows), "line spectrum") as sp:
+        for a in range(0, f_all.size, rows):
+            sp.step()
+            f = f_all[a:a + rows, None]
+            ph = np.exp(-1j * TWO_PI * f * (t0[None, :] + 0.5 * tau[None, :]))
+            sinc = np.sinc(f * tau[None, :])
+            s = (ph * sinc * dv[None, :]).sum(axis=1)
+            out[a:a + rows] = 2.0 * s / (1j * TWO_PI * f[:, 0] * T)
+    return out
 
 
 def source_lines(src: SwitchingSource, freqs, edges: dict | None = None) -> dict:

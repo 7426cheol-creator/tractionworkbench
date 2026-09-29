@@ -447,15 +447,13 @@ class RequirementSetPage(QWidget):
                 return None
             index = sel[0].row()
         from ... import api
-        from .decision import _evaluate_task
         st = self.win.state
         case = api.case_from_body(st.body(requirement={}))
         case["requirement"] = dict(self.result["req_dicts"][index])
         page = self.win.pages["decision"]
         page.show_requirement(self.result["set"]["records"][index].requirement)
         self.win.show_page("decision")
-        self.win.runner.run("decision", case["requirement"]["id"], _evaluate_task, page._show, case, [],
-                            on_error=page._failed)
+        page.start(case["requirement"]["id"], case, [])
         return case
 
     def save_results(self, path: str | None = None):
