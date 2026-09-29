@@ -15,7 +15,8 @@ def _parse(argv):
     ap = argparse.ArgumentParser(prog="TractionWorkbench", add_help=True)
     ap.add_argument("--lang", choices=("ko", "en"))
     ap.add_argument("--theme", choices=("light", "dark"))
-    ap.add_argument("--open", dest="open_case", help="case JSON to evaluate at start")
+    ap.add_argument("--open", dest="open_case", help="case JSON to evaluate, or a workspace (*.twb-workspace.json) to "
+                                                   "open, at start")
     ap.add_argument("--self-test", dest="self_test", metavar="OUT_DIR", help="headless self-test, writes a report")
     args, _unknown = ap.parse_known_args(argv)
     return args
@@ -52,8 +53,14 @@ def main(argv=None) -> int:
     from .main_window import MainWindow
     win = MainWindow()
     win.show()
-    if args.open_case:
+    from PySide6.QtCore import QTimer
+    from .workspace import SUFFIX
+    if args.open_case and str(args.open_case).endswith(SUFFIX):
+        QTimer.singleShot(0, lambda: win.open_workspace(args.open_case))
+    elif args.open_case:
         win.open_case(args.open_case)
+    else:
+        QTimer.singleShot(0, win.offer_recovery)       # the last session's unsaved work, if any
     return app.exec()
 
 

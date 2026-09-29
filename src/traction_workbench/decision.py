@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from . import __version__
+from . import __version__, progress
 from .analysis.rating import RatingEnvelope, duration_claim
 from .identity import content_sha256, implementation
 from .models.components import DriveModel, RotationalLossModel
@@ -593,18 +593,21 @@ def evaluate_requirement(req: Requirement, drive: DriveModel, *, scenario: Scena
     results: list[ConditionResult] = []
     product = ({"drive_id": drive.drive_id, "drive_revision": drive.revision,
                 "drive_content_sha256": content_sha256(drive)} if ratings else None)
-    for vdc, mag in ((v, t) for t in mags for v in vdcs):
-        sc = _scenario_for(req, scenario, source_limits, vdc, mag)
-        ev = PolicyEvaluator(drive, sc, settings)
-        sol = ev.solve(req.target_Nm)
-        cap = None
-        if with_capability and ev.speed_in_domain and ev.k.evaluable and ev.k.tau_rot is not None:
-            cap = policy_capability(ev, req.direction)
-        stated = {"coolant_temp_C": sc.coolant_temp_C, "initial_state": sc.initial_state, "Vdc_V": sc.Vdc_V,
-                  "switching_frequency_Hz": sc.switching_frequency_Hz, "winding_temp_C": sc.winding_temp_C,
-                  "magnet_temp_C": sc.magnet_temp_C}
-        rc, margin, dur, wit_T, wit_sol = _requirement_claim(req, sc, ev, sol, cap, ratings, stated, product)
-        results.append(ConditionResult(sc, sol, cap, dur, rc, margin, wit_T, wit_sol))
+    points = [(v, t) for t in mags for v in vdcs]
+    with progress.span(len(points), "operating conditions") as steps:
+        for vdc, mag in points:
+            steps.step()
+            sc = _scenario_for(req, scenario, source_limits, vdc, mag)
+            ev = PolicyEvaluator(drive, sc, settings)
+            sol = ev.solve(req.target_Nm)
+            cap = None
+            if with_capability and ev.speed_in_domain and ev.k.evaluable and ev.k.tau_rot is not None:
+                cap = policy_capability(ev, req.direction)
+            stated = {"coolant_temp_C": sc.coolant_temp_C, "initial_state": sc.initial_state, "Vdc_V": sc.Vdc_V,
+                      "switching_frequency_Hz": sc.switching_frequency_Hz, "winding_temp_C": sc.winding_temp_C,
+                      "magnet_temp_C": sc.magnet_temp_C}
+            rc, margin, dur, wit_T, wit_sol = _requirement_claim(req, sc, ev, sol, cap, ratings, stated, product)
+            results.append(ConditionResult(sc, sol, cap, dur, rc, margin, wit_T, wit_sol))
     agg = aggregate_and([*(r.requirement_claim for r in results), *extra_claims])
     qualifiers = [mag_note] if mag_note else []
     certificates = []

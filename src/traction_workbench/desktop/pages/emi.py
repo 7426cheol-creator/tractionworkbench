@@ -18,8 +18,14 @@ from ... import api
 from ...i18n import tr
 from ...plots import oew_hev_figures as F
 from ...plots import schematics as SC
-from ..widgets import (ConceptNote, KeyValueTable, NumTable, PlotPanel, check, combo, error_box, fmt, hint, number,
-                       primary_button, table_with_buttons)
+from ...plots.labels import reason_label
+from ...insight.systems import emi_insight, emi_oew_insight
+from ..widgets import (Cell, ConceptNote, KeyValueTable, NumTable, PlotPanel, check, combo, error_box, fmt, hint, number,
+                       primary_button, table_with_buttons, reading_tab, with_reading)
+
+COUPLING = {"y_capacitor": ("Y 커패시터 (절연 고장 시 레일 에너지)", "Y capacitor (rail energy at an insulation fault)"),
+            "dm_resonance": ("DM 공진", "DM resonance"),
+            "common_mode": ("공통모드 전압 스텝", "common-mode voltage step")}
 
 NOTE_EMI = lambda: tr(
     "<b>전도성 EMI (HV 포트)</b>는 <b>소스 → 경로 → 수신기</b>로 계산합니다. 소스는 게이트 명령에 데드타임(턴온 지연)과 전류 부호에 따른 "
@@ -70,7 +76,7 @@ def _gaps(text: str) -> list:
 
 def _task(fn):
     def run(progress, body):
-        progress(0.1, tr("계산 중", "computing"))
+        progress(0.1, tr("계산 중", "computing"), 1.0)      # the engine's loops, if any, move the rest of the bar
         return fn(body)
     return run
 
@@ -84,6 +90,8 @@ def _scroll(w):
 
 
 class EmiPage(QWidget):
+    workspace_data = ("measured", "cal_binding")        # an imported trace and a calibration binding reach the request
+
     def __init__(self, win):
         super().__init__()
         self.win = win
@@ -272,6 +280,7 @@ class EmiPage(QWidget):
         v.addWidget(ConceptNote(NOTE_EMI()))
         v.addStretch(1)
         split.addWidget(_scroll(form))
+        self.win.track_inputs(('emi',), form)
         right = QWidget()
         rl = QVBoxLayout(right)
         rl.setContentsMargins(0, 0, 0, 0)
@@ -282,6 +291,12 @@ class EmiPage(QWidget):
         self.e_tabs.addTab(self.p_spec, tr("스펙트럼·필요 감쇠", "spectrum · required attenuation"))
         self.e_tabs.addTab(self.p_net, tr("등가 회로", "equivalent network"))
         self.e_tabs.addTab(self.p_meas, tr("측정 trace 판정", "measured-trace verdict"))
+        self.i_emi = reading_tab(self.e_tabs, tr(
+            "계산하면 해석이 표시됩니다 — 최소 여유와 그 주파수, 대역별 필요 감쇠와 CM·DM 지배 경로, 판정 근거(정확 열거), 소스와 함께 볼 결합 "
+            "효과(Y 커패시터 에너지, DM 공진, CM dv/dt).",
+            "Run to read the screening — the minimum margin and where, the required attenuation per band and whether CM or "
+            "DM dominates, the evidence (exact enumeration), the coupled effects to check alongside (Y-capacitor energy, DM "
+            "resonance, CM dv/dt)."))
         self.t_emi = KeyValueTable()
         rl.addWidget(self.e_tabs, 3)
         rl.addWidget(self.t_emi, 2)
@@ -363,13 +378,33 @@ class EmiPage(QWidget):
                                                              "compute EMI first (a record binds to a computed configuration)"))
             return
         self.cal_binding = copy.deepcopy(self.last["configuration"])
+        self._cal_label()
+
+    def _cal_label(self):
         c = self.cal_binding
+        if not c:
+            self.e_cal_lab.setText(tr("구성에 결속 안 됨 (결속 전에는 적용 불가)", "not bound to a configuration (not "
+                                                                        "applicable until bound)"))
+            return
         src = c["source_ranges"]
         self.e_cal_lab.setText(tr("결속: ", "bound: ") + f"network {c['network_sha256'][:12]}…, "
                                f"Vdc {fmt(src['Vdc_V'][0])} V, |i| {fmt(src['I_pk_A'][0])} A, fe {fmt(src['fe_Hz'][0])} Hz, "
                                f"fsw {fmt(src['fsw_Hz'][0] / 1e3)} kHz, tr/tf {fmt(src['t_rise_s'][0] * 1e9)}/{fmt(src['t_fall_s'][0] * 1e9)} ns, "
                                f"{c['setup']['method']} / {c['setup']['detector']} / RBW {c['setup']['rbw_Hz']}"
                                + tr(" — 입력이 바뀌면 적용되지 않습니다", " — any changed input makes it inapplicable"))
+
+    def after_workspace_restore(self):
+        """The labels of the restored trace and binding (the file path is not part of the workspace)."""
+        self._cal_label()
+        m = self.measured
+        if not m:
+            self.e_meas_lab.setText(tr("가져온 trace 없음", "no trace imported"))
+            return
+        f = m["f_Hz"]
+        self.e_meas_lab.setText(tr(f"{len(f)}점 ({f[0] / 1e6:.3g}–{f[-1] / 1e6:.3g} MHz) · 작업 공간에서 복원",
+                                   f"{len(f)} points ({f[0] / 1e6:.3g}-{f[-1] / 1e6:.3g} MHz) · restored from the "
+                                   f"workspace") + "\n" + tr("set-up: ", "set-up: ")
+                                + " · ".join(f"{k} {v}" for k, v in (m.get("setup") or {}).items()))
 
     def apply_project(self, _project=None):
         """Switching source (controller: fsw, gate edges, dead time, carrier, minimum pulse) and the HV network /
@@ -462,7 +497,8 @@ class EmiPage(QWidget):
         A = np.asarray(res["required_attenuation_dB"], dtype=float)
         g = np.asarray(res["grid_Hz"])
         so = res["source"]
-        rows = [(tr("판정", "claim"), f"{c['status']} — {c['detail']}" + (f" [{', '.join(c['reasons'])}]" if c.get("reasons") else "")),
+        why = f" [{', '.join(reason_label(r) for r in c['reasons'])}]" if c.get("reasons") else ""
+        rows = [(tr("판정", "claim"), f"{c['status']} — {c['detail']}{why}"),
                 (tr("운전점", "operating point"), f"{fmt(res['operating_point']['speed_rpm'])} rpm, {fmt(res['operating_point']['torque_Nm'])} N·m, "
                                                  f"|i| {fmt(res['operating_point']['i_peak_A'])} A, m {fmt(res['operating_point']['modulation_index'], 3)}, "
                                                  f"carrier ratio {res['carrier_ratio']}"),
@@ -479,7 +515,7 @@ class EmiPage(QWidget):
             if d.get("min_margin_dB") is not None:
                 txt += f" · E_sup {d['E_sup_dBuV']:.2f} dBµV @ {d['f_E_sup_Hz'] / 1e6:.4g} MHz · min margin {d['min_margin_dB']:.2f} dB"
             if d["reasons"] or d["claim_reasons"]:
-                txt += " — " + "; ".join(d["reasons"] + d["claim_reasons"])
+                txt += " — " + "; ".join(reason_label(r) for r in d["reasons"] + d["claim_reasons"])
             rows.append((f"{d['lo_Hz'] / 1e6:g}–{d['hi_Hz'] / 1e6:g} MHz", txt))
         cal = res.get("calibration") or {}
         if cal.get("declared"):
@@ -499,7 +535,7 @@ class EmiPage(QWidget):
         if res.get("profile_missing"):
             rows.append((tr("프로파일 누락", "profile missing"), ", ".join(res["profile_missing"])))
         for k, v in (res.get("coupling") or {}).items():
-            rows.append((k, " · ".join(f"{kk}: {fmt(vv) if isinstance(vv, float) else vv}" for kk, vv in v.items())))
+            rows.append((Cell(tr(*COUPLING[k]) if k in COUPLING else k, k), " · ".join(f"{kk}: {fmt(vv) if isinstance(vv, float) else vv}" for kk, vv in v.items())))
         ms = res.get("measured")
         if ms:
             rows.append((tr("측정 trace", "measured trace"), f"{ms['verdict']} — {ms['reason']}"))
@@ -510,7 +546,8 @@ class EmiPage(QWidget):
         for n in res.get("notes", []):
             rows.append((tr("주의", "note"), n))
         self.t_emi.set_rows(rows)
-        if ms:
+        self.i_emi.read("emi", tr("전도성 EMI", "conducted EMI"), emi_insight, res)
+        if ms and self.e_tabs.currentWidget() is not self.i_emi:
             self.e_tabs.setCurrentWidget(self.p_meas)
 
     # ------------------------------------------------------------------ OEW tab
@@ -545,6 +582,7 @@ class EmiPage(QWidget):
             "V/3. The combined DC ripple is S_AA + S_BB + 2 Re S_AB; a small sum does not mean small local capacitor currents.")))
         v.addStretch(1)
         split.addWidget(_scroll(form))
+        self.win.track_inputs(('emi_oew',), form)
         right = QWidget()
         rl = QVBoxLayout(right)
         rl.setContentsMargins(0, 0, 0, 0)
@@ -552,7 +590,11 @@ class EmiPage(QWidget):
         self.t_ocm = KeyValueTable()
         rl.addWidget(self.p_ocm, 3)
         rl.addWidget(self.t_ocm, 2)
-        split.addWidget(right)
+        self.ocm_tabs, self.i_ocm = with_reading(right, tr(
+            "계산하면 해석이 표시됩니다 — 캐리어 위상차에 따라 CM 전압, 권선 영상분 전압 u0, DC 전류 리플이 어떻게 맞바뀌는지.",
+            "Run to read the result — how the carrier shift trades the CM voltage against the winding zero-sequence "
+            "voltage u0 and the DC current ripple."))
+        split.addWidget(self.ocm_tabs)
         split.setStretchFactor(1, 1)
         split.setSizes([380, 1080])
         return split
@@ -580,7 +622,8 @@ class EmiPage(QWidget):
         z = res["zsv_free"]
         rows.append((tr("영상분 제거 상태쌍", "zero-u0 pairs"), f"u0 max {fmt(z['u0_max_V'])} V, v_cm6 {z['v_cm6_steps_V']} V — {z['note']}"))
         self.t_ocm.set_rows(rows)
+        self.i_ocm.read("emi_oew", tr("OEW 공통모드", "OEW common mode"), emi_oew_insight, res)
 
     def redraw(self):
-        for p in (self.p_spec, self.p_net, self.p_meas, self.p_ocm):
+        for p in (self.p_spec, self.p_net, self.p_meas, self.p_ocm, self.i_emi, self.i_ocm):
             p.redraw()

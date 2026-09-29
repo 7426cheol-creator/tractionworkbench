@@ -77,8 +77,12 @@ class _Page:
 
 
 def _fig(pdf, fn, *args, size=A4_L, **kwargs):
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from .plots.figures import fit_texts
     fig = Figure(figsize=size)
+    FigureCanvasAgg(fig)                        # text metrics for fitting titles and legends to the page
     fn(fig, *args, **kwargs)
+    fit_texts(fig)
     pdf.savefig(fig)
 
 
@@ -90,14 +94,48 @@ def project_line(pc: dict) -> str:
             f"{secs} · {tr('로컬 변경', 'local edits')}: {edits}")
 
 
-def build_pdf(path, record: dict, rec=None, case=None, progress=None, envelope: bool = True) -> Path:
-    """Write the report; ``rec``/``case`` (objects from ``service.evaluate_case_full``) enable the graphs.  The report
-    is always light; the caller's plot theme is restored afterwards."""
+def build_pdf(path, record: dict, rec=None, case=None, progress=None, envelope: bool = True,
+              pwm_risk: dict | None = None) -> Path:
+    """Write the report; ``rec``/``case`` (objects from ``service.evaluate_case_full``) enable the graphs; ``pwm_risk``
+    (the PWM screen at the decision point) joins the engineering reading.  The report is always light; the caller's
+    plot theme is restored afterwards."""
     with S.using("light"):
-        return _build_pdf(path, record, rec, case, progress, envelope)
+        return _build_pdf(path, record, rec, case, progress, envelope, pwm_risk)
 
 
-def _build_pdf(path, record: dict, rec, case, progress, envelope: bool) -> Path:
+_MARK = {"ok": "[OK]", "warn": "[!]", "bad": "[X]", "open": "[?]", "info": "-"}
+_MARK_COLOR = {"ok": "#1a7f37", "warn": "#9a6700", "bad": "#cf222e", "open": "#9a6700", "info": None}
+
+
+def _strip(text: str) -> str:
+    import re
+    return re.sub(r"<[^>]+>", "", str(text)).replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+
+
+def _reading_page(pdf, record: dict, pwm_risk: dict | None, colors: dict) -> None:
+    """The engineering reading (``insight.decision``): every statement from the record's numbers."""
+    from .insight.decision import decision_insight
+    ins = decision_insight(record, pwm_risk)
+    pg = _Page(pdf, tr("엔지니어링 분석", "Engineering reading"))
+    fg, _bg = colors.get(ins.verdict or "", ("#1f2328", "#ffffff"))
+    pg.text(_strip(ins.headline), size=10.5, weight="bold", width=92, color=fg, gap=0.006)
+    if ins.metrics:
+        pg.text("  ·  ".join(f"{_strip(a)}: {_strip(b)}" for a, b, _l in ins.metrics), size=8.5, width=118, gap=0.008)
+    pg.text(tr("(아래 해석은 이 기록의 수치에서 도출했으며, 새 판정 기준을 더하지 않습니다.)",
+               "(read from this record's numbers; no new pass/fail criterion is added.)"), size=7.5, color="#57606a")
+    for s in ins.sections:
+        pg.text(_strip(s.title), size=10.5, weight="bold", gap=0.003)
+        if s.note:
+            pg.text(_strip(s.note), size=7.5, color="#57606a", width=125)
+        for it in s.items:
+            pg.text(f"{_MARK.get(it.level, '-')} {_strip(it.text)}", size=8.3, width=118,
+                    color=_MARK_COLOR.get(it.level))
+            if it.detail:
+                pg.text(f"      {_strip(it.detail)}", size=7.3, color="#57606a", width=128)
+    pg.flush()
+
+
+def _build_pdf(path, record: dict, rec, case, progress, envelope: bool, pwm_risk=None) -> Path:
     prog = progress or (lambda f, m="": None)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -152,6 +190,8 @@ def _build_pdf(path, record: dict, rec, case, progress, envelope: bool) -> Path:
         if pc:
             pg.text(project_line(pc), size=7.5, color="#57606a", width=130)
         pg.flush()
+        prog(0.1, "engineering reading")
+        _reading_page(pdf, record, pwm_risk, colors)
 
         if rec is not None and case is not None:
             idx = next((i for i, c in enumerate(rec.conditions) if c.primary.point is not None), 0)

@@ -267,7 +267,9 @@ def test_desktop_smoke(tmp_path):
         assert page.views.plane is not None and page.views.pv is None
         lay = {page.layers_table.item(r, 0).text(): page.layers_table.item(r, 1).text()
                for r in range(page.layers_table.rowCount())}
-        assert set(lay) == {"mathematical", "model", "requirement", "qualification"}   # four separate statements
+        from traction_workbench.desktop.pages.decision import LAYER_NAMES
+        assert set(lay) == {LAYER_NAMES[k]() for k in ("mathematical", "model", "requirement", "qualification")}  # four
+        assert len(lay) == 4                                                   # separate statements, named for people
         ex = win.pages["explorer"]
         ex._picked(-250.0, 120.0)
         assert ex.views.pv.point.id_A == -250.0 and ex.views.pv.point.iq_A == 120.0
@@ -399,4 +401,41 @@ def test_desktop_smoke(tmp_path):
     finally:
         TaskRunner.synchronous = False
         matplotlib.use("Agg", force=True)
+        style.apply("light")
+
+
+@pytest.mark.parametrize("lang", ["en", "ko"])
+def test_figure_words_fit_a_small_window(lang):
+    """UX review F1: on a small canvas (a 1280 x 720 window gives a figure about 480 px wide) the two side-by-side
+    plots keep their width (a legend or note wider than its axes used to squeeze a plot to a sliver), the subplot
+    titles neither overlap nor leave the figure, and the figure title wraps instead of being cut."""
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    set_language(lang)
+    style.apply("light")
+    try:
+        d, lim = sf.synthetic_drive(), sf.synthetic_limits()
+        pt = PolicyEvaluator(d, Scenario("t", 12000.0, 600.0, lim)).solve(150.0).point
+        th = api.thermal({"speed_rpm": 3000, "Vdc_V": 600, "coolant_temp_C": 65, "torque_Nm": 450, "duration_s": 10})
+        jobs = [(F.fig_power_constraints, (O.power_chain(pt), O.constraint_rows(pt)),
+                 "REQ-TS-012 · 12000 rpm · 150 N·m · 600 V · minimum-current policy point"),
+                (F.fig_thermal, (SF.availability_curve(th["availability"]),
+                                 SF.thermal_curves(api._thermal_model(None), th["request"]["nodes"], 65.0, 30.0), 450.0,
+                                 10.0), "thermal → torque availability · n = 3000 rpm · coolant inlet 65 °C")]
+        for fn, args, title in jobs:
+            for w_px in (430, 480, 800):
+                fig = Figure(figsize=(w_px / 100, 3.6), dpi=100)
+                FigureCanvasAgg(fig)
+                fn(fig, *args, title=title)
+                F.fit_texts(fig)
+                fig.canvas.draw()
+                r = fig.canvas.get_renderer()
+                a1, a2 = fig.axes[:2]
+                for ax in (a1, a2):                                     # no plot squeezed by its legend or notes
+                    assert ax.get_window_extent(r).width >= 0.2 * w_px, (fn.__name__, w_px, lang)
+                t1, t2 = (ax.title.get_window_extent(r) for ax in (a1, a2))
+                assert t1.x1 <= t2.x0 and t1.x0 >= -1 and t2.x1 <= w_px + 1, (fn.__name__, w_px, lang)
+                st = fig._suptitle.get_window_extent(r)
+                assert st.x0 >= -1 and st.x1 <= w_px + 1, (fn.__name__, w_px, lang)
+    finally:
+        set_language("ko")
         style.apply("light")

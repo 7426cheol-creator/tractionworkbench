@@ -26,6 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from itertools import combinations
 
+from .. import progress
 from ..models.components import DriveModel
 from ..scenario import Scenario
 from ..settings import DEFAULT_SETTINGS, NumericalSettings
@@ -120,68 +121,76 @@ class DominanceResult:
 
 def capability_dominance(drive: DriveModel, scenario: Scenario, direction: int = 1, relaxation: float = 0.01,
                          samples: int = 61, settings: NumericalSettings = DEFAULT_SETTINGS) -> DominanceResult:
-    base = policy_capability(PolicyEvaluator(drive, scenario, settings), direction, samples=samples, certify=False)
-    ev0 = PolicyEvaluator(drive, scenario, settings)
-    tscale = ev0.k.torque_scale()
-    # resolution of one sampled capability boundary: bisection tolerance plus a numerical floor
-    res = max(settings.capability_bisection_rel_tol * tscale, 1e-7 * tscale, 1e-9)
-    eps = 2.0 * res
-    base_v = base.value_Nm if base.accepted else None
-    active = base.active_constraints
-    rows = []
-    gains = {}
-    for name in _available(drive, scenario):
-        d, s = _relaxed(drive, scenario, [name], relaxation)
-        cap = policy_capability(PolicyEvaluator(d, s, settings), direction, samples=samples, certify=False)
-        v = cap.value_Nm if cap.accepted else None
-        gain = None if (v is None or base_v is None) else direction * (v - base_v)
-        gains[name] = gain
-        p, _ = RELAXABLE[name]
-        lim = get_value(drive, scenario, p)
-        new_lim = get_value(d, s, p)
-        if gain is None:
-            cls = "unresolved (capability not established)"
-        elif gain - eps > 0:
-            cls = "limiting"
-        elif gain + eps < 0:
-            cls = "relaxation lowered the capability (non-monotonic response)"
-        else:
-            cls = "not limiting alone (gain within resolution)"
-        rows.append((("constraint", name), ("parameter", p), ("limit", lim), ("relaxed_limit", new_lim),
-                     ("perturbation", _perturbation(name, drive, scenario, relaxation)),
-                     ("capability_Nm", v), ("gain_Nm", gain),
-                     ("gain_interval_Nm", None if gain is None else [gain - eps, gain + eps]),
-                     ("gain_interval_meaning", "sampled resolution (two bisected boundaries), not an enclosure of the "
-                                               "global capability change"),
-                     ("sensitivity_Nm_per_unit", None if gain is None or new_lim == lim else gain / abs(new_lim - lim)),
-                     ("active_at_base", name in active),
-                     ("classification", cls)))
-    joint = []
-    avail = set(gains)
-    weak = [n for n in gains if gains[n] is not None and gains[n] <= eps]
-    cand_pairs = [pr for pr in combinations(weak, 2) if pr[0] in active or pr[1] in active]
-    # tied caps of one side are always relaxed together (either can bind alone; together they are one constraint)
-    cand_pairs += [pr for pr in TIED if set(pr) <= avail and pr not in cand_pairs]
-    for a, b in cand_pairs:
-        d, s = _relaxed(drive, scenario, [a, b], relaxation)
-        cap = policy_capability(PolicyEvaluator(d, s, settings), direction, samples=samples, certify=False)
-        v = cap.value_Nm if cap.accepted else None
-        gain = None if (v is None or base_v is None) else direction * (v - base_v)
-        pert = [_perturbation(n, drive, scenario, relaxation) for n in (a, b)]
-        if gain is None:
-            joint.append((("constraints", [a, b]), ("perturbation", pert), ("gain_Nm", None),
-                          ("classification", "unresolved")))
-        elif gain - eps > 0 and not any(g is not None and g - eps > 0 for g in (gains.get(a), gains.get(b))):
-            # only a pair helps: a joint bottleneck (a pair containing a limit that is limiting alone adds nothing)
-            joint.append((("constraints", [a, b]), ("perturbation", pert), ("gain_Nm", gain),
-                          ("gain_interval_Nm", [gain - eps, gain + eps]), ("classification", "joint bottleneck")))
-    notes = ["relaxations are diagnostic (cause analysis), not realisable hardware changes",
-             f"gain resolution +-{eps:.2e} N*m (two sampled capability boundaries); a gain inside it is not a "
-             f"'limiting' finding, and a relaxation without an established capability is 'unresolved'",
-             "capabilities are sampled scans (certify=False): the classification is sampled evidence"]
-    if base_v is None:
-        notes.append("base capability not established: every classification is unresolved")
-    return DominanceResult(direction, base_v, tuple(active), tuple(rows), tuple(joint), relaxation, tuple(notes))
+    names = list(_available(drive, scenario))
+    tied = [pr for pr in TIED if set(pr) <= set(names)]
+    # one policy capability per step: the base, each limit relaxed alone, then the pairs (known after the singles)
+    with progress.span(1 + len(names) + len(tied), "dominance") as steps:
+        steps.step()
+        base = policy_capability(PolicyEvaluator(drive, scenario, settings), direction, samples=samples, certify=False)
+        ev0 = PolicyEvaluator(drive, scenario, settings)
+        tscale = ev0.k.torque_scale()
+        # resolution of one sampled capability boundary: bisection tolerance plus a numerical floor
+        res = max(settings.capability_bisection_rel_tol * tscale, 1e-7 * tscale, 1e-9)
+        eps = 2.0 * res
+        base_v = base.value_Nm if base.accepted else None
+        active = base.active_constraints
+        rows = []
+        gains = {}
+        for name in names:
+            steps.step()
+            d, s = _relaxed(drive, scenario, [name], relaxation)
+            cap = policy_capability(PolicyEvaluator(d, s, settings), direction, samples=samples, certify=False)
+            v = cap.value_Nm if cap.accepted else None
+            gain = None if (v is None or base_v is None) else direction * (v - base_v)
+            gains[name] = gain
+            p, _ = RELAXABLE[name]
+            lim = get_value(drive, scenario, p)
+            new_lim = get_value(d, s, p)
+            if gain is None:
+                cls = "unresolved (capability not established)"
+            elif gain - eps > 0:
+                cls = "limiting"
+            elif gain + eps < 0:
+                cls = "relaxation lowered the capability (non-monotonic response)"
+            else:
+                cls = "not limiting alone (gain within resolution)"
+            rows.append((("constraint", name), ("parameter", p), ("limit", lim), ("relaxed_limit", new_lim),
+                         ("perturbation", _perturbation(name, drive, scenario, relaxation)),
+                         ("capability_Nm", v), ("gain_Nm", gain),
+                         ("gain_interval_Nm", None if gain is None else [gain - eps, gain + eps]),
+                         ("gain_interval_meaning", "sampled resolution (two bisected boundaries), not an enclosure of the "
+                                                   "global capability change"),
+                         ("sensitivity_Nm_per_unit", None if gain is None or new_lim == lim else gain / abs(new_lim - lim)),
+                         ("active_at_base", name in active),
+                         ("classification", cls)))
+        joint = []
+        avail = set(gains)
+        weak = [n for n in gains if gains[n] is not None and gains[n] <= eps]
+        cand_pairs = [pr for pr in combinations(weak, 2) if pr[0] in active or pr[1] in active]
+        # tied caps of one side are always relaxed together (either can bind alone; together they are one constraint)
+        cand_pairs += [pr for pr in TIED if set(pr) <= avail and pr not in cand_pairs]
+        steps.remaining(len(cand_pairs))
+        for a, b in cand_pairs:
+            steps.step()
+            d, s = _relaxed(drive, scenario, [a, b], relaxation)
+            cap = policy_capability(PolicyEvaluator(d, s, settings), direction, samples=samples, certify=False)
+            v = cap.value_Nm if cap.accepted else None
+            gain = None if (v is None or base_v is None) else direction * (v - base_v)
+            pert = [_perturbation(n, drive, scenario, relaxation) for n in (a, b)]
+            if gain is None:
+                joint.append((("constraints", [a, b]), ("perturbation", pert), ("gain_Nm", None),
+                              ("classification", "unresolved")))
+            elif gain - eps > 0 and not any(g is not None and g - eps > 0 for g in (gains.get(a), gains.get(b))):
+                # only a pair helps: a joint bottleneck (a pair containing a limit that is limiting alone adds nothing)
+                joint.append((("constraints", [a, b]), ("perturbation", pert), ("gain_Nm", gain),
+                              ("gain_interval_Nm", [gain - eps, gain + eps]), ("classification", "joint bottleneck")))
+        notes = ["relaxations are diagnostic (cause analysis), not realisable hardware changes",
+                 f"gain resolution +-{eps:.2e} N*m (two sampled capability boundaries); a gain inside it is not a "
+                 f"'limiting' finding, and a relaxation without an established capability is 'unresolved'",
+                 "capabilities are sampled scans (certify=False): the classification is sampled evidence"]
+        if base_v is None:
+            notes.append("base capability not established: every classification is unresolved")
+        return DominanceResult(direction, base_v, tuple(active), tuple(rows), tuple(joint), relaxation, tuple(notes))
 
 
 @dataclass(frozen=True)
@@ -215,47 +224,56 @@ def requirement_relaxation(drive: DriveModel, scenario: Scenario, T_request: flo
     def first_ok(names):
         prev = 0.0
         seen_unknown = False
-        for f in fracs:
-            d, s = _relaxed(drive, scenario, names, f)
-            st = status(d, s)
-            if st == "FEASIBLE":
-                lo, hi = prev, f
-                for _ in range(40):
-                    m = 0.5 * (lo + hi)
-                    d, s = _relaxed(drive, scenario, names, m)
-                    sm = status(d, s)
-                    seen_unknown |= sm == "UNKNOWN"
-                    if sm == "FEASIBLE":
-                        hi = m
-                    else:
-                        lo = m
-                unresolved[tuple(names)] = seen_unknown
-                return hi
-            seen_unknown |= st == "UNKNOWN"
-            prev = f
+        with progress.span(len(fracs) + 40, "relaxation search") as search:     # the steps, then 40 bisections
+            for f in fracs:
+                search.step()
+                d, s = _relaxed(drive, scenario, names, f)
+                st = status(d, s)
+                if st == "FEASIBLE":
+                    search.remaining(40)
+                    lo, hi = prev, f
+                    for _ in range(40):
+                        search.step()
+                        m = 0.5 * (lo + hi)
+                        d, s = _relaxed(drive, scenario, names, m)
+                        sm = status(d, s)
+                        seen_unknown |= sm == "UNKNOWN"
+                        if sm == "FEASIBLE":
+                            hi = m
+                        else:
+                            lo = m
+                    unresolved[tuple(names)] = seen_unknown
+                    return hi
+                seen_unknown |= st == "UNKNOWN"
+                prev = f
         unresolved[tuple(names)] = seen_unknown
         return None
 
     singles_ok = False
-    for name in _available(drive, scenario):
-        f = first_ok([name])
-        p, _ = RELAXABLE[name]
-        lim = get_value(drive, scenario, p)
-        rows.append((("constraint", name), ("parameter", p), ("limit", lim),
-                     ("sufficient_alone", f is not None),
-                     ("minimal_relative_relaxation", f),
-                     ("minimal_meaning", "smallest sufficient relaxation found; UNKNOWN statuses were met below it - "
-                                         "not a proven minimum" if unresolved.get((name,)) else
-                                         "bracketed between an insufficient and a sufficient relaxation (sampled)"),
-                     ("relaxed_limit", None if f is None else get_value(*_relaxed(drive, scenario, [name], f), p)),
-                     ("perturbation", None if f is None else _perturbation(name, drive, scenario, f))))
-        singles_ok |= f is not None
-    if not singles_ok:
-        names = _available(drive, scenario)
-        for a, b in combinations(names, 2):
-            f = first_ok([a, b])
-            if f is not None:
-                joint.append((("constraints", [a, b]), ("minimal_relative_relaxation_each", f)))
+    names = list(_available(drive, scenario))
+    with progress.span(len(names), "relaxation") as tried:      # each limit; then each pair, if none suffices alone
+        for name in names:
+            tried.step()
+            f = first_ok([name])
+            p, _ = RELAXABLE[name]
+            lim = get_value(drive, scenario, p)
+            rows.append((("constraint", name), ("parameter", p), ("limit", lim),
+                         ("sufficient_alone", f is not None),
+                         ("minimal_relative_relaxation", f),
+                         ("minimal_meaning", "smallest sufficient relaxation found; UNKNOWN statuses were met below it "
+                                             "- not a proven minimum" if unresolved.get((name,)) else
+                                             "bracketed between an insufficient and a sufficient relaxation (sampled)"),
+                         ("relaxed_limit", None if f is None else get_value(*_relaxed(drive, scenario, [name], f), p)),
+                         ("perturbation", None if f is None else _perturbation(name, drive, scenario, f))))
+            singles_ok |= f is not None
+        if not singles_ok:
+            pairs = list(combinations(names, 2))
+            tried.remaining(len(pairs))
+            for a, b in pairs:
+                tried.step()
+                f = first_ok([a, b])
+                if f is not None:
+                    joint.append((("constraints", [a, b]), ("minimal_relative_relaxation_each", f)))
     notes = [f"searched relaxations up to +{max_relaxation:.0%} ({steps} steps + bisection); diagnostic only",
              "a realisable change (e.g. Vdc) moves several limits at once: use one-parameter sizing for it"]
     if not singles_ok and joint:

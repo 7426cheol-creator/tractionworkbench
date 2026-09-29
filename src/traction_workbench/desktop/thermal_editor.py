@@ -96,10 +96,13 @@ class StageTable(QTableWidget):
         self._recompute()
 
     def _append(self, r, x, flag):
+        self._append_text(f"{r:.6g}", f"{x:.6g}", flag)
+
+    def _append_text(self, r: str, x: str, flag: bool):
         i = self.rowCount()
         self.insertRow(i)
-        self.setItem(i, 0, QTableWidgetItem(f"{r:.6g}"))
-        self.setItem(i, 1, QTableWidgetItem(f"{x:.6g}"))
+        self.setItem(i, 0, QTableWidgetItem(r))
+        self.setItem(i, 1, QTableWidgetItem(x))
         d = QTableWidgetItem("")
         d.setFlags(Qt.ItemIsEnabled)
         self.setItem(i, 2, d)
@@ -107,6 +110,24 @@ class StageTable(QTableWidget):
         f.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
         f.setCheckState(Qt.Checked if flag else Qt.Unchecked)
         self.setItem(i, 3, f)
+
+    def workspace_state(self) -> dict:
+        """The stages as typed (a half-typed number included) with their flow-dependence marks."""
+        rows = [[(self.item(i, j).text() if self.item(i, j) else "") for j in (0, 1)]
+                + [self.item(i, 3) is not None and self.item(i, 3).checkState() == Qt.Checked]
+                for i in range(self.rowCount())]
+        return {"kind": self.kind, "rows": rows}
+
+    def restore_workspace(self, v: dict) -> list:
+        self._busy = True
+        self.kind = v.get("kind") or self.kind
+        self.setRowCount(0)
+        for r, x, flag in v.get("rows") or []:
+            self._append_text(str(r), str(x), bool(flag))
+        self._busy = False
+        self._headers()
+        self._recompute()
+        return []
 
     def add_stage(self):
         R, X, F = self.values(strict=False)
@@ -411,6 +432,28 @@ class ThermalModelEditor(QWidget):
 
     def reset(self):
         self.load(self.reset_source() if self.reset_source else api.EXAMPLE_THERMAL)
+
+    def workspace_state(self) -> dict:
+        """Every node as typed (not ``spec()``, which refuses an unfinished table), the model fields and the coolant."""
+        from .workspace import capture_fields
+        return {"nodes": [capture_fields(self.tabs.widget(i)) for i in range(self.tabs.count())],
+                "fields": capture_fields(self), "coolant": copy.deepcopy(self.coolant_spec)}
+
+    def restore_workspace(self, v: dict) -> list:
+        from .workspace import restore_fields
+        problems = []
+        while self.tabs.count():
+            w = self.tabs.widget(0)
+            self.tabs.removeTab(0)
+            w.deleteLater()
+        for k, node in enumerate(v.get("nodes") or []):
+            self.add_node()
+            problems += [tr(f"노드 {k + 1}: ", f"node {k + 1}: ") + p for p in restore_fields(self.tabs.widget(k), node)]
+        self.tabs.setCurrentIndex(0)
+        problems += restore_fields(self, v.get("fields") or {})
+        self.coolant_spec = copy.deepcopy(v.get("coolant"))
+        self.changed.emit()
+        return problems
 
     def spec(self) -> dict:
         nodes = [self.tabs.widget(i).spec() for i in range(self.tabs.count())]

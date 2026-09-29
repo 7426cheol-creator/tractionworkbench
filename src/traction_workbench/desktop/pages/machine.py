@@ -18,8 +18,9 @@ from PySide6.QtWidgets import (QFormLayout, QGroupBox, QHBoxLayout, QLineEdit, Q
 from ... import api
 from ...i18n import tr
 from ...plots import machine_figures as F
+from ...insight.systems import concept_sizing_insight, machine_trade_insight, winding_insight
 from ..widgets import (ConceptNote, KeyValueTable, NumTable, PlotPanel, check, error_box, fmt, hint, integer, number,
-                       primary_button, table_with_buttons)
+                       primary_button, table_with_buttons, with_reading)
 
 KINDS = "capability | point | ugo | asc | copper"
 
@@ -75,7 +76,7 @@ NOTE_S = lambda: tr(
 
 def _task(fn):
     def run(progress, body):
-        progress(0.1, tr("계산 중", "computing"))
+        progress(0.1, tr("계산 중", "computing"), 1.0)      # the engine's loops, if any, move the rest of the bar
         return fn(body)
     return run
 
@@ -100,6 +101,8 @@ def _floats(text: str, name: str) -> list[float]:
 
 
 class MachinePage(QWidget):
+    workspace_data = ("cand_lineage",)                   # a candidate handed over by the winding gate keeps its lineage
+
     def __init__(self, win):
         super().__init__()
         self.win = win
@@ -163,6 +166,7 @@ class MachinePage(QWidget):
         v.addWidget(ConceptNote(NOTE()))
         v.addStretch(1)
         split.addWidget(_scroll(form))
+        self.win.track_inputs(('machine_trade',), form)
         right = QWidget()
         rl = QVBoxLayout(right)
         rl.setContentsMargins(0, 0, 0, 0)
@@ -170,7 +174,11 @@ class MachinePage(QWidget):
         self.k_trade = KeyValueTable()
         rl.addWidget(self.p_trade, 3)
         rl.addWidget(self.k_trade, 2)
-        split.addWidget(right)
+        self.trade_tabs, self.i_trade = with_reading(right, tr(
+            "실행하면 해석이 표시됩니다 — 후보별 상대 여유와 구속 항목, 기준 대비 무엇이 좋아지고 나빠지는지, 파생 후보에서 무효가 되는 데이터.",
+            "Run to read the study — each candidate's relative margins and binding item, what improves and what worsens "
+            "against the reference, the data a derived candidate invalidates."))
+        split.addWidget(self.trade_tabs)
         split.setStretchFactor(1, 1)
         split.setSizes([470, 990])
         return split
@@ -251,6 +259,7 @@ class MachinePage(QWidget):
                 out.append(("   " + tr("스케일링", "scaling"), "; ".join(lin["carried"])))
                 out.append(("   " + tr("무효화 데이터", "invalidated data"), "; ".join(lin["invalidated"])))
         self.k_trade.set_rows(out)
+        self.i_trade.read("machine_trade", tr("트레이드 스터디", "trade study"), machine_trade_insight, res)
 
     # ================================================================== winding
     def _wind_tab(self):
@@ -295,6 +304,7 @@ class MachinePage(QWidget):
         v.addWidget(ConceptNote(NOTE_W()))
         v.addStretch(1)
         split.addWidget(_scroll(form))
+        self.win.track_inputs(('winding',), form)
         right = QWidget()
         rl = QVBoxLayout(right)
         rl.setContentsMargins(0, 0, 0, 0)
@@ -302,7 +312,11 @@ class MachinePage(QWidget):
         self.k_wind = KeyValueTable()
         rl.addWidget(self.p_wind, 3)
         rl.addWidget(self.k_wind, 2)
-        split.addWidget(right)
+        self.wind_tabs, self.i_wind = with_reading(right, tr(
+            "계산하면 해석이 표시됩니다 — 기본파·고조파 권선계수와 단절권 효과, 슬롯 고조파, 유효 턴, 일관성 검사, 대안 권선의 k_N.",
+            "Run to read the winding — fundamental and harmonic winding factors and the pitch effect, slot harmonics, "
+            "effective turns, consistency checks, the k_N of the alternative."))
+        split.addWidget(self.wind_tabs)
         split.setStretchFactor(1, 1)
         split.setSizes([420, 1040])
         return split
@@ -353,6 +367,7 @@ class MachinePage(QWidget):
                 rows.append((tr("대안: k_N 보내기 거부", "alternative: k_N not handed over"), "; ".join(cmp["refusals"])))
         rows.append((tr("의미", "meaning"), w["note"]))
         self.k_wind.set_rows(rows)
+        self.i_wind.read("winding", tr("권선", "winding"), winding_insight, w)
         self.w_send.setEnabled(bool(cmp and cmp["sendable"]))
 
     def send_candidate(self):
@@ -390,6 +405,7 @@ class MachinePage(QWidget):
         v.addWidget(ConceptNote(NOTE_S()))
         v.addStretch(1)
         split.addWidget(_scroll(form))
+        self.win.track_inputs(('concept_sizing',), form)
         right = QWidget()
         rl = QVBoxLayout(right)
         rl.setContentsMargins(0, 0, 0, 0)
@@ -397,7 +413,11 @@ class MachinePage(QWidget):
         self.k_size = KeyValueTable(headers=["σ [kPa]", "L/D", "V_r [L]", "D [mm]", "L [mm]", tr("원주속도 [m/s]", "tip speed [m/s]")])
         rl.addWidget(self.p_size, 3)
         rl.addWidget(self.k_size, 2)
-        split.addWidget(right)
+        self.size_tabs, self.i_size = with_reading(right, tr(
+            "계산하면 해석이 표시됩니다 — 전단응력·종횡비에 따른 회전자 크기와 팁 속도 한계 안에 드는 조합.",
+            "Run to read the sizes — rotor size over shear stress and aspect ratio, and which combinations stay within "
+            "the tip-speed limit."))
+        split.addWidget(self.size_tabs)
         split.setStretchFactor(1, 1)
         split.setSizes([420, 1040])
         return split
@@ -428,7 +448,8 @@ class MachinePage(QWidget):
                                fmt(r["L_stack_mm"], 4),
                                (fmt(r["tip_speed_m_s"], 4) + ("" if r.get("tip_speed_ok", True) else tr(" (초과)", " (exceeded)")))
                                if "tip_speed_m_s" in r else "—"] for r in rows])
+        self.i_size.read("concept_sizing", tr("개념 사이징", "concept sizing"), concept_sizing_insight, cs)
 
     def redraw(self):
-        for p in (self.p_trade, self.p_wind, self.p_size):
+        for p in (self.p_trade, self.p_wind, self.p_size, self.i_trade, self.i_wind, self.i_size):
             p.redraw()

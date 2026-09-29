@@ -17,8 +17,11 @@ from PySide6.QtWidgets import (QFormLayout, QGroupBox, QHBoxLayout, QLineEdit, Q
 from ... import api
 from ...i18n import tr
 from ...plots import pwm_figures as F
+from ...plots.labels import reason_label
+from ...insight.control import (driveline_insight, pwm_policies_insight, pwm_ripple_insight,
+                                pwm_timing_insight, pwm_transients_insight, stability_insight)
 from ..widgets import (ConceptNote, KeyValueTable, NumTable, PlotPanel, check, combo, error_box, fmt, hint, number,
-                       primary_button, table_with_buttons)
+                       primary_button, table_with_buttons, reading_tab)
 
 NOTE_PWM = lambda: tr(
     "<b>가변 PWM</b> = 운전점별 <b>캐리어(스위칭) 주파수</b> 변경입니다(전기 기본파·회전수 제어와 다름). 질문은 '최적 fsw'가 아니라 "
@@ -69,7 +72,7 @@ def _set(w, data):
 
 def _task(fn):
     def run(progress, body):
-        progress(0.1, tr("계산 중", "computing"))
+        progress(0.1, tr("계산 중", "computing"), 1.0)      # the engine's loops, if any, move the rest of the bar
         return fn(body)
     return run
 
@@ -265,6 +268,7 @@ class PwmDrivelinePage(QWidget):
         v.addWidget(ConceptNote(NOTE_PWM()))
         v.addStretch(1)
         split.addWidget(_scroll(form))
+        self.win.track_inputs(('pwm_policies', 'pwm_timing', 'pwm_ripple', 'pwm_transients'), form)
         right = QWidget()
         rl = QVBoxLayout(right)
         rl.setContentsMargins(0, 0, 0, 0)
@@ -276,6 +280,12 @@ class PwmDrivelinePage(QWidget):
         for p, lab in ((self.pl_pol, tr("정책 비교", "policies")), (self.pl_tim, tr("타이밍·전환", "timing · transition")),
                        (self.pl_rip, tr("리플", "ripple")), (self.pl_trn, tr("샘플링·전환 과도", "sampling · transition"))):
             self.p_tabs.addTab(p, lab)
+        self.i_pwm = reading_tab(self.p_tabs, tr(
+            "계산하면 해석이 표시됩니다 — 정책 비교: 인버터 에너지와 제어·파형 여유의 맞바꿈, 한계별 여유와 가장 빠듯한 항목 · 타이밍: "
+            "fsw에 따른 지연·위상 여유 · 리플: fsw에 따른 리플 · 과도: 샘플링 유효성과 전환 구현 방식별 전류 편차.",
+            "Run to read the result — policies: inverter energy against control and waveform margins, each limit's margin "
+            "and the tightest · timing: delay and phase margin over fsw · ripple over fsw · transients: sampling validity "
+            "and the current kick per implementation."))
         self.k_pwm = KeyValueTable()
         rl.addWidget(self.p_tabs, 3)
         rl.addWidget(self.k_pwm, 2)
@@ -417,7 +427,9 @@ class PwmDrivelinePage(QWidget):
         self.pl_trn.draw(F.fig_pwm_transients, res, name="pwm_transients",
                          csv=lambda r=res: {"m": r["sampling_curves"]["leg_shunt"]["m"],
                                             **{f"valid_{k}": c["valid_fraction"] for k, c in r["sampling_curves"].items()}})
-        self.p_tabs.setCurrentWidget(self.pl_trn)
+        if self.p_tabs.currentWidget() is not self.i_pwm:
+            self.p_tabs.setCurrentWidget(self.pl_trn)
+        self.i_pwm.read("pwm_transients", tr("샘플링·전환 과도", "sampling · transition"), pwm_transients_insight, res)
         h, pt = res["sampling_here"], res["point"]
         rows = [(tr("운전점", "operating point"), f"{pt['speed_rpm']:.0f} rpm · {pt['torque_Nm']:.0f} N·m · m {pt['m']:.3f} · "
                                                 f"f_e {pt['f_e_Hz']:.0f} Hz · fsw {pt['fsw_Hz'] / 1e3:g} kHz"),
@@ -453,7 +465,9 @@ class PwmDrivelinePage(QWidget):
                                             "energy_upper_J": [p["energy"]["upper_J"] for p in r["policies"]],
                                             "Tj_max_C": [p["Tj_max_C"] for p in r["policies"]],
                                             "phase_margin_min_deg": [p["phase_margin_min_deg"] for p in r["policies"]]})
-        self.p_tabs.setCurrentWidget(self.pl_pol)
+        if self.p_tabs.currentWidget() is not self.i_pwm:
+            self.p_tabs.setCurrentWidget(self.pl_pol)
+        self.i_pwm.read("pwm_policies", tr("정책 비교", "policies"), pwm_policies_insight, res)
         rows = []
         for p in res["policies"]:
             nm = p["policy"]["name"]
@@ -528,7 +542,9 @@ class PwmDrivelinePage(QWidget):
                          csv=lambda r=res: {k: [x.get(k) for x in r["rows"]] for k in
                                             ("fsw_Hz", "deadline_ok", "total_delay_s", "phase_margin_deg",
                                              "phase_at_mode_deg", "phase_at_crossover_deg")})
-        self.p_tabs.setCurrentWidget(self.pl_tim)
+        if self.p_tabs.currentWidget() is not self.i_pwm:
+            self.p_tabs.setCurrentWidget(self.pl_tim)
+        self.i_pwm.read("pwm_timing", tr("타이밍·전환", "timing · transition"), pwm_timing_insight, res)
         rows = [(f"{x['fsw_Hz'] / 1e3:g} kHz", (tr("deadline 미준수", "deadline missed") if not x["deadline_ok"] else
                                                  f"τ {1e6 * x['total_delay_s']:.1f} µs · PM {fmt(x.get('phase_margin_deg'), 3)}° "
                                                  f"({tr('결속 축', 'binding axis')} {x.get('binding_axis') or '—'}: "
@@ -552,7 +568,9 @@ class PwmDrivelinePage(QWidget):
         self.r_btn.setEnabled(True)
         self.last_rip = res
         self.pl_rip.draw(F.fig_pwm_ripple, res, name="pwm_ripple")
-        self.p_tabs.setCurrentWidget(self.pl_rip)
+        if self.p_tabs.currentWidget() is not self.i_pwm:
+            self.p_tabs.setCurrentWidget(self.pl_rip)
+        self.i_pwm.read("pwm_ripple", tr("리플", "ripple"), pwm_ripple_insight, res)
         self.k_pwm.set_rows([(f"{x['fsw_Hz'] / 1e3:g} kHz",
                               f"ripple {x['ripple_rms_A']:.4g} A rms (spectrum {x['ripple_rms_spectrum_A']:.4g}) · pp "
                               f"{x['ripple_pp_A']:.4g} A · Np {fmt(x['pulse_ratio'], 3)} · narrowest pulse "
@@ -685,6 +703,7 @@ class PwmDrivelinePage(QWidget):
         v.addWidget(ConceptNote(NOTE_DAMP()))
         v.addStretch(1)
         split.addWidget(_scroll(form))
+        self.win.track_inputs(('driveline', 'driveline_stability'), form)
         right = QWidget()
         rl = QVBoxLayout(right)
         rl.setContentsMargins(0, 0, 0, 0)
@@ -693,6 +712,12 @@ class PwmDrivelinePage(QWidget):
         self.pl_st = PlotPanel(hint=tr("'안정성 지도'를 누르세요", "press 'stability map'"))
         self.d_tabs.addTab(self.pl_dl, tr("응답", "response"))
         self.d_tabs.addTab(self.pl_st, tr("안정성", "stability"))
+        self.i_dl = reading_tab(self.d_tabs, tr(
+            "계산하면 해석이 표시됩니다 — 변형별 저크·응답·정착과 요구, 감쇠 없음 대비 무엇이 좋아지고 무엇을 잃는지, 전압 여유가 허용하는 "
+            "토크 변화율 · 안정성: 감쇠 이득과 지연 내성의 맞바꿈.",
+            "Run to read the result — jerk, response and settling per variant against the requirement, what improves and "
+            "what is lost against no damping, the torque slew the voltage allows · stability: damping gain against delay "
+            "tolerance."))
         self.k_dl = KeyValueTable()
         rl.addWidget(self.d_tabs, 3)
         rl.addWidget(self.k_dl, 2)
@@ -766,7 +791,9 @@ class PwmDrivelinePage(QWidget):
                         csv=lambda r=res: {**{"t_s": r["variants"]["off"]["sim"]["t_s"]},
                                            **{f"{n}_T_act": v["sim"]["T_act"] for n, v in r["variants"].items()},
                                            **{f"{n}_acc_l": v["sim"]["acc_l"] for n, v in r["variants"].items()}})
-        self.d_tabs.setCurrentWidget(self.pl_dl)
+        if self.d_tabs.currentWidget() is not self.i_dl:
+            self.d_tabs.setCurrentWidget(self.pl_dl)
+        self.i_dl.read("driveline", tr("응답 (변형 비교)", "response (variants)"), driveline_insight, res)
         md = res["modal"]
         rows = [(tr("모드", "mode"), f"{md['f_n_Hz']:.3f} Hz · ζ {md['zeta']:.4f} · α {md['alpha']:.4f}")]
         w = res.get("window")
@@ -775,7 +802,7 @@ class PwmDrivelinePage(QWidget):
         for n, v in res["variants"].items():
             m = v["metrics"]
             st = v.get("stability") or {}
-            rows.append((n, f"{v['status']}" + (f" — {'; '.join(v['reasons'])}" if v["reasons"] else "")))
+            rows.append((n, f"{v['status']}" + (f" — {'; '.join(reason_label(r) for r in v['reasons'])}" if v["reasons"] else "")))
             rows.append(("   " + tr("지표", "metrics"),
                          f"t90 {fmt(m.get('t_to_90_s') and 1e3 * m['t_to_90_s'], 3)} ms · jerk "
                          f"{fmt(m.get('peak_vehicle_jerk_m_s3'), 4)} m/s³ · settle {fmt(m.get('t_settle_s') and 1e3 * m['t_settle_s'], 3)} ms "
@@ -818,11 +845,13 @@ class PwmDrivelinePage(QWidget):
         self.s_btn.setEnabled(True)
         self.last_stab = res
         self.pl_st.draw(F.fig_driveline_stability, res, name="driveline_stability")
-        self.d_tabs.setCurrentWidget(self.pl_st)
+        if self.d_tabs.currentWidget() is not self.i_dl:
+            self.d_tabs.setCurrentWidget(self.pl_st)
+        self.i_dl.read("driveline_stability", tr("안정성", "stability"), stability_insight, res)
         self.k_dl.set_rows([(f"Kd {c['Kd']:g}", f"ζ (no delay) {c['zeta_undelayed']:.3f} · first destabilising delay "
                                                 f"{fmt(c['first_destabilising_delay_ms'], 4)} ms (relative-speed reference)")
                             for c in res["continuous_relative_speed"]] + [(tr("의미", "meaning"), res["meaning"])])
 
     def redraw(self):
-        for p in (self.pl_pol, self.pl_tim, self.pl_rip, self.pl_trn, self.pl_dl, self.pl_st):
+        for p in (self.pl_pol, self.pl_tim, self.pl_rip, self.pl_trn, self.pl_dl, self.pl_st, self.i_pwm, self.i_dl):
             p.redraw()

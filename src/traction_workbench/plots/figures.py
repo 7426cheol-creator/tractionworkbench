@@ -37,8 +37,10 @@ def _note(ax, text: str, loc: str = "upper left", fontsize: float = 7.5):
     x, y, ha, va = {"upper left": (0.01, 0.98, "left", "top"), "upper right": (0.99, 0.98, "right", "top"),
                     "lower left": (0.01, 0.02, "left", "bottom"),
                     "lower right": (0.99, 0.02, "right", "bottom")}[loc]
-    ax.text(x, y, text, transform=ax.transAxes, ha=ha, va=va, fontsize=fontsize, color=t["fg"], zorder=20,
-            bbox=dict(boxstyle="round,pad=0.35", fc=t["panel"], ec=t["grid"], alpha=0.92))
+    note = ax.text(x, y, text, transform=ax.transAxes, ha=ha, va=va, fontsize=fontsize, color=t["fg"], zorder=20,
+                   bbox=dict(boxstyle="round,pad=0.35", fc=t["panel"], ec=t["grid"], alpha=0.92))
+    note.set_in_layout(False)          # a note sits inside its axes: it never takes the plot's width (see fit_texts)
+    note._twb_note = text
 
 
 def _wrapped(text: str, width: int = 90, max_lines: int = 4) -> str:
@@ -51,6 +53,93 @@ def _wrapped(text: str, width: int = 90, max_lines: int = 4) -> str:
         lines = lines[:max_lines]
         lines[-1] += " …"
     return "\n".join(lines)
+
+
+def _side_title(ax, text: str, fontsize: float = 9, max_lines: int = 4) -> None:
+    """Title of one of several side-by-side axes.  ``fit_texts`` wraps it (and the axes' legend labels) to the axes'
+    laid-out width: constrained layout ignores the width of titles, so a long one would run into its neighbour or off
+    the figure on a small window or in English."""
+    ax._twb_side_title = (text, fontsize, max_lines)
+    ax.set_title(text, fontsize=fontsize)
+
+
+def _wrap_to(text: str, room: float, width, max_lines: int) -> str:
+    """The widest wrap of ``text`` whose lines fit ``room`` px (the narrowest within ``max_lines`` lines per original
+    line when none does); line breaks already in the text are kept."""
+    import textwrap
+    if width(text) <= room:
+        return text
+    parts = text.split("\n")
+    best = text
+    for n in range(max(len(p) for p in parts) - 1, 5, -1):
+        lines = [ln for p in parts for ln in (textwrap.wrap(p, n, break_long_words=False) or [p])]
+        if len(lines) > max_lines * len(parts):
+            break
+        best = "\n".join(lines)
+        if width(best) <= room:
+            break
+    return best
+
+
+def fit_texts(fig) -> None:
+    """Fit a drawn figure's words to its current size: the figure title wraps to the figure width, and every side
+    title (``_side_title``) with its legend labels wraps to its axes' width, the axes placed as if the legends fitted
+    (a legend wider than its axes would otherwise squeeze the plot to a sliver).  Called after drawing and whenever
+    the canvas is resized; the raw texts are kept, so each fit starts from them.  Presentation only: a failure leaves
+    the figure as drawn."""
+    import matplotlib as mpl
+    from matplotlib.font_manager import FontProperties
+    try:
+        get = getattr(fig.canvas, "get_renderer", None)
+        renderer = get() if get is not None else None
+        if renderer is None:
+            return
+        px = fig.get_figwidth() * fig.dpi
+
+        def measure(prop):
+            return lambda s: max(renderer.get_text_width_height_descent(ln, prop, ismath=False)[0]
+                                 for ln in s.split("\n"))
+
+        st = getattr(fig, "_suptitle", None)
+        if st is not None and st.get_text():
+            raw = getattr(st, "_twb_raw", None) or st.get_text()
+            st._twb_raw = raw
+            st.set_text(_wrap_to(raw, px - 12, measure(st.get_fontproperties()), 3))
+        axes = [a for a in fig.axes if getattr(a, "_twb_side_title", None)]
+        if not axes:
+            return
+        legends = [(lg, lg.get_in_layout()) for lg in (a.get_legend() for a in axes) if lg is not None]
+        try:
+            for lg, _was in legends:
+                lg.set_in_layout(False)
+            engine = fig.get_layout_engine()
+            if engine is not None:
+                engine.execute(fig)                        # the axes where the next draw puts them
+        finally:
+            for lg, was in legends:
+                lg.set_in_layout(was)
+        for ax in axes:
+            text, fontsize, max_lines = ax._twb_side_title
+            room = ax.get_position().width * px
+            prop = FontProperties(size=fontsize, weight=mpl.rcParams["axes.titleweight"])
+            ax.set_title(_wrap_to(text, room, measure(prop), max_lines), fontsize=fontsize)
+            for t in ax.texts:                             # notes inside the axes (``_note``)
+                raw = getattr(t, "_twb_note", None)
+                if raw and "$" not in raw:
+                    pad = 1.6 * t.get_fontsize() * fig.dpi / 72
+                    t.set_text(_wrap_to(raw, room - pad, measure(t.get_fontproperties()), 3))
+            lg = ax.get_legend()
+            if lg is None:
+                continue
+            for t in lg.get_texts():
+                raw = getattr(t, "_twb_raw", None) or t.get_text()
+                t._twb_raw = raw
+                if "$" in raw:                             # math text keeps its one line
+                    continue
+                pad = 4.3 * t.get_fontsize() * fig.dpi / 72    # handle, gaps and frame of one legend row
+                t.set_text(_wrap_to(raw, room - pad, measure(t.get_fontproperties()), 3))
+    except Exception:  # noqa: BLE001 - presentation only
+        pass
 
 
 def _discharge_summary(res: dict, width: int = 60) -> str:
@@ -307,7 +396,7 @@ def fig_power_constraints(fig, chain: list | None, rows: list, title: str | None
                                                                                 if eta else " · η_inv+motor N/A")),
               loc="upper right")
         ax1.set_ylabel(tr("전력 [kW]", "power [kW]"))
-        ax1.set_title(tr("전력 흐름 (DC → 축, 손실 차감)", "power chain (DC → shaft, losses subtracted)"))
+        _side_title(ax1, tr("전력 흐름 (DC → 축, 손실 차감)", "power chain (DC → shaft, losses subtracted)"))
     else:
         ax1.text(0.5, 0.5, tr("손실 모델 없음: DC/축 전력 미정의", "loss model missing: DC/shaft power undefined"),
                  ha="center", va="center", transform=ax1.transAxes)
@@ -326,12 +415,12 @@ def fig_power_constraints(fig, chain: list | None, rows: list, title: str | None
             unit = r["unit"].split(" ")[0]
             val = f"{sl / 1e3:.4g} kW" if unit == "W" else f"{sl:.4g} {unit}"
             txt += tr(f"  여유 {val}", f"  slack {val}")
-        ax2.text(u + 2, yi, txt, va="center", fontsize=7, color=t["fg"])
+        ax2.text(u + 2, yi, txt, va="center", fontsize=7, color=t["fg"], clip_on=True).set_in_layout(False)
     ax2.set_yticks(y)
     ax2.set_yticklabels([r["name"] for r in items], fontsize=7.5)
     ax2.set_xlim(0, max(135.0, (util.max() if util.size else 0) + 45))
     ax2.set_xlabel(tr("사용률 = 요구/한계 [%]", "utilisation = demand/limit [%]"))
-    ax2.set_title(tr("제약 사용률 (고유 단위 여유)", "constraint utilisation (native-unit slack)"))
+    _side_title(ax2, tr("제약 사용률 (고유 단위 여유)", "constraint utilisation (native-unit slack)"))
     ax2.legend(handles=[Patch(fc=S.STATE[k], label=lab) for k, lab in (
         ("SATISFIED", tr("만족", "satisfied")), ("ACTIVE", tr("활성(경계)", "active (boundary)")),
         ("VIOLATED", tr("위반", "violated")))], loc="lower right", fontsize=7)
@@ -946,7 +1035,8 @@ def fig_thermal(fig, av_curve: dict | None, th: dict | None, T_request: float | 
         ax1.set_xlabel(tr("지속시간 [s]", "duration [s]"))
         ax1.set_ylabel(torque_label())
         ax1.legend(loc="lower left", fontsize=7)
-        ax1.set_title(tr("열 → 토크 가용성 (미검증 모델이면 UNKNOWN 유지)", "thermal → torque availability (UNKNOWN if unvalidated)"), fontsize=9)
+        _side_title(ax1, tr("열 → 토크 가용성 (미검증 모델이면 UNKNOWN 유지)",
+                            "thermal → torque availability (UNKNOWN if unvalidated)"))
     else:
         ax1.text(0.5, 0.5, tr("가용성 데이터 없음", "no availability data"), ha="center", va="center", transform=ax1.transAxes)
     if th and th["curves"]:
@@ -972,7 +1062,8 @@ def fig_thermal(fig, av_curve: dict | None, th: dict | None, T_request: float | 
         ax2.set_xlabel(tr("시간 [s]", "time [s]"))
         ax2.set_ylabel(tr("온도 [°C]", "temperature [°C]"))
         ax2.legend(loc="upper left", fontsize=7)
-        ax2.set_title(tr("요구점의 노드 온도 (일정 손실, Foster)", "node temperatures at the request (constant loss, Foster)"), fontsize=9)
+        _side_title(ax2, tr("요구점의 노드 온도 (일정 손실, Foster)",
+                            "node temperatures at the request (constant loss, Foster)"))
     else:
         ax2.text(0.5, 0.5, tr("요구점이 정적으로 가능하지 않아 온도 계산 안 함", "request not statically feasible: no temperature trace"),
                  ha="center", va="center", transform=ax2.transAxes, fontsize=8)

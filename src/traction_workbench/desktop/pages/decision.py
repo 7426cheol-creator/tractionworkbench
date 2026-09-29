@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import numpy as np
@@ -12,39 +13,86 @@ from PySide6.QtWidgets import (QButtonGroup, QComboBox, QFileDialog, QFormLayout
                                QSplitter, QTabWidget, QTextBrowser, QVBoxLayout, QWidget)
 
 from ... import api
+from ... import progress as PR
 from ... import service as S
 from ...analysis.variation import PARAMETERS
 from ...i18n import language, tr
+from ...insight.decision import decision_insight, pending_text
+from ...insight.texts import engine_text
 from ...plots import figures as F
-from ...plots.labels import change_kind_label, param_label
+from ...plots.labels import change_kind_label, claim_label, constraint_label, param_label, reason_label, yes_no
 from ...requirement_set import classify
 from ...viz import design as DS
 from ...viz import maps as M
 from ...viz import operating as O
 from ...viz import sweeps as SW
 from ..opviews import OperatingViews
-from ..widgets import (ConceptNote, ClaimTree, KeyValueTable, PlotPanel, VerdictBanner, check, combo, error_box, fmt, hint,
-                       number, primary_button)
+from ..widgets import (ConceptNote, ClaimTree, InsightPanel, KeyValueTable, PlotPanel, VerdictBanner, check, combo, confirm,
+                       error_box, fmt, hint, number, primary_button)
+
+
+LAYER_NAMES = {"mathematical": lambda: tr("수학 (수치 증거)", "mathematical (numerical evidence)"),
+               "model": lambda: tr("모델 판정", "model verdict"),
+               "requirement": lambda: tr("요구 완결성", "requirement completeness"),
+               "qualification": lambda: tr("데이터 적격성", "data qualification")}
+
+
+ANALYSIS_KEYS = ("sizing", "dominance", "relaxation", "compare_Vdc")
 
 
 def _evaluate_task(progress, case: dict, analyses_curves: list):
-    progress(0.05, tr("판정 계산", "evaluating"))
-    rec_d, rec, case_obj = S.evaluate_case_full(case)
-    out = {"record": rec_d, "rec": rec, "case": case_obj, "curves": []}
-    progress(0.6, tr("id–iq 지도", "id–iq map"))
-    out["views"] = {0: _condition_views(rec, case_obj, 0)}
+    """The verdict first, then what builds on it: the PWM consequences at the same operating point, the optional
+    analyses and the design curves.  The verdict and its operating point go to the page as soon as they are known
+    (``progress.partial``, with the stages still to come in ``pending``); each stage's engine loops move the bar
+    through the stage's share."""
+    an = case.get("analyses") or {}
+    names = [tr("판정", "verdict"), tr("PWM 영향 (같은 운전점)", "PWM at the same point")]
+    if any(an.get(k) for k in ANALYSIS_KEYS):
+        names.append(tr("추가 분석", "analyses"))
+    if analyses_curves:
+        names.append(tr("설계 곡선", "design curves"))
+    n = len(names)
+
+    def stage(k: int) -> None:
+        progress(k / n, f"{k + 1}/{n} {names[k]}", (k + 1) / n)
+
+    stage(0)
+    t0 = time.perf_counter()
+    rec, case_obj = S.evaluate_decision(case)
+    spent = time.perf_counter() - t0             # the record's own time: verdict + analyses (as evaluate_case_full)
+    out = {"rec": rec, "case": case_obj, "curves": [], "views": {0: _condition_views(rec, case_obj, 0)}}
     cond = rec.conditions[0]
+    later = S.pending_analyses(rec, case_obj)
+    pending = (["pwm"] if cond.primary.point is not None else []) + later + (["curves"] if analyses_curves else [])
+    partial = getattr(progress, "partial", None)
+    if pending and partial is not None:          # its own containers: the stages below never change what it shows
+        partial({"rec": rec, "case": case_obj, "curves": [], "views": dict(out["views"]), "pwm_risk": None,
+                 "record": S.decision_record(rec, case_obj, {}, time.perf_counter() - spent), "pending": pending})
+    stage(1)
     if cond.primary.point is not None:          # PWM consequences at the same operating point (review priority 3)
         try:
             out["pwm_risk"] = api.pwm_risk_at(case_obj.drive, cond.scenario, cond.primary.point)
         except Exception as exc:  # noqa: BLE001 - a screening add-on never hides the decision
             out["pwm_risk"] = {"status": "ERROR", "reason": str(exc)}
-    for i, (param, lo, hi) in enumerate(analyses_curves):
-        progress(0.7 + 0.25 * i / max(1, len(analyses_curves)), f"{param}")
-        sc = rec.conditions[0].scenario
-        out["curves"].append(DS.capability_vs_parameter(case_obj.drive, sc, param, np.linspace(lo, hi, 31),
-                                                        T_request=rec.requirement.target_Nm,
-                                                        direction=1 if rec.requirement.target_Nm >= 0 else -1))
+    analyses = {}
+    k = 2
+    if any(an.get(key) for key in ANALYSIS_KEYS):
+        stage(k)
+        k += 1
+        t1 = time.perf_counter()
+        analyses = S.decision_analyses(rec, case_obj)
+        spent += time.perf_counter() - t1
+    if analyses_curves:
+        stage(k)
+        sc = cond.scenario
+        with PR.span(len(analyses_curves), "") as steps:                  # the stage name says what they are
+            for param, lo, hi in analyses_curves:
+                steps.step(param_label(param))
+                out["curves"].append(DS.capability_vs_parameter(case_obj.drive, sc, param, np.linspace(lo, hi, 31),
+                                                                T_request=rec.requirement.target_Nm,
+                                                                direction=1 if rec.requirement.target_Nm >= 0 else -1))
+    out["record"] = S.decision_record(rec, case_obj, analyses, time.perf_counter() - spent)
+    out["pending"] = []
     progress(1.0, "")
     return out
 
@@ -107,14 +155,36 @@ def _envelope_task(progress, drive, limits, Vdc, magnet_temp_C=None):
     return SW.envelope(drive, limits, Vdc, n=33, progress=progress, magnet_temp_C=magnet_temp_C)
 
 
+class _AdaptiveSplitter(QSplitter):
+    """Side by side when at least ``threshold`` px wide, one above the other when narrower (each part keeps a
+    readable width instead of two slivers)."""
+
+    def __init__(self, threshold: int):
+        super().__init__(Qt.Horizontal)
+        self._threshold = threshold
+
+    def resizeEvent(self, ev):
+        want = Qt.Horizontal if ev.size().width() >= self._threshold else Qt.Vertical
+        if self.orientation() != want:
+            self.setOrientation(want)
+            total = ev.size().width() if want == Qt.Horizontal else ev.size().height()
+            self.setSizes([total // 2, total - total // 2] if want == Qt.Horizontal else [total * 2 // 5, total * 3 // 5])
+        super().resizeEvent(ev)
+
+
 class DecisionPage(QWidget):
     def __init__(self, win):
         super().__init__()
         self.win = win
         self.result = None
         self._env_cache = {}
+        self._banner_last = ("NONE", "", "")        # verdict, the lines always shown, the folded details
+        self._inputs_note = ""
+        self._computing = False                     # the result on screen is a verdict whose later stages still run
+        self._run_partial = False                   # the latest run has shown its verdict (its later stages follow)
         split = QSplitter(Qt.Horizontal)
-        split.addWidget(self._build_form())
+        form = self._build_form()
+        split.addWidget(form)
         split.addWidget(self._build_results())
         split.setStretchFactor(1, 1)
         split.setSizes([330, 1100])
@@ -122,6 +192,76 @@ class DecisionPage(QWidget):
         lay.setContentsMargins(8, 8, 8, 8)
         lay.addWidget(split)
         self._load_preset(0)
+        self.win.track_inputs("decision", form)
+
+    # ------------------------------------------------------------------ window hooks
+    def task_finished(self, key: str, outcome: str) -> None:
+        """A cancelled evaluation leaves the last result (or the empty page) as it was, and says so.  When its
+        verdict is already on screen, the verdict stays (it is complete); what did not finish is named and saving
+        waits for a full run."""
+        if key != "decision" or outcome != "cancelled":
+            return
+        if self._partial_shown():
+            self._stages_stopped(tr("추가 계산을 취소했습니다.", "the later stages were cancelled."))
+            return
+        if self.result is not None:
+            v, html, details = self._banner_last
+            self._set_banner(v, html, details, tr("새 계산은 취소됨 — 이전 결과를 표시 중입니다.",
+                                                  "the new evaluation was cancelled - showing the previous result."))
+        else:
+            self.banner.set("NONE", tr("계산을 취소했습니다. 입력을 확인하고 다시 실행하세요 (Ctrl+Enter).",
+                                       "Evaluation cancelled. Check the inputs and run again (Ctrl+Enter)."))
+
+    def inputs_changed(self, changed: dict) -> None:
+        """The verdict on screen belongs to the inputs it was computed from: say so when the form differs."""
+        diffs = changed.get("decision") or []
+        if diffs:
+            shown = "; ".join(f"{f}: {a} → {b}" for f, a, b in diffs[:4])
+            if len(diffs) > 4:
+                shown += tr(f" 외 {len(diffs) - 4}개", f" and {len(diffs) - 4} more")
+            self._inputs_note = tr(f"⚠ 입력이 바뀌었습니다 — 이 판정은 바뀌기 전 입력으로 계산됐습니다 ({shown}). "
+                                   f"다시 실행: Ctrl+Enter",
+                                   f"⚠ inputs changed - this verdict was computed from the earlier inputs ({shown}). "
+                                   f"Run again: Ctrl+Enter")
+        else:
+            self._inputs_note = ""
+        if self.result is not None:
+            self._set_banner(*self._banner_last)
+
+    def _source_row(self, *_):
+        """The source resistance row (label and fields) is shown only when Vdc is a battery OCV."""
+        self._req_form.setRowVisible(self.src_row, self.vdc_kind.currentData() == "battery_ocv")
+
+    def _partial_shown(self) -> bool:
+        """The latest run's verdict is on screen and its later stages did not finish (``pending`` names them)."""
+        return self._run_partial and self.result is not None and bool(self.result.get("pending"))
+
+    def _stages_stopped(self, note: str) -> None:
+        """The run whose verdict is on screen ended before its later stages: the verdict stays (it is complete);
+        the reading, the banner and the analyses tab say what was not computed."""
+        self._computing = False
+        res = self.result
+        self.insight.show_insight(decision_insight(res["record"], res.get("pwm_risk"), res["pending"], running=False))
+        self._set_banner(*self._banner_last, note=note)
+        self._fill_analyses(res)
+
+    def _set_banner(self, verdict: str, html: str, details: str = "", note: str = "") -> None:
+        """Notes (inputs changed since, stages still computing or not finished, a cancelled re-run) always show;
+        the record details fold away."""
+        extra = "".join(f"<br><span style='color:#b35900'><b>{x}</b></span>"
+                        for x in (self._inputs_note, self._stages_note(), note) if x)
+        self.banner.set(verdict, html + extra, details)
+
+    def _stages_note(self) -> str:
+        pending = (self.result or {}).get("pending") or []
+        if not pending:
+            return ""
+        what = pending_text(pending)
+        if self._computing:
+            return tr(f"⏳ 계산 중: {what} — 판정은 확정입니다. 저장은 모두 끝난 뒤에 할 수 있습니다.",
+                      f"⏳ still computing: {what} - the verdict is final; saving follows when all is done.")
+        return tr(f"끝나지 않은 계산: {what} — 판정은 완료된 결과입니다. 기록을 저장하려면 다시 실행하세요.",
+                  f"not finished: {what} - the verdict is complete. Run again to save the record.")
 
     # ------------------------------------------------------------------ form
     def _build_form(self):
@@ -163,9 +303,7 @@ class DecisionPage(QWidget):
         sr.setContentsMargins(0, 0, 0, 0)
         sr.addWidget(self.src_R)
         sr.addWidget(self.src_basis, 1)
-        self.src_row.setVisible(False)
-        self.vdc_kind.currentIndexChanged.connect(
-            lambda *_: self.src_row.setVisible(self.vdc_kind.currentData() == "battery_ocv"))
+        self.vdc_kind.currentIndexChanged.connect(self._source_row)
         self.range_on = check(tr("Vdc 범위 요구", "Vdc range"), False,
                               tr("범위 전체를 요구하면 표본점 통과만으로 PASS가 아닙니다 (SAMPLED_COVERAGE). 단조성 조건(정적 순구동, Vdc "
                                  "무관 손실, 고정 소스 한계)이 성립하면 저전압 끝점으로 범위 전체를 입증합니다.",
@@ -223,7 +361,9 @@ class DecisionPage(QWidget):
         f.addRow(tr("속도", "speed"), self.speed)
         f.addRow("Vdc", self.vdc)
         f.addRow(tr("Vdc 의미", "Vdc meaning"), self.vdc_kind)
-        f.addRow("R_eq", self.src_row)
+        f.addRow(tr("소스 저항 R_eq", "source R_eq"), self.src_row)
+        self._req_form = f
+        self._source_row()                   # the label and the fields show only for a battery OCV
         f.addRow("", rr)
         f.addRow(tr("시간", "time"), self.dur_none)
         f.addRow("", dr)
@@ -243,8 +383,7 @@ class DecisionPage(QWidget):
             gl.addWidget(w)
         v.addWidget(g)
         self.run_btn = primary_button(tr("판정 실행  (Ctrl+Enter)", "Evaluate  (Ctrl+Enter)"))
-        self.run_btn.clicked.connect(self.run)
-        self.run_btn.setShortcut("Ctrl+Return")
+        self.run_btn.clicked.connect(self.run)          # Ctrl+Enter is the window's shortcut (every page)
         v.addWidget(self.run_btn)
         v.addWidget(ConceptNote(tr(
             "<b>판정 방식</b>: 요구 하나를 여러 판정 항목(claim)으로 나눕니다 — 전기적 존재(전압·전류·도메인), 최소전류 정책의 "
@@ -374,14 +513,24 @@ class DecisionPage(QWidget):
         except Exception as exc:  # noqa: BLE001
             error_box(self, tr("입력 오류", "input error"), str(exc))
             return
-        self.run_btn.setEnabled(False)
         self.banner.set("NONE", tr("계산 중…", "computing…"))
-        self.win.runner.run("decision", tr("요구 판정", "decision"), _evaluate_task, self._show, case, curves,
-                            on_error=self._failed)
+        self.start(tr("요구 판정", "decision"), case, curves)
+
+    def start(self, label: str, case: dict, curves: list) -> None:
+        """Evaluate ``case`` (the page's form, a case file, a row of a requirement set): the verdict shows as soon
+        as it is known, the PWM consequences, analyses and design curves follow."""
+        self.run_btn.setEnabled(False)
+        self._run_partial = False
+        self._computing = False                     # a verdict still on screen from a replaced run: its stages stop
+        self.win.runner.run("decision", label, _evaluate_task, self._show, case, curves, on_error=self._failed,
+                            on_partial=self._show_partial)
 
     def _failed(self, msg, tb):
         self.run_btn.setEnabled(True)
-        self.banner.set("NONE", f"<b>{msg.split(':')[0]}</b><br>{msg}")
+        if self._partial_shown():                   # the verdict stays; a later stage failed
+            self._stages_stopped(tr(f"추가 계산 실패: {msg}", f"a later stage failed: {msg}"))
+        else:
+            self.banner.set("NONE", f"<b>{msg.split(':')[0]}</b><br>{msg}")
         error_box(self, tr("판정 실패", "evaluation failed"), msg, tb)
 
     # --------------------------------------------------------------- results
@@ -390,6 +539,10 @@ class DecisionPage(QWidget):
         v = QVBoxLayout(w)
         v.setContentsMargins(6, 0, 0, 0)
         self.banner = VerdictBanner()
+        kept = self.win._session_kept()                      # the details stay folded or open as the person left them
+        self.banner.set_details_shown(kept and self.win.settings.value("decision/banner_details", False, type=bool))
+        self.banner.details_toggled.connect(
+            lambda on: self.win.settings.setValue("decision/banner_details", on) if self.win._session_kept() else None)
         v.addWidget(self.banner)
         row = QHBoxLayout()
         row.addWidget(QLabel(tr("표시 조건:", "condition:")))
@@ -405,11 +558,20 @@ class DecisionPage(QWidget):
             row.addWidget(b)
         v.addLayout(row)
         self.tabs = QTabWidget()
-        # summary
-        summ = QSplitter(Qt.Horizontal)
+        # the engineering reading of the result (conclusion, item by item, mechanism, what would change it)
+        self.insight = InsightPanel(tr("판정을 실행하면 결과의 엔지니어링 해석이 여기에 표시됩니다 — 결론과 여유, 판정 항목별 근거, "
+                                       "운전점에서 무엇이 한계인지, 전력·손실, 병목 기여도, 요구를 만족시키려면 무엇을 바꿔야 하는지, "
+                                       "이 결과가 말하지 않는 것.",
+                                       "Run the evaluation to read the result here: the conclusion and margin, each judged "
+                                       "item, what limits at the operating point, power and losses, the bottleneck "
+                                       "contributions, what would make it pass and what the result does not cover."))
+        self.tabs.addTab(self.insight, tr("엔지니어링 분석", "engineering reading"))
+        # summary: the claim tree beside the four sections on a wide result area, above them on a narrow one
+        summ = _AdaptiveSplitter(800)
         self.claims = ClaimTree()
-        self.key_table = KeyValueTable()
-        self.layers_table = KeyValueTable(headers=[tr("층", "layer"), tr("상태", "status"), tr("의미", "meaning")])
+        self.key_table = KeyValueTable(fit_rows=True)
+        self.layers_table = KeyValueTable(headers=[tr("층", "layer"), tr("상태", "status"), tr("의미", "meaning")],
+                                          fit_rows=True)
         self.layers_table.setToolTip(tr("서로 다른 진술을 하나의 판정으로 합치지 않습니다: 수치 증거 / 이 모델의 요구 판정 / "
                                         "요구의 완결성 / 데이터의 qualification",
                                         "Separate statements never merged into one verdict: numerical evidence / the "
@@ -419,7 +581,12 @@ class DecisionPage(QWidget):
         for lw in (self.limiting, self.actions):
             lw.setWordWrap(True)
             lw.setAlternatingRowColors(True)
-        right = QSplitter(Qt.Vertical)                 # four titled sections the user can resize
+        # four titled sections in one scrolling column; the tables are as tall as their rows, so no row is ever cut
+        # to a bare header (a short window scrolls instead)
+        right = QWidget()
+        rl = QVBoxLayout(right)
+        rl.setContentsMargins(0, 0, 4, 0)
+        rl.setSpacing(4)
         for title, body in ((tr("<b>판정 층</b> (수학 · 모델 · 요구 · qualification — 서로 다른 진술)",
                              "<b>claim layers</b> (mathematical · model · requirement · qualification — separate)"),
                           self.layers_table),
@@ -427,19 +594,21 @@ class DecisionPage(QWidget):
                          (tr("<b>제한 요인</b>", "<b>limiting factors</b>"), self.limiting),
                          (tr("<b>다음 조치 · 결론을 바꿀 자료</b>", "<b>next actions · data that would change the decision</b>"),
                           self.actions)):
-            box = QWidget()
-            bl = QVBoxLayout(box)
-            bl.setContentsMargins(0, 0, 0, 0)
-            bl.setSpacing(2)
             head = QLabel(title)
             head.setWordWrap(True)
-            bl.addWidget(head)
-            bl.addWidget(body, 1)
-            right.addWidget(box)
-        right.setSizes([170, 250, 150, 230])
+            rl.addWidget(head)
+            rl.addWidget(body)
+        for lw in (self.limiting, self.actions):
+            lw.setMinimumHeight(120)
+        rl.addStretch(1)
+        right_scroll = QScrollArea()
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setFrameShape(QScrollArea.NoFrame)
+        right_scroll.setWidget(right)
         summ.addWidget(self.claims)
-        summ.addWidget(right)
+        summ.addWidget(right_scroll)
         summ.setSizes([560, 560])
+        self.summary_tab = summ
         self.tabs.addTab(summ, tr("요약·근거", "summary · evidence"))
         self.views = OperatingViews()
         self.tabs.addTab(self.views, tr("운전점 그래프", "operating point"))
@@ -450,6 +619,7 @@ class DecisionPage(QWidget):
         al.setContentsMargins(0, 0, 0, 0)
         self.an_tabs = QTabWidget()
         al.addWidget(self.an_tabs)
+        self.an_tab = an
         self.tabs.addTab(an, tr("추가 분석", "analyses"))
         self.record_view = QTextBrowser()
         self.record_view.setOpenExternalLinks(False)
@@ -458,27 +628,57 @@ class DecisionPage(QWidget):
         v.addWidget(self.tabs, 1)
         return w
 
+    def _show_partial(self, res):
+        """The verdict, its reading and operating point as soon as they are known; the stages still running are
+        named on the banner, in the reading and in the analyses tab, and saving waits for the complete record."""
+        self._run_partial = True
+        self._render(res)
+
     def _show(self, res):
         self.run_btn.setEnabled(True)
+        if self._partial_shown() and self.result.get("rec") is res.get("rec"):
+            self._complete(res)                     # this run's verdict is on screen: add what the later stages found
+        else:
+            self._render(res)
+        self._run_partial = False
+
+    def _banner_parts(self, res, ins) -> tuple[str, str, str]:
+        """(verdict, the lines always shown, the folded details) of a result."""
+        rec = res["record"]
+        v = rec["verdict"]
+        reasons = ", ".join(reason_label(r) for r in v["reasons"]) or "—"
+        qual = "".join(f"<br>· {q}" for q in v.get("qualifiers", []))
+        cls = classify(v["status"], v["reasons"])
+        why = why_more = ""
+        if v["status"] != "FEASIBLE":           # the class of the answer says which kind of work could change it
+            why = f" · {tr('분류', 'class')}: <b>{tr(cls['label_ko'], cls['label_en'])}</b>"
+            why_more = ((f"<br>{tr('분류', 'class')}: {engine_text(cls['hint'])}" if cls["hint"] else "")
+                        + (tr(f" (원인 {len(cls['classes'])}개: {', '.join(cls['classes'])})",
+                              f" ({len(cls['classes'])} causes: {', '.join(cls['classes'])})")
+                           if len(cls.get("classes") or []) > 1 else ""))
+        deciding = ", ".join(dict.fromkeys(claim_label(n) for n in v.get("deciding_claims", []))) or "—"
+        # always shown: the conclusion with its numbers, the requirement id, why, and (not proven) what kind of work
+        # could change it; folded: the requirement text, qualifiers, reason codes, scope and the record identity
+        html = (f"<span style='font-size:10.5pt'>{ins.headline}</span><br>"
+                f"<b>{rec['requirement'].get('req_id', '')}</b> · {tr('사유', 'reasons')}: <b>{reasons}</b> · "
+                f"{tr('결정 항목', 'deciding items')}: {deciding}{why}")
+        codes = ", ".join(v["reasons"]) or "—"
+        details = (f"<b>{rec['requirement'].get('req_id', '')}</b> — {rec['requirement'].get('original_text', '')}{qual}"
+                   f"{why_more}<br>{tr('사유 코드', 'reason codes')}: {codes}"
+                   f"<br><span style='font-size:8.5pt'>{tr('범위', 'scope')}: {v.get('scope', '')}<br>record "
+                   f"{rec['record_id']} · input SHA-256 {rec['input_sha256'][:16]}… · {rec.get('elapsed_s', 0):.2f} s</span>")
+        return v["verdict"], html, details
+
+    def _render(self, res):
         self.result = res
         rec = res["record"]
         v = rec["verdict"]
-        reasons = ", ".join(v["reasons"]) or "—"
-        qual = "".join(f"<br>· {q}" for q in v.get("qualifiers", []))
-        cls = classify(v["status"], v["reasons"])
-        why = ""
-        if v["status"] != "FEASIBLE":           # the class of the answer says which kind of work could change it
-            why = (f"<br>{tr('분류', 'class')}: <b>{tr(cls['label_ko'], cls['label_en'])}</b>"
-                   + (f" — {cls['hint']}" if cls["hint"] else "")
-                   + (tr(f" (원인 {len(cls['classes'])}개: {', '.join(cls['classes'])})",
-                         f" ({len(cls['classes'])} causes: {', '.join(cls['classes'])})")
-                      if len(cls.get("classes") or []) > 1 else ""))
-        html = (f"<b>{rec['requirement'].get('req_id', '')}</b> — {rec['requirement'].get('original_text', '')}<br>"
-                f"{tr('사유', 'reasons')}: <b>{reasons}</b> · {tr('결정 claim', 'deciding claims')}: "
-                f"{', '.join(v.get('deciding_claims', [])) or '—'}{why}{qual}<br>"
-                f"<span style='font-size:8pt'>{tr('범위', 'scope')}: {v.get('scope', '')}<br>record {rec['record_id']} · "
-                f"input SHA-256 {rec['input_sha256'][:16]}… · {rec.get('elapsed_s', 0):.2f} s</span>")
-        self.banner.set(v["verdict"], html)
+        ins = decision_insight(rec, res.get("pwm_risk"), res.get("pending") or ())
+        self.insight.show_insight(ins)
+        self._banner_last = self._banner_parts(res, ins)
+        self._inputs_note = ""
+        self._computing = bool(res.get("pending"))
+        self._set_banner(*self._banner_last)
         self.cond_combo.blockSignals(True)
         self.cond_combo.clear()
         for i, c in enumerate(rec["conditions"]):
@@ -513,18 +713,32 @@ class DecisionPage(QWidget):
                 meaning = "; ".join(L["open_items"])
             if key == "qualification":
                 meaning = f"{L.get('validation_status', '')} · " + " | ".join(L.get("sub_models", []))
-            lrows.append((key, st, meaning))
+            lrows.append((LAYER_NAMES[key](), st, meaning))
             lcol[(i, 1)] = "#1a7f37" if (st in good or st.startswith("FEASIBLE")) else (
                 "#cf222e" if st in ("INFEASIBLE", "UNRESOLVED") else "#b7791f")
         self.layers_table.set_rows(lrows, lcol)
         for b in (self.save_json, self.save_md, self.save_pdf):
-            b.setEnabled(True)
+            b.setEnabled(not res.get("pending"))
         self._fill_analyses(res)
         self._condition_changed(0)
         self._env_cache.pop("current", None)
         self.env_panel.placeholder(tr("이 탭을 열면 T–n 곡선을 계산합니다.", "Opening this tab computes the T–n envelope."))
         if self.tabs.currentWidget() is self.env_panel:
             self._tab_changed(self.tabs.currentIndex())
+
+    def _complete(self, res):
+        """The later stages of the run whose verdict is on screen: the reading, the record details (its time) and
+        the analyses tab take them in; the verdict, claims and operating point graphs stay as they are."""
+        res["views"] = {**res["views"], **self.result["views"]}     # condition views drawn meanwhile stay
+        self.result = res
+        self._computing = False
+        ins = decision_insight(res["record"], res.get("pwm_risk"))
+        self.insight.show_insight(ins)
+        self._banner_last = self._banner_parts(res, ins)
+        self._set_banner(*self._banner_last)
+        for b in (self.save_json, self.save_md, self.save_pdf):
+            b.setEnabled(True)
+        self._fill_analyses(res)
 
     def _condition_changed(self, idx):
         if self.result is None or idx < 0:
@@ -551,12 +765,13 @@ class DecisionPage(QWidget):
         pcap = c.get("policy_capability") or {}
         rw = c.get("requirement_witness")
         rows = [(tr("요구 판정 (이 조건)", "requirement at condition"), c["requirement_claim_at_this_condition"]["status"]),
-                (tr("요구 witness (정적·DC·지속 모두 같은 점)", "requirement witness (static, DC, duration at one point)"),
+                (tr("요구 근거점 witness (정적·DC·지속 모두 같은 점)", "requirement witness (static, DC, duration at one point)"),
                  "—" if not rw else f"T = {fmt(rw['torque_Nm'])} N·m, id / iq = {fmt(rw['id_A'])} / {fmt(rw['iq_A'])} A"),
                 (tr("토크 capability 여유 [N·m]", "torque capability margin [N·m]"), fmt(margin)),
-                (tr("정책 capability [N·m] / certified", "policy capability [N·m] / certified"),
-                 f"{fmt(pcap.get('achieved_value_Nm'))} / {pcap.get('certified')}"),
-                (tr("capability 제한 제약", "capability limited by"), ", ".join(pcap.get("active_constraints_at_witness") or []) or "—")]
+                (tr("정책 capability [N·m] / 인증", "policy capability [N·m] / certified"),
+                 f"{fmt(pcap.get('achieved_value_Nm'))} / {yes_no(pcap.get('certified'))}"),
+                (tr("capability를 정하는 제약", "capability limited by"),
+                 ", ".join(constraint_label(n) for n in pcap.get("active_constraints_at_witness") or []) or "—")]
         rc = c.get("rejected_band_centre")
         if rc:
             rows.append((tr("밴드 중심 (탈락 후보, 진단용)", "band centre (rejected candidate, diagnostic)"),
@@ -569,7 +784,7 @@ class DecisionPage(QWidget):
                      (tr("전압 여유 [V]", "voltage margin [V]"), fmt(op["voltage"]["remaining_command_margin_V"])),
                      ("P_dc [kW] / I_dc [A]", f"{fmt(None if op['Pdc_W'] is None else op['Pdc_W'] / 1e3)} / {fmt(op['Idc_A_average'])}"),
                      (tr("효율", "efficiency"), f"{fmt(op['efficiency'])} ({op['energy_mode']})"),
-                     (tr("제약 위반", "violated"), ", ".join(op["violated_groups"]) or "—")]
+                     (tr("제약 위반", "violated"), ", ".join(constraint_label(n) for n in op["violated_groups"]) or "—")]
         self.key_table.set_rows(rows)
 
     def _fill_analyses(self, res):
@@ -605,6 +820,17 @@ class DecisionPage(QWidget):
             t = KeyValueTable(headers=[tr("항목", "item"), tr("값", "value")])
             t.set_rows(_pwm_risk_rows(pr))
             self.an_tabs.addTab(t, tr("PWM 위험 (같은 운전점)", "PWM risk (same point)"))
+        pending = res.get("pending") or []
+        if pending and self._computing:
+            lab = hint(tr(f"계산 중: {pending_text(pending)} — 끝나면 여기에 표시됩니다.",
+                          f"computing: {pending_text(pending)} - shown here when done."))
+            lab.setAlignment(Qt.AlignCenter)
+            self.an_tabs.addTab(lab, "⏳")
+        elif pending:
+            lab = hint(tr(f"끝나지 않은 계산: {pending_text(pending)} — 다시 실행하면 계산합니다.",
+                          f"not finished: {pending_text(pending)} - run again to compute."))
+            lab.setAlignment(Qt.AlignCenter)
+            self.an_tabs.addTab(lab, "—")
         if self.an_tabs.count() == 0:
             lab = hint(tr("요청된 추가 분석이 없습니다. 왼쪽 '추가 분석'에서 선택하세요.", "No additional analyses requested."))
             lab.setAlignment(Qt.AlignCenter)
@@ -615,7 +841,7 @@ class DecisionPage(QWidget):
             return
         rec = self.result["rec"]
         sc = rec.conditions[max(0, self.cond_combo.currentIndex())].scenario
-        key = (id(self.result), sc.Vdc_V, sc.magnet_temp_C)
+        key = (id(rec), sc.Vdc_V, sc.magnet_temp_C)        # the same run's verdict and complete result share it
         if key in self._env_cache:
             self._draw_env(self._env_cache[key])
             return
@@ -649,7 +875,21 @@ class DecisionPage(QWidget):
                                                  "electrical_min_Nm": env["min"]["electrical_T_Nm"]})
 
     # ------------------------------------------------------------------- save
+    def _confirm_current(self) -> bool:
+        """Saving a result whose inputs were edited since: say which inputs it belongs to before writing it."""
+        diffs = self.win.input_changes("decision")
+        if not diffs:
+            return True
+        shown = "\n".join(f"· {f}: {a} → {b}" for f, a, b in diffs[:8])
+        return confirm(self, tr("바뀌기 전 입력의 결과", "result of the earlier inputs"),
+                       tr(f"화면의 판정은 바뀌기 전 입력으로 계산됐습니다:\n{shown}\n\n저장되는 기록도 그 입력의 결과입니다. "
+                          f"그대로 저장할까요? (지금 입력으로 저장하려면 먼저 다시 실행하세요.)",
+                          f"The verdict on screen was computed from the earlier inputs:\n{shown}\n\nThe saved record is "
+                          f"that result. Save it anyway? (Run again first to save the current inputs.)"))
+
     def _save_json(self):
+        if self.result is None or self.result.get("pending") or not self._confirm_current():
+            return
         rec = self.result["record"]
         path, _ = QFileDialog.getSaveFileName(self, tr("의사결정 기록 저장", "save decision record"), f"{rec['record_id']}.json", "JSON (*.json)")
         if path:
@@ -657,10 +897,14 @@ class DecisionPage(QWidget):
             Path(path).write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
     def _save_md(self):
+        if self.result is None or self.result.get("pending") or not self._confirm_current():
+            return
         rec = self.result["record"]
         path, _ = QFileDialog.getSaveFileName(self, tr("Markdown 저장", "save Markdown"), f"{rec['record_id']}.md", "Markdown (*.md)")
         if path:
-            md = rec["markdown"]
+            reading = decision_insight(rec, self.result.get("pwm_risk"))
+            md = ("## " + tr("엔지니어링 분석 (아래 기록의 수치에서 도출)", "Engineering reading (from the record's numbers below)")
+                  + "\n\n" + reading.markdown() + "\n\n---\n\n" + rec["markdown"])
             if rec.get("project_context"):                      # the product data it was computed from (R2)
                 from ...report_pdf import project_line
                 md += "\n\n## " + tr("프로젝트 (제품 데이터)", "Project (product data)") + "\n\n" + \
@@ -668,13 +912,16 @@ class DecisionPage(QWidget):
             Path(path).write_text(md, encoding="utf-8")
 
     def _save_pdf(self):
+        if self.result is None or self.result.get("pending") or not self._confirm_current():
+            return
         rec = self.result["record"]
         path, _ = QFileDialog.getSaveFileName(self, tr("PDF 보고서 저장", "save PDF report"), f"{rec['record_id']}.pdf", "PDF (*.pdf)")
         if path:
             from ...report_pdf import build_pdf
             res = self.result
             self.win.runner.run("pdf", tr("PDF 보고서", "PDF report"),
-                                lambda progress: build_pdf(path, res["record"], res["rec"], res["case"], progress=progress),
+                                lambda progress: build_pdf(path, res["record"], res["rec"], res["case"], progress=progress,
+                                                           pwm_risk=res.get("pwm_risk")),
                                 self._pdf_done)
 
     def _pdf_done(self, p):
@@ -684,6 +931,7 @@ class DecisionPage(QWidget):
 
     def redraw(self):
         self.banner.restyle()
+        self.insight.redraw()
         self.views.redraw()
         self.env_panel.redraw()
         for i in range(self.an_tabs.count()):

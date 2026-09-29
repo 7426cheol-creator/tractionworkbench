@@ -13,7 +13,10 @@ from ...solvers.policy import PolicyEvaluator
 from ...viz import maps as M
 from ...viz import operating as O
 from ..opviews import OperatingViews
-from ..widgets import ConceptNote, KeyValueTable, MagnetTempInput, error_box, hint, number, primary_button
+from ...insight.drive import point_insight
+from ...insight.texts import engine_parts
+from ..widgets import (ConceptNote, KeyValueTable, MagnetTempInput, claim_cell, error_box, hint, number, primary_button,
+                       reading_tab)
 
 
 def _task(progress, drive, limits, n, vdc, mode, T, idv, iqv, magnet_temp_C=None):
@@ -109,12 +112,16 @@ class ExplorerPage(QWidget):
         split.addWidget(sc)
         self.views = OperatingViews(clickable=True)
         self.views.plane_clicked.connect(self._picked)
+        self.insight = reading_tab(self.views.tabs, tr(
+            "계산하면 이 운전점의 해석이 표시됩니다 — 무엇이 한계인지(전압·전류·DC), 약계자 여부, 전력이 어디로 가는지.",
+            "Run to read this operating point — what limits it (voltage, current, DC), field weakening, where the power goes."))
         split.addWidget(self.views)
         split.setStretchFactor(1, 1)
         split.setSizes([330, 1100])
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
         lay.addWidget(split)
+        self.win.track_inputs("explorer", form)
 
     def run(self):
         s = self.win.state
@@ -170,10 +177,15 @@ class ExplorerPage(QWidget):
             if not fwd["validity_gate"]:
                 rows.append((tr("모델 유효성 gate", "model validity gate"), "UNKNOWN", "; ".join(fwd["issues"])))
         for c in res["claims"]:
-            rows.append((c["name"], c["status"], c["detail"]))
+            rows.append((claim_cell(c["name"]), c["status"], engine_parts(c.get("detail") or "")))
         from ..theme import status_color
         colors = {(i, 1): status_color(r[1]) for i, r in enumerate(rows)}
         self.claims.set_rows(rows, colors)
+        where = f"n = {sc.speed_rpm:g} rpm · Vdc = {sc.Vdc_V:g} V" + (          # the reading says the mode in words
+            f" · T_mag {sc.magnet_temp_C:g} °C" if sc.magnet_temp_C is not None else "")
+        self.insight.read("explorer", tr("운전점", "operating point"), point_insight,
+                          None if res["pv"] is None else res["pv"].point.to_dict(), where,
+                          res.get("T"), res.get("forward"), res.get("claims"))
         if res["pv"] is not None:
             self.views.show_point(res["pv"], title)
         else:
@@ -182,3 +194,4 @@ class ExplorerPage(QWidget):
 
     def redraw(self):
         self.views.redraw()
+        self.insight.redraw()

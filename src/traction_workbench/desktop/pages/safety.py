@@ -13,8 +13,12 @@ from ...i18n import tr
 from ...extensions.dclink import back_emf_ll_peak, speed_for_back_emf
 from ...plots import figures as F
 from ...plots import schematics as SC
+from ...plots.labels import reason_label
 from ...viz import safety as SF
-from ..widgets import ConceptNote, KeyValueTable, PlotPanel, check, combo, error_box, fmt, hint, number, primary_button
+from ...insight.safety import (discharge_insight, ftti_insight, overvoltage_insight, passive_insight,
+                               safe_state_insight)
+from ..widgets import (ConceptNote, KeyValueTable, PlotPanel, check, combo, error_box, fmt, hint, number,
+                       primary_button, reading_tab, with_reading)
 
 NOTE_FTTI = lambda: (tr("<b>FTTI (Fault Tolerant Time Interval)</b>: 고장 발생부터 위험 사건이 일어나기 전까지 허용되는 시간입니다. "
                 "감지 시간(FDTI: 센싱·필터·판정·디바운스)과 반응 시간(FRTI: 요청·게이트 차단·전류 감쇠)의 최악 합이 FTTI보다 짧아야 합니다. "
@@ -109,6 +113,33 @@ class RulesTable(QTableWidget):
         for row in sorted({i.row() for i in self.selectedIndexes()}, reverse=True):
             self.removeRow(row)
 
+    def workspace_state(self) -> list:
+        """The rules as typed: text cells, the three choices, the basis."""
+        k = len(RULE_NUM) + 1
+        return [{"cells": [(self.item(r, j).text() if self.item(r, j) else "") for j in range(k)],
+                 "choices": [self.cellWidget(r, k + i).currentData() for i in range(3)],
+                 "basis": self.item(r, k + 3).text() if self.item(r, k + 3) else ""} for r in range(self.rowCount())]
+
+    def restore_workspace(self, rows: list) -> list:
+        k = len(RULE_NUM) + 1
+        problems = []
+        self.setRowCount(0)
+        for n, row in enumerate(rows or []):
+            self.add({"rule_id": "", "when": {}, "basis": ""})
+            r = self.rowCount() - 1
+            for j, txt in enumerate((row.get("cells") or [])[:k]):
+                self.setItem(r, j, QTableWidgetItem(str(txt)))
+            for i, data in enumerate((row.get("choices") or [])[:3]):
+                c = self.cellWidget(r, k + i)
+                idx = next((q for q in range(c.count()) if c.itemData(q) == data), None)
+                if idx is None:
+                    problems.append(tr(f"규칙 {n + 1}: 선택 '{data}'이 현재 선택지에 없음", f"rule {n + 1}: choice "
+                                                                               f"'{data}' is not offered now"))
+                else:
+                    c.setCurrentIndex(idx)
+            self.setItem(r, k + 3, QTableWidgetItem(str(row.get("basis", ""))))
+        return problems
+
     def rules(self) -> list:
         out = []
         k = len(RULE_NUM) + 1
@@ -133,8 +164,12 @@ class RulesTable(QTableWidget):
         return out
 
 
+def _reasons(c: dict) -> str:
+    return ", ".join(reason_label(r) for r in c.get("reasons") or []) or "—"
+
+
 def _claim_line(c: dict) -> str:
-    return f"{c['status']} · {', '.join(c.get('reasons') or []) or '—'} · {c.get('detail', '')}"
+    return f"{c['status']} · {_reasons(c)} · {c.get('detail', '')}"
 
 
 def ms_(x):
@@ -143,7 +178,7 @@ def ms_(x):
 
 def _claim_rows(c: dict) -> list:
     """Claim as table rows: status + reasons, then one row per clause of the detail (long messages stay readable)."""
-    rows = [(tr("판정", "claim"), f"{c['status']} · {', '.join(c.get('reasons') or []) or '—'}")]
+    rows = [(tr("판정", "claim"), f"{c['status']} · {_reasons(c)}")]
     rows += [(tr("근거", "detail") if i == 0 else "", part) for i, part in enumerate(p for p in (c.get("detail") or "").split("; ") if p)]
     rows += [(tr("한정", "qualifier"), q) for q in c.get("qualifiers") or []]
     return rows
@@ -253,6 +288,7 @@ class SafetyPage(QWidget):
         v.addWidget(b)
         v.addWidget(ConceptNote(NOTE_FTTI()))
         split.addWidget(left)
+        self.win.track_inputs("ftti", left)
         right = QWidget()
         rv = QVBoxLayout(right)
         rv.setContentsMargins(0, 0, 0, 0)
@@ -260,7 +296,12 @@ class SafetyPage(QWidget):
         self.t_ftti = KeyValueTable()
         rv.addWidget(self.p_ftti, 3)
         rv.addWidget(self.t_ftti, 1)
-        split.addWidget(right)
+        self.ftti_tabs, self.i_ftti = with_reading(right, tr(
+            "분석하면 해석이 표시됩니다 — 시간이 어느 항목에서 쓰이는지(선택 경로, 사건 순서), 감지·반응 분담, 예산 점검, 이중 계산·공백.",
+            "Analyse to read the chain — where the time goes (chosen path, in event order), the detection / reaction "
+            "split, the budget checks, double counts and gaps."))
+        self.ftti_tabs.setTabText(1, tr("타임라인·표", "timeline · table"))
+        split.addWidget(self.ftti_tabs)
         split.setSizes([520, 900])
         lay = QVBoxLayout(w)
         lay.setContentsMargins(0, 4, 0, 0)
@@ -364,6 +405,7 @@ class SafetyPage(QWidget):
             rows.append((c["budget"], txt))
         rows += [(tr("주석", "note"), n) for n in res.get("notes", [])]
         self.t_ftti.set_rows(rows)
+        self.i_ftti.read("ftti", "FTTI", ftti_insight, res)
 
     # --------------------------------------------------------------- DC link
     def _dclink_tab(self):
@@ -389,6 +431,7 @@ class SafetyPage(QWidget):
         b.clicked.connect(self.run_discharge)
         f.addRow(b)
         v.addWidget(g)
+        dis_box = g
         v.addWidget(ConceptNote(NOTE_DISCHARGE()))
         g = QGroupBox(tr("패시브 방전 (상시 연결 블리더 저항)", "passive discharge (always-connected bleeder)"))
         f = QFormLayout(g)
@@ -415,6 +458,7 @@ class SafetyPage(QWidget):
         b.clicked.connect(self.run_passive)
         f.addRow(b)
         v.addWidget(g)
+        pas_box = g
         v.addWidget(ConceptNote(NOTE_PASSIVE()))
         g = QGroupBox(tr("회생 중 배터리 차단 과전압", "battery disconnect during regen"))
         f = QFormLayout(g)
@@ -433,12 +477,16 @@ class SafetyPage(QWidget):
         b.clicked.connect(self.run_overvoltage)
         f.addRow(b)
         v.addWidget(g)
+        ov_box = g
         v.addWidget(ConceptNote(NOTE_OV()))
         v.addStretch(1)
         sc = QScrollArea()
         sc.setWidgetResizable(True)
         sc.setWidget(left)
         split.addWidget(sc)
+        self.win.track_inputs("discharge", dis_box)
+        self.win.track_inputs("passive", pas_box)
+        self.win.track_inputs("overvoltage", ov_box)
         right = QTabWidget()
         self.dc_tabs = right
         for key, label in (("dis", tr("능동 방전", "active discharge")), ("pas", tr("패시브 방전", "passive discharge")),
@@ -457,6 +505,12 @@ class SafetyPage(QWidget):
             setattr(self, f"p_{key}", plot)
             setattr(self, f"t_{key}", table)
             right.addTab(w2, label)
+        self.i_dc = reading_tab(right, tr(
+            "계산하면 해석이 표시됩니다 — 능동 방전: RC 메커니즘과 저항 부담, 회전 중 역기전력 · 패시브: 시간·손실 조건의 설계 창과 맞바꿈 · "
+            "과전압: 에너지 수지, 허용 반응 시간, 필요한 커패시턴스.",
+            "Run to read the result — active discharge: the RC mechanism and the resistor stress, the back-EMF while "
+            "spinning · passive: the time / loss design window and its trade · overvoltage: the energy balance, the "
+            "allowed reaction time, the capacitance it would take."))
         split.addWidget(right)
         split.setSizes([380, 1000])
         self._default_dclink_schematics()
@@ -508,6 +562,7 @@ class SafetyPage(QWidget):
         if wa:
             rows.append((tr("능동 R_a 병렬 시", "with active R_a in parallel"), f"{wa['t_reach_s']:.4g} s"))
         self.t_pas.set_rows(rows + _emf_rows(res))
+        self.i_dc.read("passive", tr("패시브 방전", "passive discharge"), passive_insight, res)
 
     def _default_dclink_schematics(self):
         self.s_dis.draw(SC.fig_dclink_schematic, "discharge",
@@ -557,6 +612,7 @@ class SafetyPage(QWidget):
                  (tr("초기 전류 · 전력 · 저항 에너지", "initial current · power · resistor energy"),
                   f"{res['I0_A']:.3g} A · {res['P0_W']:.4g} W · {res['E_R_J']:.4g} J")]
         self.t_dis.set_rows(rows + _emf_rows(res))
+        self.i_dc.read("discharge", tr("능동 방전", "active discharge"), discharge_insight, res)
 
     def run_overvoltage(self):
         s = self.win.state
@@ -593,6 +649,7 @@ class SafetyPage(QWidget):
             rows.append((tr("역기전력 선간 peak", "back-EMF line-line peak"), f"{res['back_emf_ll_peak_V']:.4g} V"))
         rows += [(tr("주석", "note"), n) for n in res.get("notes", [])]
         self.t_ov.set_rows(rows)
+        self.i_dc.read("overvoltage", tr("회생 중 배터리 차단", "battery disconnect while regenerating"), overvoltage_insight, res)
 
     # ------------------------------------------------------------ safe state
     def _safe_tab(self):
@@ -636,6 +693,7 @@ class SafetyPage(QWidget):
         v.addWidget(b)
         v.addWidget(ConceptNote(NOTE_SAFE()))
         split.addWidget(left)
+        self.win.track_inputs("safe_state", left)
         right = QTabWidget()
         self.s_safe = PlotPanel(min_height=300)
         self.p_safe = PlotPanel()
@@ -643,6 +701,10 @@ class SafetyPage(QWidget):
         right.addTab(self.s_safe, tr("회로 비교 (ASC / Freewheel)", "circuits (ASC / freewheel)"))
         right.addTab(self.p_safe, tr("속도에 따른 전류·토크·역기전력", "current, torque, back-EMF vs speed"))
         right.addTab(self.t_safe, tr("판정 표", "screening table"))
+        self.i_safe = reading_tab(right, tr(
+            "스크리닝하면 해석이 표시됩니다 — ASC 정상 전류·제동 토크·동손, freewheel의 정류 시작 속도와 위험, 프로젝트 규칙.",
+            "Screen to read the candidates — the ASC steady current, braking torque and copper loss, the freewheel "
+            "rectification onset and its risk, the project rules."))
         self.safe_tabs = right
         split.addWidget(right)
         split.setSizes([420, 1000])
@@ -693,7 +755,9 @@ class SafetyPage(QWidget):
                          f"{r['basis']} ({r['kind']})"))
         rows += [(tr("주석", "note"), n) for n in res.get("notes", [])]
         self.t_safe.set_rows(rows)
+        self.i_safe.read("safe_state", tr("안전 상태", "safe state"), safe_state_insight, res)
 
     def redraw(self):
-        for p in (self.p_ftti, self.p_dis, self.p_ov, self.p_safe, self.s_dis, self.s_ov, self.s_safe, self.p_pas, self.s_pas):
+        for p in (self.p_ftti, self.p_dis, self.p_ov, self.p_safe, self.s_dis, self.s_ov, self.s_safe, self.p_pas, self.s_pas,
+                  self.i_ftti, self.i_dc, self.i_safe):
             p.redraw()

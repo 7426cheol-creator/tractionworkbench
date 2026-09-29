@@ -31,6 +31,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .. import progress
 from ..errors import InputValidationError, OutsideModelDomain
 from ..models.components import DriveModel
 from ..models.module_loss import leg_losses_trajectory, positions
@@ -841,25 +842,28 @@ def capability_comparison(drive: DriveModel, VA_V: float, speeds_rpm, zero_seque
     cb = OewTopology("common_bus", VA_V, zero_sequence=zero_sequence, zs_policy=zs_policy)
     iso = OewTopology("isolated", VA_V, VB_V)
     rows = []
-    for n in speeds_rpm:
-        sc = Scenario("cmp", float(n), VA_V, DcSourceLimits(), winding_temp_C=winding_temp_C, magnet_temp_C=magnet_temp_C)
-        k = DriveKernel(drive, sc, settings)
-        if not k.evaluable or k.tau_rot is None:
-            rows.append({"speed_rpm": float(n), "note": "model not evaluable / shaft torque undefined"})
-            continue
-        D, Q, ev = _grid(drive, k, n_id, n_iq)
-        tsh = ev["tem"] - k.tau_rot
-        row = {"speed_rpm": float(n)}
-        for key, topo, V in (("single_vsi_Nm", None, VA_V), ("oew_common_bus_Nm", cb, None),
-                             ("oew_isolated_Nm", iso, None), ("single_vsi_same_stack_Nm", None, VA_V + VB_V)):
-            m = _feasible_mask(D, Q, ev, drive, topo, k, V_single=V)
-            if topo is cb and zero_sequence is None:
-                row["oew_common_bus_conditional"] = "e0 = 0 assumed (zero-sequence data not declared)"
-            vals = np.where(m, direction * tsh, -np.inf)
-            j = np.unravel_index(int(np.argmax(vals)), vals.shape)
-            row[key] = None if not np.isfinite(vals[j]) else float(direction * vals[j])
-            row[key.replace("_Nm", "_at")] = None if not np.isfinite(vals[j]) else [float(D[j]), float(Q[j])]
-        rows.append(row)
+    speeds = list(speeds_rpm)
+    with progress.span(len(speeds), "speeds") as steps:
+        for n in speeds:
+            steps.step()
+            sc = Scenario("cmp", float(n), VA_V, DcSourceLimits(), winding_temp_C=winding_temp_C, magnet_temp_C=magnet_temp_C)
+            k = DriveKernel(drive, sc, settings)
+            if not k.evaluable or k.tau_rot is None:
+                rows.append({"speed_rpm": float(n), "note": "model not evaluable / shaft torque undefined"})
+                continue
+            D, Q, ev = _grid(drive, k, n_id, n_iq)
+            tsh = ev["tem"] - k.tau_rot
+            row = {"speed_rpm": float(n)}
+            for key, topo, V in (("single_vsi_Nm", None, VA_V), ("oew_common_bus_Nm", cb, None),
+                                 ("oew_isolated_Nm", iso, None), ("single_vsi_same_stack_Nm", None, VA_V + VB_V)):
+                m = _feasible_mask(D, Q, ev, drive, topo, k, V_single=V)
+                if topo is cb and zero_sequence is None:
+                    row["oew_common_bus_conditional"] = "e0 = 0 assumed (zero-sequence data not declared)"
+                vals = np.where(m, direction * tsh, -np.inf)
+                j = np.unravel_index(int(np.argmax(vals)), vals.shape)
+                row[key] = None if not np.isfinite(vals[j]) else float(direction * vals[j])
+                row[key.replace("_Nm", "_at")] = None if not np.isfinite(vals[j]) else [float(D[j]), float(Q[j])]
+            rows.append(row)
     return {"rows": rows, "VA_V": VA_V, "VB_V": VB_V, "direction": direction,
             "grid": {"n_id": n_id, "n_iq": n_iq}, "zero_sequence_declared": zero_sequence is not None,
             "zs_policy": zs_policy,

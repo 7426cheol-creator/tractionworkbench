@@ -24,8 +24,8 @@ from . import theme
 def fmt(v, digits: int = 6) -> str:
     if v is None:
         return "—"
-    if isinstance(v, bool):
-        return "yes" if v else "no"
+    if isinstance(v, (bool, np.bool_)):
+        return tr("예", "yes") if v else tr("아니오", "no")
     if isinstance(v, (int, np.integer)):
         return f"{int(v):d}"
     if isinstance(v, (float, np.floating)):
@@ -43,6 +43,21 @@ def fmt(v, digits: int = 6) -> str:
         return " · ".join(f"{k}: " + (f"({fmt(x, digits)})" if isinstance(x, dict) else fmt(x, digits))
                           for k, x in v.items())
     return str(v)
+
+
+class Cell(str):
+    """Table text with its own tooltip: a display name keeps the record's code one hover away."""
+
+    def __new__(cls, text: str, tip: str = ""):
+        s = super().__new__(cls, text)
+        s.tip = tip
+        return s
+
+
+def claim_cell(name: str) -> Cell:
+    """A claim's display name for a table; the claim code (as in the JSON record) is its tooltip."""
+    from ..plots.labels import claim_label
+    return Cell(claim_label(name), name)
 
 
 # ---------------------------------------------------------------------------
@@ -93,18 +108,23 @@ class PlotPanel(QWidget):
         self.name = "figure"
         self.canvas.mpl_connect("motion_notify_event", self._on_move)
         self.canvas.mpl_connect("button_press_event", self._on_click)
+        self.canvas.mpl_connect("resize_event", self._fit_texts)       # titles and legends follow the canvas size
         self.placeholder(hint or tr("입력을 확인하고 실행하면 결과 그래프가 여기에 표시됩니다.",
                                     "Run the calculation to see the plot here."))
 
     # -- drawing ---------------------------------------------------------------
     def placeholder(self, text: str):
         self._draw = None
+        self._pending = False
         self._csv = None
         self.figure.clear()
         t = S.theme()
         self.figure.set_facecolor(t["bg"])
         self.figure.text(0.5, 0.5, text, ha="center", va="center", color=t["muted"], fontsize=10, wrap=True)
-        self.canvas.draw_idle()
+        if self.isVisible():
+            self.canvas.draw_idle()
+        else:                                # a hidden tab draws its note when it is first shown (like a figure):
+            self._stale = True               # text layout is not free, least of all while a calculation runs
         self.csv_button.setEnabled(False)
         for b in self.fig_buttons:                      # nothing to export yet
             b.setEnabled(False)
@@ -119,6 +139,16 @@ class PlotPanel(QWidget):
     def redraw(self):
         if self._draw is None:
             return
+        self.csv_button.setEnabled(self._csv is not None)
+        for b in self.fig_buttons:
+            b.setEnabled(True)
+        if not self.isVisible():             # a hidden tab draws when it is first shown: a result on one tab does
+            self._pending = True             # not freeze the window drawing every other tab
+            return
+        self._render()
+
+    def _render(self):
+        self._pending = False
         fn, args, kwargs = self._draw
         self.figure.set_facecolor(S.theme()["bg"])
         try:
@@ -126,10 +156,21 @@ class PlotPanel(QWidget):
         except Exception as exc:  # noqa: BLE001 - a plotting failure must not crash the app
             self.figure.clear()
             self.figure.text(0.5, 0.5, f"plot error: {exc}", ha="center", va="center", color="#cf222e")
+        self._fit_texts()
         self.canvas.draw_idle()
-        self.csv_button.setEnabled(self._csv is not None)
-        for b in self.fig_buttons:
-            b.setEnabled(True)
+
+    def _fit_texts(self, _ev=None):
+        if self._draw is not None and not getattr(self, "_pending", False):
+            from ..plots.figures import fit_texts
+            fit_texts(self.figure)
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        if getattr(self, "_pending", False) and self._draw is not None:
+            self._render()
+        elif getattr(self, "_stale", False):
+            self.canvas.draw_idle()
+        self._stale = False
 
     # -- interaction -----------------------------------------------------------
     def _on_move(self, ev):
@@ -150,6 +191,8 @@ class PlotPanel(QWidget):
     def export(self, kind: str):
         if self._draw is None:
             return
+        if getattr(self, "_pending", False):          # never drawn yet (its tab was not opened): draw it now
+            self._render()
         path, _ = QFileDialog.getSaveFileName(self, tr("그림 저장", "Save figure"), f"{self.name}.{kind}",
                                               f"{kind.upper()} (*.{kind})")
         if path:
@@ -192,11 +235,17 @@ def _cell(x):
 # ---------------------------------------------------------------------------
 
 class VerdictBanner(QFrame):
+    """The verdict, its one-line conclusion and reasons; the requirement text, scope and record identity fold away
+    under [details] (they stay one click away and in every saved record)."""
+
+    details_toggled = Signal(bool)
+
     def __init__(self, parent=None):
         super().__init__(parent)
+        from PySide6.QtWidgets import QToolButton
         self.setObjectName("Verdict")
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(14, 10, 14, 10)
+        lay.setContentsMargins(14, 8, 10, 8)
         self.big = QLabel("—")
         f = QFont(theme.app_font())
         f.setPointSizeF(20)
@@ -206,21 +255,51 @@ class VerdictBanner(QFrame):
         self.text = QLabel(tr("요구를 입력하고 [판정 실행]을 누르세요.", "Enter a requirement and press Evaluate."))
         self.text.setWordWrap(True)
         self.text.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.more = QLabel("")
+        self.more.setWordWrap(True)
+        self.more.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.more.hide()
+        col = QVBoxLayout()
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(3)
+        col.addWidget(self.text)
+        col.addWidget(self.more)
+        self.more_btn = QToolButton()
+        self.more_btn.setAutoRaise(True)
+        self.more_btn.setCheckable(True)
+        self.more_btn.toggled.connect(self._toggled)
+        self.more_btn.hide()
         lay.addWidget(self.big)
-        lay.addWidget(self.text, 1)
+        lay.addLayout(col, 1)
+        lay.addWidget(self.more_btn, 0, Qt.AlignTop)
+        self._toggled(False)
         self.set("NONE", "")
+
+    def _toggled(self, on: bool):
+        self.more_btn.setText(tr("접기 ▴", "less ▴") if on else tr("자세히 ▾", "details ▾"))
+        self.more_btn.setToolTip(tr("요구 원문, 한정, 사유 코드, 범위, 기록 ID와 입력 해시", "requirement text, qualifiers, "
+                                    "reason codes, scope, record id and input hash"))
+        self.more.setVisible(on and bool(self.more.text()))
+        self.details_toggled.emit(on)
+
+    def set_details_shown(self, on: bool):
+        self.more_btn.setChecked(bool(on))
 
     def restyle(self):
         self.set(*self._last)
 
-    def set(self, verdict: str, html: str):
-        self._last = (verdict, html or self.text.text())
+    def set(self, verdict: str, html: str, details: str = ""):
+        self._last = (verdict, html or self.text.text(), details)
         bg, fg = theme.verdict_colors(verdict)
         self.setStyleSheet(f"QFrame#Verdict {{ background: {bg}; border: 1px solid {fg}; border-radius: 8px; }}"
                            f"QLabel {{ background: transparent; }}")
         self.big.setStyleSheet(f"color: {fg};")
         self.text.setStyleSheet(f"color: {theme.colors()['fg']};")
+        self.more.setStyleSheet(f"color: {theme.colors()['fg']};")
         self.big.setText({"NONE": "—"}.get(verdict, verdict))
+        self.more.setText(details)
+        self.more_btn.setVisible(bool(details))
+        self.more.setVisible(bool(details) and self.more_btn.isChecked())
         if html:
             self.text.setText(html)
 
@@ -248,7 +327,12 @@ class ClaimTree(QTreeWidget):
             top.setFont(0, f)
             self.addTopLevelItem(top)
             for c in claims:
-                it = QTreeWidgetItem([c["name"], c["status"], ", ".join(c.get("reasons") or []), c.get("detail", "")])
+                from ..plots.labels import claim_label, reason_label, state_label
+                it = QTreeWidgetItem([claim_label(c["name"]), state_label(c["status"]),
+                                      ", ".join(reason_label(r) for r in c.get("reasons") or []), c.get("detail", "")])
+                it.setToolTip(0, c["name"])
+                it.setToolTip(1, c["status"])
+                it.setToolTip(2, ", ".join(c.get("reasons") or []))
                 it.setForeground(1, QColor(theme.status_color(c["status"])))
                 fb = it.font(1)
                 fb.setBold(True)
@@ -266,8 +350,12 @@ class ClaimTree(QTreeWidget):
 
 
 class KeyValueTable(QTableWidget):
-    def __init__(self, parent=None, headers=None):
+    """Read-only rows of (item, value, ...).  ``fit_rows``: the table is as tall as its rows (in a scrolling column
+    every row stays readable, whatever the window size)."""
+
+    def __init__(self, parent=None, headers=None, fit_rows: bool = False):
         super().__init__(parent)
+        self._fit_rows = fit_rows
         headers = headers or [tr("항목", "item"), tr("값", "value")]
         self.setColumnCount(len(headers))
         self.setHorizontalHeaderLabels(headers)
@@ -284,11 +372,34 @@ class KeyValueTable(QTableWidget):
         for i, row in enumerate(rows):
             for j, v in enumerate(row):
                 it = QTableWidgetItem(v if isinstance(v, str) else fmt(v))
-                it.setToolTip(it.text())
+                it.setToolTip(getattr(v, "tip", "") or it.text())
                 if colors and (i, j) in colors:
                     it.setForeground(QColor(colors[(i, j)]))
                 self.setItem(i, j, it)
         self.resizeRowsToContents()
+        self._fit_height()
+
+    def _fit_height(self):
+        if not self._fit_rows:
+            return
+        hh = self.horizontalHeader()                 # short columns wrap past 28 % of the width: the last column (the
+        cap = max(90, int(self.viewport().width() * 0.28))           # explanation) keeps the room it needs
+        for j in range(self.columnCount() - 1):
+            hh.setSectionResizeMode(j, QHeaderView.Interactive)
+            self.resizeColumnToContents(j)
+            if hh.sectionSize(j) > cap:
+                hh.resizeSection(j, cap)
+        self.resizeRowsToContents()
+        head = self.horizontalHeader().sizeHint().height()
+        rows = sum(self.rowHeight(r) for r in range(self.rowCount()))
+        bar = self.horizontalScrollBar().sizeHint().height() if self.horizontalHeader().length() > self.viewport().width() \
+            else 0                                   # columns wider than the table: keep the last row above the bar
+        self.setFixedHeight(head + max(rows, 24) + bar + 2 * self.frameWidth() + 2)
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        if self._fit_rows and ev.size().width() != ev.oldSize().width():   # wrapped rows re-flow with the width
+            self._fit_height()
 
 
 def parse_clipboard_grid(text: str) -> list[list[str]]:
@@ -315,6 +426,7 @@ class NumTable(QTableWidget):
         super().__init__(parent)
         self.text_cols = frozenset(text_cols)            # returned as stripped text (names, kinds)
         self.optional_cols = frozenset(optional_cols)    # a blank numeric cell here is None (not declared), not 0
+        self.fit_columns = True                          # False: the page sizes the columns itself
         self.setColumnCount(len(headers))
         self.setHorizontalHeaderLabels(headers)
         self.verticalHeader().setVisible(True)
@@ -325,12 +437,41 @@ class NumTable(QTableWidget):
         if rows:
             self.load(rows)
 
+    def _fit(self) -> None:
+        """No header or value is cut: equal columns while each fits its share of the width, otherwise every column as
+        wide as its header and values (spare width shared out) and a table narrower than that scrolls sideways (a cut
+        header hides which quantity a column holds)."""
+        cols = [j for j in range(self.columnCount()) if not self.isColumnHidden(j)]
+        if not self.fit_columns or not cols:
+            return
+        h = self.horizontalHeader()
+        need = {j: max(h.sectionSizeHint(j), self.sizeHintForColumn(j)) for j in cols}
+        sb = self.verticalScrollBar()
+        room = self.viewport().width() - (0 if sb.isVisible() else sb.sizeHint().width())   # rows may still be added
+        if max(need.values()) * len(cols) <= room:
+            if h.sectionResizeMode(cols[0]) != QHeaderView.Stretch:
+                h.setSectionResizeMode(QHeaderView.Stretch)
+            return
+        h.setSectionResizeMode(QHeaderView.Interactive)
+        spare = max(0, room - sum(need.values())) // len(cols)
+        for j, w in need.items():
+            h.resizeSection(j, w + spare)
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self._fit()
+
     def load(self, rows) -> None:
         self.setRowCount(0)
         for r in rows:
-            self.add_row(r)
+            self._append(r)
+        self._fit()
 
     def add_row(self, values=None) -> None:
+        self._append(values)
+        self._fit()
+
+    def _append(self, values=None) -> None:
         i = self.rowCount()
         self.insertRow(i)
         for j in range(self.columnCount()):
@@ -381,11 +522,12 @@ class NumTable(QTableWidget):
             return
         r0, c0 = max(self.currentRow(), 0), max(self.currentColumn(), 0)
         while self.rowCount() < r0 + len(grid):
-            self.add_row()
+            self._append()
         for di, row in enumerate(grid):
             for dj, cell in enumerate(row):
                 if c0 + dj < self.columnCount():
                     self.setItem(r0 + di, c0 + dj, QTableWidgetItem(cell))
+        self._fit()
 
     def keyPressEvent(self, ev):
         from PySide6.QtGui import QKeySequence
@@ -524,6 +666,31 @@ def hint(text: str) -> QLabel:
     return lab
 
 
+class ElidedLabel(QLabel):
+    """One line of plain text cut with an ellipsis to the width it gets; the full text is the tooltip."""
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(parent)
+        self._full = ""
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.setText(text)
+
+    def setText(self, text: str) -> None:  # noqa: N802 - Qt override
+        self._full = text
+        self.setToolTip(text)
+        self._elide()
+
+    def full_text(self) -> str:
+        return self._full
+
+    def resizeEvent(self, ev):  # noqa: N802 - Qt override
+        super().resizeEvent(ev)
+        self._elide()
+
+    def _elide(self) -> None:
+        QLabel.setText(self, self.fontMetrics().elidedText(self._full, Qt.ElideRight, max(0, self.width() - 2)))
+
+
 class MagnetTempInput(QWidget):
     """Optional magnet temperature of ONE operating condition (unchecked = not stated).
 
@@ -586,6 +753,103 @@ class MagnetTempInput(QWidget):
         return False
 
 
+class InsightPanel(QWidget):
+    """The engineering reading of a result (``insight.Insight``): the conclusion, key numbers, the judged items,
+    the limiting mechanism and what would change the answer — every number from the result it reads.
+
+    A page with several calculations keeps one reading per calculation (``set_reading``); a selector above the text
+    switches between them and the latest one is shown."""
+
+    def __init__(self, placeholder: str = "", parent=None):
+        super().__init__(parent)
+        from PySide6.QtWidgets import QComboBox, QTextBrowser
+        self.view = QTextBrowser()
+        self.view.setOpenExternalLinks(False)
+        self.view.setObjectName("Insight")
+        self.pick = QComboBox()
+        self.pick.setVisible(False)
+        self.pick.currentIndexChanged.connect(self._picked)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+        lay.addWidget(self.pick)
+        lay.addWidget(self.view)
+        self.insight = None
+        self.readings: dict = {}             # key -> (title, Insight)
+        self._placeholder = placeholder or tr("계산하면 결과의 엔지니어링 해석(결론·항목별 분석·한계 원인·다음 단계)이 여기에 "
+                                              "표시됩니다.", "Run the calculation to read the result here (conclusion, "
+                                                             "item by item, what limits, next steps).")
+        self.redraw()
+
+    def show_insight(self, insight) -> None:
+        self.insight = insight
+        self.redraw()
+
+    def set_reading(self, key: str, title: str, insight) -> None:
+        """Keep the reading of one calculation and show it (the selector lists every calculation read so far)."""
+        self.readings[key] = (title, insight)
+        self.pick.blockSignals(True)
+        i = self.pick.findData(key)
+        if i < 0:
+            self.pick.addItem(title, key)
+            i = self.pick.count() - 1
+        else:
+            self.pick.setItemText(i, title)
+        self.pick.setCurrentIndex(i)
+        self.pick.blockSignals(False)
+        self.pick.setVisible(self.pick.count() > 1)
+        self.show_insight(insight)
+
+    def read(self, key: str, title: str, fn, *args) -> None:
+        """``fn(*args)`` -> Insight into this panel; a reading that fails is reported in the panel, never raised
+        (the page and its result stay usable)."""
+        try:
+            ins = fn(*args)
+        except Exception as exc:  # noqa: BLE001
+            from ..insight import Insight
+            ins = Insight(headline=tr(f"해석을 만들지 못했습니다: {type(exc).__name__}: {exc}",
+                                      f"the reading could not be made: {type(exc).__name__}: {exc}"))
+            ins.failed = True
+        self.set_reading(key, title, ins)
+
+    def _picked(self, i: int) -> None:
+        key = self.pick.itemData(i)
+        if key in self.readings:
+            self.show_insight(self.readings[key][1])
+
+    def redraw(self) -> None:
+        c = theme.colors()
+        if self.insight is None:
+            self.view.setHtml(f"<p style='color:{c['muted']}'>{self._placeholder}</p>")
+            return
+        cols = {"fg": c["fg"], "muted": c["muted"], "border": c["border"], "panel": c["panel"],
+                "ok": theme.verdict_colors("PASS")[1], "bad": theme.verdict_colors("FAIL")[1],
+                "warn": theme.verdict_colors("UNKNOWN")[1], "open": theme.verdict_colors("UNKNOWN")[1],
+                "info": c["muted"]}
+        bar = self.view.verticalScrollBar().value()
+        self.view.setHtml(self.insight.html(cols))
+        self.view.verticalScrollBar().setValue(bar)
+
+    def text(self) -> str:
+        return self.view.toPlainText()
+
+
+def reading_tab(tabs, placeholder: str = "", index: int = 0) -> InsightPanel:
+    """An 'engineering reading' tab in a page's result tabs (first by default, and shown)."""
+    panel = InsightPanel(placeholder)
+    tabs.insertTab(index, panel, tr("엔지니어링 분석", "engineering reading"))
+    tabs.setCurrentIndex(index)
+    return panel
+
+
+def with_reading(widget, placeholder: str = "") -> tuple:
+    """A result widget without tabs wrapped with an 'engineering reading' tab in front: (tab widget, panel)."""
+    from PySide6.QtWidgets import QTabWidget
+    tabs = QTabWidget()
+    tabs.addTab(widget, tr("그래프·표", "plots · table"))
+    return tabs, reading_tab(tabs, placeholder)
+
+
 class ConceptNote(QWidget):
     """Collapsible explanation for newcomers (the expert content stays unchanged)."""
 
@@ -610,6 +874,17 @@ class ConceptNote(QWidget):
         lay.setSpacing(2)
         lay.addWidget(self.button)
         lay.addWidget(self.body)
+
+
+def confirm(parent, title: str, text: str) -> bool:
+    """Yes/no question; the headless self-test answers yes and records the question."""
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance()
+    if app is not None and app.property("twb_selftest"):
+        app.setProperty("twb_questions", list(app.property("twb_questions") or []) + [f"{title}: {text}"])
+        return True
+    return QMessageBox.question(parent, title, text, QMessageBox.Yes | QMessageBox.No,
+                                QMessageBox.No) == QMessageBox.Yes
 
 
 def error_box(parent, title: str, msg: str, detail: str = ""):

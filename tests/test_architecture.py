@@ -23,13 +23,13 @@ ROOT = SRC / PKG
 # top-level name (first component under the package) -> (rank, layer)
 LAYERS = {
     **{m: (0, "base") for m in ("", "errors", "status", "settings", "units", "validation", "modulation", "i18n",
-                                "identity")},
+                                "identity", "progress")},
     **{m: (1, "models") for m in ("models", "scenario", "requirement", "spec_fixtures")},
     **{m: (2, "kernel") for m in ("physics", "solvers")},
     **{m: (3, "engines") for m in ("analysis", "extensions")},
     **{m: (4, "services") for m in ("io", "parsers", "examples", "project", "exchange", "service", "decision", "report",
                                     "api", "datasheet", "mathworks", "requirement_set")},
-    **{m: (5, "presentation") for m in ("plots", "viz", "report_pdf", "desktop", "cli", "__main__")},
+    **{m: (5, "presentation") for m in ("plots", "viz", "insight", "report_pdf", "desktop", "cli", "__main__")},
 }
 UPWARD_ALLOWED: dict[tuple[str, str], str] = {}       # (importer, imported) -> reason
 PRIVATE_ALLOWED: dict[tuple[str, str, str], str] = {}  # (importer, source, name) -> reason

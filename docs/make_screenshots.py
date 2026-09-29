@@ -25,6 +25,10 @@ WIDTH = 1280
 # README image -> self-test capture (the names in desktop/selftest.py)
 SHOTS = {
     "decision": "01_decision_summary",
+    "reading_decision_fail": "04a_decision_fail_reading",
+    "reading_overvoltage": "15c_safety_overvoltage_reading",
+    "reading_efficiency": "43a_efficiency_reading",
+    "reading_pwm": "47a_pwm_reading",
     "system_overview": "02_decision_view_0",
     "idiq_map": "02_decision_view_1",
     "waveforms": "02_decision_view_2",

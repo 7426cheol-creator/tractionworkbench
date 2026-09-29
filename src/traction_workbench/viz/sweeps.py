@@ -22,6 +22,7 @@ from typing import Callable
 import numpy as np
 
 from ..models.components import DriveModel
+from ..progress import Cancelled  # noqa: F401 - its former home (compatibility)
 from ..physics import ACTIVE, NOT_EVALUATED, DriveKernel, OperatingPoint, evaluate_point
 from ..scenario import DcSourceLimits, Scenario
 from ..service import CURVE_SETTINGS
@@ -38,10 +39,6 @@ FIELDS = ("id_A", "iq_A", "I_peak_A", "I_rms_A", "v_cmd_V", "v_margin_V", "m_lin
           "eta_motor", "eta_inverter", "pf", "psi_d_Wb", "psi_q_Wb")
 
 Progress = Callable[[float, str], None] | None
-
-
-class Cancelled(Exception):
-    pass
 
 
 def _tick(progress: Progress, frac: float, msg: str = "") -> None:

@@ -37,6 +37,15 @@ def run_self_test(app, out_dir) -> int:
         app.processEvents()
         win.grab().save(str(out / f"{name}.png"))
 
+    def reading(name, panel, *keys):
+        """The engineering reading of each calculation exists, did not fail and has content."""
+        bad = []
+        for k in keys:
+            ins = (panel.readings.get(k) or (None, None))[1]
+            if ins is None or getattr(ins, "failed", False) or not ins.sections or not ins.headline:
+                bad.append(f"{k}: {'missing' if ins is None else ins.headline[:160]}")
+        check(f"reading:{name}", not bad, "; ".join(bad) or f"{len(keys)} reading(s)")
+
     try:
         win = MainWindow()
         win.resize(1600, 1000)
@@ -50,22 +59,27 @@ def run_self_test(app, out_dir) -> int:
             got = page.result["record"]["verdict"]["verdict"] if page.result else None
             check(f"decision:{p['key']}", got == EXPECTED.get(p["key"]), f"verdict {got}, expected {EXPECTED.get(p['key'])}")
             if p["key"] == "ts012_600":
-                shot(win, "01_decision_summary")
-                page.tabs.setCurrentIndex(1)
+                page.tabs.setCurrentWidget(page.insight)
+                shot(win, "01_decision_summary")        # the engineering reading (first tab)
+                page.tabs.setCurrentWidget(page.summary_tab)
+                shot(win, "01b_decision_evidence")
+                page.tabs.setCurrentWidget(page.views)
                 for k in range(page.views.tabs.count()):
                     page.views.tabs.setCurrentIndex(k)
                     shot(win, f"02_decision_view_{k}")
-                page.tabs.setCurrentIndex(2)            # T-n position (computes the envelope)
+                page.tabs.setCurrentWidget(page.env_panel)  # T-n position (computes the envelope)
                 shot(win, "03_decision_tn")
-                page.tabs.setCurrentIndex(0)
+                page.tabs.setCurrentWidget(page.insight)
             if p["key"] == "ts012_450":
-                page.tabs.setCurrentIndex(3)
+                page.tabs.setCurrentWidget(page.insight)
+                shot(win, "04a_decision_fail_reading")
+                page.tabs.setCurrentWidget(page.an_tab)
                 shot(win, "04_decision_analyses")
                 from ..report_pdf import build_pdf
                 res = page.result
                 pdf = build_pdf(out / "report_REQ-TS-012-LV.pdf", res["record"], res["rec"], res["case"])
                 check("pdf_report", pdf.is_file() and pdf.stat().st_size > 50_000, f"{pdf.stat().st_size} bytes")
-                page.tabs.setCurrentIndex(0)
+                page.tabs.setCurrentWidget(page.insight)
 
         # PWM consequences at the decision point (review priority 3) and a Vdc stated as battery OCV (priority 2)
         page.presets.setCurrentIndex(0)
@@ -94,22 +108,39 @@ def run_self_test(app, out_dir) -> int:
                 shot(win, name)
             return pg
 
-        ex = visit("explorer", 1, ["run", lambda pg: pg._picked(-300.0, 100.0)], [(None, "05_explorer")])
+        ex = visit("explorer", 1, ["run", lambda pg: pg._picked(-300.0, 100.0)],
+                   [(lambda pg: pg.views.tabs.setCurrentWidget(pg.views.overview), "05_explorer"),
+                    (lambda pg: pg.views.tabs.setCurrentWidget(pg.insight), "05a_explorer_reading")])
         check("explorer:forward", ex.views.pv is not None and abs(ex.views.pv.point.id_A + 300.0) < 1e-9)
-        tr_pg = visit("trajectory", 2, ["run"], [(None, "06_trajectory_speed"), (lambda pg: pg.tabs.setCurrentIndex(1), "07_trajectory_vars")])
+        reading("explorer", ex.insight, "explorer")
+        tr_pg = visit("trajectory", 2, ["run"], [(lambda pg: pg.tabs.setCurrentWidget(pg.p_plane), "06_trajectory_speed"),
+                                                 (lambda pg: pg.tabs.setCurrentWidget(pg.insight), "06a_trajectory_reading"),
+                                                 (lambda pg: pg.tabs.setCurrentWidget(pg.p_vars), "07_trajectory_vars")])
         tr_pg.m_torque.setChecked(True)
         tr_pg.run()
         check("trajectory", tr_pg.p_plane._draw is not None)
+        reading("trajectory", tr_pg.insight, "trajectory")
         shot(win, "08_trajectory_torque")
         perf = visit("performance", 3, [lambda pg: pg.res_combo.setCurrentIndex(0), "run"],
-                     [(None, "09_envelope"), (lambda pg: pg.tabs.setCurrentIndex(1), "10_map_eta"),
-                      (lambda pg: pg.tabs.setCurrentIndex(2), "11_envelope_detail")])
+                     [(lambda pg: pg.tabs.setCurrentWidget(pg.p_env), "09_envelope"),
+                      (lambda pg: pg.tabs.setCurrentWidget(pg.insight), "09a_envelope_reading"),
+                      (lambda pg: pg.tabs.setCurrentWidget(pg.p_map.parentWidget()), "10_map_eta"),
+                      (lambda pg: pg.tabs.setCurrentWidget(pg.p_detail), "11_envelope_detail")])
         check("performance", perf.res is not None and perf.res["map"]["status"].size > 0)
-        des = visit("design", 4, ["run1", "run2"], [(None, "12_design_sizing"), (lambda pg: pg.tabs.setCurrentIndex(1), "13_design_dominance")])
+        reading("performance", perf.insight, "performance")
+        des = visit("design", 4, ["run1", "run2"],
+                    [(lambda pg: pg.tabs.setCurrentWidget(pg.p_curve.parentWidget()), "12_design_sizing"),
+                     (lambda pg: pg.tabs.setCurrentWidget(pg.p_dom.parentWidget()), "13_design_dominance"),
+                     (lambda pg: pg.tabs.setCurrentWidget(pg.insight), "13a_design_reading")])
         check("design", des.p_curve._draw is not None and des.p_dom._draw is not None)
+        reading("design", des.insight, "sizing", "bottleneck")
         # requirement set (review 6198099 user features): the template judged on the project, then candidates
         rs = visit("requirement_set", 4, ["check_reading", "run"],
-                   [(None, "12a_requirement_set"), (lambda pg: pg.tabs.setCurrentIndex(1), "12b_requirement_priorities")])
+                   [(lambda pg: pg.tabs.setCurrentWidget(pg.res_split), "12a_requirement_set"),
+                    (lambda pg: pg.tabs.setCurrentWidget(pg.prio_table), "12b_requirement_priorities"),
+                    (lambda pg: (pg.tabs.setCurrentWidget(pg.insight),
+                                 pg.insight.pick.setCurrentIndex(pg.insight.pick.findData("set"))), "12d_requirement_reading")])
+        reading("requirement_set", rs.insight, "set", "row")
         sm = rs.result["set"]["summary"] if rs.result else {}
         check("requirement_set", (sm.get("total"), sm.get("PASS"), sm.get("FAIL"), sm.get("UNKNOWN")) == (5, 3, 1, 1)
               and rs.detail.toPlainText().startswith("1. ") and "REQ-A" in rs.detail.toPlainText(), sm)
@@ -120,23 +151,34 @@ def run_self_test(app, out_dir) -> int:
         check("requirement_set:candidates", cs.get("charge 150 kW", {}).get("improves") == ["REQ-B"]
               and set(cs.get("current 250 A", {}).get("worsens", [])) == {"REQ-A", "REQ-C", "REQ-D", "REQ-E"},
               {k: (c["improves"], c["worsens"]) for k, c in cs.items()})
-        rs.tabs.setCurrentIndex(2)
+        rs.tabs.setCurrentWidget(rs.cand_table)
         shot(win, "12c_requirement_candidates")
-        rs.tabs.setCurrentIndex(0)
+        rs.tabs.setCurrentWidget(rs.res_split)
         rs.res_table.selectRow(1)
         rs.open_in_decision()
         got = page.result["record"] if page.result else {}
         check("requirement_set:open", got.get("requirement", {}).get("req_id") == "REQ-B"
               and got.get("verdict", {}).get("verdict") == "FAIL", got.get("requirement", {}).get("req_id"))
         saf = visit("safety", 5, ["run_ftti", "run_discharge", "run_passive", "run_overvoltage", "run_safe"],
-                    [(None, "14_safety_ftti"), (lambda pg: pg.tabs.setCurrentIndex(1), "15_safety_dclink"),
-                     (lambda pg: pg.dc_tabs.setCurrentIndex(1), "15a_safety_passive"),
-                     (lambda pg: pg.dc_tabs.setCurrentIndex(2), "15b_safety_overvoltage"),
-                     (lambda pg: pg.tabs.setCurrentIndex(2), "16_safety_state")])
+                    [(lambda pg: pg.ftti_tabs.setCurrentIndex(1), "14_safety_ftti"),
+                     (lambda pg: pg.ftti_tabs.setCurrentWidget(pg.i_ftti), "14a_safety_ftti_reading"),
+                     (lambda pg: (pg.tabs.setCurrentIndex(1), pg.dc_tabs.setCurrentWidget(pg.s_dis.parentWidget())),
+                      "15_safety_dclink"),
+                     (lambda pg: pg.dc_tabs.setCurrentWidget(pg.s_pas.parentWidget()), "15a_safety_passive"),
+                     (lambda pg: pg.dc_tabs.setCurrentWidget(pg.s_ov.parentWidget()), "15b_safety_overvoltage"),
+                     (lambda pg: (pg.dc_tabs.setCurrentWidget(pg.i_dc),
+                                  pg.i_dc.pick.setCurrentIndex(pg.i_dc.pick.findData("overvoltage"))),
+                      "15c_safety_overvoltage_reading"),
+                     (lambda pg: (pg.tabs.setCurrentIndex(2), pg.safe_tabs.setCurrentWidget(pg.s_safe)), "16_safety_state")])
         check("safety", all(p._draw is not None for p in (saf.p_ftti, saf.p_dis, saf.p_pas, saf.p_ov, saf.p_safe)))
-        th = visit("thermal", 6, ["run"], [(None, "17_thermal"), (lambda pg: pg.tabs.setCurrentIndex(2), "17b_thermal_network"),
-                                           (lambda pg: pg.tabs.setCurrentIndex(3), "17c_thermal_zth"),
-                                           (lambda pg: pg.tabs.setCurrentIndex(4), "17d_thermal_editor")])
+        reading("safety:ftti", saf.i_ftti, "ftti")
+        reading("safety:dclink", saf.i_dc, "discharge", "passive", "overvoltage")
+        reading("safety:safe_state", saf.i_safe, "safe_state")
+        th = visit("thermal", 6, ["run"], [(lambda pg: pg.tabs.setCurrentWidget(pg.res_tab), "17_thermal"),
+                                           (lambda pg: pg.tabs.setCurrentWidget(pg.insight), "17a_thermal_reading"),
+                                           (lambda pg: pg.tabs.setCurrentWidget(pg.net_tab), "17b_thermal_network"),
+                                           (lambda pg: pg.tabs.setCurrentWidget(pg.p_zth), "17c_thermal_zth"),
+                                           (lambda pg: pg.tabs.setCurrentWidget(pg.editor_tab), "17d_thermal_editor")])
         check("thermal", th.plot._draw is not None and "s" in th.headline.text(), th.headline.text())
         th.run_cycle()                                   # repeated load (review 6198099 priority 1)
         shot(win, "17e_thermal_repeated_load")
@@ -144,7 +186,8 @@ def run_self_test(app, out_dir) -> int:
         check("thermal:repeated_load", th.p_cyc._draw is not None and (cy.get("periodic") or {}).get("reached")
               and cy.get("first_limit") is not None and (cy.get("allowed") or {}).get("pulse_duration_s", 0) > 0,
               (cy.get("claim") or {}).get("status"))
-        th.tabs.setCurrentIndex(0)
+        reading("thermal", th.insight, "thermal", "thermal_cycle")
+        th.tabs.setCurrentWidget(th.res_tab)
         t_ref = th.last["res"]["request"]["time_to_first_limit_s"]
         th.c_flow.setValue(5.0)
         th.run()
@@ -152,39 +195,53 @@ def run_self_test(app, out_dir) -> int:
         check("thermal:coolant_flow", isinstance(t_ref, float) and isinstance(t_low, float) and t_low < t_ref,
               f"10 L/min {t_ref} s, 5 L/min {t_low} s")
         th.c_flow.setValue(10.0)
-        th.tabs.setCurrentIndex(0)
+        th.tabs.setCurrentWidget(th.res_tab)
         check("schematics", all(p._draw is not None for p in (saf.s_dis, saf.s_pas, saf.s_ov, saf.s_safe, page.views.overview)))
-        pro = visit("protection", 0, ["run"], [(None, "22_protection_timeline"),
-                                               (lambda pg: pg.ptabs.setCurrentIndex(1), "23_protection_window"),
-                                               (lambda pg: pg.ptabs.setCurrentIndex(2), "24_protection_loop")])
+        pro = visit("protection", 0, ["run"], [(lambda pg: pg.ptabs.setCurrentWidget(pg.p_time), "22_protection_timeline"),
+                                               (lambda pg: pg.ptabs.setCurrentWidget(pg.i_prot), "22a_protection_reading"),
+                                               (lambda pg: pg.ptabs.setCurrentWidget(pg.p_win.parentWidget()),
+                                                "23_protection_window"),
+                                               (lambda pg: pg.ptabs.setCurrentWidget(pg.p_loop), "24_protection_loop")])
         prot_ids = [r["id"] for r in (pro.last or {}).get("rows", [])]
         check("protection:ov", pro.last is not None and pro.last["trace"]["protected"] and len(prot_ids) == 9,
               f"{pro.last and pro.last['summary_status']} {prot_ids}")
         pro.preset.setCurrentIndex(1)
         pro.run()
         check("protection:ot", pro.last is not None and pro.last["unit"] == "degC" and pro.last["trace"]["protected"])
+        reading("protection", pro.i_prot, "protection")
         pro.tabs.setCurrentIndex(1)
         pro.run_asc()
         asc_ok = pro.last_asc is not None and pro.last_asc["claim"]["status"] == "UNKNOWN" and \
             len(pro.last_asc["requirements"]) == 2
         check("protection:asc", asc_ok, pro.last_asc and pro.last_asc["claim"]["detail"])
+        reading("protection:asc", pro.i_asc, "asc")
+        pro.asc_tabs.setCurrentIndex(1)
         shot(win, "25_asc_transient")
-        pw = visit("power", 0, ["run_module"], [(None, "26_power_module")])
+        pro.asc_tabs.setCurrentWidget(pro.i_asc)
+        shot(win, "25a_asc_reading")
+        pw = visit("power", 0, ["run_module"], [(lambda pg: pg.mod_tabs.setCurrentIndex(1), "26_power_module"),
+                                                (lambda pg: pg.mod_tabs.setCurrentWidget(pg.i_mod), "26a_power_module_reading")])
         check("power:module", pw.last_module is not None and pw.last_module["losses"]["established"]
               and pw.last_module["operating_point"]["Pinv_module_W"] > 0)
         pw.tabs.setCurrentIndex(1)
         pw.run_ripple()
+        pw.rip_tabs.setCurrentIndex(1)
         shot(win, "27_power_ripple")
         check("power:ripple", pw.last_ripple is not None and pw.last_ripple["I_cap_rms_A"] > 0
               and pw.last_ripple["claims"]["capacitor_life"]["status"] == "UNKNOWN")
         pw.tabs.setCurrentIndex(2)
         pw.run_life()
+        pw.life_tabs.setCurrentIndex(1)
         shot(win, "28_power_life")
         check("power:lifetime", pw.last_life is not None and pw.last_life["damage"]["claim"]["status"] == "UNKNOWN"
               and pw.last_life["damage"]["cycles_counted"] > 0)
-        oh = visit("oew_hev", 0, ["run_oew"], [(None, "29_oew_sets"), (lambda pg: pg.o_tabs.setCurrentIndex(1), "30_oew_point"),
-                                                (lambda pg: pg.o_tabs.setCurrentIndex(3), "31_oew_paired"),
-                                                (lambda pg: pg.o_tabs.setCurrentIndex(5), "32_oew_circuit")])
+        reading("power:module", pw.i_mod, "module")
+        reading("power:ripple", pw.i_rip, "ripple")
+        reading("power:lifetime", pw.i_life, "lifetime")
+        oh = visit("oew_hev", 0, ["run_oew"], [(lambda pg: pg.o_tabs.setCurrentWidget(pg.p_sets), "29_oew_sets"),
+                                                (lambda pg: pg.o_tabs.setCurrentWidget(pg.p_opt), "30_oew_point"),
+                                                (lambda pg: pg.o_tabs.setCurrentWidget(pg.p_pair), "31_oew_paired"),
+                                                (lambda pg: pg.o_tabs.setCurrentWidget(pg.p_sch), "32_oew_circuit")])
         w = (oh.last_oew or {}).get("result", {}).get("witness")
         check("oew:point", w is not None and oh.last_oew["result"]["status"] == "FEASIBLE"
               and abs(w["identities"]["ports_minus_winding_W"]) < 1e-3, oh.last_oew and oh.last_oew["result"]["status"])
@@ -197,6 +254,7 @@ def run_self_test(app, out_dir) -> int:
         cmp_rows = [r for r in (oh.last_cmp or {}).get("rows", []) if r.get("single_vsi_Nm") is not None]
         check("oew:compare", bool(cmp_rows) and cmp_rows[-1]["oew_common_bus_Nm"] > cmp_rows[-1]["single_vsi_Nm"])
         oh.tabs.setCurrentIndex(1)
+        oh.h_tabs.setCurrentWidget(oh.p_joint)
         oh.run_joint()
         shot(win, "34_hev_joint")
         check("hev:joint", oh.last_joint is not None and
@@ -209,16 +267,27 @@ def run_self_test(app, out_dir) -> int:
         oh.run_planetary()
         shot(win, "36_hev_planetary")
         check("hev:planetary", oh.last_pl is not None and oh.last_pl["check"]["status"] == "FEASIBLE")
-        em = visit("emi", 0, ["run"], [(None, "37_emi_spectrum"), (lambda pg: pg.e_tabs.setCurrentIndex(1), "38_emi_network")])
+        reading("oew", oh.i_oew, "oew", "oew_compare")
+        reading("hev", oh.i_hev, "hev_joint", "hev_crank", "hev_rejection", "hev_planetary")
+        oh.h_tabs.setCurrentWidget(oh.i_hev)
+        oh.i_hev.pick.setCurrentIndex(oh.i_hev.pick.findData("hev_joint"))
+        shot(win, "36a_hev_reading")
+        em = visit("emi", 0, ["run"], [(lambda pg: pg.e_tabs.setCurrentWidget(pg.p_spec), "37_emi_spectrum"),
+                                       (lambda pg: pg.e_tabs.setCurrentWidget(pg.i_emi), "37a_emi_reading"),
+                                       (lambda pg: pg.e_tabs.setCurrentWidget(pg.p_net), "38_emi_network")])
         check("emi:screening", em.last is not None and em.last["claim"]["status"] == "UNKNOWN"
               and "SCREENING_ONLY" in em.last["claim"]["reasons"], em.last and em.last["claim"]["detail"])
         em.tabs.setCurrentIndex(1)
         em.run_oew()
+        em.ocm_tabs.setCurrentIndex(1)
         shot(win, "39_emi_oew_cm")
         cs = (em.last_oew or {}).get("cases", {})
         check("emi:oew_cm", len(cs) == 2 and cs["0"]["u0_rms_V"] < cs["0.5"]["u0_rms_V"]
               and cs["0"]["cm6_rms_V"] > cs["0.5"]["cm6_rms_V"])
-        ef = visit("efficiency", 0, ["run_point"], [(None, "43_efficiency_point")])
+        reading("emi", em.i_emi, "emi")
+        reading("emi:oew", em.i_ocm, "emi_oew")
+        ef = visit("efficiency", 0, ["run_point"], [(lambda pg: pg.e_tabs.setCurrentWidget(pg.i_eff), "43a_efficiency_reading"),
+                                                    (lambda pg: pg.e_tabs.setCurrentWidget(pg.p_point), "43_efficiency_point")])
         eb = ((ef.last_point or {}).get("ledger") or {}).get("boundaries", {})
         check("efficiency:five_boundaries", all(eb.get(k, {}).get("status") == "DEFINED" for k in
                                                 ("inverter", "motor", "inverter_motor", "reducer", "edrive"))
@@ -235,13 +304,17 @@ def run_self_test(app, out_dir) -> int:
               and 0 < (em_.get("eta_traction") or 0) < 1 and 0 < (em_.get("eta_regeneration") or 0) < 1)
         ef.tabs.setCurrentIndex(1)
         ef.run_ab()
+        ef.ab_tabs.setCurrentIndex(1)
         shot(win, "46_module_ab")
         ab_rows = (ef.last_ab or {}).get("rows", [])
         check("efficiency:module_ab", bool(ab_rows) and all(r["A"].get("Tj_C") is not None and r["B"].get("Tj_C") is not None
                                                             for r in ab_rows)
               and all(r["compare"]["verdict"] in ("A_LOWER_LOSS", "B_LOWER_LOSS", "UNDECIDED") for r in ab_rows),
               str([r["compare"]["verdict"] for r in ab_rows]))
-        pw_ = visit("pwm_driveline", 0, ["run_policies"], [(None, "47_pwm_policies")])
+        reading("efficiency", ef.i_eff, "point", "map", "mission")
+        reading("efficiency:module_ab", ef.i_ab, "module_compare")
+        pw_ = visit("pwm_driveline", 0, ["run_policies"], [(lambda pg: pg.p_tabs.setCurrentWidget(pg.i_pwm), "47a_pwm_reading"),
+                                                           (lambda pg: pg.p_tabs.setCurrentWidget(pg.pl_pol), "47_pwm_policies")])
         pol = {p["policy"]["name"]: p for p in (pw_.last_pol or {}).get("policies", [])}
         check("pwm:policies", pol.get("fixed 10 kHz", {}).get("admissible") and
               not pol.get("thermal fallback 6 kHz", {}).get("admissible", True) and
@@ -263,6 +336,7 @@ def run_self_test(app, out_dir) -> int:
               and sc.get("dc_link_shunt", {}).get("valid_fraction", [1])[0] == 0.0,
               str({k: v.get("excursion_A") for k, v in tv.items()}))
         pw_.tabs.setCurrentIndex(1)
+        pw_.d_tabs.setCurrentWidget(pw_.pl_dl)
         pw_.run_driveline()
         shot(win, "49_antijerk_variants")
         dv = (pw_.last_dl or {}).get("variants", {})
@@ -274,7 +348,13 @@ def run_self_test(app, out_dir) -> int:
         shot(win, "50_antijerk_stability")
         gr = (pw_.last_stab or {}).get("grid", [])
         check("antijerk:stability", any(not x["stable"] for row in gr for x in row) and any(x["stable"] for row in gr for x in row))
-        mc = visit("machine", 0, ["run_trade"], [(None, "40_machine_trade")])
+        reading("pwm", pw_.i_pwm, "pwm_policies", "pwm_timing", "pwm_ripple", "pwm_transients")
+        reading("driveline", pw_.i_dl, "driveline", "driveline_stability")
+        pw_.d_tabs.setCurrentWidget(pw_.i_dl)
+        pw_.i_dl.pick.setCurrentIndex(pw_.i_dl.pick.findData("driveline"))
+        shot(win, "50a_antijerk_reading")
+        mc = visit("machine", 0, ["run_trade"], [(lambda pg: pg.trade_tabs.setCurrentIndex(1), "40_machine_trade"),
+                                                 (lambda pg: pg.trade_tabs.setCurrentWidget(pg.i_trade), "40a_machine_trade_reading")])
         mrows = {r["candidate"]: r for r in (mc.last_trade or {}).get("rows", []) if "checks" in r}
         check("machine:trade", "ref" in mrows and "N+10%" in mrows and mrows["ref"]["all_feasible"]
               and mrows["N+10%"]["checks"]["UGO back-EMF"]["status"] == "INFEASIBLE"
@@ -282,6 +362,7 @@ def run_self_test(app, out_dir) -> int:
                       - 1.1) < 1e-9, str({k: v.get("binding") for k, v in mrows.items()}))
         mc.tabs.setCurrentIndex(1)
         mc.run_wind()
+        mc.wind_tabs.setCurrentIndex(1)
         shot(win, "41_machine_winding")
         mw = mc.last_wind or {}
         check("machine:winding", abs(mw.get("kw1", 0) - 0.9330127018922193) < 1e-12 and mw.get("balanced")
@@ -291,9 +372,13 @@ def run_self_test(app, out_dir) -> int:
         check("machine:k_turns_to_trade", mc.t_cand.rowCount() == n0 + 1 and mc.tabs.currentIndex() == 0)
         mc.tabs.setCurrentIndex(2)
         mc.run_size()
+        mc.size_tabs.setCurrentIndex(1)
         shot(win, "42_machine_sizing")
         check("machine:sizing", mc.last_size is not None and
               all(abs(r["check_T_Nm"] - mc.last_size["T_Nm"]) < 1e-9 for r in mc.last_size["rows"]))
+        reading("machine", mc.i_trade, "machine_trade")
+        reading("machine:winding", mc.i_wind, "winding")
+        reading("machine:sizing", mc.i_size, "concept_sizing")
         visit("model", 7, [], [(None, "18_model")])
         # project data package (R2): identity, consistency, every result names its product data, a revision switch
         # reloads the pages and marks older results stale
@@ -393,13 +478,33 @@ def run_self_test(app, out_dir) -> int:
         page.dur_none.setChecked(True)
         for w in (page.an_dom, page.an_relax, page.an_size_v, page.an_size_i):
             w.setChecked(False)
+        steps = []
+
+        def step_seen(key, frac, msg):
+            if key == "decision":
+                steps.append((frac, msg))
+        win.runner.progress.connect(step_seen)
         page.run()
+        win.runner.progress.disconnect(step_seen)
         got = page.result["record"]["verdict"]["verdict"] if page.result else None
         check("decision:flux_map", got in ("PASS", "FAIL", "UNKNOWN") and page.result["record"]["model"]["fidelity"] == "D2", got)
-        page.tabs.setCurrentIndex(1)
+        # the long flux-map scan says where it is (A5): engine steps reach the status bar, the bar never goes back
+        from ..plots.labels import progress_label
+        scan = [m for _f, m in steps if progress_label("torque capability") in m]
+        fr = [f for f, _m in steps]
+        check("progress:engine_steps", len(scan) >= 10 and all(b >= a for a, b in zip(fr, fr[1:])),
+              f"{len(steps)} messages, {len(scan)} in the capability scan; e.g. {scan[len(scan) // 2] if scan else '-'}")
+        page.tabs.setCurrentWidget(page.views)
         shot(win, "20_flux_map_decision")
         win.set_theme("dark", persist=False)
         shot(win, "21_dark_theme")
+        # workspace (J1): every page's inputs, page data and the project written to a file and read back in place
+        from . import workspace as WS
+        ws_file = WS.save(WS.build(win), out / ("selftest" + WS.SUFFIX))
+        ws_back = WS.load(ws_file)
+        ws_problems = WS.apply(win, ws_back)
+        check("workspace:roundtrip", not ws_problems and WS.content(WS.build(win)) == WS.content(ws_back),
+              "; ".join(ws_problems[:5]) or f"{len(ws_back['pages'])} pages, {ws_file.stat().st_size // 1024} KB")
         errs = app.property("twb_errors") or []
         check("no_error_dialogs", not errs, "; ".join(errs))
     except Exception:  # noqa: BLE001

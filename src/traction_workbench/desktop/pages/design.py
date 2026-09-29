@@ -14,26 +14,28 @@ from ...i18n import tr
 from ...plots import figures as F
 from ...scenario import Scenario
 from ...viz import design as DS
+from ...insight.drive import bottleneck_insight, sizing_insight
 from ..widgets import (ConceptNote, KeyValueTable, MagnetTempInput, PlotPanel, combo, error_box, fmt, hint, integer,
-                       number, primary_button)
+                       number, primary_button, reading_tab)
 
 
 def _sweep_task(progress, drive, limits, n, vdc, T, param, lo, hi, samples, magnet_temp_C=None):
     sc = Scenario("design", n, vdc, limits, magnet_temp_C=magnet_temp_C)
+    progress(0.0, tr("1/2 파라미터 스윕", "1/2 parameter sweep"), 0.7)     # the engine's steps move the bar
     cv = DS.capability_vs_parameter(drive, sc, param, np.linspace(lo, hi, samples), T_request=T,
-                                    direction=1 if T >= 0 else -1, progress=lambda f, m: progress(0.7 * f, m))
-    progress(0.75, tr("역설계 bisection", "sizing bisection"))
+                                    direction=1 if T >= 0 else -1)
+    progress(0.7, tr("2/2 역설계 bisection", "2/2 sizing bisection"), 1.0)
     sz = size_parameter(drive, sc, T, param, (lo, hi), samples).to_dict()
     return {"curve": cv, "sizing": sz}
 
 
 def _dominance_task(progress, drive, limits, n, vdc, T, magnet_temp_C=None):
     sc = Scenario("design", n, vdc, limits, magnet_temp_C=magnet_temp_C)
-    progress(0.1, tr("제약 1% 완화 재계산", "1% relaxation"))
+    progress(0.0, tr("1/2 제약 1% 완화 재계산", "1/2 1% relaxation"), 0.6)
     dom = capability_dominance(drive, sc, 1 if T >= 0 else -1).to_dict()
-    progress(0.6, tr("요구 완화 탐색", "requirement relaxation"))
+    progress(0.6, tr("2/2 요구 완화 탐색", "2/2 requirement relaxation"), 1.0)
     rel = requirement_relaxation(drive, sc, T).to_dict()
-    return {"dominance": dom, "relaxation": rel}
+    return {"dominance": dom, "relaxation": rel, "T_Nm": T}
 
 
 class DesignPage(QWidget):
@@ -58,6 +60,7 @@ class DesignPage(QWidget):
         self.magnet.sync(win.state.drive)
         win.state.drive_changed.connect(lambda: self.magnet.sync(self.win.state.drive))
         v.addWidget(g)
+        req_box = g
         g = QGroupBox(tr("1-파라미터 역설계", "one-parameter sizing"))
         f = QFormLayout(g)
         self.param = combo([(f"{param_label(k)} [{v[1]}] · {change_kind_label(v[0])}", k) for k, v in PARAMETERS.items()],
@@ -73,6 +76,7 @@ class DesignPage(QWidget):
         self.kind_hint = hint("")
         f.addRow(self.kind_hint)
         v.addWidget(g)
+        size_box = g
         self.run_sweep = primary_button(tr("capability vs 파라미터 + 역설계", "capability vs parameter + sizing"))
         self.run_sweep.clicked.connect(self.run1)
         v.addWidget(self.run_sweep)
@@ -115,6 +119,12 @@ class DesignPage(QWidget):
         l2.addWidget(self.t_dom, 1)
         self.tabs.addTab(w1, tr("파라미터 민감도·역설계", "parameter sweep · sizing"))
         self.tabs.addTab(w2, tr("병목·완화", "bottleneck · relaxation"))
+        self.insight = reading_tab(self.tabs, tr(
+            "계산하면 해석이 표시됩니다 — 역설계: 요구를 만족하는 파라미터 경계와 그 점의 해, 기준값 근처의 기울기 · 병목: 어느 한계를 "
+            "풀면 토크가 가장 많이 느는지, 단독·공동 병목.",
+            "Run to read the result — sizing: the parameter edge that meets the requirement, the solution there and the "
+            "slope near the baseline · bottleneck: which limit gives the most torque when relaxed, single and joint "
+            "bottlenecks."))
         split.addWidget(self.tabs)
         split.setStretchFactor(1, 1)
         split.setSizes([330, 1100])
@@ -122,6 +132,8 @@ class DesignPage(QWidget):
         lay.setContentsMargins(8, 8, 8, 8)
         lay.addWidget(split)
         self._param_changed()
+        self.win.track_inputs("design-sweep", req_box, size_box)
+        self.win.track_inputs("design-dom", req_box)
 
     def _param_changed(self, *_):
         key = self.param.currentData()
@@ -182,15 +194,18 @@ class DesignPage(QWidget):
                 (tr("최소값에서의 해", "solution at minimum"), ", ".join(f"{k}={fmt(v)}" for k, v in sol.items()) or "—")]
         rows += [(tr("주석", "note"), n) for n in sz["notes"]]
         self.t_sizing.set_rows(rows)
+        self.insight.read("sizing", tr("파라미터 역설계", "sizing"), sizing_insight, cv, sz)
 
     def _show2(self, res):
         self.run_dom.setEnabled(True)
         dom, rel = res["dominance"], res["relaxation"]
         self.p_dom.draw(F.fig_dominance, dom, rel, name="dominance")
         rows = [(r["constraint"], r["classification"], fmt(r["gain_Nm"]), fmt(r["sensitivity_Nm_per_unit"]),
-                 "yes" if r["active_at_base"] else "") for r in dom["single"]]
+                 tr("예", "yes") if r["active_at_base"] else "") for r in dom["single"]]
         self.t_dom.set_rows(rows)
+        self.insight.read("bottleneck", tr("병목·완화", "bottleneck · relaxation"), bottleneck_insight, dom, rel, res.get("T_Nm", self.T.value()))
 
     def redraw(self):
         self.p_curve.redraw()
         self.p_dom.redraw()
+        self.insight.redraw()

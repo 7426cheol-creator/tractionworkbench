@@ -42,6 +42,16 @@
 | **모델·데이터** | 내장 드라이브(상수 dq D1 / flux map D2) 선택, 단위가 선언된 드라이브 JSON·case 파일 불러오기, DC 소스 한계(**값 / 미선언(UNKNOWN) / 선언된 무제한(∞)** 구분) — 활성 프로젝트의 drive·dc_source 섹션을 편집(수정된 작업 사본), provenance, **data audit**(용도별 사용 가능 여부와 qualification 공백) |
 | **검증 (V&V)** | production vs golden acceptance(오차/허용오차 그래프), 참조 패키지 SHA-256, 알려진 한계, **교환 패키지** 저장(MathWorks 이식·도구 간 parity용 규약·fixture) |
 
+결과가 있는 모든 페이지는 결과 탭의 첫 칸 **엔지니어링 분석**에서 결과를 공학적으로 읽어 줍니다: 결론 한 줄, 한계를 만드는
+메커니즘, 전력·손실·시간·에너지가 어디로 가는지, 여유가 가장 작은 항목, 무엇을 바꾸면 답이 바뀌는지, 미확정의 원인과 필요한 자료.
+모든 수치는 그 결과에서 나오고(결과 수치로 만든 항등식은 항을 함께 표시), 해석은 판정을 바꾸지 않습니다. 판정 페이지의 Markdown·PDF
+보고서에도 같은 해석이 들어갑니다. 페이지 머리 막대의 **▶ 버튼**(Ctrl+Enter)은 보이는 탭의 계산을 실행하고, 실행 중에는 그 페이지의
+계산만 취소합니다(Esc). 긴 계산은 상태 표시줄에 어디까지 왔는지(예: "요구 판정: 1/2 판정 · 토크 능력 130/350 (스캔) · 21 s")를
+보여 주고, 취소하면 다음 계산 단계에서 바로 멈춥니다. 요구 판정은 판정을 먼저 보여 주고 PWM 영향·추가 분석을 뒤이어 채웁니다. 결과를
+만든 뒤 입력을 바꾸면 결과 위 띠와 배너에 바뀐 항목(이전 → 지금)이 표시되고, 되돌리면 사라집니다. **작업 공간 파일**(파일 메뉴 →
+작업 공간 저장·열기, `*.twb-workspace.json`)은 모든 페이지의 입력과 프로젝트를 담고, 앱은 작업 중인 입력을 자동으로 남겨 다음 시작 때
+복원할지 묻습니다.
+
 모든 그래프는 확대·이동·PNG/SVG/PDF 저장, 데이터는 CSV로 내보낼 수 있습니다. 한국어/영어, 라이트/다크 테마를 지원합니다.
 각 페이지의 **ⓘ 개념 설명**을 펼치면 그래프 읽는 법과 핵심 식을 짧게 볼 수 있습니다(전문 내용은 그대로, 처음 쓰는 사람을 위한 보조).
 항상 보이는 배지로 활성 프로젝트(ID·개정)·모델 ID·fidelity(D1/D2)·데이터 출처(synthetic)·“하드웨어 미검증”을 표시하고,
@@ -51,6 +61,15 @@
 
 아래 화면은 모두 데스크톱 self-test(`twb selftest`)가 각 페이지를 실제 코드 경로로 실행한 그대로의 캡처입니다(내장 합성 예제 데이터,
 `python docs/make_screenshots.py`로 다시 만듭니다). 이미지를 누르면 원본 크기로 볼 수 있습니다.
+
+### 엔지니어링 분석 (결과 해석)
+
+| | |
+|---|---|
+| ![FAIL 해석](docs/screenshots/reading_decision_fail.jpg) | ![과전압 해석](docs/screenshots/reading_overvoltage.jpg) |
+| **요구 판정 FAIL의 해석** (450 V): 결론 한 줄(최대 토크 134.9 N·m, 부족 15.11 N·m), 판정 항목별 근거(요구 축출력 188.5 kW가 손실이 0이어도 유효 방전 한도 180 kW를 넘음 — 어떤 드라이브로도 불가능), 요구를 만족시키려면(전압·DC 방전 전류 한계 공동 +10.6 %, Vdc ≥ 497.7 V; 인버터 전류만으로는 불가), 이 결과가 말하지 않는 것 | **회생 중 배터리 차단의 해석**: 흡수 여유 ½·C·(V_lim² − V₁²) = 90.62 J 대 선언 반응 2 ms 동안의 유입 190.8 J(2.11배) → 최고 전압 √(V₁² + 2E/C) = 1,060 V, 결과를 바꾸는 것(반응 ≤ 0.95 ms, 또는 C ≥ 2E/(V_lim² − V₁²) = 1,053 µF), freewheel만으로 부족한 이유(역기전력 870.6 V > 850 V) |
+| ![효율 해석](docs/screenshots/reading_efficiency.jpg) | ![가변 PWM 해석](docs/screenshots/reading_pwm.jpg) |
+| **효율 운전점의 해석**: 다섯 경계의 η, 포트 사이 전력 흐름(DC 97.25 kW → 감속기 출력 91.72 kW, 경계마다 손실 차감), 손실 원장(감속기 46 %, 모터 동손 22 %, 인버터 18 %, 회전·철손 14 %), 전자기 변환 T_e·ω와 축 출력의 차 = 회전 손실 | **가변 PWM 정책의 해석**: 허용 2 / 3과 허용되지 않는 정책, 인버터 에너지가 가장 낮은 정책(−5.985 kJ, −6.4 %), 모터+인버터 에너지는 구간이 겹치면 순위를 매기지 않음, 정책별 에너지 ↔ 위상 여유·펄스 비·T_j의 맞바꿈, 정책마다 한계별 여유와 가장 빠듯한 항목(전류 루프 위상 여유 12.1°) |
 
 ### 요구 판정·구동 성능
 
@@ -158,7 +177,7 @@
 ```bash
 pip install -e '.[gui,test]'          # numpy, scipy + PySide6-Essentials, matplotlib (+ pytest)
 
-twb gui                               # 데스크톱 앱 (= traction-workbench)
+twb gui [--open 작업.twb-workspace.json]   # 데스크톱 앱 (= traction-workbench); case JSON이면 판정, 작업 공간이면 복원
 twb evaluate examples/cases/req_ts_012_450V_sizing.json --out out/   # 의사결정 기록 JSON + Markdown
 twb report   examples/cases/req_ts_012_450V_sizing.json --pdf out/report.pdf   # 그래프 포함 PDF 보고서
 twb demo | solve | forward | capability | curve | acceptance
