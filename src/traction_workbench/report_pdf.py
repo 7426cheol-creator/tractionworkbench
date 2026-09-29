@@ -77,8 +77,12 @@ class _Page:
 
 
 def _fig(pdf, fn, *args, size=A4_L, **kwargs):
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    from .plots.figures import fit_texts
     fig = Figure(figsize=size)
+    FigureCanvasAgg(fig)                        # text metrics for fitting titles and legends to the page
     fn(fig, *args, **kwargs)
+    fit_texts(fig)
     pdf.savefig(fig)
 
 

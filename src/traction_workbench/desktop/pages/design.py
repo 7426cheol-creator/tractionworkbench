@@ -14,8 +14,9 @@ from ...i18n import tr
 from ...plots import figures as F
 from ...scenario import Scenario
 from ...viz import design as DS
+from ...insight.drive import bottleneck_insight, sizing_insight
 from ..widgets import (ConceptNote, KeyValueTable, MagnetTempInput, PlotPanel, combo, error_box, fmt, hint, integer,
-                       number, primary_button)
+                       number, primary_button, reading_tab)
 
 
 def _sweep_task(progress, drive, limits, n, vdc, T, param, lo, hi, samples, magnet_temp_C=None):
@@ -33,7 +34,7 @@ def _dominance_task(progress, drive, limits, n, vdc, T, magnet_temp_C=None):
     dom = capability_dominance(drive, sc, 1 if T >= 0 else -1).to_dict()
     progress(0.6, tr("요구 완화 탐색", "requirement relaxation"))
     rel = requirement_relaxation(drive, sc, T).to_dict()
-    return {"dominance": dom, "relaxation": rel}
+    return {"dominance": dom, "relaxation": rel, "T_Nm": T}
 
 
 class DesignPage(QWidget):
@@ -117,6 +118,12 @@ class DesignPage(QWidget):
         l2.addWidget(self.t_dom, 1)
         self.tabs.addTab(w1, tr("파라미터 민감도·역설계", "parameter sweep · sizing"))
         self.tabs.addTab(w2, tr("병목·완화", "bottleneck · relaxation"))
+        self.insight = reading_tab(self.tabs, tr(
+            "계산하면 해석이 표시됩니다 — 역설계: 요구를 만족하는 파라미터 경계와 그 점의 해, 기준값 근처의 기울기 · 병목: 어느 한계를 "
+            "풀면 토크가 가장 많이 느는지, 단독·공동 병목.",
+            "Run to read the result — sizing: the parameter edge that meets the requirement, the solution there and the "
+            "slope near the baseline · bottleneck: which limit gives the most torque when relaxed, single and joint "
+            "bottlenecks."))
         split.addWidget(self.tabs)
         split.setStretchFactor(1, 1)
         split.setSizes([330, 1100])
@@ -186,6 +193,7 @@ class DesignPage(QWidget):
                 (tr("최소값에서의 해", "solution at minimum"), ", ".join(f"{k}={fmt(v)}" for k, v in sol.items()) or "—")]
         rows += [(tr("주석", "note"), n) for n in sz["notes"]]
         self.t_sizing.set_rows(rows)
+        self.insight.read("sizing", tr("파라미터 역설계", "sizing"), sizing_insight, cv, sz)
 
     def _show2(self, res):
         self.run_dom.setEnabled(True)
@@ -194,7 +202,9 @@ class DesignPage(QWidget):
         rows = [(r["constraint"], r["classification"], fmt(r["gain_Nm"]), fmt(r["sensitivity_Nm_per_unit"]),
                  tr("예", "yes") if r["active_at_base"] else "") for r in dom["single"]]
         self.t_dom.set_rows(rows)
+        self.insight.read("bottleneck", tr("병목·완화", "bottleneck · relaxation"), bottleneck_insight, dom, rel, res.get("T_Nm", self.T.value()))
 
     def redraw(self):
         self.p_curve.redraw()
         self.p_dom.redraw()
+        self.insight.redraw()

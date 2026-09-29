@@ -15,10 +15,12 @@ from ...i18n import tr
 from ...plots import figures as F
 from ...plots import review_figures as RF
 from ...plots import schematics as SC
+from ...plots.labels import reason_label
 from ...viz import safety as SF
 from ..thermal_editor import ThermalModelEditor
+from ...insight.thermal import cycle_insight, thermal_insight
 from ..widgets import (ConceptNote, KeyValueTable, PlotPanel, check, combo, error_box, fmt, hint, integer, number,
-                       primary_button)
+                       primary_button, reading_tab)
 
 DURATIONS = [round(float(x), 4) for x in np.geomspace(0.1, 3000, 21)] + ["inf"]
 
@@ -56,7 +58,8 @@ def _task(progress, body, spec):
         ttl = [float(n["time_to_limit_s"]) for n in req["nodes"] if isinstance(n["time_to_limit_s"], (int, float))]
         t_end = max([body["duration_s"] * 3] + [3 * t for t in ttl if math.isfinite(t)] + [10.0])
         curves = SF.thermal_curves(model, req["nodes"], body["coolant_temp_C"], t_end)
-    return {"res": res, "curves": curves, "validated": model.validated}
+    ask = {k: body.get(k) for k in ("torque_Nm", "speed_rpm", "duration_s", "Vdc_V", "coolant_temp_C")}
+    return {"res": res, "curves": curves, "validated": model.validated, "ask": ask}
 
 
 class ThermalPage(QWidget):
@@ -140,9 +143,22 @@ class ThermalPage(QWidget):
         net_scroll = QScrollArea()
         net_scroll.setWidgetResizable(True)
         net_scroll.setWidget(self.p_net)
+        self.net_tab = net_scroll
         self.tabs.addTab(net_scroll, tr("열 회로도·냉각수 순환", "thermal network · coolant loop"))
         self.tabs.addTab(self.p_zth, "Z_th(t)")
-        self.tabs.addTab(self.editor, tr("열 모델 편집", "thermal model"))
+        # the editor keeps its minimum size and scrolls in a small window (it never squeezes its fields together)
+        ed_scroll = QScrollArea()
+        ed_scroll.setWidgetResizable(True)
+        ed_scroll.setWidget(self.editor)
+        self.editor_tab = ed_scroll
+        self.tabs.addTab(ed_scroll, tr("열 모델 편집", "thermal model"))
+        self.res_tab = res
+        self.insight = reading_tab(self.tabs, tr(
+            "계산하면 해석이 표시됩니다 — 어느 노드가 먼저 한계에 닿는지와 그 시간, 연속 운전 시 노드별 정상 온도 대 한계, 열원 분담, "
+            "냉각수 온도 상승 · 반복 부하: 주기 정상 최고 온도와 여유, 허용 펄스·휴지.",
+            "Run to read the result — which node reaches its limit first and when, each node's steady temperature against "
+            "its limit, the heat sources, the coolant rise · repeated load: the periodic peaks and margins, the allowed "
+            "pulse and rest."))
         split.addWidget(self.tabs)
         split.setStretchFactor(1, 1)
         split.setSizes([380, 1040])
@@ -256,11 +272,13 @@ class ThermalPage(QWidget):
     def _show_cycle(self, res):
         self.cy_btn.setEnabled(True)
         self.last_cycle = res
-        self.tabs.setCurrentWidget(self.cyc_tab)
+        self.insight.read("thermal_cycle", tr("반복 부하", "repeated load"), cycle_insight, res)
+        if self.tabs.currentWidget() is not self.insight:
+            self.tabs.setCurrentWidget(self.cyc_tab)
         self.p_cyc.draw(RF.fig_thermal_cycle, res, name="thermal_repeated_load",
                         csv=lambda r=res: {"t_s": r["trace"]["t_s"], **{f"T_{k}_C": v for k, v in r["trace"]["nodes"].items()}})
         c = res["claim"]
-        rows = [(tr("판정", "claim"), f"{c['status']} · {', '.join(c.get('reasons') or [])} · "
+        rows = [(tr("판정", "claim"), f"{c['status']} · {', '.join(reason_label(r) for r in c.get('reasons') or [])} · "
                                      f"{'; '.join(c.get('qualifiers') or [])} {c.get('detail', '')}")]
         fl = res.get("first_limit")
         rows.append((tr("첫 한계 도달", "first limit"),
@@ -481,8 +499,9 @@ class ThermalPage(QWidget):
                       f"{T:g} N·m is not statically feasible, so no duration was evaluated ({claim.get('status', '')}).")
         note = tr("검증된 열모델" if out["validated"] else "미검증 열모델 → 스크리닝 추정 (지속시간 claim UNKNOWN 유지)",
                   "validated thermal model" if out["validated"] else "unvalidated thermal model → screening estimate (duration claim stays UNKNOWN)")
-        self.headline.setText(f"{head}<br><span style='font-size:9pt'>claim: <b>{claim.get('status', '—')}</b> · "
-                              f"{', '.join(claim.get('reasons') or [])} · {note}</span>")
+        why = ", ".join(reason_label(r) for r in claim.get("reasons") or [])
+        self.headline.setText(f"{head}<br><span style='font-size:9pt'>{tr('판정', 'claim')}: <b>{claim.get('status', '—')}</b>"
+                              f"{' · ' + why if why else ''} · {note}</span>")
         self.plot.draw(F.fig_thermal, cur, out["curves"], T, dur,
                        title=tr(f"열 → 토크 가용성 · n = {self.n.value():g} rpm · 냉각수 입구 {cool:g} °C",
                                 f"thermal → torque availability · n = {self.n.value():g} rpm · coolant inlet {cool:g} °C"),
@@ -494,6 +513,8 @@ class ThermalPage(QWidget):
                          fmt(r["torque_Nm"]), r["limited_by"]))
         self.table.set_rows(rows)
         self._refresh_diagrams()
+        self.insight.read("thermal", tr("열 가용성", "thermal availability"), thermal_insight, res,
+                          out.get("ask") or {"torque_Nm": T, "speed_rpm": self.n.value(), "duration_s": dur})
 
     def apply_project(self, _project=None):
         """Thermal networks and cooling system of the active project."""
@@ -501,5 +522,5 @@ class ThermalPage(QWidget):
         self._apply_coolant_spec(self.editor.coolant_spec)
 
     def redraw(self):
-        for p in (self.plot, self.p_net, self.p_zth, self.p_cyc):
+        for p in (self.plot, self.p_net, self.p_zth, self.p_cyc, self.insight):
             p.redraw()

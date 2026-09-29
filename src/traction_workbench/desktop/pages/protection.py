@@ -11,7 +11,9 @@ from PySide6.QtWidgets import (QFormLayout, QGroupBox, QLabel, QLineEdit, QScrol
 from ... import api
 from ...i18n import tr
 from ...plots import review_figures as RF
-from ..widgets import ConceptNote, KeyValueTable, PlotPanel, check, combo, error_box, fmt, integer, number, primary_button
+from ...insight.safety import asc_insight, protection_insight
+from ..widgets import (ConceptNote, KeyValueTable, PlotPanel, check, combo, error_box, fmt, integer, number,
+                       primary_button, reading_tab, with_reading)
 
 NOTE_PROT = lambda: tr(
     "<b>보호 임계값 검토</b>는 '경고 &lt; 디레이팅 &lt; 고장' 순서만 보지 않습니다. 같은 물리 궤적 위에서 "
@@ -159,6 +161,12 @@ class ProtectionPage(QWidget):
         self.ptabs.addTab(self.p_time, tr("이벤트 타임라인", "event timeline"))
         self.ptabs.addTab(w, tr("임계값 창·PROT 표", "threshold window · PROT table"))
         self.ptabs.addTab(self.p_loop, tr("검출 루프 개요도", "detection loop diagram"))
+        self.i_prot = reading_tab(self.ptabs, tr(
+            "검토하면 해석이 표시됩니다 — PROT 항목별 결론, 한 궤적 위의 인과 순서(임계 통과 → 확인 → 반응 → 최고치)와 한계까지 여유, "
+            "샘플 위상에 따른 차이, 임계값 창의 구성.",
+            "Review to read the result — each PROT item, the cause and effect on one trajectory (crossing → confirmation → "
+            "reaction → peak) and the margin to the limit, the spread over the sampling phase, how the threshold window "
+            "is built."))
         split.addWidget(self.ptabs)
         split.setStretchFactor(1, 1)
         split.setSizes([360, 1100])
@@ -266,6 +274,7 @@ class ProtectionPage(QWidget):
         self.t_rows.set_rows([(r["id"] + " " + r["item"], word.get(r["status"], r["status"]), r["detail"])
                               for r in rows],
                              colors={(i, 1): col.get(r["status"], "#57606a") for i, r in enumerate(rows)})
+        self.i_prot.read("protection", tr("보호 검토", "protection review"), protection_insight, res)
 
     # ------------------------------------------------------------------ ASC tab
     def _req_group(self, title, rid, op, t0, t1, lim, origin):
@@ -348,7 +357,12 @@ class ProtectionPage(QWidget):
         self.t_asc = KeyValueTable()
         l2.addWidget(self.p_asc, 3)
         l2.addWidget(self.t_asc, 2)
-        split.addWidget(w)
+        self.asc_tabs, self.i_asc = with_reading(w, tr(
+            "계산하면 해석이 표시됩니다 — 요구별(연산자·창·원점) 값과 여유, 과도의 모양(정상 대비 peak 배수, 최소 id, 제동 충격), 공급사 "
+            "envelope가 있어야 판정되는 항목.",
+            "Run to read the transient — each requirement's value and margin (its operator, window and origin), the shape "
+            "(peak over steady, minimum id, braking shock), what needs supplier envelopes."))
+        split.addWidget(self.asc_tabs)
         split.setStretchFactor(1, 1)
         split.setSizes([360, 1100])
         return split
@@ -381,6 +395,7 @@ class ProtectionPage(QWidget):
     def _show_asc(self, res):
         self.asc_btn.setEnabled(True)
         self.last_asc = res
+        self.i_asc.read("asc", tr("ASC 과도", "ASC transient"), asc_insight, res)
         if not res.get("evaluable"):
             self.p_asc.placeholder(res["claim"]["detail"])
             self.t_asc.set_rows([(tr("판정", "claim"), res["claim"]["status"] + " — " + res["claim"]["detail"])])
@@ -415,5 +430,5 @@ class ProtectionPage(QWidget):
         self.t_asc.set_rows(rows)
 
     def redraw(self):
-        for p in (self.p_time, self.p_win, self.p_loop, self.p_asc):
+        for p in (self.p_time, self.p_win, self.p_loop, self.p_asc, self.i_prot, self.i_asc):
             p.redraw()

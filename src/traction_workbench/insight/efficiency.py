@@ -27,6 +27,13 @@ _AUX = {"useful_output_over_all_inputs": ("유용 출력 / 전체 입력 (LV 보
         "hv_recovery_ratio": ("HV 회수 비", "HV recovery ratio"),
         "net_recovery_after_lv_aux": ("LV 보조를 뺀 순 회수 비", "net recovery after LV auxiliaries"),
         "recovered_over_all_inputs": ("회수 / 전체 입력", "recovered / all inputs")}
+
+
+def aux_label(key: str) -> str:
+    """Display name of an auxiliary efficiency metric (the record's key when it has none)."""
+    return tr(*_AUX[key]) if key in _AUX else key
+
+
 _STATUS = {"DEFINED": None, "N/A": ("해당 없음", "N/A"), "UNKNOWN": ("미상", "unknown"), "INCONSISTENT": ("모순 (η > 1)", "inconsistent (η > 1)")}
 
 
@@ -205,7 +212,7 @@ def point_insight(res: dict) -> Insight:
     if aux or sc:
         s = ins.section(tr("경계 밖 (η에 들어 있지 않은 것)", "outside the boundaries (not in η)"))
         for k, v in aux.items():
-            s.add(f"{tr(*_AUX[k]) if k in _AUX else esc(k)}: {_eta(v, 3)}", "info")
+            s.add(f"{esc(aux_label(k))}: {_eta(v, 3)}", "info")
         if sc.get("excluded"):
             s.add(tr("인버터 경계 밖: ", "outside the inverter boundary: ") + ", ".join(esc(engine_text(x)) for x in sc["excluded"]),
                   "open", tr(f"인버터 모델: {esc(sc.get('model', ''))} ({esc(sc.get('technology', ''))}, {esc(sc.get('value_kind', ''))})",

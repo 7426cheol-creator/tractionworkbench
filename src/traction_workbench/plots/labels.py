@@ -70,6 +70,16 @@ _CLAIM = {
     "active_discharge": ("능동 방전", "active discharge"),
     "safe_state_selection": ("안전 상태 스크리닝", "safe-state screening"),
     "threshold_window": ("임계값 창", "threshold window"),
+    "oew_voltage_allocation": ("OEW 전압 배분 (모든 각도)", "OEW voltage allocation (every angle)"),
+    "oew_bridge_current": ("OEW 브리지 전류", "OEW bridge current"),
+    "oew_domain": ("OEW 운전 영역", "OEW operating domain"),
+    "oew_shared_source": ("OEW 공통 전원 한계", "OEW shared source limits"),
+    "oew_port_A": ("OEW 전원 A 한계", "OEW source A limits"), "oew_port_B": ("OEW 전원 B 한계", "OEW source B limits"),
+    "oew_torque": ("OEW 토크", "OEW torque"),
+    "oew_common_bus": ("OEW 공통 bus", "OEW common bus"),
+    "oew_common_bus_conditional": ("OEW 공통 bus (조건부)", "OEW common bus (conditional)"),
+    "oew_isolated": ("OEW 분리 전원", "OEW isolated sources"),
+    "actual_system": ("실제 시스템", "actual system"),
 }
 _CONSTRAINT = {
     "VOLTAGE": ("전압 한계 (명령 전압 예산)", "voltage limit (command budget)"),

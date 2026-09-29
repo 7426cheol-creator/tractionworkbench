@@ -23,6 +23,12 @@ def die_label(k: str) -> str:
 
 
 def module_insight(res: dict) -> Insight:
+    if "operating_point" not in res:
+        m = res.get("module") or {}
+        ins = Insight(headline=tr(f"{esc(m.get('name', ''))}: 운전점 없음 — {esc(engine_text(res.get('note', '')))}",
+                                  f"{esc(m.get('name', ''))}: no operating point — {esc(res.get('note', ''))}"), verdict="UNKNOWN")
+        ins.section(tr("왜", "why")).add(esc(engine_text(res.get("note", ""))), "open")
+        return ins.nonempty()
     m, op, L = res.get("module") or {}, res.get("operating_point") or {}, res.get("losses") or {}
     rq = res.get("request") or {}
     where = tr(f"{num(rq.get('torque_Nm'))} N·m @ {num(rq.get('speed_rpm'))} rpm, {num(rq.get('Vdc_V'))} V",

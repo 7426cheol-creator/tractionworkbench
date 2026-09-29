@@ -12,9 +12,10 @@ from ...plots import figures as F
 from ...viz import maps as M
 from ...viz import sweeps as SW
 from ...scenario import Scenario
+from ...insight.drive import trajectory_insight
 from ..opviews import plane_hover
 from ..widgets import (ConceptNote, KeyValueTable, MagnetTempInput, PlotPanel, error_box, fmt, hint, integer, number,
-                       primary_button)
+                       primary_button, reading_tab)
 
 
 def _task(progress, drive, limits, mode, n, T, vdc, points, n_max, magnet_temp_C=None):
@@ -101,6 +102,10 @@ class TrajectoryPage(QWidget):
         self.tabs.addTab(self.p_plane, tr("dq 전류 궤적", "dq current trajectory"))
         self.tabs.addTab(self.p_vars, tr("변수 추이", "quantities"))
         self.tabs.addTab(self.table, tr("표", "table"))
+        self.insight = reading_tab(self.tabs, tr(
+            "계산하면 궤적의 해석이 표시됩니다 — 어느 구간에서 어떤 한계(전압·전류·DC)가 걸리는지, 약계자가 시작되는 점, 해가 없는 구간.",
+            "Run to read the trajectory — which limit (voltage, current, DC) binds where, where field weakening starts, "
+            "where there is no solution."))
         split.addWidget(self.tabs)
         split.setStretchFactor(1, 1)
         split.setSizes([330, 1100])
@@ -145,7 +150,9 @@ class TrajectoryPage(QWidget):
         for i in range(len(sw["x"])):
             rows.append([fmt(sw["x"][i]), names[int(sw["status"][i])]] + [fmt(sw[k][i]) for k, _ in FIELD_LABELS[2:]])
         self.table.set_rows(rows)
+        self.insight.read("trajectory", tr("궤적", "trajectory"), trajectory_insight, sw)
 
     def redraw(self):
         self.p_plane.redraw()
         self.p_vars.redraw()
+        self.insight.redraw()

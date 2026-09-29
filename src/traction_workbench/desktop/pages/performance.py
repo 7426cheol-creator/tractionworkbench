@@ -11,7 +11,8 @@ from ...i18n import tr
 from ...plots import figures as F
 from ...viz import maps as M
 from ...viz import sweeps as SW
-from ..widgets import ConceptNote, PlotPanel, check, combo, error_box, hint, number, primary_button
+from ...insight.drive import envelope_insight
+from ..widgets import ConceptNote, PlotPanel, check, combo, error_box, hint, number, primary_button, reading_tab
 
 RESOLUTION = {"fast": (25, 24, 21), "normal": (41, 40, 33), "fine": (61, 60, 49)}
 
@@ -112,6 +113,10 @@ class PerformancePage(QWidget):
         self.tabs.addTab(self.p_env, tr("T–n 성능 곡선", "T–n envelope"))
         self.tabs.addTab(mapw, tr("효율·손실 맵", "efficiency / loss maps"))
         self.tabs.addTab(self.p_detail, tr("최대 토크 곡선 상세", "along the max-torque envelope"))
+        self.insight = reading_tab(self.tabs, tr(
+            "계산하면 성능 곡선의 해석이 표시됩니다 — 속도 구간별로 어떤 한계가 토크를 정하는지, 기저 속도, 최대 출력, 효율이 좋은 영역.",
+            "Run to read the envelope — which limit sets the torque in each speed band, the base speed, the peak power, "
+            "where the efficiency is best."))
         split.addWidget(self.tabs)
         split.setStretchFactor(1, 1)
         split.setSizes([310, 1100])
@@ -162,6 +167,8 @@ class PerformancePage(QWidget):
                                                           "operating points along the max-torque (policy) envelope"),
                                name="envelope_detail", csv=csv)
         self._draw_map()
+        self.insight.read("performance", tr("성능 곡선·맵", "envelope · maps"), envelope_insight, env, res.get("compare"),
+                          res.get("map"), res.get("note"))
 
     def _draw_map(self):
         if self.res is None:
@@ -198,5 +205,5 @@ class PerformancePage(QWidget):
         self.p_map.draw(F.fig_map, mp, q, self.res["env"], name=f"map_{q}", csv=csv, hover=hover)
 
     def redraw(self):
-        for p in (self.p_env, self.p_detail, self.p_map):
+        for p in (self.p_env, self.p_detail, self.p_map, self.insight):
             p.redraw()

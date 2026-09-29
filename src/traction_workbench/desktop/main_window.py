@@ -242,6 +242,7 @@ class MainWindow(QMainWindow):
         self.show_page("decision")
         for key in self.pages:
             self._refresh_run_action(key)
+        self._restore_session()
 
     # ------------------------------------------------------------------ navigation
     def _build_nav(self):
@@ -782,6 +783,28 @@ class MainWindow(QMainWindow):
             "dq model. Verdicts are only definite with proof/evidence; every result is a reproducible decision record.<br><br>"
             "Verified against synthetic fixtures only; no hardware validation."))
 
+    # ------------------------------------------------------------------ session: window size, position, last page
+    def _session_kept(self) -> bool:
+        """The self-test always starts from the same window (deterministic captures); a user session is kept."""
+        return not QApplication.instance().property("twb_selftest")
+
+    def _restore_session(self) -> None:
+        if not self._session_kept():
+            return
+        geo = self.settings.value("window/geometry")
+        if geo is not None:
+            self.restoreGeometry(geo)
+        page = self.settings.value("window/page")
+        if isinstance(page, str) and page in self._nav_rows:
+            self.show_page(page)
+
+    def _save_session(self) -> None:
+        if not self._session_kept():
+            return
+        self.settings.setValue("window/geometry", self.saveGeometry())
+        self.settings.setValue("window/page", self.current_page())
+
     def closeEvent(self, ev):
+        self._save_session()
         self.runner.cancel_all()
         super().closeEvent(ev)

@@ -164,6 +164,10 @@ class DecisionPage(QWidget):
         if self.result is not None:
             self._set_banner(*self._banner_last)
 
+    def _source_row(self, *_):
+        """The source resistance row (label and fields) is shown only when Vdc is a battery OCV."""
+        self._req_form.setRowVisible(self.src_row, self.vdc_kind.currentData() == "battery_ocv")
+
     def _set_banner(self, verdict: str, html: str, note: str = "") -> None:
         extra = "".join(f"<br><span style='color:#b35900'><b>{x}</b></span>" for x in (self._inputs_note, note) if x)
         self.banner.set(verdict, html + extra)
@@ -208,9 +212,7 @@ class DecisionPage(QWidget):
         sr.setContentsMargins(0, 0, 0, 0)
         sr.addWidget(self.src_R)
         sr.addWidget(self.src_basis, 1)
-        self.src_row.setVisible(False)
-        self.vdc_kind.currentIndexChanged.connect(
-            lambda *_: self.src_row.setVisible(self.vdc_kind.currentData() == "battery_ocv"))
+        self.vdc_kind.currentIndexChanged.connect(self._source_row)
         self.range_on = check(tr("Vdc 범위 요구", "Vdc range"), False,
                               tr("범위 전체를 요구하면 표본점 통과만으로 PASS가 아닙니다 (SAMPLED_COVERAGE). 단조성 조건(정적 순구동, Vdc "
                                  "무관 손실, 고정 소스 한계)이 성립하면 저전압 끝점으로 범위 전체를 입증합니다.",
@@ -268,7 +270,9 @@ class DecisionPage(QWidget):
         f.addRow(tr("속도", "speed"), self.speed)
         f.addRow("Vdc", self.vdc)
         f.addRow(tr("Vdc 의미", "Vdc meaning"), self.vdc_kind)
-        f.addRow("R_eq", self.src_row)
+        f.addRow(tr("소스 저항 R_eq", "source R_eq"), self.src_row)
+        self._req_form = f
+        self._source_row()                   # the label and the fields show only for a battery OCV
         f.addRow("", rr)
         f.addRow(tr("시간", "time"), self.dur_none)
         f.addRow("", dr)

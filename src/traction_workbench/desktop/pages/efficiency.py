@@ -18,8 +18,10 @@ from PySide6.QtWidgets import (QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
 from ... import api
 from ...i18n import tr
 from ...plots import efficiency_figures as F
-from ..widgets import (ConceptNote, KeyValueTable, NumTable, PlotPanel, check, combo, error_box, fmt, hint, number,
-                       primary_button, table_with_buttons)
+from ...insight.efficiency import ab_insight, aux_label, map_insight, mission_insight, point_insight
+from ...insight.texts import engine_parts
+from ..widgets import (Cell, ConceptNote, KeyValueTable, NumTable, PlotPanel, check, claim_cell, combo, error_box, fmt,
+                       hint, number, primary_button, table_with_buttons, reading_tab, with_reading)
 
 NOTE = lambda: tr(
     "<b>효율은 경계(control volume)의 성질</b>입니다. 포트: P_dc(선언한 인버터 HV DC 단자 입력), P_ac(모터 AC 단자 입력), "
@@ -173,6 +175,12 @@ class EfficiencyPage(QWidget):
         for p, lab in ((self.p_point, tr("운전점", "point")), (self.p_map, tr("경계별 지도", "maps by boundary")),
                        (self.p_mis, tr("미션", "mission"))):
             self.e_tabs.addTab(p, lab)
+        self.i_eff = reading_tab(self.e_tabs, tr(
+            "계산하면 해석이 표시됩니다 — 운전점: 포트 사이 전력 흐름과 경계별 손실, 손실 원장, 어느 손실을 줄이면 효과가 큰지 · 지도: "
+            "경계별 최고·최저 효율과 위치 · 미션: 경계별·구간별 손실 에너지.",
+            "Run to read the result — point: the power flow between the ports and each boundary's loss, the loss ledger, "
+            "which loss matters most · maps: best and worst efficiency per boundary and where · mission: loss energy per "
+            "boundary and per segment."))
         self.k_eff = KeyValueTable()
         rl.addWidget(self.e_tabs, 3)
         rl.addWidget(self.k_eff, 2)
@@ -241,8 +249,11 @@ class EfficiencyPage(QWidget):
         self.e_btn.setEnabled(True)
         self.last_point = res
         self.p_point.draw(F.fig_efficiency_point, res, name="efficiency_point")
-        self.e_tabs.setCurrentWidget(self.p_point)
-        rows = [(c["name"], f"{c['status']} — {c.get('detail', '')}") for c in res.get("claims", [])]
+        if self.e_tabs.currentWidget() is not self.i_eff:
+            self.e_tabs.setCurrentWidget(self.p_point)
+        self.i_eff.read("point", tr("운전점", "point"), point_insight, res)
+        rows = [(claim_cell(c["name"]), f"{c['status']} — {engine_parts(c.get('detail') or '')}")
+                for c in res.get("claims", [])]
         led = res.get("ledger")
         if led:
             for k, r in led["boundaries"].items():
@@ -280,7 +291,7 @@ class EfficiencyPage(QWidget):
             if rot and rot.get("scope"):
                 rows.append((tr("회전·철손 항의 범위", "scope of the rotational / iron item"), rot["scope"]))
             for k, val in (led.get("aux_metrics") or {}).items():
-                rows.append((k, f"{100 * val:.3f}%"))
+                rows.append((Cell(aux_label(k), k), f"{100 * val:.3f}%"))
             sc = led["inverter_scope"]
             rows.append((tr("인버터 경계", "inverter boundary"), f"{sc.get('model')}: {', '.join(sc.get('included', []))}"))
             rows.append((tr("인버터 경계 밖", "outside the inverter boundary"), ", ".join(sc.get("excluded", []))))
@@ -305,7 +316,9 @@ class EfficiencyPage(QWidget):
             out["loss_known_W"] = np.asarray(mp["loss_known_W"], float).ravel()
             return out
         self.p_map.draw(F.fig_efficiency_maps, res, name="efficiency_maps", csv=csv)
-        self.e_tabs.setCurrentWidget(self.p_map)
+        if self.e_tabs.currentWidget() is not self.i_eff:
+            self.e_tabs.setCurrentWidget(self.p_map)
+        self.i_eff.read("map", tr("경계별 지도", "maps by boundary"), map_insight, res)
 
     def _show_mission(self, res):
         self.e_mis_btn.setEnabled(True)
@@ -314,7 +327,9 @@ class EfficiencyPage(QWidget):
                         csv=lambda r=res: {k: [s.get(k) if k in s else s["ports_W"].get(k) for s in r["segments"]]
                                            for k in ("duration_s", "speed_rpm", "torque_Nm", "status", "P_dc", "P_ac",
                                                      "P_m", "P_o")})
-        self.e_tabs.setCurrentWidget(self.p_mis)
+        if self.e_tabs.currentWidget() is not self.i_eff:
+            self.e_tabs.setCurrentWidget(self.p_mis)
+        self.i_eff.read("mission", tr("미션", "mission"), mission_insight, res)
         e = res["energy"]
         kwh = 3.6e6
         rows = [(tr("요구 수행", "requirement delivered"), tr("모든 구간", "every segment") if res["delivered"] else
@@ -403,7 +418,11 @@ class EfficiencyPage(QWidget):
         self.k_ab = KeyValueTable()
         rl.addWidget(self.p_ab, 3)
         rl.addWidget(self.k_ab, 2)
-        split.addWidget(right)
+        self.ab_tabs, self.i_ab = with_reading(right, tr(
+            "비교하면 해석이 표시됩니다 — 운전점별 손실 차와 오차 예산, 차이가 도통·스위칭 중 어디서 오는지, T_j, 미션 인버터 손실.",
+            "Run to read the comparison — the loss difference per point against the error budget, whether it comes from "
+            "conduction or switching, T_j, the mission inverter loss."))
+        split.addWidget(self.ab_tabs)
         split.setStretchFactor(1, 1)
         split.setSizes([440, 1020])
         return split
@@ -501,7 +520,8 @@ class EfficiencyPage(QWidget):
         rows.append((tr("여기서 평가하지 않은 것", "not evaluated here"), "; ".join(res["not_evaluated"])))
         rows.append((tr("의미", "meaning"), res["meaning"]))
         self.k_ab.set_rows(rows)
+        self.i_ab.read("module_compare", tr("모듈 A/B", "module A/B"), ab_insight, res)
 
     def redraw(self):
-        for p in (self.p_point, self.p_map, self.p_mis, self.p_ab):
+        for p in (self.p_point, self.p_map, self.p_mis, self.p_ab, self.i_eff, self.i_ab):
             p.redraw()

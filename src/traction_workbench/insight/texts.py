@@ -266,6 +266,116 @@ _FIXED = {
     "typical data do not rank a production population.":
         "고정 정책: 선언된 한 변조·캐리어 아래의 모듈 변경; 설계별: 모듈 + 선언된 정책 변경 (선언된 정책끼리의 비교이지 전역 "
         "최적화가 아님). 규칙으로 더 나은 기술은 없고, typical 데이터로 생산 모집단의 순위를 정하지 않음.",
+    # PWM policy / timing
+    "control deadline missed at the scheduled frequency": "스케줄된 주파수에서 제어 deadline 미준수",
+    "commanded pulse narrower than the declared minimum": "명령 펄스가 선언된 최소 폭보다 좁음",
+    "fundamental copper: the same operating point for every policy (kept in each policy's ledger)":
+        "기본파 동손: 모든 정책에서 같은 운전점 (각 정책의 원장에 유지)",
+    "DC-link capacitor ESR loss: ownership not declared - shown separately (E_cap_J)":
+        "DC 링크 커패시터 ESR 손실: 소유 경계 미선언 — 따로 표시",
+    "gate drive / controller LV power: external LV supply, not an HV efficiency term":
+        "게이트 구동·제어기 LV 전력: 외부 LV 공급 — HV 효율 항이 아님",
+    "conservative bound I_fund,pk + max|di|: the fundamental peak and the ripple peak assumed aligned - not the exact "
+    "pulse peak": "보수 상한 I_fund,pk + max|di| — 기본파 peak와 리플 peak가 겹친다고 가정 (정확한 펄스 peak가 아님)",
+    "module Tj per segment is a steady electrothermal fixed point at the declared coolant (Tj = T_coolant + Rth P_hot); "
+    "the schedule's sensor temperature T_ntc is the SUPPLIED trajectory (an input observable) - not a closed-loop "
+    "mission thermal simulation (loss -> thermal network -> NTC -> scheduler -> fsw)":
+        "구간별 모듈 T_j는 선언된 냉각수에서의 정상 전열 고정점 (T_j = T_냉각수 + R_th·P_hot); 스케줄의 센서 온도 T_ntc는 주어진 "
+        "궤적(입력)이며, 손실 → 열망 → NTC → 스케줄러 → fsw의 폐루프 미션 열 시뮬레이션이 아님",
+    "EMI / NVH / bearing-current impact of the policy (the conducted-EMI page evaluates one carrier frequency at a time)":
+        "정책이 EMI·NVH·베어링 전류에 주는 영향 (전도성 EMI 페이지는 캐리어 주파수 하나씩 평가)",
+    "best among the evaluated admissible candidates only (no global or production optimum claimed); a mandatory "
+    "violation is never traded for efficiency; an inverter-loss gain is not a motor+inverter gain - that is an interval "
+    "comparison with the PWM copper and the declared Fe+PM HF bound":
+        "평가한 허용 후보 중 최선일 뿐 (전역·양산 최적이 아님); 필수 위반을 효율과 맞바꾸지 않음; 인버터 손실 이득은 "
+        "모터+인버터 이득이 아님 — 그것은 PWM 동손과 선언된 고주파 철·자석 손실 상한을 넣은 구간 비교",
+    "valid windows from the declared settle / aperture / dead time; invalid samples are held or predicted by the "
+    "declared policy, never replaced by the true current":
+        "유효 창은 선언된 정착·개구·데드타임에서 계산; 무효 샘플은 선언된 정책대로 유지·예측하며 실제 전류로 대체하지 않음",
+    "example target timing (replace with the measured delay chain of the ECU)": "예시 목표 타이밍 (ECU의 측정 지연 사슬로 교체)",
+    # driveline
+    "same maneuver and requirement for every variant; a delayed acceleration is not a jerk improvement by itself; the "
+    "linear model holds only while contact is maintained":
+        "모든 변형이 같은 조작·요구; 가속을 늦추는 것만으로는 저크 개선이 아님; 선형 모델은 접촉이 유지되는 동안만 성립",
+    "less loss in the window because less work is delivered (slower response): not an efficiency gain":
+        "같은 창에서 일을 덜 전달해서(느린 응답) 손실이 적을 뿐 — 효율 이득이 아님",
+    "sampled loop: exact ZOH + fractional delay; continuous crossings are for ideal relative-speed feedback (an analysis "
+    "reference, not the target controller)":
+        "표본 루프: 정확한 ZOH + 분수 지연; 연속 교차점은 이상적 상대속도 피드백 기준 (분석 기준이지 목표 제어기가 아님)",
+    "the sampled closed loop is unstable for THIS policy (not a physical impossibility)":
+        "이 정책에서 표본 폐루프가 불안정 (물리적 불가능이 아님)",
+    "torque authority window not declared: clipping and the positive / negative reserve are not evaluated (missing is "
+    "not unlimited)": "토크 권한 창 미선언 — 클리핑과 양/음 여유를 평가하지 않음 (없음은 무제한이 아님)",
+    # OEW / HEV
+    "regulate_i0: u0* = e0 (ideal zero-sequence current control)": "i0 제어: u0* = e0 (이상적 영상분 전류 제어)",
+    "datasheet module (duty/current trajectory of this bridge)": "데이터시트 모듈 (이 브리지의 듀티·전류 궤적)",
+    "id/iq/speed inside the declared domain": "id·iq·속도가 선언된 영역 안",
+    "switching ripple (see the switched zero-sequence ripple)": "스위칭 리플 (스위칭 영상분 리플 참조)",
+    "dead time, minimum pulse": "데드타임, 최소 펄스", "chassis common mode / EMC / insulation stress": "섀시 공통모드·EMC·절연 스트레스",
+    "cross-saturation with i0": "i0와의 교차 포화", "bridge transitions and fault transients": "브리지 전환과 고장 과도",
+    "witnessed grid maxima (same method for every configuration): lower bounds of the electrical capability; DC-source "
+    "limits, losses, thermal and i0 transients not applied":
+        "근거점으로 확인한 격자 최대값 (모든 구성에 같은 방법) — 전기적 capability의 하한; DC 소스 한계·손실·열·i0 과도는 미적용",
+    "sampled joint set: FEASIBLE cells are witnesses (every port's voltage identity closed); the rectangle of separate "
+    "maxima is not an available torque set":
+        "표본으로 본 동시 가능 집합: '가능' 셀은 근거점 (모든 포트의 전압 항등식이 닫힘); 따로 본 최대값의 사각형은 쓸 수 있는 "
+        "토크 집합이 아님",
+    "the battery side is solved with its sag: duty, inductor current, loss, UV at the battery":
+        "배터리 쪽은 전압 강하까지 풀어 계산: 듀티, 인덕터 전류, 손실, 배터리 저전압",
+    "branch stress (currents, losses, capacitor ripple) follows the branch powers, not the net":
+        "가지의 부담(전류·손실·커패시터 리플)은 순합이 아니라 가지 전력을 따름",
+    "sampled initial angles are coverage evidence, not a proof over the continuum; combustion onset needs engine evidence":
+        "표본 초기각은 범위 근거일 뿐 연속 구간의 증명이 아님; 연소 시작은 엔진 근거가 필요",
+    "starter capability evaluated at the UV floor and taken as the lower of neighbouring speed samples (a screening "
+    "envelope: an interior capability valley is not excluded); DC power / current interpolated between exact policy solves":
+        "시동 기기 capability는 저전압 하한에서 평가하고 인접 속도 표본 중 낮은 값을 사용 (스크리닝 포락선 — 내부의 골은 배제되지 "
+        "않음); DC 전력·전류는 정확한 정책 해 사이를 보간",
+    "Coulomb friction holds the crank at rest; compression rebound is modelled unless a one-way backstop is declared":
+        "쿨롱 마찰이 정지한 크랭크를 붙잡음; 원웨이 백스톱을 선언하지 않으면 압축 반동을 모델링",
+    "engaged fixed-ratio connection assumed; clutch slip, combustion, NVH are outside this replay":
+        "고정비 연결(체결) 가정; 클러치 슬립·연소·NVH는 이 재현 밖",
+    "result named 'cranking requirement', not 'engine start'": "결과 이름은 '크랭킹 요구'이지 '엔진 시동'이 아님",
+    "screening: declared powers and reaction; ESR, inductance, protection clamps and converter dynamics not modelled":
+        "스크리닝: 선언된 전력·반응; ESR·인덕턴스·보호 클램프·컨버터 동특성은 모델 밖",
+    "the common capacitor margin is counted once for all fault branches": "공통 커패시터 여유는 모든 고장 가지에 한 번만 셈",
+    "massless, lossless simple planetary; torques positive into the gear set": "질량·손실 없는 단순 유성기어; 기어 세트로 들어가는 토크를 +",
+    "torques positive INTO the gear set; massless, lossless ideal set": "기어 세트로 들어가는 토크를 +; 질량·손실 없는 이상적 세트",
+    "kinematics, ideal torque ratio and power balance close": "기구학·이상 토크비·전력 수지가 닫힘",
+    # EMI
+    "screening margin": "스크리닝 여유",
+    "line-sum estimate of the modelled lines: not a CISPR receiver reading (QP / AV weighting, IF filter shape and dwell "
+    "not modelled)": "모델링된 스펙트럼 선의 합 추정 — CISPR 수신기 판독이 아님 (QP·AV 가중, IF 필터 모양, 체류 시간 미모델)",
+    "ideal-switch edges with declared rise / fall and dead time; ringing, reverse recovery and gate-loop effects are "
+    "outside this source": "선언된 상승·하강·데드타임의 이상 스위치 에지 — 링잉·역회복·게이트 루프 효과는 이 소스 밖",
+    "zero-sequence suppression (u0 = 0) is not chassis common-mode suppression: EMC, bearing and insulation stress need "
+    "the chassis network and their own evidence":
+        "영상분 억제(u0 = 0)는 섀시 공통모드 억제가 아님 — EMC·베어링·절연 스트레스는 섀시 회로망과 별도 근거가 필요",
+    # machine design
+    "AC copper loss (conductor size / strands / hairpin geometry change)": "AC 동손 (도체 크기·소선·헤어핀 형상 변경)",
+    "HF winding impedance and parasitic capacitance (EMC path)": "고주파 권선 임피던스·기생 커패시턴스 (EMC 경로)",
+    "thermal network of the winding (copper distribution, fill)": "권선 열망 (구리 분포·점적률)",
+    "demagnetisation envelope in amperes (valid only as an ampere-turn limit)": "암페어 단위 감자 한계 (암페어-턴 한계로만 유효)",
+    "iron / PM loss maps (volume)": "철·자석 손실 지도 (부피)", "rotor mechanics and overspeed envelope": "회전자 기계 강도·과속 한계",
+    "inertia and thermal capacities": "관성·열용량", "end-effect split (declared shares only)": "단부 효과 분담 (선언 비율만)",
+    "saturation and cross-coupling (a PM change is not a scaling for a nonlinear map)":
+        "포화·교차결합 (자석 변경은 비선형 지도의 스케일링이 아님)",
+    "demagnetisation envelope (new magnet / grade)": "감자 한계 (새 자석·등급)", "iron loss at the new flux density": "새 자속 밀도에서의 철손",
+    "cogging and torque ripple": "코깅·토크 리플",
+    "coupled requirement margins on the same requirements, temperatures and sources; derived candidates are scaled "
+    "references (not validated) with the listed invalidated data":
+        "같은 요구·온도·전원에서의 결합 여유 — 파생 후보는 스케일한 기준(검증 안 됨)이며 나열된 데이터가 무효",
+    "pole pairs": "극쌍 수", "feasible slot / pole combination": "가능한 슬롯·극 조합", "balanced three-phase": "3상 평형",
+    "parallel paths symmetric": "병렬 회로 대칭", "the machine's declared winding": "기기에 선언된 권선",
+    "A-B-C along increasing slot number": "슬롯 번호 증가 방향으로 A-B-C",
+    "not declared by the active model (a k_N is a generic thought experiment)": "활성 모델에 선언되지 않음 (k_N은 일반적 사고실험)",
+    "generic k_N (thought experiment): the active machine declares no winding, so this is not a redesign of its winding":
+        "일반 k_N (사고실험) — 활성 기기에 권선 선언이 없으므로 그 권선의 재설계가 아님",
+    "ideal star-of-slots factors: AC resistance, losses, NVH and manufacturability are not approved by a winding factor; "
+    "feasibility, balance, phase sequence and parallel-path symmetry are checked":
+        "이상적 슬롯 별도(star of slots) 계수 — AC 저항·손실·NVH·제작성은 권선계수로 승인되지 않음; 가능성·평형·상순·병렬 대칭은 검사함",
+    "concept envelope from declared shear stress and aspect ratio; rotor mechanics, thermal, demagnetisation and losses "
+    "need their own evidence (external / later phases)":
+        "선언된 전단응력·종횡비로 본 개념 범위 — 회전자 기계·열·감자·손실은 별도 근거 필요 (외부·후속 단계)",
 }
 
 _PATTERNS = [
@@ -383,13 +493,97 @@ _PATTERNS += [
      r"모터 PWM 고조파 손실: 평가하지 않았고 상쇄된다고 보지 않음 (\1)"),
     (r"module loss not established: (.*)", r"모듈 손실 미확정: \1"),
 ]
+_PATTERNS += [
+    (r"segment (\d+): waveform models \(ripple, sampling, capacitor\) use the synchronous carrier (\S+) kHz, the module "
+     r"loss and the schedule the requested (\S+) kHz \((.*)\)",
+     r"구간 \1: 파형 모델(리플·샘플링·커패시터)은 동기 캐리어 \2 kHz, 모듈 손실과 스케줄은 요청값 \3 kHz 사용 (\4)"),
+    (r"requirement not delivered \(INFEASIBLE\) in segment\(s\) (.*)", r"구간 \1에서 요구 미달성 (불가능)"),
+    (r"segment (\d+): requirement not established \((.*)\)", r"구간 \1: 요구 달성 미확정 (\2)"),
+    (r"the implemented \(sampled\) current loop is unstable in segment\(s\) (.*) - a positive continuous margin is not "
+     r"sufficient", r"구현된(표본) 전류 루프가 구간 \1에서 불안정 — 연속 근사의 양의 여유로는 부족"),
+    (r"(.*): current excursion (\S+) A > (\S+) A(.*)", r"\1: 전류 편차 \2 A > \3 A\4"),
+    (r"threshold chatter: (\S+) noise (\S+) \(peak-peak\) >= hysteresis (\S+) - (.*)",
+     r"임계 채터: \1 노이즈 \2 (peak-peak) ≥ 히스테리시스 \3 — \4"),
+    (r"(\S+): measurement noise not declared \(threshold chatter not evaluated\)",
+     r"\1: 측정 노이즈 미선언 (임계 채터 미평가)"),
+    (r"held sample age (\S+) us exceeds the declared (\S+) us", r"유지 샘플 나이 \1 µs가 선언된 \2 µs를 넘음"),
+    (r"held-sample error bound (\S+) A exceeds the declared (\S+) A", r"유지 샘플 오차 상한 \1 A가 선언된 \2 A를 넘음"),
+    (r"peak vehicle jerk (\S+) > (\S+)", r"차량 저크 최대 \1 > \2 m/s³"),
+    (r"peak load angular jerk (\S+) > (\S+)", r"부하 각저크 최대 \1 > \2"),
+    (r"settling time \(on the requested target\) (\S+) > (\S+)", r"정착 시간 (요구 목표 기준) \1 > \2 s"),
+    (r"response time \(to 90 % of the request\) (\S+) > (\S+)", r"응답 시간 (요구의 90 %까지) \1 > \2 s"),
+    (r"(response time \(to 90 % of the request\)|settling time \(on the requested target\)|peak vehicle jerk): no "
+     r"requirement declared", r"\1: 요구 미선언"),
+    (r"(.*): not reached within the horizon", r"\1: 계산 구간 안에 도달하지 못함"),
+    (r"(.*): not reached by (\S+) s \(horizon covers it\)", r"\1: \2 s까지 도달하지 못함 (계산 구간이 포함)"),
+]
+_PATTERNS += [
+    (r"co-linear split s = (\S+); common-mode offsets differ by u0\*", r"동일선상 분배 s = \1; 공통모드 오프셋 차이 = u0*"),
+    (r"utilisation (\S+) \((\w+)\) at theta = (\S+) deg; co-linear split s = (\S+); common-mode offsets differ by u0\*",
+     r"활용률 \1 (\2) @ θ = \3°; 동일선상 분배 s = \4; 공통모드 오프셋 차이 = u0*"),
+    (r"phase peak (\S+) A \(exact: sqrt\(id\^2 \+ iq\^2\) over every angle \(i0 = 0\)\) vs (\S+) A per bridge \(each bridge "
+     r"carries the full winding current; never halved\)",
+     r"상전류 peak \1 A (정확: 모든 각도에서 √(id² + iq²), i0 = 0) vs 브리지당 \2 A (각 브리지가 권선 전류 전체를 흘림 — 반으로 "
+     r"나누지 않음)"),
+    (r"within discharge power (\S+)/(\S+)", r"방전 전력 한계 안 (\1 / \2 W)"),
+    (r"T_shaft (\S+) N\*m \(residual (\S+), budget (\S+)\)", r"축 토크 \1 N·m (잔차 \2, 허용 \3)"),
+    (r"met at all (\d+) sampled initial angles \(worst (\S+) s at (\S+) deg\)", r"표본 초기각 \1개 모두 충족 (최악 \2 s @ \3°)"),
+    (r"the (\S+) J capacitor margin is used at (\S+) us, before the excess ends at (\S+) us: peak (\S+) V",
+     r"커패시터 여유 \1 J이 \2 µs에 소진 — 잉여가 끝나는 \3 µs 전: 최고 \4 V"),
+    (r"SCREENING - predicted exceedance up to (\S+) dB at (\S+) MHz \(exact over the covered band\)",
+     r"스크리닝 — 최대 \1 dB 초과 예측 @ \2 MHz (덮은 대역 전체에서 정확)"),
+    (r"one (\S+) V bridge \(ideal ceiling V/sqrt3\)", r"\1 V 브리지 하나 (이상 한계 V/√3)"),
+    (r"two bridges on one (\S+) V bus \(zero-u0 hexagon: V\)", r"\1 V bus 하나에 브리지 둘 (u0 = 0 육각형: V)"),
+    (r"(\S+) V \+ (\S+) V isolated sources \(\(VA\+VB\)/sqrt3\)", r"\1 V + \2 V 분리 전원 ((V_A + V_B)/√3)"),
+    (r"one (\S+) V bridge \(same total stack, higher device blocking voltage\)", r"\1 V 브리지 하나 (같은 총 전압, 더 높은 소자 내압)"),
+    (r"winding p = (\d+), drive model p = (\d+)", r"권선 p = \1, 구동 모델 p = \2"),
+    (r"a = (\d+), divisors of (\d+) allowed", r"병렬 a = \1 (\2의 약수만 허용)"),
+]
+_PATTERNS += [
+    (r"die (.+?): no supplier cycling model for this package/mechanism: cycle histogram, hotspot and dT/mean-temperature "
+     r"comparison only", r"다이 \1: 이 패키지·메커니즘의 공급사 사이클 수명 모델 없음 — 사이클 히스토그램, 핫스팟, ΔT·평균 온도 비교만"),
+]
+_PWM_NAMES = {"Tj": "모듈 T_j", "peak-current conservative bound (I_fund,pk + max|di|)": "피크 전류 보수 상한 (I_fund,pk + max|di|)",
+              "capacitor RMS current": "커패시터 RMS 전류", "current-loop phase margin": "전류 루프 위상 여유",
+              "pulse ratio": "펄스 비"}
+for _en, _ko in _PWM_NAMES.items():
+    _FIXED[f"{_en}: no limit declared"] = f"{_ko}: 한계 미선언"
+    _FIXED[f"{_en}: not evaluated in every segment"] = f"{_ko}: 모든 구간에서 평가되지 않음"
+    _PATTERNS.append((re.escape(_en) + r" (\S+) vs limit (\S+)", _ko.replace("\\", "\\\\") + r" \1 vs 한계 \2"))
 _TAG = re.compile(r"^\[(Vdc=[^\],]+)(?:, magnet ([^\]]+) degC)?\]\s*")
+
+
+_IDENTS = {"upper_offset": ("상단 오프셋", "upper offset"), "lower_offset": ("하단 오프셋", "lower offset"),
+           "spread_A": ("브리지 A 전압 폭", "bridge A spread"), "spread_B": ("브리지 B 전압 폭", "bridge B spread"),
+           "sensor_temp_C": ("센서 온도", "sensor temperature"), "torque_abs_Nm": ("|토크|", "|torque|"),
+           "regulate_i0": ("i0 제어", "i0 regulation"), "E_cap_J": ("E_cap", "E_cap"),
+           "eta_interval_incl_pwm_hf": ("PWM 포함 η 구간", "the η interval incl. PWM"),
+           "m_dot": ("ṁ", "ṁ"), "eta_f": ("η_f", "η_f"), "eta_r": ("η_r", "η_r"), "omega_m": ("ω_m", "ω_m"),
+           "upper_igbt": ("상단 IGBT", "upper IGBT"), "lower_igbt": ("하단 IGBT", "lower IGBT"),
+           "upper_diode": ("상단 다이오드", "upper diode"), "lower_diode": ("하단 다이오드", "lower diode"),
+           "upper_mosfet": ("상단 MOSFET", "upper MOSFET"), "lower_mosfet": ("하단 MOSFET", "lower MOSFET"),
+           "upper_switch": ("상단 스위치", "upper switch"), "lower_switch": ("하단 스위치", "lower switch"),
+           "upper_diode_or_reverse": ("상단 다이오드/역도통", "upper diode / reverse"),
+           "lower_diode_or_reverse": ("하단 다이오드/역도통", "lower diode / reverse")}
+_IDENT_RE = re.compile(r"\b(" + "|".join(map(re.escape, _IDENTS)) + r")\b")
+
+
+def _idents(s: str) -> str:
+    """Engine identifiers quoted inside a sentence -> display words (both languages)."""
+    ko = language() == "ko"
+    return _IDENT_RE.sub(lambda m: _IDENTS[m.group(1)][0 if ko else 1], s)
 
 
 def engine_text(s: str) -> str:
     """A next action / not-evaluated item / limiting factor of the engines, in the reading's language."""
-    if language() != "ko" or not s:
+    if not s:
         return s
+    if language() != "ko":
+        return _idents(s)
+    return _idents(_engine_ko(s))
+
+
+def _engine_ko(s: str) -> str:
     tag = ""
     m = _TAG.match(s)
     if m:
@@ -406,10 +600,10 @@ def engine_text(s: str) -> str:
 def engine_parts(s: str) -> str:
     """A '; '-joined engine message in the reading's language: the whole sentence when it is known, else clause by
     clause (each clause translated when known, kept verbatim otherwise)."""
-    if language() != "ko" or not s:
+    if not s:
         return s
     whole = engine_text(s)
-    if whole != s or "; " not in s:
+    if language() != "ko" or whole != _idents(s) or "; " not in s:
         return whole
     return "; ".join(engine_text(p) for p in s.split("; ") if p)
 

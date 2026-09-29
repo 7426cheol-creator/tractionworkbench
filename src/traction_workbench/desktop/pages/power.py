@@ -20,8 +20,11 @@ from ... import api
 from ...extensions.dclink_ripple import LOCATIONS, QUANTITIES
 from ...i18n import tr
 from ...plots import review_figures as RF
-from ..widgets import (ConceptNote, KeyValueTable, NumTable, PlotPanel, check, combo, error_box, fmt, hint, integer,
-                       number, parse_clipboard_grid, primary_button, table_with_buttons)
+from ...insight.power import life_insight, module_insight, ripple_insight
+from ...insight.texts import engine_parts
+from ...plots.labels import reason_label
+from ..widgets import (ConceptNote, KeyValueTable, NumTable, PlotPanel, check, claim_cell, combo, error_box, fmt, hint,
+                       integer, number, parse_clipboard_grid, primary_button, table_with_buttons, with_reading)
 
 NOTE_MODULE = lambda: tr(
     "<b>데이터시트 기반 모듈 손실</b>: 결정 운전점(id, iq, vd, vq)에서 전기각 θ에 걸쳐 PWM 듀티(SVPWM/SPWM/DPWM1)를 평균해 "
@@ -250,17 +253,19 @@ def _scroll(form: QWidget) -> QScrollArea:
     return sc
 
 
-def _result_side(plot: PlotPanel, table: KeyValueTable) -> QWidget:
+def _result_side(plot: PlotPanel, table: KeyValueTable, placeholder: str = "") -> tuple:
+    """The plot over the table, behind an 'engineering reading' tab: (widget, reading panel)."""
     w = QWidget()
     lay = QVBoxLayout(w)
     lay.setContentsMargins(0, 0, 0, 0)
     lay.addWidget(plot, 3)
     lay.addWidget(table, 2)
-    return w
+    return with_reading(w, placeholder)
 
 
 def _claim_text(c: dict) -> str:
-    return f"{c['status']} — {c.get('detail', '')}" + (f"  [{', '.join(c['reasons'])}]" if c.get("reasons") else "")
+    return (f"{c['status']} — {engine_parts(c.get('detail') or '')}"
+            + (f"  [{', '.join(reason_label(r) for r in c['reasons'])}]" if c.get("reasons") else ""))
 
 
 class PowerPage(QWidget):
@@ -426,7 +431,12 @@ class PowerPage(QWidget):
         self.p_mod = PlotPanel(hint=tr("소자 위치별 손실 · 토크 스윕 (모듈 vs 대리식) · 정지 핫스팟",
                                        "per-position loss · torque sweep (module vs surrogate) · standstill hotspot"))
         self.t_mod = KeyValueTable()
-        split.addWidget(_result_side(self.p_mod, self.t_mod))
+        side, self.i_mod = _result_side(self.p_mod, self.t_mod, tr(
+            "계산하면 해석이 표시됩니다 — 인버터 전체 손실의 도통/스위칭 분담, 다이별 손실과 가장 뜨거운 다이, 판정에 쓰는 대체 손실 모델과의 "
+            "차이, 전열 결합.", "Run to read the losses — conduction vs switching over the inverter, the per-die loss and "
+            "the hottest die, the difference to the loss surrogate the decisions use, the electrothermal coupling."))
+        self.mod_tabs = side
+        split.addWidget(side)
         split.setStretchFactor(1, 1)
         split.setSizes([400, 1060])
         return split
@@ -566,6 +576,7 @@ class PowerPage(QWidget):
         if "operating_point" not in res:
             out.append((tr("운전점", "operating point"), res.get("note", "")))
             self.t_mod.set_rows(out)
+            self.i_mod.read("module", tr("모듈 손실", "module losses"), module_insight, res)
             return
         op, lo = res["operating_point"], res["losses"]
         out += [(tr("판정", "claim"), _claim_text(res["claim"])),
@@ -602,6 +613,7 @@ class PowerPage(QWidget):
             out.append((tr("문제", "problems"), "; ".join(lo["problems"])))
         out.append((tr("모델 밖", "not modelled"), ", ".join(lo.get("not_modelled", []))))
         self.t_mod.set_rows(out)
+        self.i_mod.read("module", tr("모듈 손실", "module losses"), module_insight, res)
 
     # ================================================================== ripple tab
     def _ripple_tab(self):
@@ -692,7 +704,12 @@ class PowerPage(QWidget):
         self.win.track_inputs(('ripple',), form)
         self.p_rip = PlotPanel(hint=tr("스위칭 함수 파형 · 스펙트럼과 가지 분배", "switching-function waveform · spectrum and split"))
         self.t_rip = KeyValueTable()
-        split.addWidget(_result_side(self.p_rip, self.t_rip))
+        side, self.i_rip = _result_side(self.p_rip, self.t_rip, tr(
+            "계산하면 해석이 표시됩니다 — 인버터 입력 전류의 교류 성분이 커패시터와 배터리로 나뉘는 비, ESR 손실과 핫스팟 온도, 리플 요구.",
+            "Run to read the DC link — how the inverter's ac current splits between the capacitor and the battery, the ESR "
+            "loss and the hotspot, the ripple requirement."))
+        self.rip_tabs = side
+        split.addWidget(side)
         split.setStretchFactor(1, 1)
         split.setSizes([400, 1060])
         return split
@@ -764,7 +781,7 @@ class PowerPage(QWidget):
                          f"{fmt(rq['value'])} · [{fmt(rq['bounds'][0])}, {fmt(rq['bounds'][1])}] · "
                          + tr(f"샘플 분해능 {fmt(rq['resolution_delta'], 3)}", f"sampling resolution {fmt(rq['resolution_delta'], 3)}")))
         for k, c in (res.get("claims") or {}).items():
-            rows.append((k, _claim_text(c)))
+            rows.append((claim_cell(k), _claim_text(c)))
         hs = res.get("hotspot")
         if hs:
             if hs.get("converged"):
@@ -782,6 +799,7 @@ class PowerPage(QWidget):
             rows.append((tr("가정", "assumption"), res["assumption"]))
         rows.append((tr("모델 밖", "not modelled"), ", ".join(res.get("not_modelled", []))))
         self.t_rip.set_rows(rows)
+        self.i_rip.read("ripple", tr("DC-link 리플", "DC-link ripple"), ripple_insight, res)
 
     # ================================================================== lifetime tab
     def _life_tab(self):
@@ -867,7 +885,12 @@ class PowerPage(QWidget):
         self.win.track_inputs(('lifetime',), form)
         self.p_life = PlotPanel(hint=tr("Tj 이력과 rainflow 히스토그램", "Tj history and rainflow histogram"))
         self.t_life = KeyValueTable()
-        split.addWidget(_result_side(self.p_life, self.t_life))
+        side, self.i_life = _result_side(self.p_life, self.t_life, tr(
+            "계산하면 해석이 표시됩니다 — 다이별 온도 진폭과 사이클 수, rainflow ΔT 분포, 손상 판정에 필요한 공급사 모델.",
+            "Run to read the cycling — each die's temperature swing and cycle count, the rainflow ΔT distribution, the "
+            "supplier model the damage needs."))
+        self.life_tabs = side
+        split.addWidget(side)
         split.setStretchFactor(1, 1)
         split.setSizes([400, 1060])
         return split
@@ -974,7 +997,8 @@ class PowerPage(QWidget):
         for n in res.get("notes") or []:
             rows.append((tr("주의", "note"), n))
         self.t_life.set_rows(rows)
+        self.i_life.read("lifetime", tr("열 사이클", "thermal cycling"), life_insight, res)
 
     def redraw(self):
-        for p in (self.p_mod, self.p_rip, self.p_life):
+        for p in (self.p_mod, self.p_rip, self.p_life, self.i_mod, self.i_rip, self.i_life):
             p.redraw()

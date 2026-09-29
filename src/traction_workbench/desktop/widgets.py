@@ -45,6 +45,21 @@ def fmt(v, digits: int = 6) -> str:
     return str(v)
 
 
+class Cell(str):
+    """Table text with its own tooltip: a display name keeps the record's code one hover away."""
+
+    def __new__(cls, text: str, tip: str = ""):
+        s = super().__new__(cls, text)
+        s.tip = tip
+        return s
+
+
+def claim_cell(name: str) -> Cell:
+    """A claim's display name for a table; the claim code (as in the JSON record) is its tooltip."""
+    from ..plots.labels import claim_label
+    return Cell(claim_label(name), name)
+
+
 # ---------------------------------------------------------------------------
 # plotting
 # ---------------------------------------------------------------------------
@@ -93,12 +108,14 @@ class PlotPanel(QWidget):
         self.name = "figure"
         self.canvas.mpl_connect("motion_notify_event", self._on_move)
         self.canvas.mpl_connect("button_press_event", self._on_click)
+        self.canvas.mpl_connect("resize_event", self._fit_texts)       # titles and legends follow the canvas size
         self.placeholder(hint or tr("입력을 확인하고 실행하면 결과 그래프가 여기에 표시됩니다.",
                                     "Run the calculation to see the plot here."))
 
     # -- drawing ---------------------------------------------------------------
     def placeholder(self, text: str):
         self._draw = None
+        self._pending = False
         self._csv = None
         self.figure.clear()
         t = S.theme()
@@ -119,6 +136,16 @@ class PlotPanel(QWidget):
     def redraw(self):
         if self._draw is None:
             return
+        self.csv_button.setEnabled(self._csv is not None)
+        for b in self.fig_buttons:
+            b.setEnabled(True)
+        if not self.isVisible():             # a hidden tab draws when it is first shown: a result on one tab does
+            self._pending = True             # not freeze the window drawing every other tab
+            return
+        self._render()
+
+    def _render(self):
+        self._pending = False
         fn, args, kwargs = self._draw
         self.figure.set_facecolor(S.theme()["bg"])
         try:
@@ -126,10 +153,18 @@ class PlotPanel(QWidget):
         except Exception as exc:  # noqa: BLE001 - a plotting failure must not crash the app
             self.figure.clear()
             self.figure.text(0.5, 0.5, f"plot error: {exc}", ha="center", va="center", color="#cf222e")
+        self._fit_texts()
         self.canvas.draw_idle()
-        self.csv_button.setEnabled(self._csv is not None)
-        for b in self.fig_buttons:
-            b.setEnabled(True)
+
+    def _fit_texts(self, _ev=None):
+        if self._draw is not None and not getattr(self, "_pending", False):
+            from ..plots.figures import fit_texts
+            fit_texts(self.figure)
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        if getattr(self, "_pending", False) and self._draw is not None:
+            self._render()
 
     # -- interaction -----------------------------------------------------------
     def _on_move(self, ev):
@@ -150,6 +185,8 @@ class PlotPanel(QWidget):
     def export(self, kind: str):
         if self._draw is None:
             return
+        if getattr(self, "_pending", False):          # never drawn yet (its tab was not opened): draw it now
+            self._render()
         path, _ = QFileDialog.getSaveFileName(self, tr("그림 저장", "Save figure"), f"{self.name}.{kind}",
                                               f"{kind.upper()} (*.{kind})")
         if path:
@@ -289,7 +326,7 @@ class KeyValueTable(QTableWidget):
         for i, row in enumerate(rows):
             for j, v in enumerate(row):
                 it = QTableWidgetItem(v if isinstance(v, str) else fmt(v))
-                it.setToolTip(it.text())
+                it.setToolTip(getattr(v, "tip", "") or it.text())
                 if colors and (i, j) in colors:
                     it.setForeground(QColor(colors[(i, j)]))
                 self.setItem(i, j, it)
@@ -320,6 +357,7 @@ class NumTable(QTableWidget):
         super().__init__(parent)
         self.text_cols = frozenset(text_cols)            # returned as stripped text (names, kinds)
         self.optional_cols = frozenset(optional_cols)    # a blank numeric cell here is None (not declared), not 0
+        self.fit_columns = True                          # False: the page sizes the columns itself
         self.setColumnCount(len(headers))
         self.setHorizontalHeaderLabels(headers)
         self.verticalHeader().setVisible(True)
@@ -330,12 +368,41 @@ class NumTable(QTableWidget):
         if rows:
             self.load(rows)
 
+    def _fit(self) -> None:
+        """No header or value is cut: equal columns while each fits its share of the width, otherwise every column as
+        wide as its header and values (spare width shared out) and a table narrower than that scrolls sideways (a cut
+        header hides which quantity a column holds)."""
+        cols = [j for j in range(self.columnCount()) if not self.isColumnHidden(j)]
+        if not self.fit_columns or not cols:
+            return
+        h = self.horizontalHeader()
+        need = {j: max(h.sectionSizeHint(j), self.sizeHintForColumn(j)) for j in cols}
+        sb = self.verticalScrollBar()
+        room = self.viewport().width() - (0 if sb.isVisible() else sb.sizeHint().width())   # rows may still be added
+        if max(need.values()) * len(cols) <= room:
+            if h.sectionResizeMode(cols[0]) != QHeaderView.Stretch:
+                h.setSectionResizeMode(QHeaderView.Stretch)
+            return
+        h.setSectionResizeMode(QHeaderView.Interactive)
+        spare = max(0, room - sum(need.values())) // len(cols)
+        for j, w in need.items():
+            h.resizeSection(j, w + spare)
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self._fit()
+
     def load(self, rows) -> None:
         self.setRowCount(0)
         for r in rows:
-            self.add_row(r)
+            self._append(r)
+        self._fit()
 
     def add_row(self, values=None) -> None:
+        self._append(values)
+        self._fit()
+
+    def _append(self, values=None) -> None:
         i = self.rowCount()
         self.insertRow(i)
         for j in range(self.columnCount()):
@@ -386,11 +453,12 @@ class NumTable(QTableWidget):
             return
         r0, c0 = max(self.currentRow(), 0), max(self.currentColumn(), 0)
         while self.rowCount() < r0 + len(grid):
-            self.add_row()
+            self._append()
         for di, row in enumerate(grid):
             for dj, cell in enumerate(row):
                 if c0 + dj < self.columnCount():
                     self.setItem(r0 + di, c0 + dj, QTableWidgetItem(cell))
+        self._fit()
 
     def keyPressEvent(self, ev):
         from PySide6.QtGui import QKeySequence
@@ -618,18 +686,27 @@ class MagnetTempInput(QWidget):
 
 class InsightPanel(QWidget):
     """The engineering reading of a result (``insight.Insight``): the conclusion, key numbers, the judged items,
-    the limiting mechanism and what would change the answer — every number from the result it reads."""
+    the limiting mechanism and what would change the answer — every number from the result it reads.
+
+    A page with several calculations keeps one reading per calculation (``set_reading``); a selector above the text
+    switches between them and the latest one is shown."""
 
     def __init__(self, placeholder: str = "", parent=None):
         super().__init__(parent)
-        from PySide6.QtWidgets import QTextBrowser
+        from PySide6.QtWidgets import QComboBox, QTextBrowser
         self.view = QTextBrowser()
         self.view.setOpenExternalLinks(False)
         self.view.setObjectName("Insight")
+        self.pick = QComboBox()
+        self.pick.setVisible(False)
+        self.pick.currentIndexChanged.connect(self._picked)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+        lay.addWidget(self.pick)
         lay.addWidget(self.view)
         self.insight = None
+        self.readings: dict = {}             # key -> (title, Insight)
         self._placeholder = placeholder or tr("계산하면 결과의 엔지니어링 해석(결론·항목별 분석·한계 원인·다음 단계)이 여기에 "
                                               "표시됩니다.", "Run the calculation to read the result here (conclusion, "
                                                              "item by item, what limits, next steps).")
@@ -638,6 +715,38 @@ class InsightPanel(QWidget):
     def show_insight(self, insight) -> None:
         self.insight = insight
         self.redraw()
+
+    def set_reading(self, key: str, title: str, insight) -> None:
+        """Keep the reading of one calculation and show it (the selector lists every calculation read so far)."""
+        self.readings[key] = (title, insight)
+        self.pick.blockSignals(True)
+        i = self.pick.findData(key)
+        if i < 0:
+            self.pick.addItem(title, key)
+            i = self.pick.count() - 1
+        else:
+            self.pick.setItemText(i, title)
+        self.pick.setCurrentIndex(i)
+        self.pick.blockSignals(False)
+        self.pick.setVisible(self.pick.count() > 1)
+        self.show_insight(insight)
+
+    def read(self, key: str, title: str, fn, *args) -> None:
+        """``fn(*args)`` -> Insight into this panel; a reading that fails is reported in the panel, never raised
+        (the page and its result stay usable)."""
+        try:
+            ins = fn(*args)
+        except Exception as exc:  # noqa: BLE001
+            from ..insight import Insight
+            ins = Insight(headline=tr(f"해석을 만들지 못했습니다: {type(exc).__name__}: {exc}",
+                                      f"the reading could not be made: {type(exc).__name__}: {exc}"))
+            ins.failed = True
+        self.set_reading(key, title, ins)
+
+    def _picked(self, i: int) -> None:
+        key = self.pick.itemData(i)
+        if key in self.readings:
+            self.show_insight(self.readings[key][1])
 
     def redraw(self) -> None:
         c = theme.colors()
@@ -654,6 +763,22 @@ class InsightPanel(QWidget):
 
     def text(self) -> str:
         return self.view.toPlainText()
+
+
+def reading_tab(tabs, placeholder: str = "", index: int = 0) -> InsightPanel:
+    """An 'engineering reading' tab in a page's result tabs (first by default, and shown)."""
+    panel = InsightPanel(placeholder)
+    tabs.insertTab(index, panel, tr("엔지니어링 분석", "engineering reading"))
+    tabs.setCurrentIndex(index)
+    return panel
+
+
+def with_reading(widget, placeholder: str = "") -> tuple:
+    """A result widget without tabs wrapped with an 'engineering reading' tab in front: (tab widget, panel)."""
+    from PySide6.QtWidgets import QTabWidget
+    tabs = QTabWidget()
+    tabs.addTab(widget, tr("그래프·표", "plots · table"))
+    return tabs, reading_tab(tabs, placeholder)
 
 
 class ConceptNote(QWidget):

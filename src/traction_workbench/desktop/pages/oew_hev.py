@@ -20,8 +20,11 @@ from ... import api
 from ...i18n import tr
 from ...plots import oew_hev_figures as F
 from ...plots import schematics as SC
-from ..widgets import (ConceptNote, KeyValueTable, NumTable, PlotPanel, check, combo, error_box, fmt, hint, integer,
-                       number, primary_button, table_with_buttons)
+from ...insight.texts import engine_parts
+from ...insight.systems import (crank_insight, hev_joint_insight, oew_compare_insight, oew_insight,
+                                planetary_insight, rejection_insight)
+from ..widgets import (ConceptNote, KeyValueTable, NumTable, PlotPanel, check, claim_cell, combo, error_box, fmt, hint,
+                       integer, number, primary_button, table_with_buttons, reading_tab)
 
 INF = math.inf
 
@@ -190,6 +193,12 @@ class OewHevPage(QWidget):
                        (self.p_cmp, tr("T–n 비교", "T-n comparison")), (self.p_pair, tr("안전 상태 쌍", "paired safe states")),
                        (self.p_rip, tr("i0 스위칭 리플", "i0 switching ripple")), (self.p_sch, tr("회로도", "circuit"))):
             self.o_tabs.addTab(p, lab)
+        self.i_oew = reading_tab(self.o_tabs, tr(
+            "계산하면 해석이 표시됩니다 — 운전점과 두 브리지의 전압 배분(활용률·구속 조건), 영상분, 브리지별 전력·손실, 상태쌍 기하 · "
+            "T–n 비교: 구성별 최대 토크와 갈라지는 속도.",
+            "Run to read the result — the operating point and the voltage allocation of the two bridges (utilisation, "
+            "binding term), zero sequence, power and loss per bridge, the state-pair geometry · T–n comparison: maximum "
+            "torque per configuration and where they part."))
         self.t_oew = KeyValueTable()
         rl.addWidget(self.o_tabs, 3)
         rl.addWidget(self.t_oew, 2)
@@ -302,7 +311,7 @@ class OewHevPage(QWidget):
             rows.append((tr("순환 전력", "circulating power"), f"{fmt(w['circulating_power_W'])} W"))
             rows.append((tr("항등식 잔차", "identity residuals"), {k: f"{v:.2e}" for k, v in w["identities"].items()}))
             for c in w["claims"]:
-                rows.append((c["name"], f"{c['status']} — {c.get('detail', '')}"))
+                rows.append((claim_cell(c["name"]), f"{c['status']} — {engine_parts(c.get('detail') or '')}"))
             rows.append((tr("모델 밖", "not modelled"), ", ".join(w["not_modelled"])))
         g = res["geometry"]
         rows.append((tr("상태쌍 기하", "state-pair geometry"),
@@ -313,6 +322,7 @@ class OewHevPage(QWidget):
         rows.append(("B = 000 vs floating star", f"{bc['B_000_common_bus_V']} vs {[round(x, 1) for x in bc['floating_star_V']]} V "
                                                  f"(A = {bc['sA']})"))
         self.t_oew.set_rows(rows)
+        self.i_oew.read("oew", tr("OEW 운전점", "OEW operating point"), oew_insight, res)
 
     def _show_cmp(self, res):
         self.o_cmp_btn.setEnabled(True)
@@ -322,7 +332,9 @@ class OewHevPage(QWidget):
                         csv=lambda rows=rows: {k: [r.get(k) for r in rows] for k in
                                                ("speed_rpm", "single_vsi_Nm", "oew_common_bus_Nm", "oew_isolated_Nm",
                                                 "single_vsi_same_stack_Nm")})
-        self.o_tabs.setCurrentWidget(self.p_cmp)
+        if self.o_tabs.currentWidget() is not self.i_oew:
+            self.o_tabs.setCurrentWidget(self.p_cmp)
+        self.i_oew.read("oew_compare", tr("T–n 비교", "T-n comparison"), oew_compare_insight, res)
 
     # ================================================================== HEV
     def _hev_tab(self):
@@ -458,6 +470,12 @@ class OewHevPage(QWidget):
                        (self.p_rej, tr("부하 차단", "load rejection")), (self.p_pl, tr("유성기어", "planetary")),
                        (self.p_hsch, tr("시스템 구성도", "system diagram"))):
             self.h_tabs.addTab(p, lab)
+        self.i_hev = reading_tab(self.h_tabs, tr(
+            "계산하면 해석이 표시됩니다 — 동시 가능 토크 집합과 안 되는 이유, 요구점의 가지·순환·배터리 전력 · 크랭킹: 초기각별 도달 시간 · "
+            "부하 차단: 에너지 장부 · 유성기어: 세 축의 전력.",
+            "Run to read the result — the joint torque set and why pairs fail, the branch / circulating / battery power at "
+            "the request · cranking: time per initial angle · load rejection: the energy ledger · planetary: the power at "
+            "the three shafts."))
         self.t_hev = KeyValueTable()
         rl.addWidget(self.h_tabs, 3)
         rl.addWidget(self.t_hev, 2)
@@ -528,7 +546,9 @@ class OewHevPage(QWidget):
         info = {"p1_W": (rq.get("branch_P_dc_W") or [None, None])[0], "p2_W": (rq.get("branch_P_dc_W") or [None, None])[1],
                 "p_src_W": rq.get("P_source_W"), "em1_pos": res["machines"][0]["role"], "em2_pos": res["machines"][1]["role"]}
         self.p_hsch.draw(SC.fig_hev_schematic, info, name="hev_system")
-        self.h_tabs.setCurrentWidget(self.p_joint)
+        if self.h_tabs.currentWidget() is not self.i_hev:
+            self.h_tabs.setCurrentWidget(self.p_joint)
+        self.i_hev.read("hev_joint", tr("동시 토크 집합", "joint torque set"), hev_joint_insight, res)
         rows = [(tr("기기 범위", "machine ranges"), "; ".join(f"{m['name']} @ {fmt(m['speed_rpm'])} rpm: "
                                                              f"[{fmt(m['range_Nm'][0])}, {fmt(m['range_Nm'][1])}] N·m"
                                                              for m in res["machines"])),
@@ -555,7 +575,9 @@ class OewHevPage(QWidget):
         self.c_btn.setEnabled(True)
         self.last_crank = res
         self.p_crank.draw(F.fig_hev_crank, res, name="hev_cranking")
-        self.h_tabs.setCurrentWidget(self.p_crank)
+        if self.h_tabs.currentWidget() is not self.i_hev:
+            self.h_tabs.setCurrentWidget(self.p_crank)
+        self.i_hev.read("hev_crank", tr("크랭킹", "cranking"), crank_insight, res)
         c = res["claim"]
         rows = [(tr("판정", "claim"), f"{c['status']} — {c['detail']}" + (f" [{'; '.join(c['qualifiers'])}]" if c.get("qualifiers") else ""))]
         for r in res["runs"]:
@@ -573,7 +595,9 @@ class OewHevPage(QWidget):
         self.p_rej.draw(F.fig_hev_rejection, res, name="hev_load_rejection",
                         csv=lambda res=res: {"t_s": res["trace"]["t_s"], "V_V": res["trace"]["V_V"],
                                              "P_excess_W": res["trace"]["P_excess_W"]})
-        self.h_tabs.setCurrentWidget(self.p_rej)
+        if self.h_tabs.currentWidget() is not self.i_hev:
+            self.h_tabs.setCurrentWidget(self.p_rej)
+        self.i_hev.read("hev_rejection", tr("부하 차단", "load rejection"), rejection_insight, res)
         c = res["claim"]
         self.t_hev.set_rows([(tr("판정", "claim"), f"{c['status']} — {c['detail']}"),
                              (tr("잉여 전력", "excess power"), f"{fmt(res['P_excess_W'])} W"),
@@ -590,7 +614,9 @@ class OewHevPage(QWidget):
         self.pl_btn.setEnabled(True)
         self.last_pl = res
         self.p_pl.draw(F.fig_planetary, res, name="hev_planetary")
-        self.h_tabs.setCurrentWidget(self.p_pl)
+        if self.h_tabs.currentWidget() is not self.i_hev:
+            self.h_tabs.setCurrentWidget(self.p_pl)
+        self.i_hev.read("hev_planetary", tr("유성기어", "planetary"), planetary_insight, res)
         ch = res["check"]
         self.t_hev.set_rows([(tr("판정", "check"), f"{ch['status']} — {ch['detail']}"),
                              (tr("속도 [rpm]", "speeds [rpm]"), res["speeds_rpm"]),
@@ -600,5 +626,5 @@ class OewHevPage(QWidget):
 
     def redraw(self):
         for p in (self.p_sets, self.p_opt, self.p_cmp, self.p_pair, self.p_rip, self.p_sch, self.p_joint, self.p_crank,
-                  self.p_rej, self.p_pl, self.p_hsch):
+                  self.p_rej, self.p_pl, self.p_hsch, self.i_oew, self.i_hev):
             p.redraw()

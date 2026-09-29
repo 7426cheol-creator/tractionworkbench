@@ -15,7 +15,10 @@ from PySide6.QtWidgets import (QAbstractItemView, QFileDialog, QGroupBox, QHeade
 from ... import requirement_set as RS
 from ...analysis.variation import PARAMETERS
 from ...i18n import tr
-from ..widgets import ConceptNote, NumTable, error_box, fmt, hint, primary_button, table_with_buttons
+from ...plots.labels import reason_label
+from ...insight.decision import decision_insight
+from ...insight.drive import requirement_set_insight
+from ..widgets import ConceptNote, NumTable, error_box, fmt, hint, primary_button, reading_tab, table_with_buttons
 
 VERDICT_COLOR = {"PASS": "#1a7f37", "FAIL": "#cf222e", "UNKNOWN": "#9a6700"}
 TEXT_COLS = (0, 1, 6, 7, 11, 13, 14)          # id, text, duration, initial_state, operator, speed kind, Vdc port
@@ -82,9 +85,12 @@ class RequirementSetPage(QWidget):
                  tr("자석 [°C]", "magnet [°C]"), tr("권선 [°C]", "winding [°C]"), tr("연산", "operator"),
                  tr("밴드 [N·m]", "band [N·m]"), tr("속도 종류", "speed kind"), tr("Vdc 포트", "Vdc port")]
         self.table = NumTable(heads, min_height=220, text_cols=TEXT_COLS, optional_cols=(5, 8, 9, 10, 12))
+        self.table.fit_columns = False
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        fm = self.table.horizontalHeader().fontMetrics()
         for j, wdt in enumerate((70, 170, 60, 64, 60, 70, 64, 120, 70, 64, 64, 64, 64, 84, 130)):
-            self.table.setColumnWidth(j, wdt)
+            self.table.setColumnWidth(j, max(wdt, fm.horizontalAdvance(heads[j]) + 24))    # a header is never cut
+            self.table.horizontalHeaderItem(j).setToolTip(heads[j])
         gl.addWidget(table_with_buttons(self.table, tr(
             "토크는 모터 축 토크, 속도는 기계 rpm(속도 종류 electrical이면 극쌍수로 환산), Vdc는 인버터 DC 단자 전압입니다(배터리 "
             "쪽 값은 소스 모델이 필요해 거절). 지속은 초 또는 'continuous', 연산은 achieve / band. 비운 온도는 미지정(자석 온도: 온도 "
@@ -181,6 +187,12 @@ class RequirementSetPage(QWidget):
         self.tabs.addTab(res, tr("판정 요약", "verdicts"))
         self.tabs.addTab(self.prio_table, tr("다음 자료 우선순위", "next-data priorities"))
         self.tabs.addTab(self.cand_table, tr("후보 × 요구", "candidates x requirements"))
+        self.res_split = res
+        self.insight = reading_tab(self.tabs, tr(
+            "판정하면 요구 묶음의 해석이 표시됩니다 — 요구별 결론과 여유, 여러 요구에 공통인 한계, 미확정을 풀 다음 자료. 표에서 요구를 "
+            "고르면 그 요구의 상세 해석도 여기서 볼 수 있습니다.",
+            "Judge to read the set — per-requirement conclusions and margins, the limits shared by several requirements, "
+            "the next data for the open answers; selecting a requirement in the table adds its own reading here."))
         rv.addWidget(self.tabs, 1)
         br = QHBoxLayout()
         self.open_btn = QPushButton(tr("선택한 요구를 판정 페이지에서 열기", "open the selected requirement on the decision page"))
@@ -290,6 +302,7 @@ class RequirementSetPage(QWidget):
             self.res_table.selectRow(0)
         self._fill_priorities(st.get("priorities") or [])
         self._fill_candidates(res.get("candidates"))
+        self.insight.read("set", tr("요구 묶음 전체", "the whole set"), requirement_set_insight, st)
 
     def _fill_priorities(self, prio):
         t = self.prio_table
@@ -336,7 +349,7 @@ class RequirementSetPage(QWidget):
         lines.append(tr("각 요구의 토크와 속도는 같은 운전점의 값으로만 씁니다(한 요구의 최대 토크와 다른 요구의 최대 속도를 곱하지 "
                         "않음).", "each requirement's torque and speed are used as ONE operating point (never the "
                                   "maximum torque of one requirement times the maximum speed of another)."))
-        self.tabs.setCurrentIndex(0)
+        self.tabs.setCurrentWidget(self.res_split)
         self.detail.setPlainText("\n".join(lines))
         return reqs
 
@@ -401,7 +414,7 @@ class RequirementSetPage(QWidget):
              f"3. {tr('결론·여유', 'conclusion and margin')}: {r['verdict']} ({r['status']}) · "
              f"{tr(r['class_label_ko'], r['class_label_en'])}"
              + (f" · {tr('여유', 'margin')} {fmt(r['margin_Nm'])} N·m" if r["margin_Nm"] is not None else "")
-             + (f" · reasons: {', '.join(r['reasons'])}" if r["reasons"] else "")]
+             + (f" · {tr('사유', 'reasons')}: {', '.join(reason_label(x) for x in r['reasons'])}" if r["reasons"] else "")]
         if r.get("decided_by"):
             L.append(f"   {tr('결정 근거', 'decided by')}: {r['decided_by']} ({tr('모델 판정', 'model verdict')} "
                      f"{r['model_verdict']}: {', '.join(r['model_reasons'])})")
@@ -421,6 +434,8 @@ class RequirementSetPage(QWidget):
             L += [f"   {tr('한정', 'qualifiers')}:"] + [f"   - {q}" for q in rec.qualifiers]
         L += [f"   record {r['record_id']} — {tr('판정 페이지에서 같은 요구를 열면 그래프와 4층 판정을 봅니다', 'open the same requirement on the decision page for the graphs and the four claim layers')}"]
         self.detail.setPlainText("\n".join(L))
+        self.insight.read("row", tr(f"선택한 요구: {r['id']}", f"selected requirement: {r['id']}"), decision_insight,
+                          rec.to_dict())
 
     def open_in_decision(self, index: int | None = None):
         """The selected row as a case (the same requirement dict, drive and limits) on the decision page."""
@@ -455,4 +470,4 @@ class RequirementSetPage(QWidget):
         return path
 
     def redraw(self):
-        pass
+        self.insight.redraw()
