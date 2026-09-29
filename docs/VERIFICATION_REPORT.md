@@ -1,6 +1,6 @@
 # Verification Report — Traction Workbench
 
-자동 생성: `python verification/make_report.py` · software 0.5.0 · commit `3c9310f` · 2026-09-28 · Python 3.11.15, NumPy 2.4.6, SciPy 1.17.1
+자동 생성: `python verification/make_report.py` · software 0.5.0 · commit `8e74a15` · 2026-09-29 · Python 3.11.15, NumPy 2.4.6, SciPy 1.17.1
 
 > 범위: 합성(synthetic) 참조 fixture에 대한 검증(verification)입니다. 하드웨어·공급사 데이터·외부 시뮬레이터에 대한 validation은 수행하지 않았습니다. 수치 자릿수는 회귀 검산용이며 실제 제품 정확도가 아닙니다.
 
@@ -9,11 +9,11 @@
 | 항목 | 결과 |
 |---|---|
 | 참조 패키지 무결성 (manifest SHA-256, 10 files) | OK |
-| 독립 fixture 검산 (production 코드 미사용) | 136/136 pass (28 s) |
+| 독립 fixture 검산 (production 코드 미사용) | 136/136 pass (27 s) |
 | Production vs golden acceptance | 21/21 pass |
-| pytest | 801 passed, 2 warnings in 350.04s (0:05:50) (354 s) |
-| 데스크톱 앱 self-test (headless, `twb selftest`) | 65/65 pass (203 s) |
-| MathWorks 이식 패키지 (`twb mathworks`) | parity PASS — 79 PASS · 0 FAIL · 0 ERROR · 1 NOT_SUPPORTED; GNU Octave 8.4.0 - MATLAB-language proxy; MATLAB / Simulink not run (4 s) |
+| pytest | 909 passed, 2 warnings in 604.68s (0:10:04) (618 s) |
+| 데스크톱 앱 self-test (headless, `twb selftest`) | 92/92 pass (160 s) |
+| MathWorks 이식 패키지 (`twb mathworks`) | parity PASS — 80 PASS · 0 FAIL · 0 ERROR · 1 NOT_SUPPORTED; GNU Octave 8.4.0 - MATLAB-language proxy; MATLAB / Simulink not run (4 s) |
 
 ## 2. 독립 fixture 검산 (`verification/independent_fixture_check.py`)
 
@@ -77,7 +77,7 @@ PASS  inverse:I10_STANDSTILL_TORQUE:golden                             |did|=5.5
 |---|---|---|
 | decision:ts012_600 | PASS | verdict PASS, expected PASS |
 | decision:ts012_450 | PASS | verdict FAIL, expected FAIL |
-| pdf_report | PASS | 132561 bytes |
+| pdf_report | PASS | 159429 bytes |
 | decision:ts012_10s | PASS | verdict UNKNOWN, expected UNKNOWN |
 | decision:regen_80 | PASS | verdict PASS, expected PASS |
 | decision:regen_100 | PASS | verdict FAIL, expected FAIL |
@@ -87,23 +87,37 @@ PASS  inverse:I10_STANDSTILL_TORQUE:golden                             |did|=5.5
 | decision:pwm_risk | PASS | EVALUATED |
 | decision:battery_ocv | PASS | RESOLVED |
 | explorer:forward | PASS |  |
+| reading:explorer | PASS | 1 reading(s) |
 | trajectory | PASS |  |
+| reading:trajectory | PASS | 1 reading(s) |
 | performance | PASS |  |
+| reading:performance | PASS | 1 reading(s) |
 | design | PASS |  |
+| reading:design | PASS | 2 reading(s) |
+| reading:requirement_set | PASS | 2 reading(s) |
 | requirement_set | PASS | {'PASS': 3, 'FAIL': 1, 'UNKNOWN': 1, 'total': 5, 'by_class': {'pass': 3, 'violation': 1, 'not_rated': 0, 'missing_input' |
 | requirement_set:candidates | PASS | {'charge 150 kW': (['REQ-B'], []), 'current 250 A': ([], ['REQ-A', 'REQ-C', 'REQ-D', 'REQ-E'])} |
 | requirement_set:open | PASS | REQ-B |
 | safety | PASS |  |
+| reading:safety:ftti | PASS | 1 reading(s) |
+| reading:safety:dclink | PASS | 3 reading(s) |
+| reading:safety:safe_state | PASS | 1 reading(s) |
 | thermal | PASS | 냉각수 입구 65 °C (유량 10 L/min, EG 50%)에서 450 N·m는 약 <b>4.24 s</b> 유지 가능, 이후 <b>426 N·m</b> (연속)<br><span style='font-size:9p |
 | thermal:repeated_load | PASS | UNKNOWN |
+| reading:thermal | PASS | 2 reading(s) |
 | thermal:coolant_flow | PASS | 10 L/min 4.239895719475726 s, 5 L/min 1.4845071749499539 s |
 | schematics | PASS |  |
 | protection:ov | PASS | INFEASIBLE ['PROT-01', 'PROT-04', 'PROT-02', 'PROT-03', 'PROT-05', 'PROT-06', 'PROT-07', 'PROT-08', 'PROT-09'] |
 | protection:ot | PASS |  |
+| reading:protection | PASS | 1 reading(s) |
 | protection:asc | PASS | screening indicates the requirement(s) ASC-RMS are exceeded - confirm with a qualified nonlinear fault-domain model befo |
+| reading:protection:asc | PASS | 1 reading(s) |
 | power:module | PASS |  |
 | power:ripple | PASS |  |
 | power:lifetime | PASS |  |
+| reading:power:module | PASS | 1 reading(s) |
+| reading:power:ripple | PASS | 1 reading(s) |
+| reading:power:lifetime | PASS | 1 reading(s) |
 | oew:point | PASS | FEASIBLE |
 | oew:geometry | PASS | {'admissible_pairs': 20, 'hull_inradius_V': 400.0} |
 | oew:compare | PASS |  |
@@ -111,34 +125,47 @@ PASS  inverse:I10_STANDSTILL_TORQUE:golden                             |did|=5.5
 | hev:crank | PASS |  |
 | hev:rejection | PASS |  |
 | hev:planetary | PASS |  |
+| reading:oew | PASS | 2 reading(s) |
+| reading:hev | PASS | 4 reading(s) |
 | emi:screening | PASS | SCREENING - predicted exceedance up to 68.9 dB at 3.819 MHz (exact over the covered band) |
 | emi:oew_cm | PASS |  |
+| reading:emi | PASS | 1 reading(s) |
+| reading:emi:oew | PASS | 1 reading(s) |
 | efficiency:five_boundaries | PASS | {'inverter': 'DEFINED', 'motor': 'DEFINED', 'inverter_motor': 'DEFINED', 'reducer': 'DEFINED', 'edrive': 'DEFINED'} |
 | efficiency:maps | PASS |  |
 | efficiency:mission | PASS |  |
 | efficiency:module_ab | PASS | ['B_LOWER_LOSS', 'B_LOWER_LOSS', 'B_LOWER_LOSS', 'B_LOWER_LOSS'] |
+| reading:efficiency | PASS | 3 reading(s) |
+| reading:efficiency:module_ab | PASS | 1 reading(s) |
 | pwm:policies | PASS | {'fixed 10 kHz': [], 'light-load 8 kHz': [], 'thermal fallback 6 kHz': ['current-loop phase margin 36.33 vs limit 45']} |
 | pwm:transition | PASS |  |
 | pwm:ripple | PASS |  |
 | pwm:sampling_transition | PASS | {'declared': 0.0, 'bumpless (volts, Ki*Ts remapped)': 0.0, 'error-sum integrator, Ki*Ts remapped': 90.93442529058187, 'i |
 | antijerk:variants | PASS | {'off': 'INFEASIBLE', 'shaping': 'INFEASIBLE', 'feedback': 'INFEASIBLE', 'combined': 'FEASIBLE'} |
 | antijerk:stability | PASS |  |
+| reading:pwm | PASS | 4 reading(s) |
+| reading:driveline | PASS | 2 reading(s) |
 | machine:trade | PASS | {'ref': 'UGO back-EMF', 'N-10%': 'high-speed torque @ min Vdc', 'N+10%': 'UGO back-EMF', 'L+20%': 'UGO back-EMF', 'PM-10 |
 | machine:winding | PASS | 0.9330127018922193 |
 | machine:k_turns_to_trade | PASS |  |
 | machine:sizing | PASS |  |
+| reading:machine | PASS | 1 reading(s) |
+| reading:machine:winding | PASS | 1 reading(s) |
+| reading:machine:sizing | PASS | 1 reading(s) |
 | project:identity | PASS | OK |
 | project:usage | PASS | ['asc', 'concept_sizing', 'decision', 'decision-env', 'design-dom', 'design-sweep', 'discharge', 'driveline', 'driveline |
-| project:switch | PASS | <b>stale</b> — 결과 계산 후 프로젝트가 바뀌었습니다 (emi: controller; emi_oew: controller): 다시 계산하세요 |
+| project:switch | PASS | ⚠ <b>입력이 바뀜</b> — 화면의 결과는 바뀌기 전 입력으로 계산됐습니다: <b>EMI</b> (데드타임 1.500 µs → 1.200 µs) · 다시 실행: Ctrl+Enter<br>⚠ <b>프로젝트 데이터가 |
 | project:restore | PASS |  |
 | datasheet:module | PASS | Example Semiconductor (fictitious) EXM-750-820 datasheet rev 0.1 (synthetic format example) |
 | datasheet:entry_forms | PASS | {'motor': True, 'module': True, 'capacitor': True, 'gate_edges': True} |
 | datasheet:entry_motor | PASS | EXMOT-200 |
 | mathworks:package | PASS | ['no target report yet: every target stage is NOT_RUN'] |
 | guide | PASS |  |
-| acceptance | PASS | <span style='color:#1a7f37; font-weight:600'>21/21 PASS · manifest OK</span> · 1.24 s · verification against synthetic f |
+| acceptance | PASS | <span style='color:#1a7f37; font-weight:600'>21/21 PASS · manifest OK</span> · 1.34 s · verification against synthetic f |
 | exchange:package | PASS |  |
 | decision:flux_map | PASS | UNKNOWN |
+| progress:engine_steps | PASS | 80 messages, 75 in the capability scan; e.g. 요구 판정: 1/2 판정 · 토크 능력 130/227 (스캔) |
+| workspace:roundtrip | PASS | 15 pages, 97 KB |
 | no_error_dialogs | PASS |  |
 
 ## 6. MathWorks 이식 패키지 (`twb mathworks`)
@@ -147,7 +174,7 @@ Python reference(층 2)의 값과 수용된 원천(층 1: golden·계약 수식�
 
 | 단계 | 결과 |
 |---|---|
-| 패키지 | fingerprint `ae21c2a079e56c7f` · case {'forward': 48, 'flux_lookup': 21, 'requirement_witness': 11} · 층 2 ↔ 층 1 불일치 0 |
+| 패키지 | fingerprint `be7bdf7581011f7b` · case {'forward': 48, 'flux_lookup': 21, 'requirement_witness': 12} · 층 2 ↔ 층 1 불일치 0 |
 | 패키지 검사 | PASS |
 | 대상 환경 | GNU Octave 8.4.0 - MATLAB-language proxy; MATLAB / Simulink not run |
 | stage `package_check` | PASS |
@@ -157,7 +184,7 @@ Python reference(층 2)의 값과 수용된 원천(층 1: golden·계약 수식�
 | stage `system_composer` | NOT_RUN |
 | stage `dictionary_conflicts` | NOT_RUN |
 | stage `physical_validation` | NOT_CLAIMED |
-| parity (재계산) | PASS {'PASS': 79, 'FAIL': 0, 'ERROR': 0, 'NOT_SUPPORTED': 1, 'MISSING': 0} |
+| parity (재계산) | PASS {'PASS': 80, 'FAIL': 0, 'ERROR': 0, 'NOT_SUPPORTED': 1, 'MISSING': 0} |
 | 물리 검증 | NOT_CLAIMED (implementation verification V0-V4; not a physical qualification) |
 
 ## 7. 재현 방법
