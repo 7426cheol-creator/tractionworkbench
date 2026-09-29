@@ -26,10 +26,12 @@ Like every thermal result here, it is a screening estimate unless the thermal mo
 
 from __future__ import annotations
 
+import itertools
 import math
 from dataclasses import dataclass, replace
 
 import numpy as np
+from scipy.optimize import brentq
 
 from ..errors import InputValidationError
 from ..models.components import TemperatureDependence
@@ -84,18 +86,31 @@ class Feedback:
 
 
 def _feedback_nodes(model: ThermalModel) -> tuple:
+    """(winding, junction, magnet) node ids.  A node's declared ``represents`` decides; without a declaration the
+    winding is the node with the largest copper share and the junction the device node (else the largest inverter
+    share).  The magnet temperature is never inferred from a loss share: only a declared node feeds it."""
+    role = {nd.represents: nd.node_id for nd in model.nodes if nd.represents}
     cu = [(dict(nd.loss_share).get("copper", 0.0), nd.node_id) for nd in model.nodes]
-    w = max(cu)[1] if any(v > 0 for v, _ in cu) else None
+    w = role.get("winding") or (max(cu)[1] if any(v > 0 for v, _ in cu) else None)
     dev = [nd.node_id for nd in model.nodes if dict(nd.loss_share).get("inverter_hottest_device", 0.0) > 0]
     inv = [(dict(nd.loss_share).get("inverter", 0.0), nd.node_id) for nd in model.nodes]
-    j = dev[0] if dev else (max(inv)[1] if any(v > 0 for v, _ in inv) else None)
-    return w, j
+    j = role.get("junction") or (dev[0] if dev else (max(inv)[1] if any(v > 0 for v, _ in inv) else None))
+    return w, j, role.get("magnet")
+
+
+def _magnet_dependent(motor) -> bool:
+    """The motor's flux depends on the magnet temperature: a declared psi_PM(T) law, or map planes at >= 2 magnet
+    temperatures."""
+    planes = getattr(motor.flux, "planes", None) or ()
+    return motor.psi_temperature is not None or len({p.magnet_temp_C for p in planes
+                                                     if p.magnet_temp_C is not None}) >= 2
 
 
 class _Losses:
     """Operating-point losses of a phase at the current node temperatures (cached on a temperature grid)."""
 
-    def __init__(self, drive, scenario: Scenario, fb: Feedback, settings: NumericalSettings, tol_K: float = 0.5):
+    def __init__(self, drive, scenario: Scenario, fb: Feedback, settings: NumericalSettings, tol_K: float = 0.5,
+                 magnet_node: str | None = None):
         self.scenario, self.settings, self.tol = scenario, settings, tol_K
         m = drive.motor
         self.notes = []
@@ -111,24 +126,35 @@ class _Losses:
         self.rs = fb.enabled and drive.motor.rs_temperature is not None and \
             drive.motor.reference_winding_temp_C is not None
         self.module = fb.enabled and drive.inverter.module_loss is not None
+        dep = _magnet_dependent(drive.motor)
+        self.mag = fb.enabled and dep and magnet_node is not None
         if fb.enabled and not self.rs:
             self.notes.append("no R_s temperature law: the copper loss uses R_s as supplied (no winding feedback)")
         if fb.enabled and not self.module:
             self.notes.append("the inverter loss model has no junction-temperature input (no T_j feedback)")
+        if fb.enabled and dep and magnet_node is None:
+            self.notes.append("the motor flux depends on the magnet temperature but no thermal node is declared as the "
+                              "magnet temperature: the flux stays at the scenario's magnet temperature")
+        if fb.enabled and magnet_node is not None and not dep:
+            self.notes.append("a magnet node is declared but the motor has no magnet-temperature dependence (psi_PM(T) "
+                              "law or map planes): the magnet node is not fed back")
         if not fb.enabled:
             self.notes.append("loss-temperature feedback off: losses at the stated scenario temperatures")
         self.cache = {}
 
-    def at(self, ph: LoadPhase, T_w: float | None, T_j: float | None) -> dict:
+    def at(self, ph: LoadPhase, T_w: float | None, T_j: float | None, T_m: float | None = None) -> dict:
         tw = None if (not self.rs or T_w is None) else round(T_w / self.tol) * self.tol
         tj = None if (not self.module or T_j is None) else round(T_j / self.tol) * self.tol
-        key = (ph.torque_Nm, ph.speed_rpm, tw, tj)
+        tm = None if (not self.mag or T_m is None) else round(T_m / self.tol) * self.tol
+        key = (ph.torque_Nm, ph.speed_rpm, tw, tj, tm)
         hit = self.cache.get(key)
         if hit is not None:
             return hit
         sc = self.scenario.with_(speed_rpm=ph.speed_rpm)
         if tw is not None:
             sc = sc.with_(winding_temp_C=tw)
+        if tm is not None:
+            sc = sc.with_(magnet_temp_C=tm)
         drv = self.drive if tj is None else replace(self.drive, inverter=replace(self.drive.inverter, module_Tj_C=tj))
         sol = PolicyEvaluator(drv, sc, self.settings).solve(ph.torque_Nm)
         ok = sol.point is not None and sol.policy_claim.status is Status.FEASIBLE
@@ -138,7 +164,7 @@ class _Losses:
         out = {"ok": ok, "losses": _losses(sol.point) if ok else None,
                "reason": "" if ok else (sol.policy_claim.detail or "; ".join(det.get("problems", [])) or
                                        sol.policy_claim.status.value),
-               "status": sol.policy_claim.status.value, "T_w": tw, "T_j": tj}
+               "status": sol.policy_claim.status.value, "T_w": tw, "T_j": tj, "T_m": tm}
         self.cache[key] = out
         return out
 
@@ -177,70 +203,115 @@ def _initial_states(model: ThermalModel, init: InitialState, losses_pre: dict | 
     return out
 
 
+PERIODIC_TOL_K = 0.02          # largest change of any Foster term over one cycle at the periodic state
+
+
+def _state_residual(xa, xb) -> float:
+    """Largest |change| of any Foster term between two node-state lists.  The node temperature is a SUM of terms:
+    a fast term still rising and a slow one still falling can cancel in it, so the periodic cycle is judged on every
+    term, not on the node temperatures (review of 63a2b61, 3.2)."""
+    return max((float(np.max(np.abs(np.asarray(a) - np.asarray(b)))) for a, b in zip(xa, xb)), default=0.0)
+
+
 def _advance(x, r, tau, P, dt):
     a = np.exp(-dt / tau)
     return x * a + r * P * (1.0 - a)
+
+
+def _expsum_zeros(c, lam, d: float) -> list:
+    """Every zero of h(t) = sum_k c_k exp(-lam_k t) (lam_k > 0) in the open interval (0, d), by Rolle isolation.
+
+    With the rates sorted, H(t) = exp(lam_1 t) h(t) = c_1 + sum_k c_k exp(-(lam_k - lam_1) t) has the zeros of h,
+    and H' is an exponential sum with one term less: between two consecutive zeros of H' (found the same way) H is
+    monotone, so it has a zero there exactly when its values at the two ends differ in sign.  The recursion ends at
+    one term (no isolated zero).  Descartes' rule for exponential sums (at most as many zeros as sign changes of
+    the coefficients in rate order) ends it earlier: no sign change, no zero.  No sampling grid - a zero cannot fall
+    between samples (review of 63a2b61, 2.3).  A zero of even multiplicity, where h touches 0 without changing sign,
+    may be skipped: it is not an extremum of the integral of h."""
+    c, lam = np.asarray(c, float), np.asarray(lam, float)
+    order = np.argsort(lam, kind="stable")
+    cs, ls = [], []
+    for ci, li in zip(c[order], lam[order]):            # equal rates are one term
+        if ls and li == ls[-1]:
+            cs[-1] += ci
+        else:
+            cs.append(float(ci))
+            ls.append(float(li))
+    keep = [k for k, ci in enumerate(cs) if ci != 0.0]
+    cs, ls = np.array([cs[k] for k in keep]), np.array([ls[k] for k in keep])
+    if len(cs) <= 1 or not d > 0:
+        return []
+    sign = np.sign(cs)
+    if not np.any(sign[1:] != sign[:-1]):
+        return []
+    mu = ls[1:] - ls[0]
+
+    def H(t):
+        return cs[0] + float(np.sum(cs[1:] * np.exp(-mu * t)))
+    pts = [0.0] + _expsum_zeros(-mu * cs[1:], mu, d) + [float(d)]
+    out = []
+    for a, b in zip(pts[:-1], pts[1:]):
+        ha, hb = H(a), H(b)
+        if ha == 0.0 and a > 0.0:
+            out.append(a)
+        elif ha * hb < 0.0:
+            out.append(float(brentq(H, a, b, xtol=1e-15 * b, rtol=8.9e-16, maxiter=500)))
+    return sorted(set(out))
+
+
+def _stationary_times(x, r, tau, P, d: float) -> list:
+    """Times in (0, d) where sum_i x_i(t) has a zero derivative on the exact trajectory
+    x_i(t) = R_i P + (x_i - R_i P) exp(-t / tau_i): the zeros of sum_i -(x_i - R_i P) / tau_i exp(-t / tau_i)."""
+    x, r, tau = (np.asarray(v, float) for v in (x, r, tau))
+    e = x - r * P
+    return _expsum_zeros(-e / tau, 1.0 / tau, d)
 
 
 def _phase_max(x, r, tau, P, d, with_time: bool = False):
     """max over t in [0, d] of sum_i x_i(t) on the exact trajectory x_i(t) = c_i + (x_i - c_i) exp(-t / tau_i),
     c_i = R_i P.  When every term moves the same way the extremes are the ends; when terms move in opposite
     directions (a fast term heating while a slower one cools, e.g. after a hot soak or from measured node
-    temperatures) the peak can lie inside the phase: the derivative, a sum of exponentials, is bracketed on a dense
-    grid and each + to - root bisected.  ``with_time``: (max, the time it is reached)."""
+    temperatures) the peak can lie inside the phase.  The candidates are the two ends and EVERY stationary point,
+    isolated exactly (``_expsum_zeros``), so the maximum is exact to rounding however fast a thermal mode is against
+    the phase length.  ``with_time``: (max, the time it is reached)."""
     x, r, tau = (np.asarray(v, float) for v in (x, r, tau))
     e = x - r * P
-    end = float(np.sum(r * P + e * np.exp(-d / tau)))
-    best, t_best = (float(np.sum(x)), 0.0) if float(np.sum(x)) >= end else (end, float(d))
-    if d <= 0 or not (np.any(e > 0) and np.any(e < 0)):
-        return (best, t_best) if with_time else best
-    g = lambda t: float(np.sum(-e / tau * np.exp(-t / tau)))          # noqa: E731
-    ts = np.unique(np.concatenate([np.linspace(0.0, d, 257), d * np.geomspace(1e-7, 1.0, 257)]))
-    gv = np.sum((-e / tau)[None, :] * np.exp(-ts[:, None] / tau[None, :]), axis=1)
-    for k in np.nonzero((gv[:-1] > 0) & (gv[1:] <= 0))[0]:
-        lo, hi = float(ts[k]), float(ts[k + 1])
-        for _ in range(60):
-            mid = 0.5 * (lo + hi)
-            if g(mid) > 0:
-                lo = mid
-            else:
-                hi = mid
-        v = float(np.sum(r * P + e * np.exp(-lo / tau)))
-        if v > best:
-            best, t_best = v, lo
-    return (best, t_best) if with_time else best
+
+    def f(t):
+        return float(np.sum(r * P + e * np.exp(-t / tau)))
+    cands = [0.0] + (_stationary_times(x, r, tau, P, d) if d > 0 else []) + ([float(d)] if d > 0 else [])
+    vals = [f(t) for t in cands]
+    k = int(np.argmax(vals))
+    return (vals[k], cands[k]) if with_time else vals[k]
 
 
 def _crossing(x, r, tau, P, ref, limit, dt) -> float | None:
-    """First time in (0, dt] at which ref + sum x(t) reaches the limit for a constant P (bisection on the exact
-    trajectory; None when not reached).  The exact maximum inside the step decides whether and by when it is
-    reached, so a narrow peak between samples is never missed."""
-    f = lambda t: ref + float(np.sum(_advance(x, r, tau, P, t))) - limit     # noqa: E731
-    mx, t_mx = _phase_max(x, r, tau, P, dt, with_time=True)
-    if ref + mx < limit:
-        return None
-    ts = np.linspace(0.0, max(t_mx, 1e-12 * dt), 17)[1:]
-    prev = 0.0
-    for t in ts:
-        if f(t) >= 0.0:
-            lo, hi = prev, t
-            for _ in range(60):
-                mid = 0.5 * (lo + hi)
-                if f(mid) >= 0.0:
-                    hi = mid
-                else:
-                    lo = mid
-            return hi
-        prev = t
+    """First time in [0, dt] at which ref + sum x(t) reaches the limit for a constant P (None when not reached).
+    Between consecutive stationary points (isolated exactly) the trajectory is monotone, so the first piece whose
+    end reaches the limit holds the first crossing, and only one: it is solved on that piece.  0.0 when the step
+    starts at or above the limit."""
+    x, r, tau = (np.asarray(v, float) for v in (x, r, tau))
+    e = x - r * P
+
+    def g(t):
+        return ref + float(np.sum(r * P + e * np.exp(-t / tau))) - limit
+    if g(0.0) >= 0.0:
+        return 0.0
+    pts = [0.0] + _stationary_times(x, r, tau, P, dt) + [float(dt)]
+    for a, b in zip(pts[:-1], pts[1:]):
+        if g(b) >= 0.0:
+            return float(brentq(g, a, b, xtol=1e-15 * b, rtol=8.9e-16, maxiter=500))
     return None
 
 
 def repeated_load(drive, scenario: Scenario, model: ThermalModel, phases: list, cycles: int = 20,
                   initial: InitialState | None = None, feedback: Feedback | None = None, steps_per_phase: int = 24,
                   settings: NumericalSettings = DEFAULT_SETTINGS,
-                  allowed: bool = True) -> dict:
+                  allowed: bool = True, cache_K: float = 0.5, resolution_check: bool = True) -> dict:
     """The duty cycle ``phases`` repeated ``cycles`` times (or until the periodic cycle is reached) from ``initial``.
-    ``phases[0]`` is the pulse (the allowed duration / torque refer to it)."""
+    ``phases[0]`` is the pulse (the allowed duration / torque refer to it).  ``resolution_check``: the run is repeated
+    with twice the steps per phase and half the loss-cache grid; the changes are reported and a verdict that changes
+    with the resolution is not a verdict (review of 63a2b61, 3.2)."""
     if scenario.coolant_temp_C is None:
         raise InputValidationError("coolant temperature must be stated for a thermal evaluation", field="coolant_temp_C")
     if not phases:
@@ -250,13 +321,21 @@ def repeated_load(drive, scenario: Scenario, model: ThermalModel, phases: list, 
         raise InputValidationError("cycles must be 1..500", field="cycles")
     init = initial or InitialState()
     fb = feedback or Feedback()
-    L = _Losses(drive, scenario, fb, settings)
-    w_id, j_id = _feedback_nodes(model)
+    if not (_finite("cache_K", cache_K) > 0):
+        raise InputValidationError("the loss-cache grid must be > 0 K", field="cache_K")
+    w_id, j_id, m_id = _feedback_nodes(model)
+    L = _Losses(drive, scenario, fb, settings, cache_K, magnet_node=m_id)
     ids = [nd.node_id for nd in model.nodes]
     iw = ids.index(w_id) if w_id in ids else None
     ij = ids.index(j_id) if j_id in ids else None
+    im = ids.index(m_id) if m_id in ids else None
     R, tau = _node_arrays(model)
     inlet = float(scenario.coolant_temp_C)
+
+    def fbT(temps) -> tuple:
+        """(winding, junction, magnet) temperatures of the feedback nodes."""
+        return tuple(None if i is None else temps[i] for i in (iw, ij, im))
+    t_start = (None, None, inlet if im is not None else None)        # before any node temperature is known
 
     def refs_for(losses):
         fluid = model.coolant.fluid_temperatures(inlet, losses) if model.coolant is not None else None
@@ -266,7 +345,7 @@ def repeated_load(drive, scenario: Scenario, model: ThermalModel, phases: list, 
     pre = None
     if init.kind == "steady_state_at":
         pre_ph = LoadPhase(float(init.torque_Nm), float(init.speed_rpm), 1.0, "preload")
-        ev = L.at(pre_ph, None, None)
+        ev = L.at(pre_ph, *t_start)
         if not ev["ok"]:
             raise InputValidationError(f"the preload point is not statically established: {ev['reason']}",
                                        field="initial_state")
@@ -276,14 +355,14 @@ def repeated_load(drive, scenario: Scenario, model: ThermalModel, phases: list, 
             refs0 = refs_for(pre)
             x0 = _initial_states(model, init, pre, refs0)
             temps = [ref + float(np.sum(x)) for ref, x in zip(refs0, x0)]
-            ev = L.at(pre_ph, temps[iw] if iw is not None else None, temps[ij] if ij is not None else None)
+            ev = L.at(pre_ph, *fbT(temps))
             if not ev["ok"]:
                 raise InputValidationError(f"the preload point is not established at its own steady temperature: "
                                            f"{ev['reason']}", field="initial_state")
             if ev["losses"] == pre:
                 break
             pre = ev["losses"]
-    first = L.at(phases[0], None, None)
+    first = L.at(phases[0], *t_start)
     refs = refs_for(pre if pre is not None else (first["losses"] or {}))
     x = _initial_states(model, init, pre, refs)
     temps0 = [ref + float(np.sum(xx)) for ref, xx in zip(refs, x)]
@@ -300,7 +379,7 @@ def repeated_load(drive, scenario: Scenario, model: ThermalModel, phases: list, 
             if record:
                 bounds.append((t, t + ph.duration_s, k, c))
             for s_ in range(steps_per_phase):
-                ev = L.at(ph, temps[iw] if iw is not None else None, temps[ij] if ij is not None else None)
+                ev = L.at(ph, *fbT(temps))
                 if not ev["ok"]:
                     return xs, temps, peak, fl, {"t_s": t, "cycle": c + 1, "phase": k, "reason": ev["reason"],
                                                  "status": ev["status"]}, t, refs
@@ -313,11 +392,16 @@ def repeated_load(drive, scenario: Scenario, model: ThermalModel, phases: list, 
                 if bad:
                     return xs, temps, peak, fl, {"t_s": t, "cycle": c + 1, "phase": k, "status": "UNKNOWN",
                                                  "reason": f"heat source of node {bad[0]!r} not available"}, t, refs
+                if fl is None:
+                    # every node's first crossing inside this step, then the earliest: the node order of the model
+                    # never decides which limit is reached first (review of 63a2b61, 2.2)
+                    hits = [(tc, nd.node_id) for i, nd in enumerate(model.nodes)
+                            if (tc := _crossing(xs[i], R[i], tau[i], Ps[i], refs[i], nd.limit_C, dt)) is not None]
+                    if hits:
+                        t0, node = min(hits)
+                        fl = {"t_s": t + t0, "cycle": c + 1, "phase": k, "node": node,
+                              "nodes_at_limit": sorted(n for tc, n in hits if tc <= t0 + 1e-12 * dt)}
                 for i, nd in enumerate(model.nodes):
-                    if fl is None:
-                        tc = _crossing(xs[i], R[i], tau[i], Ps[i], refs[i], nd.limit_C, dt)
-                        if tc is not None:
-                            fl = {"t_s": t + tc, "cycle": c + 1, "phase": k, "node": nd.node_id}
                     peak[i] = max(peak[i], refs[i] + _phase_max(xs[i], R[i], tau[i], Ps[i], dt))
                     xs[i] = _advance(xs[i], R[i], tau[i], Ps[i], dt)
                 t += dt
@@ -338,8 +422,9 @@ def repeated_load(drive, scenario: Scenario, model: ThermalModel, phases: list, 
             break
         per_cycle.append({"cycle": c + 1, "peak_C": dict(zip(ids, peak)), "start_C": dict(zip(ids, start_T)),
                           "end_C": dict(zip(ids, temps))})
+        settled = c >= 1 and _state_residual(x_new, x) < PERIODIC_TOL_K
         x = x_new
-        if c >= 1 and all(abs(temps[i] - start_T[i]) < 0.02 for i in range(len(ids))):
+        if settled:
             break                                  # the physical run itself reached the periodic cycle
 
     # periodic steady cycle: per Foster term the cycle map is affine, x_end = A x_start + b with A = exp(-T/tau),
@@ -354,9 +439,11 @@ def repeated_load(drive, scenario: Scenario, model: ThermalModel, phases: list, 
             if stp:
                 periodic = {"reached": False, "stopped": stp, "iterations": it}
                 break
-            if it > 1 and all(abs(t_end[i] - ts_[i]) < 0.02 for i in range(len(ids))):
+            res = _state_residual(x_end, xs)
+            if it > 1 and res < PERIODIC_TOL_K:
                 periodic = {"reached": True, "iterations": it, "peak_C": dict(zip(ids, peak)),
-                            "start_C": dict(zip(ids, ts_)), "end_C": dict(zip(ids, t_end))}
+                            "start_C": dict(zip(ids, ts_)), "end_C": dict(zip(ids, t_end)),
+                            "state_residual_K": res}
                 break
             xs = [(xe - a * x0) / (1.0 - a) for xe, a, x0 in zip(x_end, A, xs)]
             ts_ = [ref + float(np.sum(xx)) for ref, xx in zip(refs_end, xs)]
@@ -369,12 +456,21 @@ def repeated_load(drive, scenario: Scenario, model: ThermalModel, phases: list, 
         periodic.update(margin_K=margins, governing_node=min(margins, key=margins.get),
                         exceeds=any(m < 0 for m in margins.values()))
 
-    # closed-form, losses held at the hotter temperature corner (conservative when losses grow with temperature)
-    # the start state of a trial pulse is referred to that pulse's own fluid reference (a start from node
-    # temperatures means those temperatures at t = 0+, whatever the trial torque)
-    allowed_out = _allowed(L, model, phases, init, pre, iw, ij, refs_for,
-                           x_init_for=lambda refs: _initial_states(model, init, pre, refs)) \
+    # closed form, losses bounded over the node-temperature box (see _allowed); the start state of a trial pulse is
+    # referred to that pulse's own fluid reference (a start from node temperatures means those temperatures at
+    # t = 0+, whatever the trial torque)
+    allowed_out = _allowed(L, model, phases, init, pre, (iw, ij, im), refs_for,
+                           x_init_for=lambda refs: _initial_states(model, init, pre, refs), inlet=inlet) \
         if (allowed and stop is None) else None
+
+    # the same run at twice the steps and half the loss-cache grid: the losses are held per step (explicit in the
+    # feedback), so the step and the grid are numerical choices whose effect is measured, not assumed small
+    resolution = None
+    if resolution_check and stop is None:
+        fine = repeated_load(drive, scenario, model, phases, cycles, initial, feedback, 2 * steps_per_phase, settings,
+                             allowed=allowed, cache_K=cache_K / 2.0, resolution_check=False)
+        resolution = _resolution_compare(steps_per_phase, cache_K, first_limit, periodic, per_cycle, fine, ids,
+                                         allowed_out)
 
     stated = {"coolant_temp_C": scenario.coolant_temp_C, "Vdc_V": scenario.Vdc_V,
               "switching_frequency_Hz": scenario.switching_frequency_Hz, **model.stated_conditions()}
@@ -399,6 +495,10 @@ def repeated_load(drive, scenario: Scenario, model: ThermalModel, phases: list, 
                       qualifiers=(f"screening estimate: {'a node limit is reached' if exceeded else 'within limits'} "
                                   f"in the {len(per_cycle)} simulated cycle(s){per_note}",),
                       detail="; ".join(problems) + ": the estimate is not a duty-cycle rating")
+    elif resolution is not None and not resolution["stable"]:
+        claim = Claim("repeated_load", Status.UNKNOWN, q, "qualified thermal model at matching conditions",
+                      time_horizon=horizon, reasons=(Reason.NUMERICAL_UNRESOLVED,),
+                      detail=f"the verdict changes with the time step / loss-cache grid: {resolution['note']}")
     else:
         claim = Claim("repeated_load", Status.INFEASIBLE if exceeded else Status.FEASIBLE, q,
                       "qualified thermal model at matching conditions", time_horizon=horizon,
@@ -412,19 +512,91 @@ def repeated_load(drive, scenario: Scenario, model: ThermalModel, phases: list, 
                         {"torque_Nm": init.torque_Nm, "speed_rpm": init.speed_rpm, "losses_W": pre}},
             "periodic": periodic,
             "per_cycle": per_cycle, "allowed": allowed_out,
-            "feedback": {"winding_node": w_id, "junction_node": j_id, "rs": L.rs, "module": L.module,
-                         "notes": L.notes, "evaluations": len(L.cache)},
+            "feedback": {"winding_node": w_id, "junction_node": j_id, "magnet_node": m_id, "rs": L.rs,
+                         "module": L.module, "magnet": L.mag, "notes": L.notes, "evaluations": len(L.cache)},
+            "resolution_check": resolution,
             "limits_C": limits, "qualification_problems": problems,
             "trace": {"t_s": tr_t[::step], "nodes": {n: [row[i] for row in tr_T][::step] for i, n in enumerate(ids)},
                       "phase_bounds": bounds},
             "assumptions": ["exact exponential update of every Foster term per step (constant loss within a step, "
                             f"{steps_per_phase} steps per phase; losses re-evaluated per step at the node "
-                            "temperatures, cached on a 0.5 K grid); the peak inside every step and phase is exact "
-                            "(terms moving in opposite directions can peak inside it)",
+                            f"temperatures, cached on a {cache_K:g} K grid); the peak and the first limit crossing "
+                            "inside every step and phase are exact at every stationary point (exponential-sum root "
+                            "isolation, no sampling grid)",
                             "coolant rise follows each step's losses instantly (loop thermal mass not modelled; "
                             "conservative for pulse peaks)",
-                            "allowed duration / torque: closed form with the losses at the hotter temperature corner "
-                            "(coolant or node limit) - monotone losses in temperature assumed"]}
+                            "allowed duration / torque: closed form with every loss at its largest value over the "
+                            "corners of the node-temperature box [coolant inlet, node limit] - a bound when each loss "
+                            "is monotone in each fed-back temperature (either direction), checked at interior samples "
+                            "(the loss bound check)"]}
+
+
+ALLOWED_VALUES = {"pulse_duration_s": "the allowed pulse duration", "pulse_torque_Nm": "the allowed pulse torque",
+                  "first_pulse_torque_Nm": "the allowed first-pulse torque",
+                  "rest_before_repeat_s": "the rest before repeating", "periodic_min_rest_s": "the minimum periodic rest"}
+
+
+def _allowed_change(a: dict | None, b: dict | None) -> tuple[dict, list]:
+    """Allowed values at the two resolutions -> ({key: relative change}, [keys that exist - finite - at one
+    resolution only]).  The allowed values are closed form in time, so only the loss-cache grid can move them."""
+    if not a or not b:
+        return {}, []
+    changes, flips = {}, []
+    for k in ALLOWED_VALUES:
+        x, y = a.get(k), b.get(k)
+        fx = isinstance(x, (int, float)) and math.isfinite(x)
+        fy = isinstance(y, (int, float)) and math.isfinite(y)
+        if fx and fy:
+            changes[k] = abs(x - y) / max(abs(x), abs(y), 1e-12)
+        elif fx != fy or (x is None) != (y is None):
+            flips.append(k)
+    return changes, flips
+
+
+def _resolution_compare(steps: int, cache_K: float, first_limit, periodic, per_cycle, fine: dict, ids: list,
+                        allowed_out: dict | None = None) -> dict:
+    """The run against the same run at 2x the steps and half the loss-cache grid: changes of the first limit time,
+    the simulated and the periodic peaks and the allowed values; ``stable`` when no decision changes (a first limit
+    reached or not, a periodic margin's sign, an allowed value existing at one resolution only, the run
+    stopping)."""
+    out = {"steps_per_phase": [steps, 2 * steps], "cache_K": [cache_K, cache_K / 2.0]}
+    fl_f = fine.get("first_limit")
+    out["first_limit_s"] = [None if first_limit is None else first_limit["t_s"], None if fl_f is None else fl_f["t_s"]]
+    same_fl = (first_limit is None) == (fl_f is None) and (first_limit is None or first_limit["node"] == fl_f["node"])
+    out["first_limit_change_s"] = (abs(first_limit["t_s"] - fl_f["t_s"]) if (first_limit and fl_f) else None)
+    pk = [abs(a["peak_C"][n] - b["peak_C"][n]) for a, b in zip(per_cycle, fine.get("per_cycle") or []) for n in ids]
+    out["cycle_peak_change_K"] = max(pk, default=None)
+    pf = fine.get("periodic") or {}
+    same_per = True
+    if periodic and periodic.get("peak_C") and pf.get("peak_C"):
+        out["periodic_peak_change_K"] = max(abs(periodic["peak_C"][n] - pf["peak_C"][n]) for n in ids)
+        same_per = all((periodic["margin_K"][n] < 0) == (pf["margin_K"][n] < 0) for n in ids)
+    else:
+        out["periodic_peak_change_K"] = None
+        same_per = bool(periodic and periodic.get("peak_C")) == bool(pf.get("peak_C"))
+    stopped = fine.get("stopped") is not None
+    rel, flips = _allowed_change(allowed_out, fine.get("allowed"))
+    out["allowed_change_rel"] = rel
+    out["allowed_change_max_rel"] = max(rel.values(), default=None)
+    out["stable"] = same_fl and same_per and not stopped and not flips
+    parts = []
+    if not same_fl:
+        parts.append("the first limit " + ("is reached only at one resolution" if (first_limit is None) != (fl_f is None)
+                                           else "is reached at another node"))
+    if not same_per:
+        parts.append("a periodic margin changes sign")
+    if stopped:
+        parts.append(f"the finer run stops ({fine['stopped']['reason']})")
+    for k in flips:
+        parts.append(f"{ALLOWED_VALUES[k]} is bounded at one resolution only")
+    out["note"] = "; ".join(parts) or (
+        "no decision changes; changes: first limit "
+        + ("-" if out["first_limit_change_s"] is None else f"{out['first_limit_change_s']:.3g} s")
+        + ", peaks " + ("-" if out["cycle_peak_change_K"] is None else f"{out['cycle_peak_change_K']:.3g} K")
+        + ", periodic peaks " + ("-" if out["periodic_peak_change_K"] is None else f"{out['periodic_peak_change_K']:.3g} K")
+        + ("" if out["allowed_change_max_rel"] is None else
+           f", allowed values {100 * out['allowed_change_max_rel']:.3g} %"))
+    return out
 
 
 def _periodic_ends(Rs, taus, Ps, durs, peaks: bool = False):
@@ -447,27 +619,40 @@ def _periodic_ends(Rs, taus, Ps, durs, peaks: bool = False):
     return (out, mx) if peaks else out
 
 
-def _allowed(L: _Losses, model: ThermalModel, phases: list, init: InitialState, pre, iw, ij, refs_for,
-             x_init_for) -> dict:
-    """Allowed pulse duration / torque in the periodic cycle and allowed first-pulse torque, closed form with the
-    losses at the hotter temperature corner (coolant or node limit)."""
+def _allowed(L: _Losses, model: ThermalModel, phases: list, init: InitialState, pre, fb_idx: tuple, refs_for,
+             x_init_for, inlet: float) -> dict:
+    """Allowed pulse duration / torque in the periodic cycle and allowed first-pulse torque, closed form with every
+    loss at its largest value over the corners of the box of the fed-back node temperatures (winding, junction,
+    magnet: each between the coolant inlet - no node is colder with non-negative heat - and its limit).
+
+    A corner is the maximum of a loss that is monotone in each temperature, in EITHER direction (a module's
+    on-state voltage can fall with T_j at low current; a weaker magnet can lower the field-weakening current): no
+    'losses grow with temperature' assumption.  Whether each loss is monotone is checked at interior samples of the
+    declared phases (each edge midpoint and the centre); a sample above its corners means the corner values are not
+    a bound and the allowed values are labelled estimates (review of 63a2b61, 3.2)."""
     ids = [nd.node_id for nd in model.nodes]
     lim = [nd.limit_C for nd in model.nodes]
+    roles = ("winding", "junction", "magnet")
+    active = (L.rs, L.module, L.mag)
+    dims = [(role, i, min(inlet, lim[i]), max(inlet, lim[i])) for role, i, on in zip(roles, fb_idx, active)
+            if i is not None and on]
 
-    def hot(ph):
-        corners = [(None, None)]
-        if iw is not None or ij is not None:
-            corners.append((lim[iw] if iw is not None else None, lim[ij] if ij is not None else None))
+    def temps_at(choice) -> tuple:
+        T = {role: lo + s * (hi - lo) for (role, _i, lo, hi), s in zip(dims, choice)}
+        return tuple(T.get(role) for role in roles)
+    corners = list(itertools.product((0.0, 1.0), repeat=len(dims)))
+
+    def bound(ph):
         best = None
-        for tw, tj in corners:
-            ev = L.at(ph, tw, tj)
+        for ch in corners:
+            ev = L.at(ph, *temps_at(ch))
             if not ev["ok"]:
                 return None
             best = ev["losses"] if best is None else {k: max(best.get(k, 0.0), v) for k, v in ev["losses"].items()}
         return best
 
     def powers(ph):
-        los = hot(ph)
+        los = bound(ph)
         if los is None:
             return None, None
         return [nd.power(los) for nd in model.nodes], refs_for(los)
@@ -475,7 +660,38 @@ def _allowed(L: _Losses, model: ThermalModel, phases: list, init: InitialState, 
     base = [powers(ph) for ph in phases]
     if any(p is None for p, _r in base):
         return {"status": "UNKNOWN", "reason": "a phase is not established at the temperature corners"}
-
+    # sampled monotonicity check of the corner bound on the declared phases
+    samples = [tuple(0.5 if k == d else s for k, s in enumerate(c)) for d in range(len(dims))
+               for c in itertools.product((0.0, 1.0), repeat=len(dims))]
+    samples = sorted(set(samples)) + ([tuple(0.5 for _ in dims)] if len(dims) > 1 else [])
+    violations, unverified = [], []
+    for ph in phases:
+        cmax = bound(ph)
+        for ch in samples:
+            ev = L.at(ph, *temps_at(ch))
+            T = {role: round(v, 3) for role, v in zip(roles, temps_at(ch)) if v is not None}
+            if not ev["ok"]:
+                unverified.append({"phase": ph.name or f"{ph.torque_Nm:g} N*m", "temperatures_C": T,
+                                   "reason": ev["reason"]})
+                continue
+            for k, v in ev["losses"].items():
+                c = cmax.get(k, 0.0)
+                if v > c + 1e-9 * max(abs(c), 1.0) + 1e-6:
+                    violations.append({"phase": ph.name or f"{ph.torque_Nm:g} N*m", "loss": k, "W": v,
+                                       "corner_max_W": c, "temperatures_C": T})
+    bounded = not violations and not unverified
+    lb = {"temperatures_C": {role: [lo, hi] for role, _i, lo, hi in dims}, "corners": len(corners),
+          "interior_samples": len(samples) * len(phases) if dims else 0,
+          "check": ("no fed-back temperature: losses at the scenario temperatures" if not dims else
+                    "passed: no interior sample above its corners" if bounded else
+                    "FAILED: a loss exceeds its corner values inside the box" if violations else
+                    "not verified: a phase is not established at an interior sample"),
+          "violations": violations[:12], "unverified": unverified[:12], "is_bound": bounded}
+    out = {"basis": ("closed form, every loss at its largest value over the corners of the node-temperature box "
+                     "(coolant inlet .. node limit); the highest temperature inside every phase, not only at its end"
+                     + ("" if bounded else " - ESTIMATE: the corner losses are not shown to bound the losses inside "
+                                            "the box (the loss bound check)")),
+           "loss_bound": lb}
     def periodic_margin(p0, d0, rest_durs=None):
         """Smallest node margin in the periodic cycle with the pulse (powers p0, duration d0) and the other phases
         (their declared durations unless ``rest_durs`` is given)."""
@@ -496,8 +712,6 @@ def _allowed(L: _Losses, model: ThermalModel, phases: list, init: InitialState, 
         return worst
 
     ph0 = phases[0]
-    out = {"basis": "closed form, losses at the hotter temperature corner (coolant / node limit); the highest "
-                    "temperature inside every phase, not only at its end"}
     # allowed pulse duration in the periodic cycle (the other phases as declared)
     if len(phases) > 1:
         m_at = lambda d: periodic_margin(base[0], d)        # noqa: E731

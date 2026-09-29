@@ -286,7 +286,12 @@ def test_threshold_chatter_needs_hysteresis_above_the_measurement_noise():
 def test_policy_evaluation_reports_the_failure_cases_and_keeps_unknown_apart_from_violation():
     r = api.pwm_policies({})
     for p in r["policies"]:
-        assert all(s["sampling"]["status"] == "OK" for s in p["segments"])
+        for s in p["segments"]:
+            # 16 kHz at 733 Hz (ratio 21.8): the carrier at 22 x f_e samples in valid windows, the one at 21 x f_e does
+            # not - the verdict depends on the synchronous approximation and stays open (review of 63a2b61, 3.3)
+            split = [u for u in s["sampling"]["unknown"] if "depends on the synchronous-carrier approximation" in u]
+            assert s["sampling"]["status"] == "OK" or (split and s["sampling"]["status"] == "UNKNOWN"
+                                                       and len(s["fsw_waveform_brackets_Hz"]) == 2)
         for e in p["transitions"]:
             if e["carrier_change"]:
                 assert e["transient"]["evaluated"] and e["transient"]["bumpless"]

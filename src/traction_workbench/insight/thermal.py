@@ -7,7 +7,7 @@ import math
 from ..i18n import tr
 from . import Insight, esc, kw, num, pct, q
 from .generic import claim_item, notes_section, verdict_of
-from .texts import engine_text
+from .texts import engine_parts, engine_text
 
 
 def _t(v) -> float:
@@ -157,19 +157,46 @@ def cycle_insight(res: dict) -> Insight:
         if al.get("first_pulse_torque_Nm") is not None:
             s.add(tr(f"첫 펄스만이라면 {q(_t(al['first_pulse_torque_Nm']), 'N·m')} 이하", f"the first pulse alone: at most "
                      f"{q(_t(al['first_pulse_torque_Nm']), 'N·m')}"), "info")
+        lb = al.get("loss_bound") or {}
+        if lb and not lb.get("is_bound", True):
+            v = (lb.get("violations") or [{}])[0]
+            s.add(tr("온도 범위 안에서 손실이 모서리 값보다 큰 점이 있어, 위 허용값은 <b>추정값</b>입니다 (상한 아님)",
+                     "a loss exceeds its corner values inside the temperature range: the allowed values above are "
+                     "<b>estimates</b>, not bounds"), "open",
+                  esc(engine_text(lb.get("check", ""))) + (f" — {esc(str(v.get('phase')))}: {esc(str(v.get('loss')))} "
+                                                           f"{num(v.get('W'))} W > {num(v.get('corner_max_W'))} W"
+                                                           if v else ""))
+        elif lb and lb.get("corners", 0) > 1:
+            s.add(tr(f"손실은 온도 상자 모서리 {lb['corners']}곳의 최댓값으로 잡았고, 내부 표본 {lb.get('interior_samples')}점에서 "
+                     f"그보다 큰 손실이 없음을 확인했습니다 (표본 확인, 증명 아님)",
+                     f"losses taken at the largest of the {lb['corners']} temperature-box corners; no larger loss at "
+                     f"{lb.get('interior_samples')} interior samples (a sampled check, not a proof)"), "info")
         for k, lab_ko, lab_en in (("rest_before_repeat", "첫 펄스 뒤 반복 전 필요한 휴지", "rest needed before repeating"),
                                   ("periodic_min_rest", "주기 유지에 필요한 최소 휴지", "shortest rest for the periodic cycle")):
             v, note = al.get(k + "_s"), al.get(k + "_note")
             if v is not None or note:
                 val = (f"{num(_t(v), 3)} s" if v is not None and math.isfinite(_t(v)) else "∞" if v is not None else "")
                 s.add(f"{tr(lab_ko, lab_en)}: " + " — ".join(x for x in (val, esc(engine_text(note or ""))) if x), "info")
+    rc = res.get("resolution_check")
+    if rc:
+        s = ins.section(tr("수치 해상도 점검", "numerical resolution check"),
+                        tr(f"같은 계산을 스텝 {rc['steps_per_phase'][1]}개/구간, 손실 캐시 {num(rc['cache_K'][1])} K로 다시 해 "
+                           f"비교했습니다", f"the same run at {rc['steps_per_phase'][1]} steps per phase and a "
+                           f"{num(rc['cache_K'][1])} K loss cache, compared"))
+        s.add(tr("판정이 해상도에 따라 바뀌지 않음", "no decision changes with the resolution") if rc["stable"] else
+              tr("<b>판정이 해상도에 따라 바뀜</b> — 이 결과는 판정으로 쓰지 않습니다",
+                 "<b>the verdict changes with the resolution</b> — not used as a verdict"),
+              "ok" if rc["stable"] else "open", esc(engine_parts(rc.get("note", ""))))
     fb = res.get("feedback") or {}
     if fb:
         s = ins.section(tr("손실–온도 피드백", "loss–temperature feedback"))
         s.add(tr(f"R_s(T): {'반영' if fb.get('rs') else '미반영'} ({esc(fb.get('winding_node', ''))}) · 모듈 T_j: "
-                 f"{'반영' if fb.get('module') else '미반영'} ({esc(fb.get('junction_node', ''))})",
+                 f"{'반영' if fb.get('module') else '미반영'} ({esc(fb.get('junction_node', ''))}) · 자석 온도 → 자속: "
+                 f"{'반영' if fb.get('magnet') else '미반영'} ({esc(fb.get('magnet_node') or '선언된 노드 없음')})",
                  f"R_s(T): {'on' if fb.get('rs') else 'off'} ({esc(fb.get('winding_node', ''))}) · module T_j: "
-                 f"{'on' if fb.get('module') else 'off'} ({esc(fb.get('junction_node', ''))})"), "info")
+                 f"{'on' if fb.get('module') else 'off'} ({esc(fb.get('junction_node', ''))}) · magnet temperature → "
+                 f"flux: {'on' if fb.get('magnet') else 'off'} ({esc(fb.get('magnet_node') or 'no declared node')})"),
+              "info")
         for n in fb.get("notes") or []:
             s.add(esc(engine_text(n)), "info")
     s = ins.section(tr("판정", "claim"))

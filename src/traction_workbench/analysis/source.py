@@ -26,6 +26,8 @@ from ..settings import DEFAULT_SETTINGS, NumericalSettings
 from ..solvers.policy import PolicyEvaluator
 from ..validation import finite as _finite
 
+MAX_TRANSFER_REL_TOL = 1e-12       # relative band around V_oc^2 / (4 R_eq): the proof and the root share it
+
 
 @dataclass(frozen=True)
 class TheveninSource:
@@ -75,11 +77,21 @@ def resolve_terminal_voltage(drive, scenario: Scenario, source: TheveninSource, 
                 "reason": f"OCV {V_oc:g} V outside the source model's validity {list(source.valid_ocv_V)} V"}
     w = scenario.speed_rpm * 2.0 * math.pi / 60.0
     p_shaft = T_request * w
-    if p_shaft > out["max_transfer_W"] * (1.0 + 1e-12):
+    p_max = out["max_transfer_W"]
+    # one boundary rule for the proof and the root (review of 63a2b61, 2.4): beyond the band the request is proven
+    # impossible, inside it neither proven nor resolvable (only a lossless drive at V_oc / 2 could meet it), below
+    # it the radicand V_oc^2 - 4 R_eq P_shaft >= 4 R_eq band > 0 and the root exists
+    band = MAX_TRANSFER_REL_TOL * p_max if math.isfinite(p_max) else math.inf
+    if math.isfinite(p_max) and p_shaft > p_max + band:
         return {**out, "status": "NO_SOLUTION", "P_shaft_W": p_shaft,
                 "reason": f"the shaft power {p_shaft:.6g} W alone exceeds the most this source can deliver, "
-                          f"V_oc^2 / (4 R_eq) = {out['max_transfer_W']:.6g} W (P_dc >= P_shaft when motoring): no "
+                          f"V_oc^2 / (4 R_eq) = {p_max:.6g} W (P_dc >= P_shaft when motoring): no "
                           f"drive meets the request on this source"}
+    if math.isfinite(p_max) and p_shaft >= p_max - band:
+        return {**out, "status": "NOT_RESOLVED", "P_shaft_W": p_shaft, "boundary": True,
+                "reason": f"the shaft power {p_shaft:.6g} W equals the source's maximum transfer V_oc^2 / (4 R_eq) = "
+                          f"{p_max:.6g} W within the numerical tolerance ({MAX_TRANSFER_REL_TOL:g} relative): only a "
+                          f"lossless drive at V_oc / 2 could meet it - neither proven impossible nor resolved"}
     if p_shaft > 0 and source.R_eq_ohm > 0:
         # every motoring point has P_dc >= P_shaft, so its terminal voltage is at most the upper root for P_shaft
         out["V_terminal_max_V"] = 0.5 * (V_oc + math.sqrt(V_oc ** 2 - 4.0 * source.R_eq_ohm * p_shaft))

@@ -195,3 +195,51 @@ def test_the_verdict_banner_folds_its_record_details_and_the_summary_keeps_every
         assert t.rowCount() and sum(t.rowHeight(r) for r in range(t.rowCount())) <= t.viewport().height() + 1
     page.tabs.setCurrentIndex(0)
     _settle()
+
+
+def test_the_form_states_the_question_and_sends_the_band_and_the_error_budget(win):
+    """Review of 63a2b61, section 4: the requirement's quantifiers are written out before the run (a band is ∃, a Vdc
+    range is ∀), and a declared error budget reaches the record as its own layer without changing the verdict."""
+    page = win.pages["decision"]
+    page._load_preset(0)
+    _settle()
+    assert "(∃)" not in page.reading.text() and "(∀)" not in page.reading.text()
+    try:
+        page.operator.setCurrentIndex(page.operator.findData("band"))
+        page.band.setValue(12.0)
+        page.range_on.setChecked(True)
+        _settle()
+        assert "(∃)" in page.reading.text() and "(∀)" in page.reading.text()
+        assert not page.eb_model.isEnabled()                       # an unchecked row reaches nothing
+        page.eb_model_on.setChecked(True)
+        page.eb_model.setValue(3.0)
+        page.eb_model_basis.setText("FEA vs dyno")
+        case, _curves = page._case()
+        assert case["requirement"]["operator"] == "band" and case["requirement"]["band"]["value"] == 12.0
+        assert case["error_budget"] == [{"source": page.eb_model_on.text(), "kind": "model", "quantity": "torque",
+                                         "percent": 3.0, "basis": "FEA vs dyno"}]
+        page.eb_input_on.setChecked(True)                           # a current-sensor gain error, in % of |i|
+        page.eb_input_unit.setCurrentIndex(page.eb_input_unit.findData("phase_current:pct"))
+        page.eb_input.setValue(2.0)
+        page.eb_input_basis.setText("sensor datasheet, -40..125 degC")
+        case, _curves = page._case()
+        assert case["error_budget"][1] == {"source": page.eb_input_on.text(), "kind": "input",
+                                           "quantity": "phase_current", "percent": 2.0,
+                                           "basis": "sensor datasheet, -40..125 degC"}
+        page.eb_input_on.setChecked(False)
+        page.eb_input_basis.setText("")
+        page.operator.setCurrentIndex(page.operator.findData("achieve"))
+        page.range_on.setChecked(False)
+        page.run()
+        _settle()
+        lay = page.result["record"]["verdict"]["layers"]
+        assert page.result["record"]["verdict"]["status"] == "FEASIBLE"
+        assert lay["robustness"]["status"] == "WITHIN_ERROR"       # 2.56 N*m margin < 3 % of the capability
+        t = page.layers_table
+        assert t.rowCount() == 5 and t.item(4, 1).text().startswith("WITHIN_ERROR")
+    finally:
+        page.eb_model_on.setChecked(False)
+        page.operator.setCurrentIndex(page.operator.findData("achieve"))
+        page.range_on.setChecked(False)
+        page._load_preset(0)
+        _settle()

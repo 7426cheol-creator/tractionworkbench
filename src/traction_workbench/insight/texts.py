@@ -59,6 +59,38 @@ _FIXED = {
     "the first pulse itself reaches a limit": "첫 펄스만으로 한계에 도달",
     "the inverter loss model has no junction-temperature input (no T_j feedback)":
         "인버터 손실 모델에 접합 온도 입력이 없음 (T_j 피드백 없음)",
+    "no R_s temperature law: the copper loss uses R_s as supplied (no winding feedback)":
+        "R_s 온도 법칙 없음 — 동손은 주어진 R_s 그대로 (권선 피드백 없음)",
+    "loss-temperature feedback off: losses at the stated scenario temperatures":
+        "손실–온도 피드백 끔 — 선언된 시나리오 온도의 손실",
+    "the motor flux depends on the magnet temperature but no thermal node is declared as the magnet temperature: the "
+    "flux stays at the scenario's magnet temperature":
+        "모터 자속이 자석 온도에 의존하지만 자석 온도로 선언된 열 노드가 없음 — 자속은 시나리오의 자석 온도로 고정",
+    "a magnet node is declared but the motor has no magnet-temperature dependence (psi_PM(T) law or map planes): the "
+    "magnet node is not fed back":
+        "자석 노드가 선언되었지만 모터에 자석 온도 의존성(ψ_PM(T) 법칙 또는 자속맵 온도 평면)이 없음 — 자석 노드는 "
+        "피드백하지 않음",
+    "closed form, every loss at its largest value over the corners of the node-temperature box (coolant inlet .. node "
+    "limit); the highest temperature inside every phase, not only at its end":
+        "닫힌 해 — 각 손실을 노드 온도 상자(냉각수 입구 ~ 노드 한계)의 모서리 중 최댓값으로 두고, 구간 끝이 아니라 구간 안의 "
+        "최고 온도로 판정",
+    "closed form, every loss at its largest value over the corners of the node-temperature box (coolant inlet .. node "
+    "limit); the highest temperature inside every phase, not only at its end - ESTIMATE: the corner losses are not "
+    "shown to bound the losses inside the box (the loss bound check)":
+        "닫힌 해 — 각 손실을 노드 온도 상자(냉각수 입구 ~ 노드 한계)의 모서리 중 최댓값으로 둠. 추정값: 모서리 손실이 상자 "
+        "내부 손실의 상한임을 보이지 못함 (손실 상한 점검 참조)",
+    "passed: no interior sample above its corners": "통과 — 내부 표본 중 모서리 값을 넘는 손실 없음",
+    "FAILED: a loss exceeds its corner values inside the box": "실패 — 상자 내부에서 모서리 값을 넘는 손실이 있음",
+    "not verified: a phase is not established at an interior sample": "미확인 — 내부 표본에서 운전점이 성립하지 않는 구간이 있음",
+    "no fed-back temperature: losses at the scenario temperatures": "되먹이는 온도 없음 — 시나리오 온도의 손실",
+    "allowed duration / torque: closed form with every loss at its largest value over the corners of the "
+    "node-temperature box [coolant inlet, node limit] - a bound when each loss is monotone in each fed-back "
+    "temperature (either direction), checked at interior samples (the loss bound check)":
+        "허용 시간·토크: 닫힌 해 — 각 손실을 노드 온도 상자[냉각수 입구, 노드 한계]의 모서리 중 최댓값으로 둠. 각 손실이 "
+        "되먹이는 온도마다 단조(방향 무관)일 때 상한이며, 내부 표본으로 점검함 (손실 상한 점검)",
+    "the first limit is reached only at one resolution": "첫 한계 도달이 한 해상도에서만 나타남",
+    "the first limit is reached at another node": "첫 한계에 도달하는 노드가 해상도에 따라 다름",
+    "a periodic margin changes sign": "주기 정상상태 여유의 부호가 바뀜",
     "coolant rise follows each step's losses instantly (loop thermal mass not modelled; conservative for pulse peaks)":
         "냉각수 상승은 매 단계 손실을 즉시 따름 (루프 열용량 미모델 — 펄스 피크에 보수적)",
     # power stage
@@ -379,6 +411,24 @@ _FIXED = {
 }
 
 _PATTERNS = [
+    (r"exact exponential update of every Foster term per step \(constant loss within a step, (\d+) steps per phase; "
+     r"losses re-evaluated per step at the node temperatures, cached on a (\S+) K grid\); the peak and the first limit "
+     r"crossing inside every step and phase are exact at every stationary point \(exponential-sum root isolation, no "
+     r"sampling grid\)",
+     r"스텝마다 모든 Foster 항을 지수식으로 정확히 갱신 (스텝 안에서 손실 일정, 구간당 \1스텝; 손실은 스텝마다 노드 온도에서 "
+     r"다시 계산하고 \2 K 격자로 캐시). 스텝·구간 안의 최고 온도와 첫 한계 교차는 모든 정류점에서 정확함 (지수합 근 분리, "
+     r"표본 격자 없음)"),
+    (r"no decision changes; changes: first limit (.*), peaks (.*), periodic peaks (.*), allowed values (.*)",
+     r"판정 변화 없음 — 변화량: 첫 한계 \1, 피크 \2, 주기 정상상태 피크 \3, 허용값 \4"),
+    (r"no decision changes; changes: first limit (.*), peaks (.*), periodic peaks (.*)",
+     r"판정 변화 없음 — 변화량: 첫 한계 \1, 피크 \2, 주기 정상상태 피크 \3"),
+    (r"the finer run stops \((.*)\)", r"더 촘촘한 계산이 중단됨 (\1)"),
+    (r"the allowed pulse duration is bounded at one resolution only", "허용 펄스 시간이 한쪽 해상도에서만 유한함"),
+    (r"the allowed pulse torque is bounded at one resolution only", "허용 펄스 토크가 한쪽 해상도에서만 유한함"),
+    (r"the allowed first-pulse torque is bounded at one resolution only", "첫 펄스 허용 토크가 한쪽 해상도에서만 유한함"),
+    (r"the rest before repeating is bounded at one resolution only", "반복 전 필요 휴지 시간이 한쪽 해상도에서만 유한함"),
+    (r"the minimum periodic rest is bounded at one resolution only", "주기 최소 휴지 시간이 한쪽 해상도에서만 유한함"),
+    (r"the verdict changes with the time step / loss-cache grid: (.*)", r"판정이 시간 스텝·손실 캐시 격자에 따라 바뀜: \1"),
     (r"voltage is a necessary-condition limit independent of the current rating: a larger current rating cannot fix "
      r"it; examine DC terminal voltage \(see sizing\) or the motor/declared id domain",
      "전압이 필요조건 한계입니다 — 전류 정격과 무관하므로 전류 정격을 키워도 해결되지 않습니다. DC 단자 전압(역설계 참조)이나 "
@@ -542,6 +592,36 @@ _PATTERNS += [
 _PATTERNS += [
     (r"die (.+?): no supplier cycling model for this package/mechanism: cycle histogram, hotspot and dT/mean-temperature "
      r"comparison only", r"다이 \1: 이 패키지·메커니즘의 공급사 사이클 수명 모델 없음 — 사이클 히스토그램, 핫스팟, ΔT·평균 온도 비교만"),
+]
+# margin vs the declared error budget (decision robustness layer)
+_FIXED.update({
+    "the torque capability is not established at this condition": "이 조건에서 토크 능력치가 확립되지 않음",
+    "the static claim is not decided at this condition": "이 조건에서 정적 판정이 결정되지 않음",
+    "no error budget declared": "오차 예산 미선언",
+    "no torque error declared": "토크 오차 미선언",
+    "the witness sits on the voltage limit (field weakening): the policy moves the operating point to hold it, so a "
+    "voltage error changes the torque capability - declare its torque effect or examine a Vdc range":
+        "운전점이 전압 한계 위에 있음(약계자): 정책이 운전점을 옮겨 한계를 지키므로 전압 오차는 토크 능력치를 바꿈 — 그 토크 영향을 "
+        "선언하거나 Vdc 범위로 검토",
+    "with the declared source the DC terminal voltage moves with the operating point, so this witness margin is not "
+    "the coupled system's margin":
+        "선언된 소스에서는 DC 단자 전압이 운전점에 따라 바뀌므로 이 운전점 여유는 결합 시스템의 여유가 아님",
+    "short by more than the declared error at the found capability, but no certified upper bound shows it for the "
+    "whole model capability":
+        "찾은 능력치 기준으로는 선언 오차보다 크게 부족하지만, 모델 능력치 전체에 대해 이를 보이는 인증 상한이 없음",
+    "the capability is evaluated at the terminal voltage resolved for the target torque; with the declared source the "
+    "terminal voltage moves with the torque, so this margin is not the coupled system's margin":
+        "능력치는 목표 토크에서 풀린 단자 전압에서 계산됨 — 선언된 소스에서는 단자 전압이 토크에 따라 바뀌므로 이 여유는 결합 "
+        "시스템의 여유가 아님",
+})
+_PATTERNS += [
+    (r"no (phase current|DC power|DC current|command voltage) limit at the witness: nothing to compare the declared "
+     r"error with", r"운전점에 \1 한계가 없음 — 선언 오차와 비교할 대상 없음"),
+    (r"the (phase current|DC power|DC current|command voltage) limit is not evaluated at the witness",
+     r"운전점에서 \1 한계가 평가되지 않음"),
+    (r"the static claim \((\w+)\) and the capability margin \((\S+) N\*m\) disagree: the feasible torque set is not "
+     r"contiguous here, a single margin does not describe it",
+     r"정적 판정(\1)과 능력치 여유(\2 N·m)가 어긋남 — 여기서는 가능한 토크 집합이 연속이 아니라 여유 하나로 설명되지 않음"),
 ]
 _PWM_NAMES = {"Tj": "모듈 T_j", "peak-current conservative bound (I_fund,pk + max|di|)": "피크 전류 보수 상한 (I_fund,pk + max|di|)",
               "capacitor RMS current": "커패시터 RMS 전류", "current-loop phase margin": "전류 루프 위상 여유",

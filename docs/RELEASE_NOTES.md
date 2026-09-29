@@ -5,6 +5,32 @@
 
 ## 0.5.0 변경 사항 (v0.4.0 대비)
 
+**로직 검토 의견(63a2b61) 반영** — `docs/LOGIC_REVIEW.html`에 대한 검토 의견을 재현하고 판단해 반영했습니다(상세: 문서 §18,
+[`TRACEABILITY.md`](TRACEABILITY.md) §15, 회귀 시험 `tests/test_review_63a2b61.py`).
+
+1. **결함 4건 수정** — (2.1) 가변 PWM Pareto에서 같은 에너지 불확도 구간이 정책을 지우던 규칙: 구간은 분리될 때만 지배.
+   (2.2) 반복 부하의 첫 한계가 노드 목록 순서에 따라 달라지던 것: 모든 노드의 최솟값. (2.3) 단계 내부 최고 온도와 한계 교차가 빠른
+   열 모드의 피크를 놓치던 것: 지수합 정류점의 정확한 근 분리(격자 없음). (2.4) Thevenin 결합의 제곱근 정의역 오류: 증명과 근이
+   같은 경계 대역을 쓰고, 대역 안은 UNKNOWN(BOUNDARY_WITHIN_TOLERANCE).
+2. **열 반복 부하** — 노드가 대표하는 온도를 선언(`temperature_of`: winding / junction / magnet)하고 자석 노드 온도가 운전점 자속을
+   정함. 허용값의 손실 상한은 온도 상자의 모든 모서리 최댓값(좌표별 단조면 방향 무관)이며 모서리 중점·중심으로 점검(실패 시 추정).
+   주기 수렴은 모든 Foster 항의 잔차로, 매 실행에 해상도 점검(스텝 2배·캐시 ½ — 첫 한계·피크·주기 피크·허용값)을 하고
+   판정이 바뀌면 UNKNOWN.
+3. **가변 PWM** — 비정수 f_sw/f_e는 요청 주파수를 사이에 둔 두 동기 캐리어를 모두 평가하고 두 답이 같을 때만 판정(민감도 괄호).
+   커패시터 ESR 손실을 에너지 비교 경계 안으로 선언할 수 있음(판정 화면 체크 박스).
+4. **판정의 견고성 층** — 선언한 오차 예산(모델 불일치 / 입력·측정 / 공급 데이터의 수치 오차; 물리량 토크·상전류·DC 전력·DC
+   전류·명령 전압; 절대값 또는 모델값의 %; 근거·적용 범위 필수)을 물리량마다 최악 조합으로 합쳐 "모델상 가능"과 "선언 오차를 고려해도
+   가능"을 구분(ROBUST / WITHIN_ERROR / NOT_ESTABLISHED / NOT_ASSESSED). 토크는 능력 여유(충족은 찾은 능력치, 불충족은 인증 상한),
+   한계는 요구를 만족하는 운전점에서 y + Δ ≤ y_max(약계자점의 전압 한계는 정책이 대응하므로 토크 쪽으로). 모델 판정은 바뀌지
+   않음. case 파일의 `error_budget`(예제 `examples/cases/req_ts_012_600V_error_budget.json`), 판정 화면의 "오차 예산" 입력(행마다
+   물리량·단위 선택), 판정 배너·해석·Markdown·PDF 기록.
+5. **한정자** — 판정 폼이 토크 해석(achieve / band ±)을 직접 받고 "판정할 질문"을 ∃(대역)·∀(Vdc 범위, 다평면 자석 온도)로 보여 줌.
+   결과의 "판정한 질문"과 기록의 `quantifiers`에도 같은 의미.
+6. **약계자 철손 범위** — witness가 전압 한계에 걸린 운전점이면 자속비 |ψ|/|ψ₀|, 토크·DC 여유, 이 속도의 1 kW ↔ N·m 환산과 오차
+   방향을 기록·해석에 표시(합성 기준 모델: 12,000 rpm·150 N·m에서 철손이 없는 회전 손실, 약 3.2 kW면 토크 여유가 사라짐).
+   커널의 손실 형태는 바꾸지 않음(증명 구조의 전제), 자속 의존 철손은 다음 단계.
+
+
 **MathWorks 이식 패키지 `twb-mathworks/1`** — Python Workbench를 실행 가능한 reference 구현으로 보고, 그 요구·모델·파라미터·
 시나리오·계산 의미·결과를 MATLAB / Simulink / System Composer로 재현 가능하게 옮깁니다. 새 verification framework가 아니라
 기존 구조(twb-project/1, twb-exchange/1, 결정 기록의 claim·evidence, provenance·content hash)를 그대로 싣고 이식에 필요한 것만
@@ -14,7 +40,7 @@
    fingerprint: canonical ASCII JSON이라 byte 동일 ⇔ 의미 동일), `contract.json`(검사 가능한 규약 열거값, 물리량 사전의 단위·tolerance
    class, 제약·에너지 모드·사유·claim 어휘, 수치 설정, map·손실 규칙, 세 층), `models/*.json`(제품 드라이브 + 참조·검증 fixture:
    파라미터·온도 법칙·flux plane(행 = id)·mask·대칭·온도 보간·손실 closure·**손실 소유권**·content SHA-256·provenance·자기 qualification),
-   `cases/*.json`(forward 48, flux lookup 21, 요구 witness 11 — 각 case에 Python 값과 oracle 값·tolerance), `architecture/`
+   `cases/*.json`(forward 48, flux lookup 21, 요구 witness 12 — 예제 case 파일마다 1건, 각 case에 Python 값과 oracle 값·tolerance), `architecture/`
    (System Composer/SLDD 후보와 회사 profile 양식), `source/`(프로젝트, 교환 패키지, 참조 패키지 manifest), `gap_report.json`,
    `matlab/+twb/`, 사람용 이식 안내(`README.md`)와 agent 작업표(`AGENT_TASKS.md`).
 2. **MathWorks에서 무엇이 재현되는가** — native MATLAB: 상수 dq(D1)와 flux map(D2)의 정상상태 forward 평가(전압·토크·전력·손실·
@@ -31,7 +57,7 @@
    계약 수식, map의 집합 정의로 계산합니다. 내보낼 때 (2)↔(1) 불일치는 보고되고 숨겨지지 않습니다(현재 0건). 대상 보고서는 Python이
    **원시 값에서 다시 계산**해 판정합니다. 비교에 이빨이 있는지 CI가 확인합니다: MATLAB 코드에 심은 결함 — 토크 계수, 모서리 규칙
    제거, UNKNOWN 대신 clip, 결측 DC 한계 = 무제한, ACTIVE = 위반, map 전치, power-invariant Park, 온도 보간 제거, Rs 법칙 무시 — 이
-   모두 그 결함을 겨냥한 case에서 FAIL/ERROR가 됩니다. 이 환경과 CI에서 GNU Octave 8.4(MATLAB 언어 호환 proxy)로 **79 PASS · 0 FAIL ·
+   모두 그 결함을 겨냥한 case에서 FAIL/ERROR가 됩니다. 이 환경과 CI에서 GNU Octave 8.4(MATLAB 언어 호환 proxy)로 **80 PASS · 0 FAIL ·
    0 ERROR · 1 NOT_SUPPORTED**(witness가 없는 INFEASIBLE 요구), guard 6/6. MATLAB 자체·Simulink·System Composer는 실행하지 않았습니다.
 4. **작업이 System Composer → Simulink → Simscape로 발전해도 연결을 어떻게 유지하는가** — 보고서는 semantic fingerprint와 소비한 모든
    파일의 SHA-256을 기록하고, 재수입은 그 패키지에만(다른 패키지 → FOREIGN_REPORT), 그 설계 개정에만(project digest가 다르면 현재

@@ -17,7 +17,7 @@ from ... import progress as PR
 from ... import service as S
 from ...analysis.variation import PARAMETERS
 from ...i18n import language, tr
-from ...insight.decision import decision_insight, pending_text
+from ...insight.decision import decision_insight, pending_text, requirement_reading, robustness_summary
 from ...insight.texts import engine_text
 from ...plots import figures as F
 from ...plots.labels import change_kind_label, claim_label, constraint_label, param_label, reason_label, yes_no
@@ -34,7 +34,18 @@ from ..widgets import (ConceptNote, ClaimTree, InsightPanel, KeyValueTable, Plot
 LAYER_NAMES = {"mathematical": lambda: tr("수학 (수치 증거)", "mathematical (numerical evidence)"),
                "model": lambda: tr("모델 판정", "model verdict"),
                "requirement": lambda: tr("요구 완결성", "requirement completeness"),
-               "qualification": lambda: tr("데이터 적격성", "data qualification")}
+               "qualification": lambda: tr("데이터 적격성", "data qualification"),
+               "robustness": lambda: tr("견고성 (선언 오차 대비)", "robustness (vs the declared error)")}
+
+# error-budget rows of the form: kind, display name, default value, default quantity:size
+ERROR_ROWS = (("model", ("모델 불일치", "model mismatch"), 3.0, "torque:pct"),
+              ("input", ("입력·측정 오차", "input / measurement error"), 2.0, "phase_current:pct"),
+              ("numerical", ("공급 데이터의 수치 오차", "numerical error of supplied data"), 0.5, "torque:abs"))
+# what an error is of and how it is sized: quantity:abs (its unit) or quantity:pct (% of the model value)
+ERROR_UNITS = ((("% 능력치 (토크)", "% of capability (torque)"), "torque:pct"), (("N·m (토크)", "N·m (torque)"), "torque:abs"),
+               (("% 상전류", "% of phase current"), "phase_current:pct"), (("A (상전류)", "A (phase current)"), "phase_current:abs"),
+               (("W (DC 전력)", "W (DC power)"), "dc_power:abs"), (("% DC 전력", "% of DC power"), "dc_power:pct"),
+               (("A (DC 전류)", "A (DC current)"), "dc_current:abs"), (("V (명령 전압)", "V (command voltage)"), "voltage:abs"))
 
 
 ANALYSIS_KEYS = ("sizing", "dominance", "relaxation", "compare_Vdc")
@@ -193,6 +204,7 @@ class DecisionPage(QWidget):
         lay.addWidget(split)
         self._load_preset(0)
         self.win.track_inputs("decision", form)
+        self.win.state.drive_changed.connect(self._update_reading)   # the flux-map temperatures of the question
 
     # ------------------------------------------------------------------ window hooks
     def task_finished(self, key: str, outcome: str) -> None:
@@ -227,6 +239,10 @@ class DecisionPage(QWidget):
             self._inputs_note = ""
         if self.result is not None:
             self._set_banner(*self._banner_last)
+
+    def apply_project(self, _project=None):
+        """The question reading names the flux-map temperatures of the active drive."""
+        self._update_reading()
 
     def _source_row(self, *_):
         """The source resistance row (label and fields) is shown only when Vdc is a battery OCV."""
@@ -313,6 +329,20 @@ class DecisionPage(QWidget):
         self.vdc_hi = number(650, 1, 2000, "V", 2, 10.0)
         self.vdc_hi.setEnabled(False)
         self.range_on.toggled.connect(self.vdc_hi.setEnabled)
+        self.operator = combo([(tr("이 토크 그대로", "this torque itself"), "achieve"),
+                               (tr("대역 안의 어느 하나 (∃)", "some torque in a band (∃)"), "band")], "achieve")
+        self.operator.setToolTip(tr("대역(band): 목표 ± 대역 안의 토크 하나가 모든 판정 항목을 같은 운전점에서 만족하면 충족 "
+                                    "(존재, ∃) — 대역 안 모든 토크의 추종(∀)이 아닙니다.",
+                                    "band: met when ONE torque within target ± band meets every item at the same point "
+                                    "(existence, ∃) — not tracking of every torque in the band (∀)."))
+        self.band = number(10, 0.001, 5000, "N·m", 3, 1.0, tr("대역 반폭: 목표 ± 이 값", "band half-width: target ± this"))
+        self.band.setEnabled(False)
+        self.operator.currentIndexChanged.connect(
+            lambda *_: self.band.setEnabled(self.operator.currentData() == "band"))
+        opr = QHBoxLayout()
+        opr.addWidget(self.operator, 1)
+        opr.addWidget(QLabel("±"))
+        opr.addWidget(self.band)
         rr = QHBoxLayout()
         rr.addWidget(self.range_on)
         rr.addWidget(self.vdc_hi)
@@ -358,6 +388,7 @@ class DecisionPage(QWidget):
         f.addRow("ID", self.req_id)
         f.addRow(tr("원문", "text"), self.req_text)
         f.addRow(tr("토크", "torque"), self.torque)
+        f.addRow(tr("토크 해석", "torque meaning"), opr)
         f.addRow(tr("속도", "speed"), self.speed)
         f.addRow("Vdc", self.vdc)
         f.addRow(tr("Vdc 의미", "Vdc meaning"), self.vdc_kind)
@@ -371,6 +402,47 @@ class DecisionPage(QWidget):
         f.addRow("", cr)
         f.addRow("", mr)
         f.addRow("", wr)
+        # the question the verdict will answer, quantifiers written out (∃ band, ∀ range / flux-map temperatures)
+        self.reading = hint("")
+        self.reading.setTextFormat(Qt.RichText)
+        f.addRow(tr("판정할 질문", "question"), self.reading)
+        for w in (self.torque, self.speed, self.vdc, self.vdc_hi, self.band, self.duration, self.magnet):
+            w.valueChanged.connect(self._update_reading)
+        for w in (self.range_on, self.magnet_on, self.dur_none, self.dur_sec, self.dur_cont):
+            w.toggled.connect(self._update_reading)
+        self.operator.currentIndexChanged.connect(self._update_reading)
+        v.addWidget(g)
+
+        g = QGroupBox(tr("오차 예산 — 설계 판단용 (선택)", "error budget — for a design decision (optional)"))
+        g.setToolTip(tr("모델 판정은 바뀌지 않습니다. 선언한 오차를 물리량마다 최악 조합으로 합쳐 따로 비교해 '견고 / 오차 범위 안'을 "
+                        "표시합니다: 토크는 능력치 여유와, 상전류·DC 전력·DC 전류·명령 전압은 운전점의 한계 여유와(y + Δ ≤ "
+                        "y_max). %는 모델값 대비입니다(토크: 능력치, 한계: 운전점의 값). Vdc·온도의 불확실성은 범위 요구(∀)로 "
+                        "넣으세요.",
+                        "The model verdict does not change. The declared error of each quantity is summed worst case "
+                        "and compared separately ('robust' / 'within the error'): torque with the capability margin, "
+                        "phase current, DC power, DC current and command voltage with the limit margin at the witness "
+                        "(y + Δ ≤ y_max). % is of the model value (torque: the capability; a limit: its value at the "
+                        "witness). Put Vdc and temperature uncertainty in the requirement as ranges (∀)."))
+        ef = QFormLayout(g)
+        for kind, names, default, unit in ERROR_ROWS:
+            on = check(tr(*names), False)
+            val = number(default, 0.0, 1e6, "", 3, 0.5)
+            un = combo([(tr(*lab), data) for lab, data in ERROR_UNITS], unit)
+            basis = QLineEdit()
+            basis.setPlaceholderText(tr("근거와 적용 범위 (필수 — 예: FEA 대 다이노, 3,000–12,000 rpm)",
+                                        "basis and where it applies (required - e.g. FEA vs dyno, 3,000-12,000 rpm)"))
+            for w in (val, un, basis):
+                w.setEnabled(False)
+                on.toggled.connect(w.setEnabled)
+            row = QHBoxLayout()
+            row.addWidget(val)
+            row.addWidget(un)
+            ef.addRow(on, row)
+            ef.addRow("", basis)
+            # plain attributes (eb_model_on, eb_model, eb_model_unit, eb_model_basis, ...): the workspace keeps inputs
+            # by attribute path
+            for suffix, w in (("_on", on), ("", val), ("_unit", un), ("_basis", basis)):
+                setattr(self, f"eb_{kind}{suffix}", w)
         v.addWidget(g)
 
         g = QGroupBox(tr("추가 분석", "additional analyses"))
@@ -403,6 +475,37 @@ class DecisionPage(QWidget):
         sc.setMinimumWidth(320)
         return sc
 
+    def _form_requirement(self) -> dict:
+        """The form's requirement in the record's shape (``Requirement.describe``), for the question reading."""
+        vdc = [self.vdc.value(), self.vdc_hi.value()] if self.range_on.isChecked() else self.vdc.value()
+        dur = ("not stated" if self.dur_none.isChecked() else "continuous" if self.dur_cont.isChecked()
+               else f"{self.duration.value():g} s")
+        return {"operator": self.operator.currentData(), "target_Nm": self.torque.value(), "band_Nm": self.band.value(),
+                "duration": dur,
+                "conditions": {"speed_rpm_mechanical": self.speed.value(), "Vdc_V_inverter_dc_terminal": vdc,
+                               "magnet_temp_C": self.magnet.value() if self.magnet_on.isChecked() else None}}
+
+    def _update_reading(self, *_):
+        """The question the verdict will answer, quantifiers written out; an unstated magnet temperature on a
+        multi-plane flux map is examined for every plane (∀)."""
+        try:
+            temps = SW.plane_temperatures(self.win.state.drive)
+        except Exception:  # noqa: BLE001 - the reading is a help text, never an error
+            temps = []
+        self.reading.setText(requirement_reading(self._form_requirement(), temps))
+
+    def _error_budget(self) -> list:
+        """The declared error-budget items of the form (none checked: the robustness layer is not assessed)."""
+        out = []
+        for kind, names, _default, _unit in ERROR_ROWS:
+            if not getattr(self, f"eb_{kind}_on").isChecked():
+                continue
+            quantity, size = str(getattr(self, f"eb_{kind}_unit").currentData()).split(":")
+            out.append({"source": tr(*names), "kind": kind, "quantity": quantity,
+                        ("percent" if size == "pct" else "value"): getattr(self, f"eb_{kind}").value(),
+                        "basis": getattr(self, f"eb_{kind}_basis").text().strip()})
+        return out
+
     def _load_preset(self, idx):
         p = api.PRESETS[idx]
         r = p["req"]
@@ -423,15 +526,19 @@ class DecisionPage(QWidget):
             self.duration.setValue(r["duration_s"])
         else:
             self.dur_none.setChecked(True)
+        self.operator.setCurrentIndex(max(0, self.operator.findData(r.get("operator") or "achieve")))
+        if r.get("band_Nm"):
+            self.band.setValue(r["band_Nm"])
         an = p.get("analyses", {})
         self.an_dom.setChecked(bool(an.get("dominance")))
         sz = {s["parameter"] for s in an.get("sizing", [])}
         self.an_size_v.setChecked("Vdc_V" in sz)
         self.an_size_i.setChecked("I_peak_max_A" in sz)
+        self._update_reading()
 
     def show_requirement(self, req) -> None:
         """Fill the form from a parsed requirement (e.g. one opened from the requirement set).  Items the form does
-        not hold (band operator, initial state) travel in the case itself; the hint says so."""
+        not hold (initial state) travel in the case itself; the hint says so."""
         self.req_id.setText(req.req_id)
         self.req_text.setPlainText(req.text)
         self.torque.setValue(req.target_Nm)
@@ -456,9 +563,11 @@ class DecisionPage(QWidget):
             on.setChecked(val is not None)
             if val is not None:
                 w.setValue(val)
-        extra = []
+        self.operator.setCurrentIndex(max(0, self.operator.findData(req.operator)))
         if req.operator == "band":
-            extra.append(tr(f"band ±{req.band_Nm:g} N·m", f"band +/-{req.band_Nm:g} N*m"))
+            self.band.setValue(req.band_Nm)
+        self._update_reading()
+        extra = []
         if req.initial_state:
             extra.append(tr(f"초기 상태 {req.initial_state}", f"initial state {req.initial_state}"))
         self.preset_hint.setText(tr("요구 묶음에서 연 요구", "opened from the requirement set") + (
@@ -480,7 +589,13 @@ class DecisionPage(QWidget):
             req["magnet_temp_C"] = self.magnet.value()
         if self.winding_on.isChecked():
             req["winding_temp_C"] = self.winding.value()
+        if self.operator.currentData() == "band":
+            req["operator"] = "band"
+            req["band_Nm"] = self.band.value()
         extra = {}
+        eb = self._error_budget()
+        if eb:
+            extra["error_budget"] = eb
         if self.vdc_kind.currentData() == "battery_ocv":
             req["Vdc_port"] = "battery_ocv"
             extra["source_model"] = {"kind": "thevenin", "R_eq_mohm": self.src_R.value(),
@@ -508,6 +623,7 @@ class DecisionPage(QWidget):
         return api.case_from_body(body), curves
 
     def run(self):
+        self._update_reading()
         try:
             case, curves = self._case()
         except Exception as exc:  # noqa: BLE001
@@ -573,9 +689,10 @@ class DecisionPage(QWidget):
         self.layers_table = KeyValueTable(headers=[tr("층", "layer"), tr("상태", "status"), tr("의미", "meaning")],
                                           fit_rows=True)
         self.layers_table.setToolTip(tr("서로 다른 진술을 하나의 판정으로 합치지 않습니다: 수치 증거 / 이 모델의 요구 판정 / "
-                                        "요구의 완결성 / 데이터의 qualification",
+                                        "요구의 완결성 / 데이터의 qualification / 선언 오차 대비 여유(견고성)",
                                         "Separate statements never merged into one verdict: numerical evidence / the "
-                                        "requirement verdict for this model / requirement completeness / data qualification"))
+                                        "requirement verdict for this model / requirement completeness / data "
+                                        "qualification / the margin against the declared error (robustness)"))
         self.limiting = QListWidget()
         self.actions = QListWidget()
         for lw in (self.limiting, self.actions):
@@ -587,8 +704,9 @@ class DecisionPage(QWidget):
         rl = QVBoxLayout(right)
         rl.setContentsMargins(0, 0, 4, 0)
         rl.setSpacing(4)
-        for title, body in ((tr("<b>판정 층</b> (수학 · 모델 · 요구 · qualification — 서로 다른 진술)",
-                             "<b>claim layers</b> (mathematical · model · requirement · qualification — separate)"),
+        for title, body in ((tr("<b>판정 층</b> (수학 · 모델 · 요구 · qualification · 견고성 — 서로 다른 진술)",
+                             "<b>claim layers</b> (mathematical · model · requirement · qualification · robustness — "
+                             "separate)"),
                           self.layers_table),
                          (tr("<b>핵심 수치</b>", "<b>key numbers</b>"), self.key_table),
                          (tr("<b>제한 요인</b>", "<b>limiting factors</b>"), self.limiting),
@@ -705,7 +823,7 @@ class DecisionPage(QWidget):
         lay = v.get("layers") or {}
         lrows, lcol = [], {}
         good = {"CERTIFIED", "COMPLETE", "FEASIBLE"}
-        for i, key in enumerate(("mathematical", "model", "requirement", "qualification")):
+        for i, key in enumerate(("mathematical", "model", "requirement", "qualification", "robustness")):
             L = lay.get(key) or {}
             st = str(L.get("status", "—"))
             meaning = L.get("meaning", "")
@@ -713,8 +831,11 @@ class DecisionPage(QWidget):
                 meaning = "; ".join(L["open_items"])
             if key == "qualification":
                 meaning = f"{L.get('validation_status', '')} · " + " | ".join(L.get("sub_models", []))
+            if key == "robustness":
+                label, text, _lv = robustness_summary(L)
+                st, meaning = f"{st} · {label}", text.replace("<b>", "").replace("</b>", "")
             lrows.append((LAYER_NAMES[key](), st, meaning))
-            lcol[(i, 1)] = "#1a7f37" if (st in good or st.startswith("FEASIBLE")) else (
+            lcol[(i, 1)] = "#1a7f37" if (st in good or st.startswith(("FEASIBLE", "ROBUST"))) else (
                 "#cf222e" if st in ("INFEASIBLE", "UNRESOLVED") else "#b7791f")
         self.layers_table.set_rows(lrows, lcol)
         for b in (self.save_json, self.save_md, self.save_pdf):

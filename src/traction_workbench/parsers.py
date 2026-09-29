@@ -137,7 +137,8 @@ def thermal_model_from_dict(spec, inlet_C: float | None = None) -> ThermalModel:
     coolant = coolant_from_dict(spec.get("coolant"), inlet_C)
     nodes = tuple(ThermalNode(str(n["id"]), thermal_network_from_dict(n, coolant), float(n["limit_C"]),
                               tuple((k, float(v)) for k, v in n["loss_share"].items()),
-                              n.get("station") if coolant is not None else None, _cauer_of(n, coolant))
+                              n.get("station") if coolant is not None else None, _cauer_of(n, coolant),
+                              n.get("temperature_of") or None)
                   for n in spec["nodes"])
     # the data origin is declared, never derived from the 'validated' flag (a flag is not supplier evidence)
     try:

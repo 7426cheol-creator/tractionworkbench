@@ -249,6 +249,12 @@ class PwmDrivelinePage(QWidget):
         self.p_cap = check(tr("DC-link 커패시터 전류 계산 (예시 뱅크)", "compute DC-link capacitor current (example bank)"), True)
         f.addRow(self.p_harm)
         f.addRow(self.p_cap)
+        self.p_cap_in = check(tr("커패시터 ESR 손실을 에너지 비교 경계에 포함", "include the capacitor ESR loss in the energy "
+                                                                        "comparison boundary"), False,
+                              tr("선언하면 각 정책의 에너지 구간에 C_dc ESR 손실이 들어갑니다. 선언하지 않으면 별도로만 표시합니다 "
+                                 "(소유 경계는 선언 사항)", "declared: the DC-link ESR loss enters every policy's energy "
+                                 "interval; otherwise it is shown separately (the ownership is a declaration)"))
+        f.addRow(self.p_cap_in)
         v.addWidget(g)
         row = QHBoxLayout()
         self.p_btn = primary_button(tr("정책 비교", "compare policies"))
@@ -320,7 +326,9 @@ class PwmDrivelinePage(QWidget):
             raise ValueError(tr("궤적 구간이 없습니다", "no trajectory segments"))
         b.update({"Rth_K_per_W": self.p_rth.value(), "coolant_C": self.p_cool.value(), "modulation": self.p_mdl.currentData(),
                   "L_hf_uH": self.p_lhf.value(), "baseline_fsw_kHz": self.p_base.value(),
-                  "use_capacitor": self.p_cap.isChecked(), "harmonic": b["harmonic"] if self.p_harm.isChecked() else None})
+                  "use_capacitor": self.p_cap.isChecked(),
+                  "capacitor_in_energy_boundary": self.p_cap.isChecked() and self.p_cap_in.isChecked(),
+                  "harmonic": b["harmonic"] if self.p_harm.isChecked() else None})
         b["timing"] = {**b["timing"], "sample_to_latch_us": self.tm_lat.value(), "filter_delay_us": self.tm_flt.value(),
                        "updates_per_period": self.tm_upd.currentData(), "modulator_delay_fraction": self.tm_mod.value(),
                        "min_pulse_us": self.tm_pul.value(), "wcet_source": "declared estimate",
@@ -474,7 +482,9 @@ class PwmDrivelinePage(QWidget):
             rows.append((nm, (tr("허용", "admissible") if p["admissible"] else tr("허용 안 됨: ", "not admissible: ") +
                               "; ".join(p["violations"]))))
             kj = lambda v: fmt(v and v / 1e3, 4)
-            cu = (f"{kj(p['E_cu_pwm_J'])} kJ" if p["E_cu_pwm_J"] is not None else
+            hi = p.get("E_cu_pwm_upper_J")
+            cu = ((f"{kj(p['E_cu_pwm_J'])}" + (f"–{kj(hi)}" if hi is not None and hi > p["E_cu_pwm_J"] * (1 + 1e-9)
+                                                else "") + " kJ") if p["E_cu_pwm_J"] is not None else
                   f"≥ {kj(p['E_cu_pwm_lower_bound_J'])} kJ ({tr('R_dc 하한만', 'R_dc lower bound only')})")
             mag = (f"≤ {kj(p['E_mag_hf_bound_J'])} kJ" if p["E_mag_hf_bound_J"] is not None else
                    tr("상한 없음 (UNKNOWN)", "no bound (UNKNOWN)"))
@@ -483,7 +493,9 @@ class PwmDrivelinePage(QWidget):
                          f"{tr('인버터', 'inverter')} {kj(p['E_inv_J'])} kJ · {tr('모터 PWM 동손', 'motor PWM copper')} "
                          f"{cu} · Fe+PM HF {mag} · {tr('비교 구간', 'comparison interval')} "
                          f"[{kj(e['lower_J'])}, {kj(e['upper_J']) if e['upper_J'] is not None else '∞'}] kJ"
-                         + (f" · C_dc ESR {kj(p['E_cap_J'])} kJ ({tr('별도', 'separate')})" if p.get("E_cap_J") else "")))
+                         + (f" · C_dc ESR {kj(p['E_cap_J'])} kJ ("
+                            + (tr('구간에 포함', 'in the interval') if e.get("capacitor_in_boundary") else tr('별도', 'separate'))
+                            + ")" if p.get("E_cap_J") else "")))
             rows.append(("   " + tr("여유", "margins"),
                          f"Tj {fmt(p['Tj_max_C'], 4)} °C · {tr('피크 전류 상한', 'peak-current bound')} "
                          f"{fmt(p['i_peak_bound_max_A'], 4)} A · I_cap "
@@ -491,10 +503,13 @@ class PwmDrivelinePage(QWidget):
                          f"{fmt(p['pulse_ratio_min'], 3)}"))
             if (p.get("fsw_waveform_error_max_percent") or 0.0) > 0.5:
                 rows.append(("   " + tr("fsw 요청 vs 파형", "fsw requested vs waveform"),
-                             tr(f"파형 모델(리플·샘플링·커패시터)은 동기 캐리어 사용 — 최대 오차 "
-                                f"{p['fsw_waveform_error_max_percent']:.3g} %",
-                                f"the waveform models (ripple, sampling, capacitor) use a synchronous carrier - max "
-                                f"error {p['fsw_waveform_error_max_percent']:.3g} %")))
+                             tr(f"파형 모델(리플·샘플링·커패시터)은 요청 주파수를 사이에 두는 두 동기 캐리어에서 모두 계산 — 가장 "
+                                f"가까운 캐리어 오차 최대 {p['fsw_waveform_error_max_percent']:.3g} %. 한계 판정은 두 캐리어가 "
+                                f"일치할 때만 확정합니다",
+                                f"the waveform models (ripple, sampling, capacitor) are evaluated at both synchronous "
+                                f"carriers bracketing the requested one - nearest-carrier error up to "
+                                f"{p['fsw_waveform_error_max_percent']:.3g} %; a limit is decided only where both "
+                                f"agree")))
             smp = [sg["sampling"] for sg in p["segments"] if sg.get("sampling")]
             if smp:
                 rows.append(("   " + tr("전류 샘플링", "current sampling"),

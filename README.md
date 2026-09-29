@@ -218,7 +218,7 @@ System Composer에서 같은 의미로 재현하게 하는 패키지입니다(�
 
 - **옮기는 것**: 프로젝트(twb-project/1)와 교환 패키지(twb-exchange/1)를 그대로, 모델 데이터(단위가 키에 있는 파라미터, 온도 법칙, flux
   plane·mask·축, 손실 closure와 **손실 소유권**, 모델 content SHA-256·provenance), 규약(검사 가능한 열거값), 물리량 사전·tolerance class·
-  상태 어휘, 비교 case(forward 48 · flux lookup 21 · 요구 witness 11: ±속도·구동/회생·정지·전압/전류/DC/도메인 경계 ±0.5/±2 tol·
+  상태 어휘, 비교 case(forward 48 · flux lookup 21 · 요구 witness 12: ±속도·구동/회생·정지·전압/전류/DC/도메인 경계 ±0.5/±2 tol·
   map 구멍·모서리·축 밖·온도 plane·q-odd), gap report, System Composer/SLDD 후보(stable ID), 사람용 이식 안내와 agent 작업표.
 - **MathWorks에서 재현되는 것**: native MATLAB `+twb` — 정상상태 dq forward 평가(상수 dq·flux map, 제약 상태, 에너지 모드, 항등식,
   evidence gate), plane 선택·온도 보간, 요구 witness 재검사(FEASIBLE claim), `twb.runAll`(preflight → 패키지 검사 → parity → guard →
@@ -272,7 +272,7 @@ docs/            RELEASE_NOTES.md (모델 계약·한계), TRACEABILITY.md (리�
 - 참조 패키지 10개 파일 SHA-256 일치, 독립 검산 136/136, production vs golden 21/21, pytest 807 통과, 데스크톱 self-test 65/65.
   CI 세 job(Linux 테스트 · MathWorks/Octave · Windows 동결 exe의 acceptance·self-test) 통과 — 상세: [`docs/VERIFICATION_REPORT.md`](docs/VERIFICATION_REPORT.md)
   (보고서 머리에 생성 commit 표기)
-- MathWorks 이식 패키지: 패키지의 MATLAB 코드를 **GNU Octave 8.4**(MATLAB 언어 호환 proxy)로 실행해 79 PASS · 0 FAIL · 0 ERROR ·
+- MathWorks 이식 패키지: 패키지의 MATLAB 코드를 **GNU Octave 8.4**(MATLAB 언어 호환 proxy)로 실행해 80 PASS · 0 FAIL · 0 ERROR ·
   1 NOT_SUPPORTED, guard 6/6, 심은 결함 9종 모두 검출. **MATLAB 본체·Simulink·System Composer는 실행하지 않았습니다**(NOT_RUN).
 - **합성 fixture에 대한 verification입니다.** 하드웨어·공급사 데이터·외부 시뮬레이터 validation은 수행하지 않았습니다(V4–V5 미수행).
 

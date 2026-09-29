@@ -49,6 +49,7 @@ from ..status import Claim, Evidence, EvidenceKind, Reason, Status
 from .coolant import CoolantLoop
 
 LOSS_KEYS = ("inverter", "copper", "rotational", "inverter_hottest_device")
+NODE_ROLES = ("winding", "junction", "magnet")   # a node's temperature fed back into the operating point
 COLD_STARTS = ("equilibrium_at_coolant", "coolant_equilibrium", "cold", "ambient")
 
 
@@ -151,9 +152,12 @@ class ThermalNode:
     loss_share: tuple            # (("inverter", 1/6), ("copper", 0.0), ...)
     station: str | None = None   # coolant-loop station whose fluid temperature is this node's reference
     cauer: CauerNetwork | None = None   # the declared ladder when entered as Cauer (physical inner nodes)
+    represents: str | None = None       # the operating-point temperature this node IS: winding | junction | magnet
 
     def __post_init__(self):
         object.__setattr__(self, "limit_C", _finite("limit_C", self.limit_C))
+        if self.represents is not None and self.represents not in NODE_ROLES:
+            raise InputValidationError(f"a node's temperature_of must be one of {NODE_ROLES}", field=self.node_id)
         for k, v in self.loss_share:
             if k not in LOSS_KEYS or not (0 <= float(v) <= 1):
                 raise InputValidationError(f"loss share {k}={v} invalid (keys {LOSS_KEYS}, 0..1)", field=self.node_id)
@@ -186,6 +190,10 @@ class ThermalModel:
         if not self.nodes:
             raise InputValidationError("a thermal model needs at least one node: an empty network cannot support a "
                                        "duration claim (it would read as 'never exceeds')", field="nodes")
+        roles = [nd.represents for nd in self.nodes if nd.represents is not None]
+        if len(roles) != len(set(roles)):
+            raise InputValidationError("each of winding / junction / magnet temperature can be represented by one node "
+                                       "only", field="nodes.temperature_of")
         if self.coolant is not None:
             names = set(self.coolant.station_names())
             for nd in self.nodes:

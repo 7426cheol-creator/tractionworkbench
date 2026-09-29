@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from . import __version__, progress
+from .analysis.error_budget import ErrorBudget, aggregate_robustness, constraint_robustness, torque_robustness
 from .analysis.rating import RatingEnvelope, duration_claim
 from .identity import content_sha256, implementation
 from .models.components import DriveModel, RotationalLossModel
@@ -129,11 +130,13 @@ class DecisionRecord:
     implementation: dict = field(default_factory=dict)
     range_certificates: tuple = ()
     source_coupling: dict = field(default_factory=dict)
+    robustness: dict = field(default_factory=dict)     # model margin vs the declared error budget (never the verdict)
+    iron_loss_scope: tuple = ()                        # field-weakening witnesses: what rests on the loss model
 
     @property
     def layers(self) -> dict:
         return claim_layers(self.requirement, self.drive, self.conditions, self.verdict, self.range_certificates,
-                            self.source_coupling)
+                            self.source_coupling, self.robustness, self.iron_loss_scope)
 
     def to_dict(self) -> dict:
         return jsonable({
@@ -206,14 +209,17 @@ def _sub_models(drive: DriveModel) -> list[str]:
 
 
 def claim_layers(req: Requirement, drive: DriveModel, conditions, verdict: Aggregate, certificates=(),
-                 source_coupling: dict | None = None) -> dict:
-    """Four separate statements that must not be merged into one boolean.
+                 source_coupling: dict | None = None, robustness: dict | None = None, iron_scope=()) -> dict:
+    """Separate statements that must not be merged into one boolean.
 
     * mathematical  - the numerical evidence (exact enumeration / certificates / residuals vs sampled search);
     * model         - the requirement verdict for THIS model and data (the headline verdict);
     * requirement   - whether the requirement is complete enough to be decided (duration, quantifier, ...);
     * qualification - the evidence level of the data behind the model.  Never promoted automatically:
-                      synthetic or unvalidated data, or a numerical certificate, are not hardware qualification.
+                      synthetic or unvalidated data, or a numerical certificate, are not hardware qualification;
+    * robustness    - the model's torque margin against the declared error budget (analysis.error_budget):
+                      whether the model answer survives what the model, its inputs and the numerics can be wrong
+                      by.  It never changes the model verdict.
     """
     kinds, acc_ok, cert_ok, sampled = set(), True, True, False
     for cr in conditions:
@@ -254,6 +260,13 @@ def claim_layers(req: Requirement, drive: DriveModel, conditions, verdict: Aggre
         open_items.append(f"Vdc stated as battery OCV: judged at the inverter terminal voltage of a declared Thevenin "
                           f"source (R_eq {1e3 * float(src.get('R_eq_ohm') or 0.0):g} mOhm; {src.get('basis', '')}) - "
                           f"the source model's own validity (SOC, temperature, current) is part of the answer")
+    quant = req.quantifiers()
+    temps = sorted({cr.scenario.magnet_temp_C for cr in conditions if cr.scenario.magnet_temp_C is not None})
+    quant["magnet"] = (f"for all: every flux-map magnet temperature examined ({', '.join(f'{t:g}' for t in temps)} "
+                       f"degC)" if len(temps) > 1 and req.magnet_temp_C is None else
+                       f"at {req.magnet_temp_C:g} degC (stated)" if req.magnet_temp_C is not None else
+                       f"at {temps[0]:g} degC (scenario)" if temps else
+                       "not stated: the model's reference or single flux-map plane")
     unconf = sorted({q for cr in conditions if cr.duration is not None for q in cr.duration.qualifiers
                      if q.startswith("applicability to this product")})
     if unconf:
@@ -272,12 +285,19 @@ def claim_layers(req: Requirement, drive: DriveModel, conditions, verdict: Aggre
         "model": {"status": verdict.status.value, "verdict": verdict.status.verdict,
                   "meaning": "requirement verdict for this model and its data (static fundamental steady state, "
                              "minimum-current policy, declared domain)"},
-        "requirement": {"status": "COMPLETE" if not open_items else "OPEN_ITEMS", "open_items": open_items},
+        "requirement": {"status": "COMPLETE" if not open_items else "OPEN_ITEMS", "open_items": open_items,
+                        "quantifiers": quant},
         "qualification": {"status": q_status, "data_origin": origin, "validation_status": prov.validation_status,
-                          "fidelity": drive.fidelity.value, "sub_models": _sub_models(drive),
+                          "fidelity": drive.fidelity.value, "sub_models": _sub_models(drive) + [
+                              f"iron loss at the field-weakening witness ({x['condition']}): {x['statement']}"
+                              for x in iron_scope],
+                          "iron_loss_scope": [dict(x) for x in iron_scope],
                           "meaning": "hardware qualification is a separate claim: a model PASS or a numerical "
                                      "certificate never qualifies the product; simplified loss/thermal/source models "
                                      "hold only in their declared narrow domain"},
+        "robustness": robustness or {"status": "NOT_ASSESSED", "model_static": "not assessed",
+                                     "meaning": "no error budget declared: the model margin is shown, its "
+                                                "sufficiency for a design decision is not assessed"},
     }
 
 
@@ -580,13 +600,141 @@ def _limiting_and_actions(req: Requirement, results: list[ConditionResult], samp
     return limiting, actions, unevaluated
 
 
+def iron_loss_scope(drive: DriveModel, k, pt, torque_margin_Nm: float | None) -> dict | None:
+    """At a voltage-limited (field-weakening) witness: how much the torque and DC margins rest on the rotational /
+    iron-loss model (review of 63a2b61, 3.1).  The loss is a speed-only loss torque in this tool (the certificates
+    rely on that form), so at reduced flux it does not follow the operating point.  Numbers of the record only - no
+    threshold and no correction.  None when the witness is not voltage-limited or has no rotational loss model."""
+    rot = drive.motor.rotational_loss
+    vol = None if pt is None else pt.constraint("VOLTAGE")
+    if rot is None or vol is None or vol.state != "ACTIVE" or pt.Prot_W is None:
+        return None
+    try:
+        psd0, psq0, ok0 = k.flux(0.0, 0.0)
+        psi0 = math.hypot(float(psd0), float(psq0)) if bool(ok0) else None
+    except Exception:  # noqa: BLE001 - no no-load flux (outside the data): the ratio is not stated
+        psi0 = None
+    psi = math.hypot(pt.psi_d_Wb, pt.psi_q_Wb)
+    motoring = (pt.Pdc_W or 0.0) > 0
+    dis = [c for c in pt.constraints if c.group == "DISCHARGE_SOURCE" and c.slack is not None and math.isfinite(c.slack)]
+    dc_w = min((c.slack if c.unit == "W" else c.slack * k.Vdc) for c in dis) if (dis and motoring) else None
+    nm_per_kw = 1e3 / abs(k.omega_m) if k.omega_m else None
+    r = None if not psi0 else psi / psi0
+    head = (f"field-weakening witness (voltage limit active" + ("" if r is None else f", |psi| = {100 * r:.0f} % of the "
+                                                                                 f"no-load flux") + ")")
+    margins = (("" if torque_margin_Nm is None else f" the torque margin {torque_margin_Nm:.4g} N*m")
+               + ("" if dc_w is None else f" and the smallest DC discharge margin {dc_w:.4g} W")
+               + ("" if nm_per_kw is None else f" - 1 kW of loss is {nm_per_kw:.3g} N*m at this speed"))
+    if not rot.includes_iron_loss and motoring:
+        direction = "unmodelled"
+        text = (f"{head}: the iron loss is NOT in the model (the rotational loss is mechanical: {rot.basis}); iron loss "
+                f"at this point would lower{margins}: declare it in the error budget (model) or use loss data that "
+                f"include it")
+    elif not rot.includes_iron_loss:
+        direction = "conservative"
+        text = (f"{head}: the iron loss is NOT in the model (mechanical rotational loss: {rot.basis}); for "
+                f"regenerative braking an unmodelled loss adds braking torque and eases a charge limit - the model is "
+                f"on the conservative side for this claim")
+    else:
+        direction = "not proven"
+        help_ = ("less braking help than modelled" if not motoring else "less loss than modelled")
+        text = (f"{head}: the iron loss is a speed-only loss torque ({rot.basis}) that does not follow the flux - at "
+                f"reduced flux the fundamental iron loss is likely smaller ({help_}), harmonic and PM eddy-current "
+                f"loss are not represented, so neither direction is proven; P_rot = {pt.Prot_W:.4g} W against"
+                + (margins or " the margins"))
+    return {"flux_ratio": r, "psi_Wb": psi, "psi_no_load_Wb": psi0, "P_rot_W": pt.Prot_W,
+            "tau_rot_Nm": pt.Prot_W / k.omega_m if k.omega_m else None, "includes_iron_loss": rot.includes_iron_loss,
+            "basis": rot.basis, "motoring": motoring, "direction": direction, "torque_margin_Nm": torque_margin_Nm,
+            "dc_margin_W": dc_w, "Nm_per_kW": nm_per_kw, "statement": text}
+
+
+def _condition_tag(sc: Scenario, several_magnets: bool) -> str:
+    return f"Vdc {sc.Vdc_V:g} V" + (f" / magnet {sc.magnet_temp_C:g} degC" if several_magnets else "")
+
+
+def requirement_robustness(req: Requirement, results, budget: ErrorBudget | None, *, sampled: bool = False,
+                           range_certified: bool = False, source_coupled: bool = False,
+                           verdict: Aggregate | None = None, source_status: str | None = None) -> dict:
+    """The static torque claim's capability margin at every condition against the declared error budget
+    (``analysis.error_budget``), aggregated with the requirement's for-all quantifier.  The model verdict is not
+    touched.  'Met' uses the found capability (a verified witness), 'not met' a certified upper bound of it."""
+    if req.operator == "band":
+        edge = req.target_Nm - req.band_Nm if req.direction > 0 else req.target_Nm + req.band_Nm
+        edge_basis = (f"band edge {edge:g} N*m nearest to zero on the capability side (the band needs one torque "
+                      f"inside it)")
+    else:
+        edge, edge_basis = req.target_Nm, f"the requested torque {req.target_Nm:g} N*m"
+    several = len({cr.scenario.magnet_temp_C for cr in results}) > 1
+    source_reason = ("the capability is evaluated at the terminal voltage resolved for the target torque; with the "
+                     "declared source the terminal voltage moves with the torque, so this margin is not the coupled "
+                     "system's margin")
+    per, names, checks = [], [], []
+    for i, cr in enumerate(results):
+        cap = cr.capability
+        c_lo = cap.value_Nm if cap is not None and cap.accepted else None
+        c_hi = None
+        if c_lo is not None and cap.bound_Nm is not None and any(e.kind is EvidenceKind.CERTIFIED_BOUND
+                                                                  for e in cap.evidence):
+            c_hi = cap.bound_Nm
+        if req.operator == "band":             # existence: the capability answers it; a centre's status does not
+            st = "FEASIBLE" if cr.witness_torque_Nm is not None else None
+        else:
+            st = cr.solution.policy_claim.status.value
+        r = torque_robustness(budget, req.direction, edge, c_lo, c_hi, st)
+        if source_coupled and r["robust"] is not None:
+            r = {**r, "robust": None, "status": "NOT_ESTABLISHED_SOURCE", "reason": source_reason}
+        per.append(r)
+        names.append(_condition_tag(cr.scenario, several))
+        # the declared limit errors at a witness that meets the requirement (y + Delta <= y_max per limit)
+        wit_ok = (cr.witness_torque_Nm is not None if req.operator == "band"
+                  else cr.solution.policy_claim.status is Status.FEASIBLE)
+        pt = cr.primary.point
+        if budget is not None and wit_ok and pt is not None:
+            for c in constraint_robustness(budget, pt.constraints):
+                if source_coupled and c["robust"] is not None:
+                    c = {**c, "robust": None, "status": "NOT_ESTABLISHED_SOURCE",
+                         "reason": "with the declared source the DC terminal voltage moves with the operating point, "
+                                   "so this witness margin is not the coupled system's margin"}
+                checks.append({**c, "condition": i})
+    out = aggregate_robustness(per, names, budget, checks)
+    # the verdict can rest on more than the static torque claim (duration, source coupling, range coverage): say so
+    others = []
+    if any(cr.duration is not None and cr.duration.status is not Status.FEASIBLE for cr in results):
+        others.append("duration")
+    if source_coupled and source_status not in (None, "RESOLVED"):
+        others.append("source")
+    if verdict is not None and Reason.SAMPLED_COVERAGE in verdict.reasons:
+        others.append("coverage")
+    static_answer = {"met": Status.FEASIBLE, "not met": Status.INFEASIBLE}.get(out["model_static"])
+    if verdict is not None and others and verdict.status is not static_answer:
+        words = {"duration": "the duration part (its own rating evidence)", "source": "the source coupling",
+                 "coverage": "the coverage of the continuous range"}
+        rel = (f"the verdict ({verdict.status.verdict}) is decided by {' and '.join(words[o] for o in others)}, which "
+               f"this comparison does not cover")
+        out = {**out, "verdict_relation": {"verdict": verdict.status.verdict, "parts": others, "text": rel},
+               "meaning": out["meaning"] + "; " + rel}
+    if (sampled or range_certified) and len(per) > 1 and out["status"] != "NOT_ASSESSED":
+        cov = "range_certified" if range_certified else "examined_only"
+        out = {**out, "coverage": cov, "meaning": out["meaning"] + (
+            " (at the examined conditions; the static claim is certified over the Vdc range, the margin comparison is "
+            "not)" if range_certified else " (at the examined conditions only; the continuous range is not "
+                                           "established)")}
+    return {**out, "T_edge_Nm": edge, "T_edge_basis": edge_basis, "scope":
+            "static torque claim only: a duration part keeps its own rating evidence; operating-condition "
+            "uncertainty (Vdc, temperatures) belongs in the requirement as a range; 'met' is judged at the found "
+            "capability (a verified witness), 'not met' at a certified upper bound, so the capability's numerical "
+            "tolerance needs no budget line"}
+
+
 def evaluate_requirement(req: Requirement, drive: DriveModel, *, scenario: Scenario | None = None,
                          source_limits: DcSourceLimits | None = None, ratings: tuple[RatingEnvelope, ...] = (),
                          settings: NumericalSettings = DEFAULT_SETTINGS, range_samples: int = 5,
                          with_capability: bool = True, extra_claims: tuple = (),
-                         source_coupling: dict | None = None) -> DecisionRecord:
+                         source_coupling: dict | None = None,
+                         error_budget: ErrorBudget | None = None) -> DecisionRecord:
     """``extra_claims``: requirement-level claims AND-aggregated with the conditions (e.g. the DC source coupling
-    of an OCV-stated Vdc); ``source_coupling``: the resolution record behind such a claim."""
+    of an OCV-stated Vdc); ``source_coupling``: the resolution record behind such a claim; ``error_budget``: the
+    declared error the torque margin is compared with (a separate layer - the verdict never changes)."""
     vdcs, sampled_v = _condition_points(req, range_samples)
     mags, sampled_t, mag_note = _magnet_points(req, drive, scenario, range_samples)
     sampled = sampled_v or sampled_t
@@ -594,6 +742,7 @@ def evaluate_requirement(req: Requirement, drive: DriveModel, *, scenario: Scena
     product = ({"drive_id": drive.drive_id, "drive_revision": drive.revision,
                 "drive_content_sha256": content_sha256(drive)} if ratings else None)
     points = [(v, t) for t in mags for v in vdcs]
+    iron = []
     with progress.span(len(points), "operating conditions") as steps:
         for vdc, mag in points:
             steps.step()
@@ -608,6 +757,9 @@ def evaluate_requirement(req: Requirement, drive: DriveModel, *, scenario: Scena
                       "magnet_temp_C": sc.magnet_temp_C}
             rc, margin, dur, wit_T, wit_sol = _requirement_claim(req, sc, ev, sol, cap, ratings, stated, product)
             results.append(ConditionResult(sc, sol, cap, dur, rc, margin, wit_T, wit_sol))
+            fw = iron_loss_scope(drive, ev.k, (wit_sol or sol).point, margin)
+            if fw is not None:
+                iron.append((len(results) - 1, fw))
     agg = aggregate_and([*(r.requirement_claim for r in results), *extra_claims])
     qualifiers = [mag_note] if mag_note else []
     certificates = []
@@ -681,8 +833,13 @@ def evaluate_requirement(req: Requirement, drive: DriveModel, *, scenario: Scena
     }
     if source_coupling:                    # part of the input identity only when present (other records unchanged)
         snapshot["source_coupling"] = source_coupling
+    if error_budget is not None:
+        snapshot["error_budget"] = error_budget.describe()
     if extra_claims:
         snapshot["extra_claims"] = [c.to_dict() for c in extra_claims]
+    robustness = requirement_robustness(req, results, error_budget, sampled=sampled, range_certified=v_cert,
+                                        source_coupled=bool(source_coupling), verdict=agg,
+                                        source_status=(source_coupling or {}).get("status"))
     digest = sha256_of(snapshot)
     impl = implementation()
     rid = sha256_of({"input_sha256": digest, "implementation": impl})
@@ -692,7 +849,9 @@ def evaluate_requirement(req: Requirement, drive: DriveModel, *, scenario: Scena
         verdict=agg, verdict_scope=scope, qualifiers=tuple(qualifiers), limiting_factors=tuple(limiting),
         next_actions=tuple(actions), unevaluated=tuple(unevaluated), assumptions=tuple(assumptions),
         snapshot=jsonable(snapshot), input_sha256=digest, settings=settings, implementation=dict(impl),
-        source_coupling=dict(source_coupling or {}))
+        source_coupling=dict(source_coupling or {}), robustness=jsonable(robustness),
+        iron_loss_scope=tuple(jsonable({"condition": _condition_tag(results[i].scenario, len(mags) > 1), **x})
+                              for i, x in iron))
 
 
 _jsonable = jsonable          # former private name (compatibility)

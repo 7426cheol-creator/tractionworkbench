@@ -89,6 +89,22 @@ class Requirement:
     def direction(self) -> int:
         return 1 if self.target_Nm >= 0 else -1
 
+    def quantifiers(self) -> dict:
+        """How each part is quantified, in words: the torque as the value itself or as existence inside a band, Vdc at
+        a point or for every value of a range, the duration.  (The magnet temperature's for-all over a multi-plane
+        flux map depends on the drive and is added by the decision record.)"""
+        if self.operator == "band":
+            lo, hi = self.target_Nm - self.band_Nm, self.target_Nm + self.band_Nm
+            torque = (f"exists: some shaft torque in [{lo:g}, {hi:g}] N*m (one witness for every part; not tracking "
+                      f"of every torque in the band)")
+        else:
+            torque = f"the shaft torque {self.target_Nm:g} N*m itself"
+        vdc = (f"for all: every Vdc in [{self.Vdc_V[0]:g}, {self.Vdc_V[1]:g}] V (inverter DC terminal)" if self.is_range
+               else f"at Vdc = {self.Vdc_V:g} V (inverter DC terminal)")
+        dur = ("static (no duration stated)" if self.duration_s is None else
+               "held continuously" if math.isinf(self.duration_s) else f"held for {self.duration_s:g} s")
+        return {"torque": torque, "Vdc": vdc, "duration": dur}
+
     def duration_text(self) -> str:
         if self.duration_s is None:
             return "not stated: interpreted as a static item; the duration aspect is undetermined (not 'continuous')"

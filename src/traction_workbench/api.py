@@ -116,6 +116,8 @@ def case_from_body(body) -> dict:
             "analyses": body.get("analyses") or {}}
     if body.get("source_model"):
         case["source_model"] = body["source_model"]
+    if body.get("error_budget"):
+        case["error_budget"] = body["error_budget"]
     lim = body.get("limits")
     if lim:
         case["scenario"] = {"source_limits": {
@@ -1323,7 +1325,8 @@ def pwm_policies(body):
     r = evaluate_policies(_drive(b), cand, segs, pols, float(b["coolant_C"]), _limits(b), _timing(b["timing"]),
                           float(b["L_hf_uH"]) * 1e-6, _loop(b.get("loop")), harm, bank, source,
                           str(b.get("modulation", "svpwm")), lim, _sensing(b.get("sensing")),
-                          _noise(b.get("measurement_noise")))
+                          _noise(b.get("measurement_noise")),
+                          capacitor_in_boundary=bool(b.get("capacitor_in_energy_boundary")) and bank is not None)
     return _jsonable(r)
 
 

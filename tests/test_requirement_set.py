@@ -242,7 +242,8 @@ def test_desktop_requirement_set_page_and_magnet_temperature_inputs(tmp_path):
         case = rs.open_in_decision()
         dp = win.pages["decision"]
         assert case["requirement"]["operator"] == "band" and dp.result["record"]["requirement"]["req_id"] == "REQ-E"
-        assert "band" in dp.preset_hint.text()
+        # the decision form holds the band itself (review of 63a2b61, 4): its question reads as existence (∃)
+        assert dp.operator.currentData() == "band" and dp.band.value() == 10.0 and "(∃)" in dp.reading.text()
         # a flux map with two magnet-temperature planes: single-point pages get a visible, pre-set temperature
         drive, _lim = _two_plane_map()
         win.state.drive = drive

@@ -195,6 +195,7 @@ def resolve_case_source(case_dict: dict):
                                                "a source drop)")
     else:
         why = (Reason.OUTSIDE_MODEL_DOMAIN,) if any(p["status"] == "OUTSIDE_SOURCE_MODEL" for p in bad) else \
+            (Reason.BOUNDARY_WITHIN_TOLERANCE,) if any(p.get("boundary") for p in bad) else \
             (Reason.NUMERICAL_UNRESOLVED,)
         claim = Claim("source_coupling", Status.UNKNOWN, q, scope, reasons=why,
                       detail=bad[0]["reason"] + " (no terminal voltage resolved: the drive-side conditions below are "
@@ -207,7 +208,8 @@ def evaluate_decision(case_dict: dict):
     case_dict, source_info, extra = resolve_case_source(case_dict)
     case = case_from_dict(case_dict)
     rec = evaluate_requirement(case.requirement, case.drive, scenario=case.scenario, source_limits=case.limits,
-                               ratings=case.ratings, extra_claims=extra, source_coupling=source_info)
+                               ratings=case.ratings, extra_claims=extra, source_coupling=source_info,
+                               error_budget=case.error_budget)
     return rec, case
 
 

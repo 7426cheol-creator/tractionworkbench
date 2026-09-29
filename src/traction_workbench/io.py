@@ -339,6 +339,7 @@ class Case:
     analyses: dict
     conversions: Conversions
     raw: dict = field(default_factory=dict)
+    error_budget: object = None          # analysis.error_budget.ErrorBudget | None (declared, optional)
 
 
 def case_from_dict(d: dict) -> Case:
@@ -362,7 +363,9 @@ def case_from_dict(d: dict) -> Case:
                         winding_temp_C=opt_t("winding_temp"), magnet_temp_C=opt_t("magnet_temp"),
                         coolant_temp_C=opt_t("coolant_temp"), initial_state=sc_raw.get("initial_state"),
                         description=sc_raw.get("description", ""))
-    return Case(drive, req, scen, limits, ratings, dict(d.get("analyses", {})), conv, d)
+    from .analysis.error_budget import error_budget_from_dict
+    return Case(drive, req, scen, limits, ratings, dict(d.get("analyses", {})), conv, d,
+                error_budget_from_dict(d.get("error_budget")))
 
 
 def load_case(path) -> Case:
