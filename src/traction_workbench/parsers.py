@@ -106,7 +106,9 @@ def coolant_from_dict(cs: dict | None, inlet_C: float | None) -> CoolantLoop | N
                  for st in (cs.get("loop") or DEFAULT_COOLANT_LOOP))
     return CoolantLoop(num(cs, "flow_L_per_min"), float(cp) if cp not in (None, "") else props["cp_J_per_kgK"],
                        float(rho) if rho not in (None, "") else props["rho_kg_per_m3"], loop,
-                       cs.get("reference", "mean"), None if g in (None, "") else float(g), source)
+                       cs.get("reference", "mean"), None if g in (None, "") else float(g), source,
+                       properties_clamped=bool(props["clamped_to_table"]) and not user,
+                       properties_at_C=None if user else props["T_C"])
 
 
 def thermal_network_from_dict(n: dict, coolant: CoolantLoop | None) -> FosterNetwork:
@@ -137,7 +139,8 @@ def thermal_model_from_dict(spec, inlet_C: float | None = None) -> ThermalModel:
     coolant = coolant_from_dict(spec.get("coolant"), inlet_C)
     nodes = tuple(ThermalNode(str(n["id"]), thermal_network_from_dict(n, coolant), float(n["limit_C"]),
                               tuple((k, float(v)) for k, v in n["loss_share"].items()),
-                              n.get("station") if coolant is not None else None, _cauer_of(n, coolant))
+                              n.get("station") if coolant is not None else None, _cauer_of(n, coolant),
+                              n.get("temperature_of") or None)
                   for n in spec["nodes"])
     # the data origin is declared, never derived from the 'validated' flag (a flag is not supplier evidence)
     try:
@@ -151,7 +154,9 @@ def thermal_model_from_dict(spec, inlet_C: float | None = None) -> ThermalModel:
     return ThermalModel(spec.get("model_id", "UI_THERMAL"), spec.get("revision", "1"), nodes, prov,
                         validated=bool(spec.get("validated")),
                         validity=tuple((k, tuple(v)) for k, v in (spec.get("validity") or {}).items()),
-                        coolant=coolant, validation_evidence=evidence)
+                        coolant=coolant, validation_evidence=evidence,
+                        uncertainty_K=float(spec.get("uncertainty_K") or 0.0),
+                        uncertainty_basis=str(spec.get("uncertainty_basis") or ""))
 
 
 def reducer_from_dict(r):

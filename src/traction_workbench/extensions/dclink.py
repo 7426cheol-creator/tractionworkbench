@@ -45,6 +45,7 @@ from ..models.components import DriveModel
 from ..models.flux import ConstantFluxModel
 from ..validation import finite as _finite
 from ..status import Claim, Evidence, EvidenceKind, Reason, Status
+from ..units import shown
 
 SQRT3 = math.sqrt(3.0)
 
@@ -287,17 +288,27 @@ def passive_discharge(C_F: float, V0_V: float, Vf_V: float, t_target_s: float, R
     return out
 
 
+REACTIONS = ("unspecified", "asc", "freewheel")
+
+
 def regen_disconnect_overvoltage(C_F: float, V1_V: float, P_in_W: float, V_limit_V: float,
                                  reaction_time_s: float | None = None, profile: str = "constant",
                                  drive: DriveModel | None = None, speed_rpm: float | None = None,
-                                 ramp_s: float | None = None, magnet_temp_C: float | None = None) -> dict:
+                                 ramp_s: float | None = None, magnet_temp_C: float | None = None,
+                                 reaction: str = "unspecified", P_in_upper_W: float | None = None) -> dict:
     """DC-link rise when the battery disconnects while regenerating P_in (W into the link).
 
     Profiles: ``constant`` (P_in until the reaction removes it at reaction_time_s),
     ``linear_ramp_down`` (a ramp from P_in to 0 that starts immediately - optimistic when a detection delay
     precedes the ramp), ``delay_then_ramp`` (constant P_in for reaction_time_s, then a ramp to 0 over ramp_s:
     E = P t_delay + P t_ramp / 2).  Negative times are invalid input.
-    """
+
+    ``reaction`` (engineering review 2 of 63a2b61, F-09): what removes the inflow - ``asc`` (active short circuit:
+    no DC power), ``freewheel`` (all switches open: the diodes rectify the back-EMF, which alone charges the isolated
+    link towards the line-line peak) or ``unspecified``.  Above the uncontrolled-generation speed (line-line back-EMF
+    peak > V_limit) freewheel is a proven violation and an unspecified reaction is not a pass.  ``P_in_upper_W``: the
+    inflow at V_limit (with the I^2-form loss the regenerated power only grows with the link voltage: less
+    field-weakening current, less loss), which turns the constant-inflow estimate into a bound."""
     C = _pos("C_F", C_F)
     V1 = _pos("V1_V", V1_V)
     P = _pos("P_in_W", P_in_W)
@@ -307,6 +318,9 @@ def regen_disconnect_overvoltage(C_F: float, V1_V: float, P_in_W: float, V_limit
     if profile not in ("constant", "linear_ramp_down", "delay_then_ramp"):
         raise InputValidationError("profile must be 'constant', 'linear_ramp_down' or 'delay_then_ramp'",
                                    field="profile")
+    if reaction not in REACTIONS:
+        raise InputValidationError(f"reaction must be one of {REACTIONS}", field="reaction")
+    P_up = None if P_in_upper_W is None else max(P, _pos("P_in_upper_W", P_in_upper_W))
     tramp = 0.0
     if profile == "delay_then_ramp":
         if ramp_s is None:
@@ -322,17 +336,24 @@ def regen_disconnect_overvoltage(C_F: float, V1_V: float, P_in_W: float, V_limit
         t_allow = 2 * t_ov_const
     else:
         t_allow = t_ov_const - 0.5 * tramp          # allowed delay before the ramp starts
+    ramp_alone_exceeds = t_allow < 0                # the ramp's own energy is more than the headroom
     out = {
-        "C_F": C, "V1_V": V1, "P_in_W": P, "V_limit_V": Vlim, "profile": profile,
+        "C_F": C, "V1_V": V1, "P_in_W": P, "V_limit_V": Vlim, "profile": profile, "reaction": reaction,
         "energy_headroom_J": headroom_J,
         "dVdt_initial_V_per_s": P / (C * V1),
         "time_to_limit_constant_power_s": t_ov_const,
-        "max_reaction_time_s": t_allow,
+        "max_reaction_time_s": max(0.0, t_allow),
+        **({"max_ramp_s": 2.0 * headroom_J / P} if profile == "delay_then_ramp" else {}),
+        **({"P_in_upper_W": P_up} if P_up is not None else {}),
         "assumptions": ["lossless energy balance 1/2 C (V2^2 - V1^2) = E_in", "no other DC loads, ESR or stray L",
-                        f"regenerated power profile: {profile} from P_in to 0 over the reaction time"],
+                        f"regenerated power profile: {profile} from P_in to 0 over the reaction time",
+                        ("inflow bounded by its value at the voltage limit (it grows with the link voltage)"
+                         if P_up is not None else "inflow held at its value at V1: an estimate (the regenerated "
+                                                  "power grows with the link voltage)")],
     }
     scope = "capacitor energy-balance screening after battery disconnect"
     notes = []
+    vll = None
     if drive is not None and speed_rpm is not None:
         vll = back_emf_ll_peak(drive, speed_rpm, magnet_temp_C)
         out["back_emf_ll_peak_V"] = vll
@@ -340,30 +361,74 @@ def regen_disconnect_overvoltage(C_F: float, V1_V: float, P_in_W: float, V_limit
             notes.append(f"if the inverter opens (freewheel) at {speed_rpm:g} rpm the rectified back-EMF "
                          f"({vll:.4g} V line-line peak) can drive the isolated link above {Vlim:g} V: freewheel is not "
                          f"a sufficient reaction by itself at this speed")
-    if reaction_time_s is None:
-        claim = Claim("regen_overvoltage", Status.UNKNOWN, f"DC link stays below {Vlim:g} V after disconnect", scope,
-                      reasons=(Reason.MISSING_INPUT,),
+    ucg = vll is not None and vll > Vlim
+    q = f"DC link stays below {Vlim:g} V after disconnect"
+    if reaction == "asc":
+        notes.append("reaction: active short circuit within the reaction time - its phase-current transient and braking "
+                     "torque are separate checks (ASC page)")
+    if ucg and reaction == "freewheel":
+        claim = Claim("regen_overvoltage", Status.INFEASIBLE, q, scope, reasons=(Reason.NECESSARY_CONDITION_VIOLATED,),
                       evidence=(Evidence.make(EvidenceKind.ANALYTIC_BOUND,
-                                              f"the regen power must be removed within {t_allow * 1e3:.4g} ms"),),
-                      detail="reaction time not given: the result is the maximum allowed reaction time")
+                                              f"line-line back-EMF peak {vll:.4g} V > {Vlim:g} V"),),
+                      detail=f"freewheel at {speed_rpm:g} rpm: the diodes rectify the back-EMF, which alone charges the "
+                             f"isolated link towards {vll:.4g} V (line-line peak) > {Vlim:g} V - whatever the reaction "
+                             f"time")
+        out["claim"] = claim.to_dict()
+        out["notes"] = notes
+        return out
+    if reaction_time_s is None:
+        if ramp_alone_exceeds:
+            claim = Claim("regen_overvoltage", Status.INFEASIBLE, q, scope, reasons=(Reason.CONSTRAINT_VIOLATION,),
+                          evidence=(Evidence.make(EvidenceKind.ANALYTIC_BOUND,
+                                                  f"ramp energy P t_ramp / 2 = {0.5 * P * tramp:.4g} J > headroom "
+                                                  f"{headroom_J:.4g} J"),),
+                          detail=f"the ramp alone ({tramp * 1e3:.3g} ms) brings more energy than the headroom: no "
+                                 f"delay is allowed and the ramp must be shorter than "
+                                 f"{2e3 * headroom_J / P:.3g} ms")
+        else:
+            claim = Claim("regen_overvoltage", Status.UNKNOWN, q, scope, reasons=(Reason.MISSING_INPUT,),
+                          evidence=(Evidence.make(EvidenceKind.ANALYTIC_BOUND,
+                                                  f"the regen power must be removed within {t_allow * 1e3:.3g} ms"),),
+                          detail="reaction time not given: the result is the maximum allowed reaction time")
     else:
         tr = _finite("reaction_time_s", reaction_time_s)
         if tr < 0:
             raise InputValidationError("reaction time must be >= 0 (a negative time would inject negative energy)",
                                        field="reaction_time_s")
-        e_in = P * tr if profile == "constant" else (0.5 * P * tr if profile == "linear_ramp_down"
-                                                     else P * tr + 0.5 * P * tramp)
+
+        def energy(p):
+            return p * tr if profile == "constant" else (0.5 * p * tr if profile == "linear_ramp_down"
+                                                         else p * tr + 0.5 * p * tramp)
+        e_in = energy(P)
         v2 = math.sqrt(V1 ** 2 + 2 * e_in / C)
+        v_hi = None if P_up is None else math.sqrt(V1 ** 2 + 2 * energy(P_up) / C)
         out["reaction_time_s"] = tr
         out["energy_in_J"] = e_in
-        out["V_peak_V"] = v2
-        st = Status.FEASIBLE if v2 <= Vlim else Status.INFEASIBLE
-        claim = Claim("regen_overvoltage", st, f"DC link stays below {Vlim:g} V after disconnect", scope,
-                      reasons=() if st is Status.FEASIBLE else (Reason.CONSTRAINT_VIOLATION,),
+        out["V_peak_V"] = v2                                   # estimate: inflow held at its value at V1
+        if v_hi is not None:
+            out["V_peak_bound_V"] = v_hi                       # bound: inflow at the voltage limit
+        if v2 > Vlim:
+            st, why = Status.INFEASIBLE, (Reason.CONSTRAINT_VIOLATION,)
+        elif v_hi is not None and v_hi > Vlim:
+            st, why = Status.UNKNOWN, (Reason.BOUND_INCONCLUSIVE,)
+        else:
+            st, why = Status.FEASIBLE, ()
+        quals = ["screening: declared power profile and reaction time"]
+        if v_hi is None and st is Status.FEASIBLE:
+            quals.append("estimate for a constant inflow at V1: the regenerated power grows with the link voltage")
+        if ucg and reaction == "unspecified" and st is not Status.INFEASIBLE:
+            # above the UCG speed the pass holds only for a reaction that stops the inflow
+            st, why = Status.UNKNOWN, (Reason.COUPLED_MODEL_REQUIRED,)
+            quals.append(f"reaction path not stated: the peak holds only if the reaction stops the inflow (active short "
+                         f"circuit); a freewheel reaction charges the link towards the {vll:.4g} V back-EMF peak")
+        claim = Claim("regen_overvoltage", st, q, scope, reasons=why,
                       evidence=(Evidence.make(EvidenceKind.ANALYTIC_BOUND,
-                                              f"V_peak = sqrt(V1^2 + 2 E_in / C) = {v2:.6g} V"),),
-                      qualifiers=("screening: declared power profile and reaction time",),
-                      detail=f"peak {v2:.5g} V vs limit {Vlim:g} V (allowed reaction {t_allow * 1e3:.4g} ms)")
+                                              f"V_peak = sqrt(V1^2 + 2 E_in / C) = {shown(v2, 'voltage')} V"
+                                              + ("" if v_hi is None else f" (bound {shown(v_hi, 'voltage')} V)")),),
+                      qualifiers=tuple(quals),
+                      detail=f"peak {shown(v2, 'voltage')} V" + (
+                          "" if v_hi is None else f" (bound {shown(v_hi, 'voltage')} V with the inflow at {Vlim:g} V)")
+                             + f" vs limit {Vlim:g} V (allowed reaction {max(0.0, t_allow) * 1e3:.3g} ms)")
     out["claim"] = claim.to_dict()
     out["notes"] = notes
     return out

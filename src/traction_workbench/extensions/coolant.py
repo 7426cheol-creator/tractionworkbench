@@ -14,6 +14,8 @@ fluid's own heat capacity are neglected (the rise is applied immediately, which 
 
 from __future__ import annotations
 
+import math
+
 from dataclasses import dataclass
 
 import numpy as np
@@ -77,7 +79,14 @@ class CoolantStation:
                                            field="coolant.loop")
 
     def heat(self, losses: dict) -> float:
-        return sum(float(v) * max(0.0, losses.get(k, 0.0)) for k, v in self.losses)
+        """Heat into the fluid here; NaN when a declared source is not available (never read as zero heat)."""
+        total = 0.0
+        for k, v in self.losses:
+            x = losses.get(k, 0.0)
+            if float(v) > 0.0 and (x is None or x != x):
+                return math.nan
+            total += float(v) * max(0.0, x or 0.0)
+        return total
 
 
 @dataclass(frozen=True)
@@ -89,6 +98,8 @@ class CoolantLoop:
     reference: str = "mean"
     glycol_vol_pct: float | None = None
     property_source: str = ""
+    properties_clamped: bool = False       # the generic table was left (glycol / temperature): values held at its edge
+    properties_at_C: float | None = None   # the temperature the properties were taken at (the inlet)
 
     def __post_init__(self):
         for name in ("flow_L_per_min", "cp_J_per_kgK", "rho_kg_per_m3"):
@@ -132,4 +143,13 @@ class CoolantLoop:
                 "cp_J_per_kgK": self.cp_J_per_kgK, "rho_kg_per_m3": self.rho_kg_per_m3,
                 "mass_flow_kg_s": self.mass_flow_kg_s, "capacity_rate_W_per_K": self.capacity_rate_W_per_K,
                 "reference": self.reference, "stations": [{"name": s.name, "losses": dict(s.losses)} for s in self.stations],
-                "property_source": self.property_source}
+                "property_source": self.property_source,
+                # engineering review 2 of 63a2b61, thermal F10: the simplifications travel with the result
+                "properties_at_C": self.properties_at_C,
+                "properties_note": ("fluid properties taken at the inlet temperature for the whole loop (the "
+                                    "capacity rate changes by well under 1 % over a typical rise); no fluid thermal "
+                                    "mass or transit delay: the node reference follows each step's heat instantly"),
+                "properties_clamped": self.properties_clamped,
+                **({"clamp_note": "glycol fraction or temperature outside the generic property table: the values "
+                                  "are held at the table edge - enter the supplier's cp and density"}
+                   if self.properties_clamped else {})}

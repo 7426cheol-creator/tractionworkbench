@@ -102,16 +102,17 @@ def ripple_insight(res: dict) -> Insight:
     cl = res.get("claims") or {}
     hs = res.get("hotspot") or {}
     rq = cl.get("ripple_requirement") or {}
-    head = tr(f"DC-link: 커패시터 리플 전류 {q(res.get('I_cap_rms_A'), 'A')} rms, 전압 리플 {q(res.get('V_ripple_pp_V'), 'V')} pp, "
-              f"ESR 손실 {q(res.get('P_cap_W'), 'W')} → 핫스팟 {num(hs.get('T_hot_C'))} °C",
-              f"DC-link: capacitor ripple {q(res.get('I_cap_rms_A'), 'A')} rms, voltage ripple {q(res.get('V_ripple_pp_V'), 'V')} "
-              f"pp, ESR loss {q(res.get('P_cap_W'), 'W')} → hotspot {num(hs.get('T_hot_C'))} °C")
+    # ripple, loss and hotspot at 3 significant digits: what the sampled, table-interpolated model supports (F12)
+    head = tr(f"DC-link: 커패시터 리플 전류 {q(res.get('I_cap_rms_A'), 'A', 3)} rms, 전압 리플 {q(res.get('V_ripple_pp_V'), 'V', 3)} pp, "
+              f"ESR 손실 {q(res.get('P_cap_W'), 'W', 3)} → 핫스팟 {num(hs.get('T_hot_C'), 3)} °C",
+              f"DC-link: capacitor ripple {q(res.get('I_cap_rms_A'), 'A', 3)} rms, voltage ripple {q(res.get('V_ripple_pp_V'), 'V', 3)} "
+              f"pp, ESR loss {q(res.get('P_cap_W'), 'W', 3)} → hotspot {num(hs.get('T_hot_C'), 3)} °C")
     worst = "FAIL" if any(c.get("status") == "INFEASIBLE" for c in cl.values()) else (
         "UNKNOWN" if any(c.get("status") == "UNKNOWN" for c in cl.values()) else "PASS")
     ins = Insight(headline=head, verdict=worst)
-    ins.metrics += [(tr("커패시터 전류", "capacitor current"), q(res.get("I_cap_rms_A"), "A rms"), "info"),
-                    (tr("전압 리플", "voltage ripple"), q(res.get("V_ripple_pp_V"), "V pp"), status_level(rq.get("status"))),
-                    (tr("핫스팟", "hotspot"), f"{num(hs.get('T_hot_C'))} °C", "info")]
+    ins.metrics += [(tr("커패시터 전류", "capacitor current"), q(res.get("I_cap_rms_A"), "A rms", 3), "info"),
+                    (tr("전압 리플", "voltage ripple"), q(res.get("V_ripple_pp_V"), "V pp", 3), status_level(rq.get("status"))),
+                    (tr("핫스팟", "hotspot"), f"{num(hs.get('T_hot_C'), 3)} °C", "info")]
     s = ins.section(tr("리플 전류는 어디서 오나", "where the ripple current comes from"))
     avg = res.get("average_model") or {}
     s.add(tr(f"인버터 입력 전류: 평균 {q(avg.get('I_dc_A'), 'A')} + 교류 성분 {q(res.get('I_inv_ac_rms_A'), 'A')} rms — 교류 성분의 대부분이 "
@@ -129,11 +130,36 @@ def ripple_insight(res: dict) -> Insight:
                  f"{'예' if hs.get('converged') else '아니오'})",
                  f"ESR loss {q(res.get('P_cap_W'), 'W')} × R_th {num(hs.get('Rth_eff_K_per_W'))} K/W → "
                  f"+{num((hs.get('T_hot_C') or 0) - (hs.get('boundary_T_C') or 0), 3)} K over "
-                 f"{num(hs.get('boundary_T_C'))} °C (settled with ESR(T): {'yes' if hs.get('converged') else 'no'})"), "info")
+                 f"{num(hs.get('boundary_T_C'))} °C (settled with ESR(T): {'yes' if hs.get('converged') else 'no'})"), "info",
+              tr(f"샘플링 분해능: 손실 {num(res.get('P_cap_resolution_W'), 2)} W, 핫스팟 {num(res.get('hotspot_resolution_K'), 2)} K "
+                 f"(캐리어당 샘플 2배에서의 값 변화)",
+                 f"sampling resolution: loss {num(res.get('P_cap_resolution_W'), 2)} W, hotspot "
+                 f"{num(res.get('hotspot_resolution_K'), 2)} K (value change at twice the samples per carrier)")
+              if res.get("P_cap_resolution_W") is not None else "")
     cov = res.get("esr_coverage") or {}
+    mb = res.get("model_band") or {}
     if cov and not cov.get("complete"):
-        s.add(tr(f"ESR 표가 덮지 못한 고조파 {cov.get('uncovered_harmonics')}개 — 그 몫의 손실은 미상",
-                 f"{cov.get('uncovered_harmonics')} harmonics outside the ESR table — their loss is unknown"), "open")
+        s.add(tr(f"ESR 표 밖 고조파 {cov.get('uncovered_harmonics')}개가 인버터 교류 전류 제곱의 "
+                 f"{num(100 * (cov.get('inverter_I2_share_outside') or 0), 2)} % — 문턱 {num(100 * (mb.get('gate_share') or 0), 2)} %를 "
+                 f"넘어 손실은 미상 (표를 스위칭 대역까지 넓히세요)",
+                 f"{cov.get('uncovered_harmonics')} harmonics outside the ESR table carry "
+                 f"{num(100 * (cov.get('inverter_I2_share_outside') or 0), 2)} % of the inverter ac current-squared — above "
+                 f"the {num(100 * (mb.get('gate_share') or 0), 2)} % gate, so the loss is unknown (extend the table over "
+                 f"the switching band)"), "open")
+    elif mb and (res.get("P_cap_indicative_W") or 0) > 0:
+        s.add(tr(f"ESR 표 밖 성분(전류 제곱의 {num(100 * mb.get('inverter_I2_share_outside', 0), 2)} %)의 손실 "
+                 f"{q(res.get('P_cap_indicative_W'), 'W')}는 표의 최대 ESR로 가정해 포함 — 데이터가 아니라 가정",
+                 f"the part outside the ESR table ({num(100 * mb.get('inverter_I2_share_outside', 0), 2)} % of the "
+                 f"current-squared) is carried at the table's largest ESR: {q(res.get('P_cap_indicative_W'), 'W')} — an "
+                 f"assumption, not data"), "info")
+    life = res.get("life") or {}
+    if life.get("hours_at_hotspot") is not None:
+        rq_h = life.get("required_h")
+        s.add(tr(f"커패시터 기대 수명 {num(life['hours_at_hotspot'], 3)} h (핫스팟 공급사 표)"
+                 + (f" vs 요구 {num(rq_h, 3)} h" if rq_h else " — 요구 수명이 없어 판정하지 않음"),
+                 f"capacitor expected life {num(life['hours_at_hotspot'], 3)} h (supplier table at the hotspot)"
+                 + (f" vs required {num(rq_h, 3)} h" if rq_h else " — no required life stated, so not judged")),
+              "ok" if rq_h and life["hours_at_hotspot"] >= rq_h else "warn" if rq_h else "open")
     claims_section(ins, cl)
     not_modelled_section(ins, res.get("not_modelled"))
     return ins.nonempty()

@@ -1042,7 +1042,9 @@ def fig_thermal(fig, av_curve: dict | None, th: dict | None, T_request: float | 
     if th and th["curves"]:
         for kk, c in enumerate(th["curves"]):
             col = S.PHASE[kk % 3]
-            ax2.plot(th["t_s"], c["T_C"], color=col, lw=2, label=f"{c['node']} ({c['power_W']:.0f} W)")
+            pw = c.get("power_W")
+            ax2.plot(th["t_s"], c["T_C"], color=col, lw=2,
+                     label=c["node"] if pw is None or pw != pw else f"{c['node']} ({pw:.0f} W)")
             ax2.axhline(c["limit_C"], color=col, ls="--", lw=1)
             ref = c.get("fluid_reference_C")
             if ref is not None and abs(ref - th["coolant_C"]) > 1e-9:

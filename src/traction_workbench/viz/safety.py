@@ -91,11 +91,20 @@ def ftti_timeline(t: dict) -> dict:
 
 
 def thermal_curves(model: ThermalModel, node_rows: list[dict], coolant_C: float, t_end_s: float,
-                   samples: int = 500) -> dict:
-    """Node temperatures T(t) = T_coolant + P * Zth(t) for the constant-loss thermal screening."""
+                   samples: int = 500, trace: dict | None = None) -> dict:
+    """Node temperatures T(t) = T_coolant + P * Zth(t) for the constant-loss thermal screening; with ``trace`` (the
+    coupled duration: losses following the node temperatures) the integrated trajectories instead."""
+    by_id = {n.node_id: n for n in model.nodes}
+    if trace and trace.get("t_s"):
+        tt = np.asarray(trace["t_s"], float)
+        curves = [{"node": row["node"], "T_C": np.asarray(trace["nodes"][row["node"]], float),
+                   "limit_C": by_id[row["node"]].limit_C, "power_W": row.get("power_W") or float("nan"),
+                   "time_to_limit_s": row.get("time_to_limit_s"), "fluid_reference_C": None,
+                   "station": row.get("station")}
+                  for row in node_rows if row["node"] in by_id and row["node"] in trace["nodes"]]
+        return {"t_s": tt, "curves": curves, "coolant_C": coolant_C, "coupled": True}
     t = np.concatenate([[0.0], np.geomspace(max(t_end_s, 1e-3) * 1e-5, max(t_end_s, 1e-3), samples - 1)])
     curves = []
-    by_id = {n.node_id: n for n in model.nodes}
     for row in node_rows:
         nd = by_id.get(row["node"])
         if nd is None:

@@ -107,7 +107,9 @@ def test_c1_the_bound_is_never_summed_as_a_loss(pol):
     for p in pol["policies"]:
         e = p["energy"]
         assert e["lower_J"] == pytest.approx(p["E_inv_J"] + p["E_cu_pwm_J"])            # bound not in the value
-        assert e["upper_J"] == pytest.approx(e["lower_J"] + p["E_mag_hf_bound_J"])
+        # the PWM copper between the two bracketing synchronous carriers, the Fe+PM bound only on the upper end
+        assert p["E_cu_pwm_upper_J"] >= p["E_cu_pwm_J"]
+        assert e["upper_J"] == pytest.approx(p["E_inv_J"] + p["E_cu_pwm_upper_J"] + p["E_mag_hf_bound_J"])
 
 
 def test_c2_a_missing_bound_leaves_the_comparison_open():
@@ -179,8 +181,10 @@ def test_e3_e5_the_energy_axis_decides_only_by_separated_intervals():
     names = lambda rows: sorted(r["policy"]["name"] for r in _pareto(rows))
     b = _row("B", 95.0, 110.0, 130.0)                  # overlaps A: B may still use less total energy
     assert names([a, b]) == ["A", "B"]                 # UNDECIDED on energy -> neither is dominated
-    same = _row("S", 95.0, 100.0, 120.0)               # the same interval, worse inverter energy: dominated
-    assert names([a, same]) == ["A"]
+    same = _row("S", 95.0, 100.0, 120.0)               # the same interval is not the same energy: A 90 + 25 J open part
+    assert names([a, same]) == ["A", "S"]              # = 115 J and S 95 + 10 J = 105 J fit both intervals: S may win
+    pa, ps = _row("A", 90.0, 110.0, 110.0), _row("S", 95.0, 110.0, 110.0)
+    assert names([pa, ps]) == ["A"]                    # point intervals (every part exact) that coincide are equal
     b2 = _row("B", 85.0, 110.0, 130.0)                 # better inverter energy, overlapping interval: both stay
     assert names([a, b2]) == ["A", "B"]
     c = _row("C", 95.0, 121.0, 140.0)                  # separated above A and worse inverter energy: dominated
@@ -245,7 +249,15 @@ def test_control_volume_ownership_is_declared(pol):
     assert any(p.get("E_cap_J") for p in pol["policies"])                  # shown separately, not in the energy
     for p in pol["policies"]:
         if p["E_cap_J"] is not None and p["energy"]["upper_J"] is not None:
-            assert p["energy"]["upper_J"] == pytest.approx(p["E_inv_J"] + p["E_cu_pwm_J"] + p["E_mag_hf_bound_J"])
+            assert p["energy"]["upper_J"] == pytest.approx(p["E_inv_J"] + p["E_cu_pwm_upper_J"] + p["E_mag_hf_bound_J"])
+    # declared inside the boundary, the capacitor ESR energy enters every policy's interval (both ends)
+    inside = api.pwm_policies({"capacitor_in_energy_boundary": True})
+    assert not any("capacitor" in x for x in inside["energy_control_volume"]["excluded"])
+    for p, q in zip(inside["policies"], pol["policies"]):
+        assert p["energy"]["capacitor_in_boundary"]
+        if p["energy"]["upper_J"] is not None and p["E_cap_J"] is not None:
+            assert p["energy"]["lower_J"] == pytest.approx(q["energy"]["lower_J"] + p["E_cap_lower_J"])
+            assert p["energy"]["upper_J"] == pytest.approx(q["energy"]["upper_J"] + p["E_cap_J"])
 
 
 # -- F. thermal interpretation -------------------------------------------------------------------------------------

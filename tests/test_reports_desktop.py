@@ -268,8 +268,11 @@ def test_desktop_smoke(tmp_path):
         lay = {page.layers_table.item(r, 0).text(): page.layers_table.item(r, 1).text()
                for r in range(page.layers_table.rowCount())}
         from traction_workbench.desktop.pages.decision import LAYER_NAMES
-        assert set(lay) == {LAYER_NAMES[k]() for k in ("mathematical", "model", "requirement", "qualification")}  # four
-        assert len(lay) == 4                                                   # separate statements, named for people
+        # separate statements, named for people; the fifth (review of 63a2b61, 4) compares the model margin with the
+        # declared error budget and is 'not assessed' without one - it never changes the model verdict
+        assert set(lay) == {LAYER_NAMES[k]() for k in ("mathematical", "model", "requirement", "qualification",
+                                                       "robustness")}
+        assert len(lay) == 5 and lay[LAYER_NAMES["robustness"]()].startswith("NOT_ASSESSED")
         ex = win.pages["explorer"]
         ex._picked(-250.0, 120.0)
         assert ex.views.pv.point.id_A == -250.0 and ex.views.pv.point.iq_A == 120.0

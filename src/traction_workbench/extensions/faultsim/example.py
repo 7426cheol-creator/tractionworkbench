@@ -1,0 +1,137 @@
+"""The synthetic protection architecture and safety requirements of the built-in example project.
+
+Demonstration data, not a product: every value is an example of what a project declares (sensors and the resources
+they need, the sensor roles each consumer reads, reaction paths, safety mechanisms, the safe-state policy, battery
+management, SG / FSR / TSR).  The built-in project carries it as its ``fault_sim`` section.
+"""
+
+FAULT_SIM = {
+    "topology": "two_level_vsi_star",
+    "basis": "synthetic protection architecture (not a product): one MCU runs control, the monitor task and the "
+             "software reaction path; a protection logic device (CPLD) forces the gates on hardware trips with the "
+             "safe state the MCU pre-selects; gate drivers with desaturation and UVLO; external watchdog",
+    "battery": {"L_uH": 2.0, "bms": {"charge_current_max_A": 200.0, "delay_ms": 10.0,
+                                     "basis": "synthetic: the BMS opens the contactor 10 ms after the charge limit"}},
+    "dc_link": {"bleeder_ohm": 100e3, "active_discharge_ohm": 30.0, "active_discharge_delay_ms": 5.0},
+    "control": {"command_period_ms": 10.0, "command_latency_ms": 0.5, "comm_timeout_ms": 50.0,
+                "timeout_ramp_Nm_per_ms": 5.0, "speed_filter_ms": 0.5, "v_limit_fraction": 1.0,
+                "angle_comp_periods": 1.5, "three_sensors": False, "torque_rate_Nm_per_ms": None,
+                "reset_output": "off", "boot_ms": 20.0},
+    "sensors": [
+        {"name": "CS_A", "kind": "current", "gain_tol": 0.01, "offset_tol_A": 2.0, "delay_us": 0.0, "quant_A": 0.5,
+         "valid_range_A": [-1500.0, 1500.0], "lost_value_A": 0.0, "resources": ["SENS_5V"]},
+        {"name": "CS_B", "kind": "current", "gain_tol": 0.01, "offset_tol_A": 2.0, "delay_us": 0.0, "quant_A": 0.5,
+         "valid_range_A": [-1500.0, 1500.0], "lost_value_A": 0.0, "resources": ["SENS_5V"]},
+        {"name": "CS_C", "kind": "current", "gain_tol": 0.01, "offset_tol_A": 2.0, "delay_us": 0.0, "quant_A": 0.5,
+         "valid_range_A": [-1500.0, 1500.0], "lost_value_A": 0.0, "resources": ["SENS_5V"]},
+        {"name": "RES", "kind": "position", "offset_tol_deg": 0.5, "delay_us": 20.0, "quant_deg": 0.05,
+         "los_detect_ms": 1.0, "resources": ["RDC"]},
+        {"name": "VDC_MAIN", "kind": "voltage", "gain_tol": 0.01, "offset_tol_V": 2.0, "quant_V": 0.25,
+         "valid_range_V": [0.0, 1000.0], "resources": []},
+        {"name": "VDC_HW", "kind": "voltage", "gain_tol": 0.02, "offset_tol_V": 5.0, "resources": ["HW_REF"]},
+    ],
+    "roles": {"current_a": "CS_A", "current_b": "CS_B", "current_c": "CS_C", "position_control": "RES",
+              "vdc_control": "VDC_MAIN", "vdc_hw": "VDC_HW"},
+    "resources": {"MCU": "main microcontroller: control task, monitor task, software reaction path",
+                  "SENS_5V": "current-sensor supply", "RDC": "resolver-to-digital converter and excitation",
+                  "GATE_UPPER": "upper gate-driver supply", "GATE_LOWER": "lower gate-driver supply",
+                  "CPLD": "protection logic device (forces the gates)", "HW_REF": "hardware comparator reference",
+                  "WD": "external watchdog"},
+    "paths": [
+        {"id": "SW", "delay_us": 100.0, "resources": ["MCU"],
+         "basis": "the MCU writes the reaction to the PWM unit (one control period)"},
+        {"id": "HW", "delay_us": 5.0, "resources": ["CPLD"],
+         "basis": "the CPLD forces the gates with the safe state the MCU pre-selects"},
+    ],
+    "mechanisms": [
+        {"id": "SM-TQ", "kind": "torque_monitor", "path": "SW", "reaction": "safe_state", "period_ms": 1.0,
+         "resources": ["MCU"],
+         "params": {"abs_Nm": 30.0, "rel": 0.15, "response_tau_ms": 2.0, "delay_ms": 1.0, "debounce_ms": 3.0,
+                    "ramp_Nm_per_ms": 50.0, "request_input": "monitor_message"},
+         "text": "torque plausibility: torque estimated from the measured currents and angle vs the request "
+                 "(own copy of the request message)"},
+        {"id": "SM-OC", "kind": "overcurrent_hw", "path": "HW", "reaction": "safe_state",
+         "params": {"threshold_A": 900.0, "filter_us": 2.0}, "resources": ["CPLD", "HW_REF"],
+         "text": "hardware over-current comparators on the phase-current sensor outputs"},
+        {"id": "SM-OV", "kind": "overvoltage_hw", "path": "HW", "reaction": "safe_state",
+         "params": {"threshold_V": 780.0, "filter_us": 5.0}, "resources": ["CPLD", "HW_REF"],
+         "text": "hardware DC-link over-voltage comparator (own divider)"},
+        {"id": "SM-DSAT", "kind": "desat", "path": "HW", "reaction": "safe_state",
+         "params": {"threshold_A": 1500.0, "turnoff_us": 2.0}, "resources": [],
+         "text": "gate-driver desaturation detection with soft turn-off (per switch)"},
+        {"id": "SM-UVLO", "kind": "gate_uvlo", "path": "HW", "reaction": "safe_state", "params": {"delay_us": 2.0},
+         "resources": [], "text": "gate-driver under-voltage lockout report"},
+        {"id": "SM-SUM", "kind": "current_plausibility", "path": "SW", "reaction": "safe_state", "period_ms": 0.1,
+         "resources": ["MCU"], "params": {"threshold_A": 60.0, "debounce_ms": 1.0},
+         "text": "sum of the three measured phase currents"},
+        {"id": "SM-LOS", "kind": "position_los", "path": "SW", "reaction": "safe_state", "period_ms": 0.1,
+         "resources": ["MCU"], "params": {}, "text": "resolver loss-of-signal flag"},
+        {"id": "SM-OVSW", "kind": "overvoltage_sw", "path": "SW", "reaction": "safe_state", "period_ms": 0.1,
+         "resources": ["MCU"], "params": {"threshold_V": 760.0, "debounce_ms": 0.2},
+         "text": "software DC-link over-voltage (control voltage sensor)"},
+        {"id": "SM-TO", "kind": "command_timeout", "path": "SW", "reaction": "torque_zero", "period_ms": 10.0,
+         "resources": ["MCU"], "params": {"timeout_ms": 50.0}, "text": "torque command timeout"},
+        {"id": "SM-WD", "kind": "watchdog", "path": "HW", "reaction": "safe_state", "params": {"timeout_ms": 5.0},
+         "resources": ["WD", "CPLD"], "text": "external watchdog on the control task's alive signal"},
+    ],
+    "policy": {
+        "rules": [{"if": {"uvlo": "lower"}, "then": "asc_high"},
+                  {"if": {"uvlo": "upper"}, "then": "asc_low"},
+                  {"if": {"detected_by": "desat", "device": "lower"}, "then": "asc_high"},
+                  {"if": {"detected_by": "desat", "device": "upper"}, "then": "asc_low"},
+                  {"if": {"speed_above_rpm": 6000.0}, "then": "asc_low"},
+                  {"else": "six_switch_off"}],
+        "priority": ["asc_low", "asc_high", "six_switch_off", "torque_zero"],
+        "latch": True, "recovery_after_ms": 50.0, "recovery_max_attempts": 1, "restart": "flying",
+        "restart_ramp_Nm_per_ms": 50.0, "after_reset": "restart", "speed_hysteresis_rpm": 300.0,
+        "replace_unexecutable": True,
+        "basis": "synthetic policy: above 6000 rpm (the six-switch-off rectification onset is 8270 rpm at 600 V, "
+                 "about 6900 rpm at 500 V) the active short circuit; a lost gate supply or a desaturated device "
+                 "selects the ASC of the other side"},
+    "vehicle": {"from_driveline": True},
+    "requirements": {
+        "basis": "synthetic safety requirements for the demonstration (values are examples, not an item's HARA)",
+        "safety_goals": [
+            {"id": "SG-01", "text": "avoid unintended acceleration torque", "asil": "C", "ftti_ms": 100.0,
+             "hazard": "accel", "vehicle": {"max_delta_v_mps": 0.5}},
+            {"id": "SG-02", "text": "avoid unintended deceleration torque", "asil": "C", "ftti_ms": 100.0,
+             "hazard": "decel", "vehicle": {"max_delta_v_mps": 0.5}},
+            {"id": "SG-03", "text": "avoid HV component overstress (DC-link over-voltage, device over-current)",
+             "asil": "B", "ftti_ms": 10.0, "hazard": "component"},
+        ],
+        "fsr": [
+            {"id": "FSR-01", "sg": ["SG-01", "SG-02"],
+             "text": "detect a torque deviation and bring the drive into a torque-free safe state within the FHTI",
+             "mechanisms": ["SM-TQ", "SM-OC", "SM-DSAT", "SM-SUM", "SM-LOS", "SM-WD", "SM-UVLO"],
+             "fdti_budget_ms": 20.0, "frti_budget_ms": 30.0, "safe_state": "TSR-03"},
+            {"id": "FSR-02", "sg": ["SG-03"], "text": "limit DC-link voltage and phase current to the component "
+                                                      "ratings", "mechanisms": ["SM-OV", "SM-OVSW", "SM-OC",
+                                                                                "SM-DSAT"],
+             "fdti_budget_ms": 1.0, "frti_budget_ms": 2.0, "safe_state": None},
+        ],
+        "tsr": [
+            {"id": "TSR-01", "fsr": "FSR-01", "text": "no unintended acceleration torque beyond the dynamic window "
+                                                      "for longer than 50 ms",
+             "criterion": {"type": "torque_window", "side": "accel", "abs_Nm": 50.0, "rel": 0.2,
+                           "delay_ms": 11.0, "response_tau_ms": 2.0, "tolerance_ms": 50.0, "reduction_allowed": True,
+                           "origin": "t0"}},
+            {"id": "TSR-02", "fsr": "FSR-01", "text": "no unintended deceleration torque beyond the dynamic window "
+                                                      "for longer than 50 ms",
+             "criterion": {"type": "torque_window", "side": "decel", "abs_Nm": 50.0, "rel": 0.2,
+                           "delay_ms": 11.0, "response_tau_ms": 2.0, "tolerance_ms": 50.0, "reduction_allowed": True,
+                           "origin": "t0"}},
+            {"id": "TSR-03", "fsr": "FSR-01", "text": "after a detection the drive reaches |T| <= 60 N*m within 30 ms "
+                                                      "and holds it 20 ms",
+             "criterion": {"type": "safe_state", "origin": "detection", "within_ms": 30.0, "hold_ms": 20.0,
+                           "conditions": [{"quantity": "torque_abs", "max": 60.0}]}},
+            {"id": "TSR-04", "fsr": "FSR-01", "text": "FDTI / FRTI within the budgets, FHTI within the FTTI",
+             "criterion": {"type": "timing"}},
+            {"id": "TSR-05", "fsr": "FSR-01", "text": "no detection and no reaction in fault-free operation",
+             "criterion": {"type": "no_false_reaction"}},
+            {"id": "TSR-06", "fsr": "FSR-02", "level": "component", "text": "DC-link voltage <= 850 V",
+             "criterion": {"type": "bound", "quantity": "v_dc", "max": 850.0, "origin": "t0"}},
+            {"id": "TSR-07", "fsr": "FSR-02", "level": "component", "text": "phase current <= 1600 A peak",
+             "criterion": {"type": "bound", "quantity": "i_phase_abs", "max": 1600.0, "origin": "t0"}},
+        ],
+    },
+}

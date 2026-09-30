@@ -227,8 +227,11 @@ class BusMachine:
 
 
 def _machine_point(m: BusMachine, T: float, V: float, cache: dict) -> dict:
-    key = (m.name, float(T), float(V))
-    r = cache.get(key)
+    # keyed by the machine object (its drive and speed), never by its name: two machines that share a name are two
+    # operating points (review 3 F-22); the entry holds the object, so its id is not reused while the cache lives
+    key = (id(m), float(T), float(V))
+    hit = cache.get(key)
+    r = hit[1] if hit is not None and hit[0] is m else None
     if r is None:
         sol = PolicyEvaluator(m.drive, Scenario(m.name, m.speed_rpm, V, UNLIMITED)).solve(float(T))
         pt = sol.point
@@ -236,8 +239,17 @@ def _machine_point(m: BusMachine, T: float, V: float, cache: dict) -> dict:
              "P_dc_W": None if pt is None else pt.Pdc_W, "I_peak_A": None if pt is None else pt.i_peak_A,
              "loss_W": None if (pt is None or pt.Pdc_W is None or pt.Pshaft_W is None) else pt.Pdc_W - pt.Pshaft_W,
              "detail": sol.policy_claim.detail}
-        cache[key] = r
+        cache[key] = (m, r)
     return r
+
+
+def _unique_names(machines) -> None:
+    """Each machine names one table and one branch of the bus: a repeated name would merge two machines' results."""
+    names = [m.name for m in machines]
+    dup = sorted({n for n in names if names.count(n) > 1})
+    if dup:
+        raise InputValidationError(f"machine names must be unique on one bus (repeated: {', '.join(dup)})",
+                                   field="machines")
 
 
 def _machine_table(m: BusMachine, Vdc: float, torques, cache: dict | None = None) -> list[dict]:
@@ -265,6 +277,7 @@ def unregulated_bus(machines: list, torques: list, battery: Battery, aux_W: floa
     voltage limit), and V_ub below UV or no terminal voltage at all is a collapse.  A witness is a converged fixed
     point re-evaluated independently: voltage identity and power identity within tolerance.  Anything else is
     UNKNOWN (not proved impossible)."""
+    _unique_names(machines)
     cache = {} if cache is None else cache
     ocv, R = battery.ocv_V, battery.R_int_ohm
     tol = VBUS_REL_TOL * ocv
@@ -343,6 +356,7 @@ def joint_torque_set(machines: list, Vdc_V: float, battery: Battery, aux_W: floa
     """
     if len(machines) != 2:
         raise InputValidationError("the joint torque set is computed for two machines on one bus", field="machines")
+    _unique_names(machines)
     m1, m2 = machines
     regulated = boost is not None
     V_grid = float(Vdc_V) if regulated else battery.ocv_V

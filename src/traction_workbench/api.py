@@ -28,6 +28,7 @@ from .extensions.dclink import active_discharge, passive_discharge, regen_discon
 from .extensions.safe_state import safe_state_screening
 from .extensions.thermal import ThermalModel, thermal_duration, torque_availability
 from .extensions.timing import analyze_timing
+from .modulation import MODULATIONS
 from .scenario import DcSourceLimits, Scenario
 from .status import Claim, Reason, Status
 from .solvers.policy import PolicyEvaluator
@@ -116,6 +117,8 @@ def case_from_body(body) -> dict:
             "analyses": body.get("analyses") or {}}
     if body.get("source_model"):
         case["source_model"] = body["source_model"]
+    if body.get("error_budget"):
+        case["error_budget"] = body["error_budget"]
     lim = body.get("limits")
     if lim:
         case["scenario"] = {"source_limits": {
@@ -202,11 +205,21 @@ def overvoltage(body):
                                        field="torque_Nm")
         p = -sol.point.Pdc_W
         point = {"id_A": sol.point.id_A, "iq_A": sol.point.iq_A, "Pdc_W": sol.point.Pdc_W}
+    p_up = None
+    if point is not None:
+        # after the disconnect no battery limit applies: the same torque at the voltage limit - with less
+        # field-weakening current the regenerated power is larger there (engineering review 2 of 63a2b61, F-09)
+        hi = PolicyEvaluator(d, Scenario("ov@limit", _num(body, "speed_rpm"), _num(body, "V_limit_V"),
+                                         DcSourceLimits())).solve(_num(body, "torque_Nm")).point
+        if hi is not None and hi.Pdc_W is not None and hi.Pdc_W < 0:
+            p_up = -hi.Pdc_W
+            point["Pdc_at_limit_W"] = hi.Pdc_W
     out = regen_disconnect_overvoltage(_num(body, "C_uF") * 1e-6, _num(body, "V1_V"), float(p), _num(body, "V_limit_V"),
                                        None if body.get("reaction_time_ms") in (None, "") else float(body["reaction_time_ms"]) * 1e-3,
                                        body.get("profile", "constant"), drive=d,
                                        speed_rpm=None if body.get("speed_rpm") in (None, "") else float(body["speed_rpm"]),
-                                       ramp_s=_opt(body, "ramp_ms", 1e-3), magnet_temp_C=_opt(body, "magnet_temp_C"))
+                                       ramp_s=_opt(body, "ramp_ms", 1e-3), magnet_temp_C=_opt(body, "magnet_temp_C"),
+                                       reaction=body.get("reaction") or "unspecified", P_in_upper_W=p_up)
     out["regen_operating_point"] = point
     return _jsonable(out)
 
@@ -481,7 +494,9 @@ def dclink_ripple(body):
     fe = abs(pt.f_e_Hz)
     r = ripple_analysis(pt.i_peak_A, m, phi, fe, float(cfg.get("fsw_kHz", 10.0)) * 1e3, vdc, bank, source,
                         cfg.get("modulation", "svpwm"), cfg.get("requirement"),
-                        None if cap.get("T_ref_C") in (None, "") else float(cap["T_ref_C"]))
+                        None if cap.get("T_ref_C") in (None, "") else float(cap["T_ref_C"]),
+                        required_life_h=None if cfg.get("required_life_h") in (None, "", 0) else
+                        float(cfg["required_life_h"]))
     r["operating_point"] = {"id_A": pt.id_A, "iq_A": pt.iq_A, "Pdc_W": pt.Pdc_W, "Idc_avg_A": pt.Idc_A,
                             "speed_rpm": n, "torque_Nm": T}
     r["config"] = cfg
@@ -775,7 +790,8 @@ def oew(body):
     out = {"topology": topo.describe(), "request": {"speed_rpm": n, "torque_Nm": T}, "result": r,
            "geometry": {k: v for k, v in geo.items() if k != "rows"}, "state_rows": geo["rows"],
            "b_clamp": b_clamp_vs_floating_star(topo.VA_V), "emf_phase_peak_V": emf,
-           "paired_states": paired_state_table(topo, emf, None if zs is None else zs.L0_H),
+           "paired_states": paired_state_table(topo, emf, None if zs is None else zs.L0_H,
+                                               d.motor.pole_pairs * 2 * math.pi * n / 60),
            "loss_model": "datasheet module per bridge" if b.get("use_module") else "drive's declared loss model"}
     w = r.get("witness")
     if topo.kind == "common_bus" and zs is not None and w is not None:
@@ -965,7 +981,12 @@ def emi(body):
                    "min_pulse_us": src.min_pulse_s * 1e6, "min_pulse_policy": src.min_pulse_policy,
                    "basis": src.basis, "validity": r["source_validity"]}
     r["network"] = {**EXAMPLE_EMI["network"], **(b.get("network") or {})}
+    reserve_blank = {**EXAMPLE_EMI["profile"], **(b.get("profile") or {})}.get("design_reserve_dB") in (None, "")
+    if reserve_blank:
+        r["notes"].append("design reserve not declared: M_d = 0 dB is used in every margin (a design choice to "
+                          "declare, not a default)")
     r["profile"] = {**prof.fields, "design_reserve_dB": prof.design_reserve_dB,
+                    "design_reserve_declared": not reserve_blank,
                     "limit_source": None if prof.limit is None else prof.limit.source,
                     "limit_gaps_Hz": [] if prof.limit is None else [list(g) for g in prof.limit.gaps]}
     ms = b.get("measured")
@@ -1074,22 +1095,22 @@ def _pwm_hf(b: dict, drive, sc, pt):
     if not (math.isfinite(L) and L > 0):
         raise InputValidationError("L_hf must be > 0", field="pwm_hf.L_hf_uH")
     mod = str(spec.get("modulation", "svpwm"))
-    if mod not in ("svpwm", "spwm"):
+    if mod not in MODULATIONS:
         return {"status": "UNKNOWN", "interval_W": [None, None], "copper": None, "magnetic_hf_bound_W": None,
-                "reason": f"ripple model supports svpwm / spwm, not {mod}", "basis": ""}
+                "reason": f"ripple model supports {', '.join(MODULATIONS)}, not {mod}", "basis": ""}
     return point_hf_losses(drive, sc, pt, float(spec.get("fsw_kHz") or _CTRL["fsw_kHz"]) * 1e3, L, mod,
                            harmonic_data(spec.get("harmonic")))
 
 
 def efficiency(body):
     """Five boundary efficiencies, loss ledger and flow table at one policy point (module-efficiency addendum)."""
-    from .analysis.efficiency import point_ledger
+    from .analysis.efficiency import MODEL_EFFICIENCY, point_ledger
     b = {**EXAMPLE_EFFICIENCY, **(body or {})}
     d = _eff_drive(b)
     n, T, vdc = _num(b, "speed_rpm"), _num(b, "torque_Nm"), _num(b, "Vdc_V")
     sol = PolicyEvaluator(d, Scenario("eff", n, vdc, _limits(b))).solve(T)
     out = {"request": {"speed_rpm": n, "torque_Nm": T, "Vdc_V": vdc}, "claims": [c.to_dict() for c in sol.claims],
-           "loss_model": b.get("loss_model", "module")}
+           "loss_model": b.get("loss_model", "module"), "model_efficiency": MODEL_EFFICIENCY}
     if sol.point is None:
         out["ledger"] = None
         out["reason"] = sol.policy_claim.detail
@@ -1103,8 +1124,8 @@ def efficiency(body):
 
 
 def efficiency_map(body):
-    """Boundary efficiency maps on a speed x torque grid (policy points; status mask kept, no hole filling)."""
-    from .analysis.efficiency import DEFINED, point_ledger
+    """Boundary model-efficiency maps on a speed x torque grid (policy points; status mask kept, no hole filling)."""
+    from .analysis.efficiency import DEFINED, MODEL_EFFICIENCY, point_ledger
     b = {**EXAMPLE_EFFICIENCY, **(body or {})}
     d = _eff_drive(b)
     red = _reducer(b.get("reducer"))
@@ -1132,13 +1153,14 @@ def efficiency_map(body):
     return _jsonable({"speeds_rpm": sp, "torques_Nm": tq, "Vdc_V": vdc, "grids": grids, "status": status,
                       "loss_known_W": loss_known, "reducer": None if red is None else red.describe(),
                       "oil_temp_C": oil, "loss_model": b.get("loss_model", "module"),
-                      "meaning": "values at minimum-current policy points; only FEASIBLE cells are feasible "
-                                 "operation, UNKNOWN cells are shown hatched, INFEASIBLE cells are blank"})
+                      "model_efficiency": MODEL_EFFICIENCY,
+                      "meaning": "model efficiency map: values at minimum-current policy points; only FEASIBLE cells "
+                                 "are feasible operation, UNKNOWN cells are shown hatched, INFEASIBLE cells are blank"})
 
 
 def efficiency_mission(body):
     """Mission energy ledger per direction and boundary (E+ / E- per port; no averaged eta)."""
-    from .analysis.efficiency import mission_energy, point_ledger
+    from .analysis.efficiency import MODEL_EFFICIENCY, mission_energy, point_ledger
     b = {**EXAMPLE_EFFICIENCY, **(body or {})}
     d = _eff_drive(b)
     red = _reducer(b.get("reducer"))
@@ -1166,7 +1188,7 @@ def efficiency_mission(body):
                      "loss_known_W": None if led is None else led["loss_known_subtotal_W"]})
     e = mission_energy(segs, distance_km=_opt(m, "distance_km"))
     return _jsonable({"segments": rows, "energy": e, "delivered": delivered, "Vdc_V": vdc,
-                      "loss_model": b.get("loss_model", "module")})
+                      "loss_model": b.get("loss_model", "module"), "model_efficiency": MODEL_EFFICIENCY})
 
 
 def _cand(c: dict, fsw_kHz=None):
@@ -1181,7 +1203,7 @@ def _cand(c: dict, fsw_kHz=None):
 
 def module_compare(body):
     """Module A/B (e.g. IGBT vs SiC design) on the same delivered requirement and mission (addendum section 7)."""
-    from .analysis.efficiency import compare_modules
+    from .analysis.efficiency import MODEL_EFFICIENCY, compare_modules
     b = {**EXAMPLE_EFFICIENCY, **(body or {})}
     c = b["compare"]
     mode = c.get("mode", "fixed_policy")
@@ -1198,7 +1220,7 @@ def module_compare(body):
                         float(c.get("coolant_C", 65.0)), mode,
                         float(c["common_fsw_kHz"]) * 1e3 if mode == "fixed_policy" else None,
                         _reducer(b.get("reducer")), _opt(b, "oil_temp_C"), mission)
-    return _jsonable(r)
+    return _jsonable({**r, "model_efficiency": MODEL_EFFICIENCY})
 
 
 # ------------------------------------------------------------------ variable PWM (variable-PWM / anti-jerk addendum)
@@ -1287,8 +1309,8 @@ def pwm_risk_at(drive, scenario, pt, spec: dict | None = None) -> dict:
           "harmonic": EXAMPLE_PWM["harmonic"],
           "peak_limit_A": (EXAMPLE_PWM.get("pwm_limits") or {}).get("i_peak_incl_ripple_max_A"), **(spec or {})}
     mod = str(sp.get("modulation", "svpwm"))
-    if mod not in ("svpwm", "spwm"):
-        return {"status": "UNKNOWN", "reason": f"the ripple model supports svpwm / spwm, not {mod}"}
+    if mod not in MODULATIONS:
+        return {"status": "UNKNOWN", "reason": f"the ripple model supports {', '.join(MODULATIONS)}, not {mod}"}
     bank, source = _ripple_bank(EXAMPLE_RIPPLE)
     cap = EXAMPLE_RIPPLE["capacitor"]
     return _jsonable(point_pwm_risk(drive, scenario, pt, float(sp["fsw_kHz"]) * 1e3, float(sp["L_hf_uH"]) * 1e-6, mod,
@@ -1323,7 +1345,8 @@ def pwm_policies(body):
     r = evaluate_policies(_drive(b), cand, segs, pols, float(b["coolant_C"]), _limits(b), _timing(b["timing"]),
                           float(b["L_hf_uH"]) * 1e-6, _loop(b.get("loop")), harm, bank, source,
                           str(b.get("modulation", "svpwm")), lim, _sensing(b.get("sensing")),
-                          _noise(b.get("measurement_noise")))
+                          _noise(b.get("measurement_noise")),
+                          capacitor_in_boundary=bool(b.get("capacitor_in_energy_boundary")) and bank is not None)
     return _jsonable(r)
 
 
@@ -1801,6 +1824,80 @@ def acceptance(body):
     return S.acceptance_summary()
 
 
+# ------------------------------------------------------------------------------------ causal fault simulation
+
+_FAULT_PRODUCTS: dict = {}
+
+
+def fault_product(project=None):
+    """The product a fault simulation runs on: the project and its resolved drive model (cached per project)."""
+    from .extensions.faultsim.configure import ProductData
+    pr = project or PROJECT
+    key = pr.digest()
+    if key not in _FAULT_PRODUCTS:
+        if len(_FAULT_PRODUCTS) > 8:
+            _FAULT_PRODUCTS.clear()
+        _FAULT_PRODUCTS[key] = ProductData(pr, S.resolve_drive(pr.data("drive")))
+    return _FAULT_PRODUCTS[key]
+
+
+def fault_scenarios() -> list:
+    """The representative fault scenarios of the synthetic example (key, category, title, hint, scenario)."""
+    import copy as _copy
+    from .extensions.faultsim.study import SCENARIOS
+    return _copy.deepcopy(SCENARIOS)
+
+
+def fault_sim(body, project=None):
+    """One causal fault simulation judged against the project's SG / FSR / TSR (``body`` = the scenario, or
+    ``{"example": key}``)."""
+    from .extensions.faultsim.study import explain, scenario
+    b = dict(body or {})
+    sc = scenario(b.pop("example")) if b.get("example") else b
+    return explain(fault_product(project), sc)
+
+
+def fault_compare(body, project=None):
+    """Protection on / off and the reaction candidates from the same initial condition and fault."""
+    from .extensions.faultsim.study import CANDIDATES, compare, scenario
+    b = dict(body or {})
+    cands = tuple(b.pop("candidates", None) or CANDIDATES)
+    sc = scenario(b.pop("example")) if b.get("example") else b
+    return compare(fault_product(project), sc, cands)
+
+
+def fault_campaign(body, project=None):
+    """A campaign over declared axes of a base scenario (see ``faultsim.campaign.run_campaign``)."""
+    from .extensions.faultsim.campaign import run_campaign
+    from .extensions.faultsim.study import scenario
+    b = dict(body or {})
+    if b.get("example"):
+        b["base"] = scenario(b.pop("example"))
+    return run_campaign(fault_product(project), b)
+
+
+def fault_rerun(body, project=None):
+    """Re-run a saved counterexample record on the current project and code (stale inputs reported first)."""
+    from .extensions.faultsim.campaign import rerun_record
+    return rerun_record(fault_product(project), dict(body["record"]))
+
+
+def fault_validation(body=None, project=None):
+    """The plant's validation against closed forms, an independent abc formulation and numerical convergence."""
+    from .extensions.faultsim.configure import build_setup
+    from .extensions.faultsim.reference import validation_suite
+    setup, _reqs, _info = build_setup(fault_product(project), {"speed_rpm": 6000.0, "torque_Nm": 100.0})
+    rows = validation_suite(setup.machine, setup.dc, quick=bool((body or {}).get("quick", True)))
+    return {"rows": rows, "passed": sum(r["pass"] for r in rows), "total": len(rows),
+            "machine": setup.machine.basis}
+
+
+def fault_independence(body=None, project=None):
+    """Declared dependencies of the protection architecture: shared resources and sensors per mechanism / FSR."""
+    from .extensions.faultsim.study import independence
+    return independence(project or PROJECT)
+
+
 ROUTES = {
     "info": info, "evaluate": evaluate, "curve": curve, "map": idiq, "sizing": sizing, "dominance": dominance,
     "relaxation": relaxation, "timing": timing, "discharge": discharge, "passive": passive, "overvoltage": overvoltage,
@@ -1813,6 +1910,8 @@ ROUTES = {
     "module_compare": module_compare, "pwm_policies": pwm_policies, "pwm_timing": pwm_timing, "pwm_ripple": pwm_ripple,
     "pwm_transients": pwm_transients,
     "driveline": driveline, "driveline_stability": driveline_stability,
+    "fault_sim": fault_sim, "fault_compare": fault_compare, "fault_campaign": fault_campaign,
+    "fault_rerun": fault_rerun, "fault_validation": fault_validation, "fault_independence": fault_independence,
 }
 
 

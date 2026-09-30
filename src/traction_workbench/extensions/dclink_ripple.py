@@ -39,6 +39,7 @@ from ..errors import InputValidationError
 from ..modulation import MODULATIONS, duties, overmodulated
 from ..validation import finite as _finite
 from ..status import Claim, Evidence, EvidenceKind, Reason, Status
+from ..units import shown
 
 TWO_PI = 2.0 * math.pi
 
@@ -275,6 +276,11 @@ BRANCH_TEXT = {"capacitor_current": "capacitor branch current I_C",
                "source_current": "source (battery + harness) branch current I_s",
                "bus_voltage": "bus node voltage (across the capacitor branch = inverter input terminals)"}
 RMS_FLOOR = 1e-9                  # harmonics below this share of the inverter AC RMS are rounding level (no current)
+# harmonics outside the ESR table band gate the loss only when their share of the inverter AC current-squared
+# exceeds this: an energy criterion, not the FFT's rounding level - a 1e-9 RMS floor made the verdict follow the FFT
+# length and the switching frequency (engineering review 2 of 63a2b61, F-10).  Below it their heating is carried at
+# the table's largest ESR (an assumption, stated), so the loss is not understated either
+UNCOVERED_I2_SHARE = 0.05
 THERMAL_TOL_K = 1e-9              # bracket width at which the equilibrium temperature is accepted
 RESIDUAL_BUDGET_K = 1e-6          # |T - T_b - Rth P(T)| re-evaluated independently at the returned state
 SCAN_STEP_K = 0.5                 # scan step for the first equilibrium above the boundary temperature
@@ -315,9 +321,20 @@ class _Network:
         self.B = np.where(self.ac, w * bank.ESL_H / bank.count - 1.0 / (w * bank.C_F * bank.count), 0.0)
         self.inv_rms_h = np.abs(self.X) * self.wt
         self.I_inv_ac = math.sqrt(float(np.sum(self.inv_rms_h[self.ac] ** 2)))
+        # every AC harmonic up to Nyquist is assessed (the FFT reaches twice the ESR table's top frequency: samples
+        # per carrier raised in ripple_analysis, so nothing follows the FFT length).  Outside the table band the ESR
+        # is not data: that content gates the loss only above UNCOVERED_I2_SHARE of the inverter AC current-squared
+        # (the inverter current bounds the capacitor current at every passive split: a conservative proxy)
+        self.f_model_Hz = float(bank.ESR_ohm_table[-1][0])
+        self.assessed = self.ac
+        I2 = max(self.I_inv_ac ** 2, 1e-300)
+        self.above_share = float(np.sum(self.inv_rms_h[self.ac & (self.f > self.f_model_Hz * (1 + 1e-12))] ** 2) / I2)
         self.uncovered = self.ac & ~inside
-        self.carrying = self.ac & (self.inv_rms_h > RMS_FLOOR * max(self.I_inv_ac, 1e-300))
-        self.complete = not bool(np.any(self.uncovered & self.carrying))
+        self.uncovered_share = float(np.sum(self.inv_rms_h[self.uncovered] ** 2) / I2)
+        gate = self.uncovered_share > UNCOVERED_I2_SHARE
+        self.carrying = self.uncovered & (self.inv_rms_h > RMS_FLOOR * max(self.I_inv_ac, 1e-300)) & gate
+        self.complete = not gate
+        self.esr_max_ref = max(r for _, r in bank.ESR_ohm_table) / bank.count   # the table's largest (bank) ESR
 
     def loss(self, T_C: float | None) -> float:
         """ESR loss over the characterised harmonics with the capacitor at T_C (current split re-solved at T_C)."""
@@ -326,8 +343,9 @@ class _Network:
             ic = np.abs(self.X)
         else:
             ic = np.abs(self.X * self.Zs / (self.Zs + esr + 1j * self.B))
-        cov = self.ac & ~self.uncovered
-        return float(np.sum(((ic * self.wt) ** 2 * esr)[cov]))
+        cov = self.assessed & ~self.uncovered
+        ind = (ic * self.wt) ** 2 * self.esr_max_ref * self.bank.esr_factor(T_C)
+        return float(np.sum(((ic * self.wt) ** 2 * esr)[cov]) + (np.sum(ind[self.uncovered]) if self.complete else 0.0))
 
     def at(self, T_C: float | None) -> dict:
         """Branch phasors, node voltage and ESR loss with the capacitor at T_C (None: the ESR table temperature)."""
@@ -344,10 +362,13 @@ class _Network:
                 Is = np.where(ac, Ic * Zc / Zs, X)                   # from the node voltage, not from KCL
         V = np.where(ac, -Ic * Zc, 0.0)
         ic_h = np.abs(Ic) * self.wt
-        cov = ac & ~self.uncovered
+        cov = self.assessed & ~self.uncovered
         kcl = float(np.max(np.abs(X - Ic - Is)[ac], initial=0.0)) / max(float(np.max(np.abs(X))), 1e-300)
+        p_ind = (float(np.sum((ic_h ** 2)[self.uncovered]) * self.esr_max_ref * self.bank.esr_factor(T_C))
+                 if self.complete else 0.0)
         return {"T_C": T_C, "esr": esr, "Ic": Ic, "Is": Is, "V": V, "ic_rms_h": ic_h,
-                "P_W": float(np.sum((ic_h ** 2 * esr)[cov])), "kcl_residual_rel": kcl}
+                "P_W": float(np.sum((ic_h ** 2 * esr)[cov])) + p_ind, "P_indicative_W": p_ind,
+                "kcl_residual_rel": kcl}
 
     def bounds(self, branch: str) -> tuple[np.ndarray, np.ndarray]:
         """Per-harmonic RMS range of a branch quantity over every passive capacitor impedance.
@@ -525,13 +546,20 @@ _NUMERICAL = ("max_iter", "nonfinite", "residual")
 def ripple_analysis(I_pk: float, m: float, phi_rad: float, f_e_Hz: float, fsw_Hz: float, Vdc_V: float,
                     bank: CapacitorBank, source: SourceImpedance | None = None, modulation: str = "svpwm",
                     requirement: dict | None = None, T_ref_C: float | None = None,
-                    samples_per_carrier: int = 128, max_iter: int = 100) -> dict:
+                    samples_per_carrier: int = 128, max_iter: int = 100,
+                    required_life_h: float | None = None) -> dict:
     """Capacitor current, ripple, ESR loss, hotspot and life at one operating point.
 
     ``T_ref_C`` is the boundary temperature Rth refers to (coolant / ambient).  Every reported current, voltage and
     loss belongs to ONE capacitor temperature (``state``): the settled hotspot when the thermal state is solved,
     otherwise the stated temperature with the claims that depend on the ESR there gated."""
-    wave = switching_waveform(I_pk, m, phi_rad, f_e_Hz, fsw_Hz, modulation, samples_per_carrier)
+    # the FFT must reach well past the ESR table's top frequency: the samples per carrier follow it (doubling from
+    # the requested count), so the assessed band never depends on the FFT length (engineering review 2, F-10)
+    f_top = float(bank.ESR_ohm_table[-1][0])
+    spc = int(samples_per_carrier)
+    while spc * fsw_Hz / 2.0 < 2.0 * f_top and spc < 8192:     # Nyquist at twice the top: resolved near it
+        spc *= 2
+    wave = switching_waveform(I_pk, m, phi_rad, f_e_Hz, fsw_Hz, modulation, spc)
     net = _Network(wave, bank, source)
     T_b = None if T_ref_C is None else _finite("T_ref_C", T_ref_C)
     hot = _thermal_state(net, bank, T_b, int(max_iter))
@@ -542,41 +570,55 @@ def ripple_analysis(I_pk: float, m: float, phi_rad: float, f_e_Hz: float, fsw_Hz
     if source is None:
         assumption = ("source impedance not declared: capacitor current computed for a stiff current-source "
                       "battery (all AC into the capacitor) - an assumption, not a bound (resonance can exceed it)")
-    full = {k: _band_quantity(net, st, br, q, ac) for k, br, q in
+    # a stiff source puts every AC harmonic into the capacitor whatever its impedance: that RMS current needs no ESR
+    # and is the full ideal-waveform value; everything that needs Z_C is taken over the assessed band
+    full = {k: _band_quantity(net, st, br, q, net.ac if (br == "capacitor_current" and source is None)
+                              else net.assessed) for k, br, q in
             (("icap", "capacitor_current", "current_ac_rms"), ("isrc", "source_current", "current_ac_rms"),
              ("vpp", "bus_voltage", "voltage_pp"), ("vrms", "bus_voltage", "voltage_ac_rms"))}
     # operating-state values: a quantity that depends on the capacitor impedance is reported only where the ESR at
     # the stated temperature is established (the values at an unsettled temperature stay a labelled diagnostic)
     op = {k: v if (known or (k == "icap" and source is None)) else {"value": None, "lo": None, "hi": None}
           for k, v in full.items()}
-    unc_share = float(np.sum(net.inv_rms_h[net.uncovered] ** 2) / max(net.I_inv_ac ** 2, 1e-300))
+    unc_share = net.uncovered_share
     loss_ok = net.complete and known
+    k_show = min(f.size, 4 * wave["carrier_ratio"] + 8)
+    ic_show = np.where(net.uncovered & (net.Zs is not None), np.nan, st["ic_rms_h"])
+    step = max(1, n // 4000)
+    v_mask = net.assessed if full["vpp"]["value"] is not None else (net.assessed & ~net.uncovered)
+    v_full = np.fft.irfft(np.where(v_mask, st["V"], 0.0) * n, n)
+    # capacitor life (engineering review 2 of 63a2b61, F-16): the supplier table at the settled hotspot, the voltage
+    # check with the ripple peak on top of Vdc, and a verdict only against a stated required life
+    v_ripple_pk = (float(np.max(v_full)) if full["vpp"]["value"] is not None else
+                   (0.5 * op["vpp"]["hi"] if op["vpp"]["hi"] is not None and math.isfinite(op["vpp"]["hi"]) else None))
+    V_life = Vdc_V + (v_ripple_pk or 0.0)
+    req_life = None if required_life_h in (None, 0, 0.0) else float(required_life_h)
+    if req_life is not None and not (math.isfinite(req_life) and req_life > 0):
+        raise InputValidationError("the required capacitor life must be > 0 h", field="required_life_h")
     life = {"status": "UNKNOWN", "reason": "no supplier life data for this capacitor series (no generic '10 K halves "
-                                            "the life' rule is applied)"}
+                                            "the life' rule is applied)", "required_h": req_life}
     if bank.life_hours_table:
         if hot is None or not hot["converged"]:
-            life = {"status": "UNKNOWN", "reason": "no settled hotspot temperature (" +
-                    ("no Rth declared" if hot is None else hot["termination"]) + "): no life at an unsettled state"}
+            life = {"status": "UNKNOWN", "required_h": req_life,
+                    "reason": "no settled hotspot temperature (" + ("no Rth declared" if hot is None else
+                                                                    hot["termination"]) + "): no life at an unsettled state"}
         else:
             tab = sorted(bank.life_hours_table)
             Ts = [a for a, _ in tab]
             if Ts[0] <= hot["T_hot_C"] <= Ts[-1]:
                 hrs = float(np.exp(np.interp(hot["T_hot_C"], Ts, [math.log(b) for _, b in tab])))
-                vok = bank.life_voltage_V is None or Vdc_V <= bank.life_voltage_V
-                life = {"status": "CONDITIONAL" if vok else "UNKNOWN",
-                        "hours_at_hotspot": hrs if vok else None,
+                vok = bank.life_voltage_V is None or V_life <= bank.life_voltage_V
+                life = {"status": "CONDITIONAL" if vok else "UNKNOWN", "required_h": req_life,
+                        "hours_at_hotspot": hrs if vok else None, "V_with_ripple_peak_V": V_life,
                         "basis": bank.life_basis or "supplier life table (basis not stated)",
                         "note": ("supplier table interpolated at the hotspot for constant conditions; a variable "
                                  "mission needs the supplier's accumulation rule" if vok else
-                                 f"Vdc {Vdc_V:g} V above the life-table voltage {bank.life_voltage_V:g} V")}
+                                 f"Vdc + ripple peak {V_life:.4g} V above the life-table voltage "
+                                 f"{bank.life_voltage_V:g} V")}
             else:
-                life = {"status": "UNKNOWN", "reason": f"hotspot {hot['T_hot_C']:.4g} degC outside the life table "
-                                                       f"[{Ts[0]:g}, {Ts[-1]:g}] degC (no extrapolation)"}
-    k_show = min(f.size, 4 * wave["carrier_ratio"] + 8)
-    ic_show = np.where(net.uncovered & (net.Zs is not None), np.nan, st["ic_rms_h"])
-    step = max(1, n // 4000)
-    v_mask = ac if full["vpp"]["value"] is not None else (ac & ~net.uncovered)
-    v_full = np.fft.irfft(np.where(v_mask, st["V"], 0.0) * n, n)
+                life = {"status": "UNKNOWN", "required_h": req_life,
+                        "reason": f"hotspot {hot['T_hot_C']:.3g} degC outside the life table [{Ts[0]:g}, {Ts[-1]:g}] "
+                                  f"degC (no extrapolation)"}
     esr_band = (bank.ESR_ohm_table[0][0], bank.ESR_ohm_table[-1][0])
     out = {
         "operating": {"I_pk_A": I_pk, "modulation_index": m, "phi_deg": math.degrees(phi_rad), "f_e_Hz": f_e_Hz,
@@ -589,7 +631,8 @@ def ripple_analysis(I_pk: float, m: float, phi_rad: float, f_e_Hz: float, fsw_Hz
         "I_source_ac_rms_A": op["isrc"]["value"], "I_source_ac_rms_bounds_A": [op["isrc"]["lo"], op["isrc"]["hi"]],
         "V_ripple_pp_V": op["vpp"]["value"], "V_ripple_pp_bounds_V": [op["vpp"]["lo"], op["vpp"]["hi"]],
         "V_ripple_ac_rms_V": op["vrms"]["value"], "V_ripple_ac_rms_bounds_V": [op["vrms"]["lo"], op["vrms"]["hi"]],
-        "P_cap_W": st["P_W"] if loss_ok else None, "P_cap_covered_W": st["P_W"],
+        "P_cap_W": st["P_W"] if loss_ok else None, "P_cap_covered_W": st["P_W"] - st["P_indicative_W"],
+        "P_cap_indicative_W": st["P_indicative_W"],
         "at_stated_temperature": None if known else {
             "T_C": T_state, "note": "diagnostic only: the ESR at the operating temperature is not established",
             "I_cap_rms_A": full["icap"]["value"], "I_source_ac_rms_A": full["isrc"]["value"],
@@ -597,7 +640,16 @@ def ripple_analysis(I_pk: float, m: float, phi_rad: float, f_e_Hz: float, fsw_Hz
             "P_cap_covered_W": st["P_W"]},
         "esr_coverage": {"table_band_Hz": list(esr_band), "complete": net.complete,
                          "uncovered_harmonics": int(np.count_nonzero(net.uncovered & net.carrying)),
-                         "inverter_I2_share_outside": unc_share},
+                         "inverter_I2_share_outside": unc_share, "gate_I2_share": UNCOVERED_I2_SHARE},
+        "model_band": {"f_max_Hz": net.f_model_Hz, "samples_per_carrier": spc,
+                       "inverter_I2_share_above": net.above_share, "inverter_I2_share_outside": net.uncovered_share,
+                       "gate_share": UNCOVERED_I2_SHARE,
+                       "note": (f"{100 * net.uncovered_share:.2g} % of the ideal-switch inverter AC current-squared "
+                                f"lies outside the ESR table band ({100 * net.above_share:.2g} % above "
+                                f"{net.f_model_Hz:.4g} Hz, where real edges and ringing also decide): "
+                                + ("its heating is carried at the table's largest ESR (an assumption, not data)"
+                                   if net.complete else f"more than {100 * UNCOVERED_I2_SHARE:g} %: the loss is not "
+                                                        f"established"))},
         "current_share_outside_ESR_band": unc_share,
         "hotspot": hot, "life": life, "kcl_residual_rel": st["kcl_residual_rel"],
         "parseval_residual_A": net.parseval_residual, "assumption": assumption,
@@ -606,18 +658,31 @@ def ripple_analysis(I_pk: float, m: float, phi_rad: float, f_e_Hz: float, fsw_Hz
                      "ESR_covered": (~net.uncovered[:k_show]).tolist()},
         "waveform": {"t_s": wave["t_s"][::step].tolist(), "i_inv_A": wave["i_inv_A"][::step].tolist(),
                      "v_ripple_V": v_full[::step].tolist(),
-                     "v_basis": ("all harmonics" if v_mask is ac else
+                     "v_basis": ("all harmonics in the model band" if v_mask is net.assessed else
                                  "harmonics inside the ESR table band only (impedance unknown elsewhere)")},
         "not_modelled": ["phase-current ripple", "dead time", "device edges / ringing", "overmodulation",
                          "asynchronous-carrier sidebands (synchronous ratio used)",
                          "C / ESL / ESR tolerances", "busbar impedance between capacitor and inverter terminals"],
     }
 
+    fine = {}
+
+    def refined() -> "_Network":
+        """The same operating point at twice the samples per carrier (built once, on demand)."""
+        if "net" not in fine:
+            fine["net"] = _Network(switching_waveform(I_pk, m, phi_rad, f_e_Hz, fsw_Hz, modulation, 2 * spc),
+                                   bank, source)
+        return fine["net"]
+
     def refine(branch: str, qty: str, bw: float) -> dict:
-        net2 = _Network(switching_waveform(I_pk, m, phi_rad, f_e_Hz, fsw_Hz, modulation, 2 * samples_per_carrier),
-                        bank, source)
+        net2 = refined()
         return _band_quantity(net2, net2.at(T_state), branch, qty, net2.ac & (net2.f <= bw * (1 + 1e-12)))
 
+    # the sampling resolution of the loss and the hotspot, as for the requirement quantity (review 2, F12): the change
+    # of the value at twice the samples per carrier
+    out["P_cap_resolution_W"] = abs(refined().at(T_state)["P_W"] - st["P_W"]) if loss_ok else None
+    out["hotspot_resolution_K"] = (bank.Rth_K_per_W * out["P_cap_resolution_W"]
+                                   if loss_ok and hot is not None and hot.get("converged") else None)
     out["claims"] = _claims(out, requirement, net, st, source, refine)
     return out
 
@@ -683,12 +748,12 @@ def _requirement_claim(out: dict, req: dict | None, net: _Network, st: dict, sou
     delta = max((abs(b2[k] - b[k]) for k in ("lo", "hi") if math.isfinite(b[k]) and math.isfinite(b2[k])),
                 default=0.0)
     lo, hi = b["lo"], b["hi"]
-    rng = (f"{b['value']:.4g}" if b["value"] is not None else "impedance-dependent") + \
-          (f" in [{lo:.4g}, {hi:.4g}]" if b["uncovered_harmonics"] else "")
+    rng = (shown(b["value"], "ripple") if b["value"] is not None else "impedance-dependent") + \
+          (f" in [{shown(lo, 'ripple')}, {shown(hi, 'ripple')}]" if b["uncovered_harmonics"] else "")
     unc_txt = (f"; {b['uncovered_harmonics']} harmonics in the band ({b['uncovered_band_Hz'][0]:g}-"
                f"{b['uncovered_band_Hz'][1]:g} Hz) lie outside the ESR table: bounded over every passive capacitor "
                f"impedance" if b["uncovered_harmonics"] else "")
-    det = (f"{rng} vs limit {lim:g} at {state['T_C']:.4g} degC ({state['basis']}); sampling resolution "
+    det = (f"{rng} vs limit {lim:g} at {shown(state['T_C'], 'temperature')} degC ({state['basis']}); sampling resolution "
            f"{delta:.2g} (value change at twice the samples per carrier){unc_txt}; ideal brick-wall filter at "
            f"{bw:g} Hz; sampled operating point")
     if hi + delta <= lim:
@@ -716,22 +781,47 @@ def _claims(out: dict, req: dict | None, net: _Network, st: dict, source, refine
         cov = out["esr_coverage"]
         claims["capacitor_loss"] = Claim(
             "capacitor_loss", Status.UNKNOWN, title, method, reasons=(Reason.OUTSIDE_MODEL_DOMAIN,),
-            detail=f"{cov['uncovered_harmonics']} current-carrying harmonics lie outside the ESR table "
+            detail=f"{cov['uncovered_harmonics']} harmonics lie outside the ESR table "
                    f"[{cov['table_band_Hz'][0]:g}, {cov['table_band_Hz'][1]:g}] Hz "
-                   f"({cov['inverter_I2_share_outside'] * 100:.3g} % of the inverter AC current-squared): the ESR "
-                   f"there is unknown and a current fraction does not bound its heating - not established").to_dict()
+                   f"({cov['inverter_I2_share_outside'] * 100:.3g} % of the inverter AC current-squared, more than "
+                   f"{100 * UNCOVERED_I2_SHARE:g} %): the ESR where the current is is unknown - not "
+                   f"established").to_dict()
     elif not state["esr_established"]:
         claims["capacitor_loss"] = Claim(
             "capacitor_loss", Status.UNKNOWN, title, method, reasons=(_state_reason(hot),),
             detail=f"ESR depends on the capacitor temperature, which is not established ({state['basis']})").to_dict()
     else:
+        mb, pi = out["model_band"], out["P_cap_indicative_W"]
         claims["capacitor_loss"] = Claim(
             "capacitor_loss", Status.FEASIBLE, title, method,
-            detail=f"{out['P_cap_W']:.4g} W at {state['T_C']:.4g} degC ({state['basis']})").to_dict()
+            qualifiers=(f"includes {pi:.2g} W ({100 * pi / max(out['P_cap_W'], 1e-300):.2g} % of the loss) for the "
+                        f"{100 * mb['inverter_I2_share_outside']:.2g} % of the inverter AC current-squared outside the "
+                        f"ESR table, taken at the table's largest ESR (an assumption, not data)",)
+            if pi > 1e-12 else (),
+            detail=f"{shown(out['P_cap_W'], 'loss')} W at {shown(state['T_C'], 'temperature')} degC ({state['basis']}); "
+                   f"sampling resolution {out['P_cap_resolution_W']:.2g} W"
+                   + ("" if out.get("hotspot_resolution_K") is None else
+                      f" ({out['hotspot_resolution_K']:.2g} K at the hotspot)")
+                   + " (value change at twice the samples per carrier)").to_dict()
     life = out["life"]
-    claims["capacitor_life"] = Claim("capacitor_life", Status.UNKNOWN if life["status"] != "CONDITIONAL" else
-                                     Status.FEASIBLE, "capacitor life at this operating point",
-                                     "supplier life data only", reasons=() if life["status"] == "CONDITIONAL" else
-                                     (Reason.MISSING_INPUT,),
-                                     detail=life.get("note") or life.get("reason", "")).to_dict()
+    q_life = "capacitor life at this operating point"
+    if life["status"] != "CONDITIONAL":
+        claims["capacitor_life"] = Claim("capacitor_life", Status.UNKNOWN, q_life, "supplier life data only",
+                                         reasons=(Reason.MISSING_INPUT,),
+                                         detail=life.get("note") or life.get("reason", "")).to_dict()
+    elif life.get("required_h") is None:
+        # an expected life is not a pass: 13 h showed as PASS (engineering review 2 of 63a2b61, F-16)
+        claims["capacitor_life"] = Claim(
+            "capacitor_life", Status.UNKNOWN, q_life, "supplier life data only",
+            reasons=(Reason.REQUIREMENT_INCOMPLETE,),
+            detail=f"expected life {life['hours_at_hotspot']:.3g} h at the hotspot (supplier table); no required life "
+                   f"stated - nothing to compare it with").to_dict()
+    else:
+        met = life["hours_at_hotspot"] >= life["required_h"]
+        claims["capacitor_life"] = Claim(
+            "capacitor_life", Status.FEASIBLE if met else Status.INFEASIBLE, q_life, "supplier life data only",
+            reasons=() if met else (Reason.RATING_NOT_MET,),
+            qualifiers=("nominal supplier life (no scatter declared); constant conditions at this operating point",),
+            detail=f"expected {life['hours_at_hotspot']:.3g} h vs required {life['required_h']:.3g} h at "
+                   f"{out['hotspot']['T_hot_C']:.3g} degC").to_dict()
     return claims

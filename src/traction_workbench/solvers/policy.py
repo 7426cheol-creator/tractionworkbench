@@ -237,15 +237,19 @@ class PolicyEvaluator:
         if not k.dc_defined:
             return "UNKNOWN", p
         cert = self.certify_min_point(T, c)
-        if not cert["certified"]:
+        if not cert["coverage_ok"]:
             return "UNKNOWN", p
         pdc = None
         if k.pointwise_loss:
+            if not cert["certified"]:
+                return "UNKNOWN", p          # no I^2 argument: the uncertified point decides nothing
             try:
                 pdc = evaluate_point(k, p.id_A, p.iq_A).Pdc_W
             except OutsideModelDomain:
                 return "UNKNOWN", p
-        st, _why = self.dc_status(T, p.I2, cert["i2_lb"], True, pdc)
+        # an uncertified point (open cell-bound gap) is decided by consequence: dc_status judges the whole bracket
+        # [lower bound, found] of the true minimum-current point (engineering review 2 of 63a2b61, F-01)
+        st, _why = self.dc_status(T, p.I2, cert["i2_lb"], cert["certified"], pdc)
         return st, p
 
     # -- full solve ----------------------------------------------------------
@@ -342,6 +346,9 @@ class PolicyEvaluator:
             dc_claim = self._dc_claim(T, point, i2_lb, policy_certified, scope, conditional, cond_reasons, cond_q)
         policy_claim = self._policy_claim(T, electrical, dc_claim, point, policy_certified, curve, scope,
                                           quantity, conditional, cond_reasons, cond_q)
+        if "minimum_current" in certs and not policy_certified and point is not None:
+            certs["minimum_current"]["decided_by_consequence"] = any(
+                "certified by consequence" in e.summary for e in policy_claim.evidence)
 
         # ---------------- physical existence with DC ----------------
         physical, active = self._physical_dc(T, curve, point, screens, scope, quantity, conditional,
@@ -517,11 +524,28 @@ class PolicyEvaluator:
         ev = [Evidence.make(EvidenceKind.EXACT_ENUMERATION if curve.exact else EvidenceKind.SAMPLED,
                             f"policy point id = {point.id_A:.6f} A, iq = {point.iq_A:.6f} A, |i| = {point.i_peak_A:.6f} A")]
         if not certified:
-            return Claim("policy_static", Status.UNKNOWN, q, scope, POLICY_NAME,
-                         reasons=(Reason.NUMERICAL_UNRESOLVED,) if not curve.coverage_limited else (Reason.OUTSIDE_MODEL_DOMAIN,),
-                         evidence=tuple(ev) + (dc_claim.evidence if dc_claim else ()),
-                         qualifiers=("policy point not certified as the global minimum-current point",),
-                         detail="the minimum-current operating point could not be certified")
+            by_consequence = (not curve.coverage_limited and dc_claim is not None and self.k.i2_dc is not None
+                              and dc_claim.status in (Status.FEASIBLE, Status.INFEASIBLE))
+            if not by_consequence:
+                return Claim("policy_static", Status.UNKNOWN, q, scope, POLICY_NAME,
+                             reasons=(Reason.NUMERICAL_UNRESOLVED,) if not curve.coverage_limited else
+                             (Reason.OUTSIDE_MODEL_DOMAIN,),
+                             evidence=tuple(ev) + (dc_claim.evidence if dc_claim else ()),
+                             qualifiers=("policy point not certified as the global minimum-current point",),
+                             detail="the minimum-current operating point could not be certified")
+            # certified by consequence (engineering review 2 of 63a2b61, F-01): the true minimum-current point lies
+            # on the torque curve with I^2 in [cell-bound lower bound, found]; it meets the voltage / current / domain
+            # limits by definition, and P_dc is monotone in I^2 there - the DC claim judged both ends, so the
+            # decision holds wherever in the bracket the point lies
+            ev.append(Evidence.make(EvidenceKind.CERTIFIED_BOUND,
+                                    "decision certified by consequence over the minimum-current bracket "
+                                    "(the location of the point is not certified, the verdict is)"))
+            quals = dc_claim.qualifiers + ("policy point located within the certified current bracket; the verdict "
+                                           "holds over the whole bracket (certified by consequence)",)
+            return Claim("policy_static", dc_claim.status, q, scope, POLICY_NAME, reasons=dc_claim.reasons,
+                         evidence=tuple(ev) + dc_claim.evidence, qualifiers=quals,
+                         detail=("every admissible policy point meets every constraint incl. DC (certified by "
+                                 "consequence)" if dc_claim.status is Status.FEASIBLE else dc_claim.detail))
         st = dc_claim.status
         return Claim("policy_static", st, q, scope, POLICY_NAME, reasons=dc_claim.reasons,
                      evidence=tuple(ev) + dc_claim.evidence, qualifiers=dc_claim.qualifiers,

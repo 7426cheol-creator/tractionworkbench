@@ -25,7 +25,7 @@ from dataclasses import dataclass, replace
 import numpy as np
 
 from ..errors import InputValidationError
-from ..modulation import duties as _duties
+from ..modulation import MODULATIONS, duties as _duties
 from ..validation import finite as _finite
 from .emi import SwitchingSource, edge_lines, pwm_edges
 
@@ -1033,18 +1033,25 @@ def point_hf_losses(drive, scenario, pt, fsw_Hz: float, L_hf_H: float, modulatio
     fe_true = abs(float(pt.f_e_Hz))
     fe = max(fe_true, fsw_Hz / 400.0)                     # standstill / very low speed: quasi-static ripple
     rip = phase_ripple(vdc, m, 0.0, fe, fsw_Hz, L_hf_H, modulation, n_per_carrier=128)
+    rips = [phase_ripple(vdc, m, 0.0, fe, f_b, L_hf_H, modulation, n_per_carrier=128)
+            for f_b in carrier_brackets(fsw_Hz, fe)]
     base = {"fsw_requested_Hz": fsw_Hz, "fsw_waveform_used_Hz": rip["fsw_used_Hz"],
-            "fsw_error_percent": 100.0 * (rip["fsw_used_Hz"] - fsw_Hz) / fsw_Hz, "L_hf_H": L_hf_H,
-            "modulation_index": m, "modulation": modulation, "ripple_rms_A": rip["ripple_rms_A"],
+            "fsw_error_percent": 100.0 * (rip["fsw_used_Hz"] - fsw_Hz) / fsw_Hz,
+            "fsw_waveform_brackets_Hz": [r_["fsw_used_Hz"] for r_ in rips], "L_hf_H": L_hf_H,
+            "modulation_index": m, "modulation": modulation, "ripple_rms_A": max(r_["ripple_rms_A"] for r_ in rips),
             "ripple_quasi_static": fe_true < fsw_Hz / 400.0,
             "basis": "declared L_hf (RL switching ripple, R / back-EMF harmonics / saturation neglected)"
                      + ("" if harmonic is None else f"; harmonic data: {harmonic.basis}")}
-    if rip["overmodulation"]:
+    if any(r_["overmodulation"] for r_ in rips):
         return {**base, "status": "UNKNOWN", "copper": None, "magnetic_hf_bound_W": None, "interval_W": [None, None],
                 "reason": "modulation beyond the linear range of the declared PWM family (not evaluated)"}
-    cu = harmonic_copper_loss(rip, DriveKernel(drive, scenario).Rs, harmonic)
+    Rs = DriveKernel(drive, scenario).Rs
+    cus = [harmonic_copper_loss(r_, Rs, harmonic) for r_ in rips]
+    cu = max(cus, key=lambda c: -math.inf if c["W"] is None else c["W"])
     mag = None if harmonic is None else harmonic.magnetic_hf_bound(fsw_Hz)
-    iv = motor_hf_interval(cu, mag)
+    ivs = [motor_hf_interval(c, mag) for c in cus]
+    iv = [min(v[0] for v in ivs) if all(v[0] is not None for v in ivs) else None,
+          max(v[1] for v in ivs) if all(v[1] is not None for v in ivs) else None]
     return {**base, "status": "BOUNDED" if iv[1] is not None else "OPEN", "copper": cu, "magnetic_hf_bound_W": mag,
             "interval_W": iv, "reason": "; ".join(x for x in (
                 "" if cu["W"] is not None else cu["reason"],
@@ -1066,29 +1073,39 @@ def point_pwm_risk(drive, scenario, pt, fsw_Hz: float, L_hf_H: float, modulation
     quasi = fe_true < fsw_Hz / 400.0             # standstill / very low f_e: the ripple at a stand-in f_e (fsw / 400)
     fe = max(fe_true, fsw_Hz / 400.0)
     rip = phase_ripple(vdc, m, 0.0, fe, fsw_Hz, L_hf_H, modulation, n_per_carrier=128)
+    rips = [phase_ripple(vdc, m, 0.0, fe, f_b, L_hf_H, modulation, n_per_carrier=128)
+            for f_b in carrier_brackets(fsw_Hz, fe)]
     k = DriveKernel(drive, scenario)
     base = {"fsw_requested_Hz": fsw_Hz, "fsw_waveform_used_Hz": rip["fsw_used_Hz"],
-            "fsw_error_percent": 100.0 * (rip["fsw_used_Hz"] - fsw_Hz) / fsw_Hz, "modulation": modulation,
+            "fsw_error_percent": 100.0 * (rip["fsw_used_Hz"] - fsw_Hz) / fsw_Hz,
+            "fsw_waveform_brackets_Hz": [r_["fsw_used_Hz"] for r_ in rips], "modulation": modulation,
             "modulation_index": m, "L_hf_H": L_hf_H, "i_fund_peak_A": pt.i_peak_A,
             "current_limit_A": k.Imax, "ripple_quasi_static": quasi}
-    if rip["overmodulation"]:
+    if any(r_["overmodulation"] for r_ in rips):
         return {**base, "status": "UNKNOWN",
                 "reason": "modulation beyond the linear range of the declared PWM family (ripple not evaluated)"}
     I_f = float(pt.i_peak_A)
     rms_f = I_f / math.sqrt(2.0)
-    rr = float(rip["ripple_rms_A"])
-    bound = I_f + float(rip["ripple_peak_A"])
+    rr = max(float(r_["ripple_rms_A"]) for r_ in rips)
+    pks = [float(r_["ripple_peak_A"]) for r_ in rips]
+    bound, bound_lo = I_f + max(pks), I_f + min(pks)
     f, I = np.asarray(rip["harmonic_f_Hz"]), np.asarray(rip["harmonic_I_pk_A"])
     top = np.argsort(I)[::-1][:n_lines]
-    peak = {"bound_A": bound, "meaning": "conservative bound I_fund,pk + max|di| (fundamental and ripple peaks "
-                                         "assumed aligned) - not the exact pulse peak"}
+    peak = {"bound_A": bound, "bound_other_carrier_A": bound_lo if len(rips) > 1 else None,
+            "meaning": "conservative bound I_fund,pk + max|di| (fundamental and ripple peaks assumed aligned) - not "
+                       "the exact pulse peak; the larger of the two synchronous carriers bracketing the requested one"}
     if peak_limit_A is None:
         peak.update(status="UNKNOWN", reason="no device / over-current peak limit declared (the fundamental current "
                                              "limit is not a peak limit)")
+    elif bound <= peak_limit_A:
+        peak.update(limit_A=float(peak_limit_A), status="WITHIN", reason="")
+    elif bound_lo > peak_limit_A:
+        peak.update(limit_A=float(peak_limit_A), status="EXCEEDS_BOUND",
+                    reason="the conservative bound exceeds the declared peak limit (the exact peak may still be lower)")
     else:
-        peak.update(limit_A=float(peak_limit_A), status="WITHIN" if bound <= peak_limit_A else "EXCEEDS_BOUND",
-                    reason="" if bound <= peak_limit_A else "the conservative bound exceeds the declared peak limit "
-                                                            "(the exact peak may still be lower)")
+        peak.update(limit_A=float(peak_limit_A), status="UNKNOWN",
+                    reason="the two synchronous carriers bracketing the requested frequency disagree on the declared "
+                           "peak limit: the verdict depends on the approximation")
     out = {**base, "status": "EVALUATED",
            "fundamental": {"i_peak_A": I_f, "limit_A": k.Imax, "margin_A": k.Imax - I_f,
                            "meaning": "the policy's current limit: the fundamental dq norm"},
@@ -1147,6 +1164,26 @@ NA_CHECKS = ("current_sampling", "Tj", "peak_current", "capacitor_rms", "phase_m
              "transitions", "chatter")
 
 
+def carrier_brackets(fsw_Hz: float, fe_Hz: float) -> list:
+    """Carrier frequencies at which the waveform models (one fundamental period, synchronous regular-sampled carrier)
+    are evaluated for a requested ``fsw_Hz``: the requested frequency itself when fsw / fe is an integer, else the two
+    synchronous carriers that bracket it, floor(fsw / fe) fe and ceil(fsw / fe) fe (review of 63a2b61, 3.3).  The
+    nearest integer alone replaced 10 kHz by 10.26 kHz at 733 Hz; the pair shows how much the approximation moves a
+    waveform result, and a limit decision is taken only where both carriers agree.  A sensitivity bracket of the
+    synchronous approximation, not a bound on an asynchronous waveform's carrier-phase drift."""
+    r = fsw_Hz / fe_Hz
+    n = round(r)
+    if n >= 1 and abs(r - n) <= 1e-9 * r:
+        return [float(fsw_Hz)]
+    lo, hi = max(1, math.floor(r)), max(1, math.ceil(r))
+    return [float(lo * fe_Hz)] if lo == hi else [float(lo * fe_Hz), float(hi * fe_Hz)]
+
+
+def _span(vals: list) -> tuple:
+    """(min, max) of values that are all established, else (None, None)."""
+    return (None, None) if (not vals or any(v is None for v in vals)) else (min(vals), max(vals))
+
+
 def _segment_eval(base_drive, cand, seg: dict, fsw: float, coolant_C: float, limits_dc, timing: TimingConfig,
                   loop: CurrentLoop | None, L_hf_H: float, harmonic: HarmonicLossData | None, bank, source,
                   modulation: str, sensing: SensingConfig | None = None) -> dict:
@@ -1180,52 +1217,84 @@ def _segment_eval(base_drive, cand, seg: dict, fsw: float, coolant_C: float, lim
     m = float(d.get("modulation_index") or 0.0)
     fe_true = abs(float(seg["speed_rpm"])) * base_drive.motor.pole_pairs / 60.0
     fe = max(fe_true, fsw / 400.0)
-    rip = phase_ripple(vdc, m, 0.0, fe, fsw, L_hf_H, modulation, n_per_carrier=128)
-    # conservative bound: the fundamental peak and the ripple peak assumed aligned (not the exact pulse peak)
-    ipk = p["i_peak_A"] + rip["ripple_peak_A"]
+    near = phase_ripple(vdc, m, 0.0, fe, fsw, L_hf_H, modulation, n_per_carrier=128)   # nearest synchronous carrier
+    brk = carrier_brackets(fsw, fe)
+    rips = [phase_ripple(vdc, m, 0.0, fe, f_b, L_hf_H, modulation, n_per_carrier=128) for f_b in brk]
+    rip = max(rips, key=lambda r_: r_["ripple_peak_A"])
+    # conservative bound: the fundamental peak and the ripple peak assumed aligned (not the exact pulse peak); the
+    # larger / smaller of the two bracketing carriers (a decision is taken only where both agree)
+    pk = [r_["ripple_peak_A"] for r_ in rips]
+    ipk, ipk_lo = p["i_peak_A"] + max(pk), p["i_peak_A"] + min(pk)
     mp = minimum_pulse(m, modulation, fsw, timing.min_pulse_s)
     from ..physics import DriveKernel
     Rs_T = DriveKernel(base_drive, sc).Rs                 # the same R_s(T) as the fundamental copper loss
-    hcu = harmonic_copper_loss(rip, Rs_T, harmonic)
+    hcus = [harmonic_copper_loss(r_, Rs_T, harmonic) for r_ in rips]
+    w_lo, w_hi = _span([h["W"] for h in hcus])
+    lb = min(h["lower_bound_W"] for h in hcus) if all(h["lower_bound_W"] is not None for h in hcus) else None
+    hcu = {**min(hcus, key=lambda h: h["lower_bound_W"] if h["lower_bound_W"] is not None else math.inf),
+           "W": w_lo, "lower_bound_W": lb}
     mag = None if harmonic is None else harmonic.magnetic_hf_bound(fsw)
+    hf = [motor_hf_interval(h, mag) for h in hcus]
+    hf_iv = [min(v[0] for v in hf) if all(v[0] is not None for v in hf) else None,
+             max(v[1] for v in hf) if all(v[1] is not None for v in hf) else None]
     out.update({"P_inv_W": p["Pinv_W"], "P_cu_fund_W": p["Pcu_W"], "P_dc_W": p["Pdc_W"], "i_peak_A": p["i_peak_A"],
-                "ripple_rms_A": rip["ripple_rms_A"], "ripple_rms_spectrum_A": rip["ripple_rms_spectrum_A"],
-                "ripple_peak_A": rip["ripple_peak_A"], "i_peak_bound_A": ipk,
+                "ripple_rms_A": max(r_["ripple_rms_A"] for r_ in rips),
+                "ripple_rms_spectrum_A": max(r_["ripple_rms_spectrum_A"] for r_ in rips),
+                "ripple_peak_A": max(pk), "i_peak_bound_A": ipk, "i_peak_bound_lo_A": ipk_lo,
                 "ripple_quasi_static": fe_true < fsw / 400.0, "modulation_index": m,
                 "pulse_ratio": (fsw / fe_true) if fe_true > 0 else None, "narrowest_pulse_s": mp["narrowest_pulse_s"],
                 "min_pulse_ok": mp["ok"],
-                "P_cu_pwm_W": hcu["W"], "P_cu_pwm_lower_bound_W": hcu["lower_bound_W"],
+                "P_cu_pwm_W": w_lo, "P_cu_pwm_upper_W": w_hi, "P_cu_pwm_lower_bound_W": lb,
                 "P_cu_pwm_status": hcu["status"], "P_cu_pwm_reason": hcu["reason"],
                 "rac_coverage_I2_fraction": hcu["rac_coverage_I2_fraction"], "harmonic_bandwidth_Hz": hcu["bandwidth_Hz"],
                 "Rs_T_ohm": Rs_T, "P_mag_hf_bound_W": mag,
-                "motor_hf_interval_W": motor_hf_interval(hcu, mag),
-                "fsw_requested_Hz": fsw, "fsw_waveform_used_Hz": rip["fsw_used_Hz"],
-                "fsw_error_percent": 100.0 * (rip["fsw_used_Hz"] - fsw) / fsw,
-                "linear_modulation": not rip["overmodulation"],
+                "motor_hf_interval_W": hf_iv,
+                "fsw_requested_Hz": fsw, "fsw_waveform_used_Hz": near["fsw_used_Hz"],
+                "fsw_error_percent": 100.0 * (near["fsw_used_Hz"] - fsw) / fsw,
+                "fsw_waveform_brackets_Hz": [r_["fsw_used_Hz"] for r_ in rips],
+                "linear_modulation": not any(r_["overmodulation"] for r_ in rips),
                 "iq_A": p.get("iq_A"), "vq_V": p.get("vq_V"), "voltage_budget_V": p.get("voltage_budget_V")})
     if sensing is not None:
-        sv = sampling_validity(m, modulation, fsw, fe_true, sensing, getattr(cand.model, "deadtime_s", 0.0) or 0.0,
-                               p["i_peak_A"], 0.5 * m * vdc, L_hf_H)
+        svs = [sampling_validity(m, modulation, f_b, fe_true, sensing, getattr(cand.model, "deadtime_s", 0.0) or 0.0,
+                                 p["i_peak_A"], 0.5 * m * vdc, L_hf_H) for f_b in brk]
+        sv = svs[0] if len(svs) == 1 else _bracket_sampling(svs, [r_["fsw_used_Hz"] for r_ in rips])
         out["sampling"] = {k: sv[k] for k in ("status", "valid_fraction", "n_invalid", "n_samples", "max_age_s",
                                               "error_bound_A", "skew_error_bound_A", "min_window_s", "violations",
                                               "unknown", "quasi_static")}
     if bank is not None and fe_true > 0:
         pf = d.get("power_factor")
         phi = math.acos(max(-1.0, min(1.0, float(pf)))) if (pf is not None and math.isfinite(pf)) else 0.0
-        cr = ripple_analysis(p["i_peak_A"], m, phi, fe_true, fsw, vdc, bank, source, modulation,
-                             T_ref_C=coolant_C)             # the capacitor's boundary: the declared coolant
-        out["I_cap_rms_A"] = cr["I_cap_rms_A"]
-        out["P_cap_W"] = cr["P_cap_W"]
-        out["fsw_capacitor_used_Hz"] = (cr.get("operating") or {}).get("fsw_used_Hz")
+        crs = [ripple_analysis(p["i_peak_A"], m, phi, fe_true, f_b, vdc, bank, source, modulation, T_ref_C=coolant_C)
+               for f_b in carrier_brackets(fsw, fe_true)]    # the capacitor's boundary: the declared coolant
+        out["I_cap_rms_lo_A"], out["I_cap_rms_A"] = _span([c["I_cap_rms_A"] for c in crs])
+        out["P_cap_lo_W"], out["P_cap_W"] = _span([c["P_cap_W"] for c in crs])
+        out["fsw_capacitor_used_Hz"] = [(c.get("operating") or {}).get("fsw_used_Hz") for c in crs]
     return out
+
+
+def _bracket_sampling(svs: list, fsws: list) -> dict:
+    """Sampling validity at the two bracketing carriers: a violation only when both carriers violate, a split
+    verdict is open (it depends on the synchronous approximation); windows / errors at the worse carrier."""
+    worst = min(svs, key=lambda s: (s["min_window_s"], -s["n_invalid"]))
+    both = all(s["violations"] for s in svs)
+    split = any(s["violations"] for s in svs) and not both
+    unknown = sorted({u for s in svs for u in s["unknown"]})
+    if split:
+        which = ", ".join(f"{f / 1e3:.4g} kHz: {'violation' if s['violations'] else 'valid'}" for s, f in zip(svs, fsws))
+        unknown.append(f"the sampling verdict depends on the synchronous-carrier approximation ({which})")
+    viol = worst["violations"] if both else []
+    return {**worst, "violations": viol, "unknown": unknown,
+            "status": "VIOLATION" if viol else ("UNKNOWN" if unknown else "OK")}
 
 
 def evaluate_policies(base_drive, cand, segments: list[dict], policies: list, coolant_C: float, limits_dc,
                       timing: TimingConfig, L_hf_H: float, loop: CurrentLoop | None = None,
                       harmonic: HarmonicLossData | None = None, bank=None, source=None, modulation: str = "svpwm",
                       limits: PwmLimits | None = None, sensing: SensingConfig | None = None,
-                      measurement_noise: dict | None = None) -> dict:
+                      measurement_noise: dict | None = None, capacitor_in_boundary: bool = False) -> dict:
     """Every policy on the SAME trajectory, source and coolant; the first policy is the baseline.
+    ``capacitor_in_boundary``: the DC-link capacitor ESR loss is declared inside the energy comparison boundary
+    (it then enters every policy's energy interval; otherwise it is shown separately, never silently added).
 
     ``cand``: efficiency.ModuleCandidate (module data, own thermal path).  Segments carry duration_s, speed_rpm,
     torque_Nm, Vdc_V and optionally sensor_temp_C (the observable temperature the schedule may use).
@@ -1234,9 +1303,8 @@ def evaluate_policies(base_drive, cand, segments: list[dict], policies: list, co
     current loop at the new segment's operating point (gain / integrator mapping, saturation)."""
     if not policies:
         raise InputValidationError("no policies", field="policies")
-    if modulation not in ("svpwm", "spwm"):
-        raise InputValidationError("the policy evaluation's ripple / sampling / edge models support svpwm and spwm",
-                                   field="modulation")
+    if modulation not in MODULATIONS:
+        raise InputValidationError(f"modulation must be one of {', '.join(MODULATIONS)}", field="modulation")
     declared_mod = getattr(cand.model, "modulation", modulation)
     if declared_mod != modulation:                   # ONE pulse pattern for losses, ripple, sampling and capacitor
         cand = replace(cand, model=replace(cand.model, modulation=modulation))
@@ -1269,7 +1337,7 @@ def evaluate_policies(base_drive, cand, segments: list[dict], policies: list, co
             prev_fsw = fsw
             rows.append(ev)
             t_now += float(seg["duration_s"])
-        agg = _aggregate(pol, rows, events, lim, loop)
+        agg = _aggregate(pol, rows, events, lim, loop, capacitor_in_boundary)
         ch = chatter_risk(pol, measurement_noise) if not pol.is_fixed else {"rows": [], "violations": [], "unknown": []}
         agg["chatter"] = ch
         agg["violations"] += ch["violations"]
@@ -1294,7 +1362,7 @@ def evaluate_policies(base_drive, cand, segments: list[dict], policies: list, co
                                   "note": None if declared_mod == modulation else
                                   "the module data's declared modulation is replaced by the policy's: one pulse pattern "
                                   "for losses, ripple, sampling and capacitor current"},
-            "energy_control_volume": ENERGY_CONTROL_VOLUME,
+            "energy_control_volume": energy_control_volume(capacitor_in_boundary),
             "peak_current_meaning": "conservative bound I_fund,pk + max|di|: the fundamental peak and the ripple peak "
                                     "assumed aligned - not the exact pulse peak",
             "thermal_scope": THERMAL_SCOPE,
@@ -1310,11 +1378,27 @@ ENERGY_CONTROL_VOLUME = {
     "name": "inverter semiconductors + motor PWM harmonic loss (policy-sensitive losses between the inverter HV "
             "terminal and the motor shaft)",
     "included": ["inverter semiconductor loss (module model, established)",
-                 "motor PWM harmonic copper (exact with R_ac(f) data, else its R_dc lower bound)",
+                 "motor PWM harmonic copper (exact with R_ac(f) data, else its R_dc lower bound; an interval between "
+                 "the two synchronous carriers bracketing a non-integer pulse ratio)",
                  "motor Fe+PM HF magnetic loss as its declared upper bound (interval end, never an expected value)"],
     "excluded": ["fundamental copper: the same operating point for every policy (kept in each policy's ledger)",
                  "DC-link capacitor ESR loss: ownership not declared - shown separately (E_cap_J)",
-                 "gate drive / controller LV power: external LV supply, not an HV efficiency term"]}
+                 "gate drive / controller LV power: external LV supply, not an HV efficiency term",
+                 "anything else outside the boundary (battery, reducer, auxiliaries): a policy ranking here is not "
+                 "a whole-drivetrain efficiency ranking"]}
+
+
+def energy_control_volume(capacitor_in_boundary: bool = False) -> dict:
+    """The declared energy comparison boundary; with the capacitor declared inside it, its ESR loss is an included
+    term (an interval over the bracketing carriers, open where it is not established)."""
+    if not capacitor_in_boundary:
+        return ENERGY_CONTROL_VOLUME
+    return {"name": ENERGY_CONTROL_VOLUME["name"].replace("harmonic loss (", "harmonic loss + DC-link capacitor ESR "
+                                                                            "loss ("),
+            "included": ENERGY_CONTROL_VOLUME["included"] + [
+                "DC-link capacitor ESR loss (declared inside the boundary; open where not established)"],
+            "excluded": [x for x in ENERGY_CONTROL_VOLUME["excluded"] if not x.startswith("DC-link capacitor")]}
+
 
 THERMAL_SCOPE = ("module Tj per segment is a steady electrothermal fixed point at the declared coolant (Tj = T_coolant "
                  "+ Rth P_hot); the schedule's sensor temperature T_ntc is the SUPPLIED trajectory (an input "
@@ -1349,7 +1433,8 @@ def _status(viol, required_unknown, open_, delivered) -> str:
     return "ADMISSIBLE"
 
 
-def _aggregate(pol, rows, events, lim: PwmLimits, loop: CurrentLoop | None = None) -> dict:
+def _aggregate(pol, rows, events, lim: PwmLimits, loop: CurrentLoop | None = None,
+               capacitor_in_boundary: bool = False) -> dict:
     viol, unknown, advisory = [], [], []
     na = set(lim.not_applicable)
 
@@ -1410,17 +1495,22 @@ def _aggregate(pol, rows, events, lim: PwmLimits, loop: CurrentLoop | None = Non
             return None
         return float(sum(v * r["duration_s"] for v, r in zip(vals, rows)))
     E_inv, E_cu, E_h = tot("P_inv_W"), tot("P_cu_fund_W"), tot("P_cu_pwm_W")
+    E_h_hi = tot("P_cu_pwm_upper_W")
     E_h_lb, E_mag, E_cap = tot("P_cu_pwm_lower_bound_W"), tot("P_mag_hf_bound_W"), tot("P_cap_W")
+    E_cap_lo = tot("P_cap_lo_W")
     tj = [r["Tj_C"] for r in rows if r.get("Tj_C") is not None]
     ipk = [r["i_peak_bound_A"] for r in rows if r.get("i_peak_bound_A") is not None]
+    ipk_lo = [r.get("i_peak_bound_lo_A", r["i_peak_bound_A"]) for r in rows if r.get("i_peak_bound_A") is not None]
     ferr = [abs(r["fsw_error_percent"]) for r in rows if r.get("fsw_error_percent") is not None]
     if ferr and max(ferr) > 0.5:
         k = max(range(len(rows)), key=lambda j: abs(rows[j].get("fsw_error_percent") or 0.0))
-        advisory.append(f"segment {k + 1}: waveform models (ripple, sampling, capacitor) use the synchronous carrier "
-                        f"{rows[k]['fsw_waveform_used_Hz'] / 1e3:.4g} kHz, the module loss and the schedule the "
-                        f"requested {rows[k]['fsw_requested_Hz'] / 1e3:.4g} kHz "
-                        f"({rows[k]['fsw_error_percent']:+.3g} %)")
+        brk = rows[k].get("fsw_waveform_brackets_Hz") or [rows[k]["fsw_waveform_used_Hz"]]
+        advisory.append(f"segment {k + 1}: waveform models (ripple, sampling, capacitor) evaluated at the synchronous "
+                        f"carriers {' and '.join(f'{f / 1e3:.4g}' for f in brk)} kHz bracketing the requested "
+                        f"{rows[k]['fsw_requested_Hz'] / 1e3:.4g} kHz of the module loss and the schedule (nearest "
+                        f"{rows[k]['fsw_error_percent']:+.3g} %); a limit is decided only where both agree")
     icap = [r["I_cap_rms_A"] for r in rows if r.get("I_cap_rms_A") is not None]
+    icap_lo = [r.get("I_cap_rms_lo_A", r["I_cap_rms_A"]) for r in rows if r.get("I_cap_rms_A") is not None]
     pm = [r["timing"].get("phase_margin_deg") for r in rows if r["timing"].get("phase_margin_deg") is not None]
     np_ = [r["pulse_ratio"] for r in rows if r.get("pulse_ratio") is not None]
     if any(not r["timing"]["deadline_ok"] for r in rows):
@@ -1431,13 +1521,13 @@ def _aggregate(pol, rows, events, lim: PwmLimits, loop: CurrentLoop | None = Non
                     ", ".join(str(k + 1) for k in unstable) + " - a positive continuous margin is not sufficient")
     if any(r.get("min_pulse_ok") is False for r in rows):
         viol.append("commanded pulse narrower than the declared minimum")
-    for check, name, vals, limit, hi in (("Tj", "Tj", tj, lim.Tj_max_C, True),
-                                         ("peak_current", "peak-current conservative bound (I_fund,pk + max|di|)",
-                                          ipk, lim.i_peak_incl_ripple_max_A, True),
-                                         ("capacitor_rms", "capacitor RMS current", icap, lim.cap_rms_max_A, True),
-                                         ("phase_margin", "current-loop phase margin", pm, lim.phase_margin_min_deg,
-                                          False),
-                                         ("pulse_ratio", "pulse ratio", np_, lim.pulse_ratio_min, False)):
+    for check, name, vals, vals_lo, limit, hi in (
+            ("Tj", "Tj", tj, None, lim.Tj_max_C, True),
+            ("peak_current", "peak-current conservative bound (I_fund,pk + max|di|)", ipk, ipk_lo,
+             lim.i_peak_incl_ripple_max_A, True),
+            ("capacitor_rms", "capacitor RMS current", icap, icap_lo, lim.cap_rms_max_A, True),
+            ("phase_margin", "current-loop phase margin", pm, None, lim.phase_margin_min_deg, False),
+            ("pulse_ratio", "pulse ratio", np_, None, lim.pulse_ratio_min, False)):
         if check in na:
             continue
         if limit is None:
@@ -1448,38 +1538,56 @@ def _aggregate(pol, rows, events, lim: PwmLimits, loop: CurrentLoop | None = Non
             if not vals:
                 continue
         worst = max(vals) if hi else min(vals)
-        if (worst > limit) if hi else (worst < limit):
+        worst_lo = worst if not vals_lo else (max(vals_lo) if hi else min(vals_lo))
+        over, over_lo = ((worst > limit), (worst_lo > limit)) if hi else ((worst < limit), (worst_lo < limit))
+        if over and over_lo:
             viol.append(f"{name} {worst:.4g} vs limit {limit:g}")
+        elif over:
+            need(check, f"{name} {worst_lo:.4g} .. {worst:.4g} vs limit {limit:g}: the two synchronous carriers "
+                        f"bracketing the requested frequency disagree - the verdict depends on the approximation")
     status = _status(viol, unknown, open_, delivered)
     return {"policy": pol.describe(), "segments": rows, "transitions": events, "violations": viol,
             "unverified": unknown + advisory, "unverified_required": unknown, "advisory": advisory,
             "not_applicable_declared": sorted(na), "status": status, "admissible": status == "ADMISSIBLE",
             "delivered": delivered,
             "E_inv_J": E_inv, "E_cu_fund_J": E_cu, "E_cu_pwm_J": E_h, "E_cu_pwm_lower_bound_J": E_h_lb,
-            "E_mag_hf_bound_J": E_mag, "E_cap_J": E_cap, "energy": policy_energy(E_inv, E_h, E_h_lb, E_mag),
+            "E_mag_hf_bound_J": E_mag, "E_cap_J": E_cap, "E_cap_lower_J": E_cap_lo, "E_cu_pwm_upper_J": E_h_hi,
+            "energy": policy_energy(E_inv, E_h, E_h_lb, E_mag, E_cu_pwm_hi=E_h_hi,
+                                    E_cap=(E_cap_lo, E_cap) if capacitor_in_boundary else None),
             "Tj_max_C": max(tj) if tj else None, "i_peak_bound_max_A": max(ipk) if ipk else None,
             "I_cap_rms_max_A": max(icap) if icap else None, "phase_margin_min_deg": min(pm) if pm else None,
             "pulse_ratio_min": min(np_) if np_ else None,
             "fsw_waveform_error_max_percent": max(ferr) if ferr else None}
 
 
-def policy_energy(E_inv, E_cu_pwm, E_cu_pwm_lb, E_mag) -> dict:
-    """Policy-sensitive energy inside the control volume 'inverter semiconductors + motor PWM harmonic loss' as an
-    interval: known = inverter energy (established); the motor PWM copper is exact with R_ac(f) data, otherwise only
-    its R_dc lower bound; the Fe+PM HF part is at most its declared bound.  The upper end is open (None) while the
-    copper is only lower-bounded or the bound is missing - an unknown is never filled with 0."""
+def policy_energy(E_inv, E_cu_pwm, E_cu_pwm_lb, E_mag, E_cu_pwm_hi=None, E_cap=None) -> dict:
+    """Policy-sensitive energy inside the control volume 'inverter semiconductors + motor PWM harmonic loss' (+ the
+    DC-link capacitor ESR loss when it is declared inside the boundary) as an interval: known = inverter energy
+    (established); the motor PWM copper is exact with R_ac(f) data - between ``E_cu_pwm`` and ``E_cu_pwm_hi`` when
+    the two synchronous carriers bracketing a non-integer pulse ratio give different values - otherwise only its R_dc
+    lower bound; the Fe+PM HF part is at most its declared bound.  ``E_cap``: (lower, upper) capacitor energy, the
+    upper None when a segment's ESR loss is not established (its lower end then counts the established segments).
+    The upper end is open (None) while any part is only lower-bounded or a bound is missing - an unknown is never
+    filled with 0."""
     if E_inv is None:
         return {"lower_J": None, "upper_J": None, "status": "UNKNOWN", "reason": "inverter energy not established"}
     cu_lo = E_cu_pwm if E_cu_pwm is not None else E_cu_pwm_lb
+    cu_hi = None if E_cu_pwm is None else (E_cu_pwm if E_cu_pwm_hi is None else E_cu_pwm_hi)
     lo = None if cu_lo is None else E_inv + cu_lo
-    hi = None if (E_cu_pwm is None or E_mag is None) else E_inv + E_cu_pwm + E_mag
+    hi = None if (cu_hi is None or E_mag is None) else E_inv + cu_hi + E_mag
     why = []
     if E_cu_pwm is None:
         why.append("motor PWM copper: R_dc lower bound only (no R_ac(f) coverage)")
     if E_mag is None:
         why.append("Fe+PM HF magnetic loss: no declared bound at every carrier frequency")
+    if E_cap is not None:
+        c_lo, c_hi = E_cap
+        lo = None if lo is None else lo + (c_lo or 0.0)
+        hi = None if (hi is None or c_hi is None) else hi + c_hi
+        if c_hi is None:
+            why.append("DC-link capacitor ESR loss: not established in every segment")
     return {"lower_J": lo, "upper_J": hi, "known_J": E_inv, "status": "BOUNDED" if hi is not None else "OPEN",
-            "reason": "; ".join(why)}
+            "reason": "; ".join(why), "capacitor_in_boundary": E_cap is not None}
 
 
 def _versus(base: dict, o: dict) -> dict:
@@ -1524,7 +1632,10 @@ def _pareto(rows: list) -> list:
     """Non-dominated admissible policies on (inverter energy, motor+inverter policy energy as an INTERVAL, peak Tj,
     peak-current bound, capacitor current, -phase margin).  Point objectives that are None for any policy are left
     out; the interval objective dominates only by separation (a's upper end <= b's lower end) - overlapping or open
-    intervals never decide, the Fe+PM bound is never an expected value."""
+    intervals never decide, the Fe+PM bound is never an expected value.  Two EQUAL intervals are not equal values:
+    the open parts belong to each policy (its own carrier frequencies), not to a common unknown that cancels, so
+    equal non-degenerate or open intervals do not decide either (review of 63a2b61, 2.1); only point intervals
+    (every part exact) that coincide are equal energies."""
     keys = [("E_inv_J", 1), ("Tj_max_C", 1), ("i_peak_bound_max_A", 1), ("I_cap_rms_max_A", 1),
             ("phase_margin_min_deg", -1)]
     keys = [(k, s) for k, s in keys if all(r.get(k) is not None for r in rows)]
@@ -1543,9 +1654,7 @@ def _pareto(rows: list) -> list:
             le = all(s * b[k] <= s * a[k] for k, s in keys)
             lt = any(s * b[k] < s * a[k] for k, s in keys)
             e_le_ba, e_lt_ba = e_le(b, a)
-            same_energy = (b["energy"]["lower_J"], b["energy"]["upper_J"]) == (a["energy"]["lower_J"],
-                                                                                a["energy"]["upper_J"])
-            if le and (e_le_ba or same_energy) and (lt or e_lt_ba):
+            if le and e_le_ba and (lt or e_lt_ba):
                 dom = True
                 break
         if not dom:

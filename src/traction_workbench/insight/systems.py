@@ -321,51 +321,102 @@ def emi_insight(res: dict) -> Insight:
     dom = res.get("domain") or []
     g = np.asarray(res.get("grid_Hz") if res.get("grid_Hz") is not None else [], float)
     A = np.asarray(res.get("required_attenuation_dB") if res.get("required_attenuation_dB") is not None else [], float)
+    Ab = np.asarray(res.get("required_attenuation_bound_dB") if res.get("required_attenuation_bound_dB") is not None
+                    else [], float)
     src_dom = np.asarray(res.get("dominant_source") if res.get("dominant_source") is not None else [], dtype=object)
     d0 = next((d for d in dom if d.get("min_margin_dB") is not None), None)
     prof = res.get("profile") or {}
+    band = res.get("band") or {}
     if d0:
-        m = d0["min_margin_dB"]
-        head = tr(f"전도성 방출 ({num(d0['lo_Hz'] / 1e6)}–{num(d0['hi_Hz'] / 1e6)} MHz, 스크리닝): 최소 여유 {num(m, 4)} dB @ "
-                  f"{num(d0['f_min_margin_Hz'] / 1e6, 4)} MHz — " + ("한계 초과 예측" if m < 0 else "한계 안"),
-                  f"conducted emission ({num(d0['lo_Hz'] / 1e6)}–{num(d0['hi_Hz'] / 1e6)} MHz, screening): minimum margin "
-                  f"{num(m, 4)} dB @ {num(d0['f_min_margin_Hz'] / 1e6, 4)} MHz — " + ("exceedance predicted" if m < 0 else "within the limit"))
+        m = d0.get("min_margin_est_dB")
+        fm = d0.get("f_min_margin_est_Hz")
+        if m is None:
+            m, fm = d0["min_margin_dB"], d0["f_min_margin_Hz"]
+        head = tr(f"전도성 방출 ({num(d0['lo_Hz'] / 1e6)}–{num(d0['hi_Hz'] / 1e6)} MHz, 스크리닝): 추정 최소 여유 {num(m, 4)} dB @ "
+                  f"{num(fm / 1e6, 4)} MHz — " + ("한계 초과 예측" if m < 0 else "한계 안")
+                  + f" (상한 기준 {num(d0['min_margin_dB'], 4)} dB)",
+                  f"conducted emission ({num(d0['lo_Hz'] / 1e6)}–{num(d0['hi_Hz'] / 1e6)} MHz, screening): estimated minimum "
+                  f"margin {num(m, 4)} dB @ {num(fm / 1e6, 4)} MHz — " + ("exceedance predicted" if m < 0 else "within the limit")
+                  + f" (on the bound {num(d0['min_margin_dB'], 4)} dB)")
     else:
         head = tr("전도성 방출: ", "conducted emission: ") + esc(engine_parts(c.get("detail", "")))
     ins = Insight(headline=head, verdict=verdict_of(c))
     if d0:
-        ins.metrics += [(tr("최소 여유", "minimum margin"), f"{num(d0['min_margin_dB'], 4)} dB", "bad" if d0["min_margin_dB"] < 0 else "ok"),
-                        (tr("최대 방출", "peak emission"), f"{num(d0.get('E_sup_dBuV'), 4)} dBµV", "info")]
+        me = d0.get("min_margin_est_dB")
+        if me is not None:
+            ins.metrics.append((tr("최소 여유 (추정)", "minimum margin (estimate)"), f"{num(me, 4)} dB", "bad" if me < 0 else "ok"))
+        ins.metrics += [(tr("최소 여유 (상한)", "minimum margin (bound)"), f"{num(d0['min_margin_dB'], 4)} dB",
+                         "warn" if d0["min_margin_dB"] < 0 else "ok"),
+                        (tr("최대 방출 추정 / 상한", "peak emission estimate / bound"),
+                         f"{num(d0.get('E_est_sup_dBuV'), 4)} / {num(d0.get('E_sup_dBuV'), 4)} dBµV", "info")]
     fin = np.isfinite(A) if A.size else np.array([], bool)
+    ax = res.get("required_attenuation_max")
     if A.size and fin.any():
         j = int(np.nanargmax(np.where(fin, A, -np.inf)))
-        ins.metrics.append((tr("최대 필요 감쇠", "max required attenuation"), f"{num(A[j], 4)} dB", "warn" if A[j] > 0 else "ok"))
+        a_max = ax["estimate_dB"] if ax else float(A[j])      # exact over the band when evaluated, else the grid
+        ins.metrics.append((tr("최대 필요 감쇠 (추정)", "max required attenuation (estimate)"), f"{num(a_max, 4)} dB",
+                            "warn" if a_max > 0 else "ok"))
         s = ins.section(tr("대역별 필요 감쇠와 지배 경로", "required attenuation and dominant path per band"),
-                        tr("필요 감쇠 = 예측 방출 − (한계 − 설계 예비). CM(공통모드)·DM(차동모드) 중 큰 쪽이 필터 설계를 정합니다.",
-                           "required attenuation = predicted emission − (limit − design reserve); the larger of the common-mode "
-                           "and differential-mode paths drives the filter."))
+                        tr("필요 감쇠 = 추정 방출 + 보정 오차 − (한계 − 설계 예비). 선합 상한 기준 값을 옆에 적습니다 — 필터를 상한으로 "
+                           "설계하면 추정보다 그만큼 과설계됩니다. CM(공통모드)·DM(차동모드) 중 큰 쪽이 필터 설계를 정합니다. "
+                           "대역별 값은 표시 격자 점에서 읽은 값이고, 대역 전체의 정확한 최대는 위 지표입니다.",
+                           "required attenuation = estimated emission + model error − (limit − design reserve); the figure on "
+                           "the line-sum bound is shown next to it — a filter sized on the bound is over-specified by the "
+                           "difference. The larger of the common-mode and differential-mode paths drives the filter. The "
+                           "per-band values are read at the display-grid points; the exact maximum over the band is the "
+                           "metric above."))
         for lo, hi in ((0.15e6, 0.5e6), (0.5e6, 2e6), (2e6, 10e6), (10e6, 30e6)):
             mk = (g >= lo) & (g <= hi) & fin
             if not mk.any():
                 continue
             k = int(np.nanargmax(np.where(mk, A, -np.inf)))
             cm = int(np.sum(src_dom[mk] == "CM")) if src_dom.size == g.size else 0
-            s.add(tr(f"{num(lo / 1e6)}–{num(hi / 1e6)} MHz: 최대 {num(A[k], 4)} dB @ {num(g[k] / 1e6, 4)} MHz — CM 지배 {cm}/{int(mk.sum())} 점",
-                     f"{num(lo / 1e6)}–{num(hi / 1e6)} MHz: up to {num(A[k], 4)} dB @ {num(g[k] / 1e6, 4)} MHz — CM-dominated at "
-                     f"{cm}/{int(mk.sum())} points"), "bad" if A[k] > 0 else "ok")
+            kb = (float(np.nanmax(np.where(mk, Ab, -np.inf))) if Ab.size == g.size else None)
+            s.add(tr(f"{num(lo / 1e6)}–{num(hi / 1e6)} MHz: 최대 {num(A[k], 4)} dB @ {num(g[k] / 1e6, 4)} MHz"
+                     + (f" (상한 기준 {num(kb, 4)} dB)" if kb is not None else "") + f" — CM 지배 {cm}/{int(mk.sum())} 점",
+                     f"{num(lo / 1e6)}–{num(hi / 1e6)} MHz: up to {num(A[k], 4)} dB @ {num(g[k] / 1e6, 4)} MHz"
+                     + (f" (on the bound {num(kb, 4)} dB)" if kb is not None else "")
+                     + f" — CM-dominated at {cm}/{int(mk.sum())} points"), "bad" if A[k] > 0 else "ok")
+    s = ins.section(tr("수신기 모델 (추정 · 상한 · 반례)", "receiver model (estimate · bound · witness)"),
+                    tr("직사각 IF·피크 검출기는 창 안 선들의 포락 최대를 읽습니다. 선의 크기 합은 그 상한일 뿐이고 (창당 선이 많을수록 "
+                       "커짐), CM 전류가 어느 레일로 돌아가는지는 모델이 정하지 못해 4가지 귀환 모델을 모두 봅니다.",
+                       "a rectangular IF with a peak detector reads the envelope maximum of the in-window lines; the "
+                       "magnitude sum is only its upper bound (larger with more lines per window), and the rail that returns "
+                       "the CM current is not fixed by this model, so four return models are evaluated."))
+    s.add(tr("추정: 직사각 IF 포락 피크 — 중점(½·½)·에지 부호(상승→HV+, 하강→HV−) 모델 중 큰 쪽, 설계 수치(필요 감쇠)의 근거",
+             "estimate: rectangular-IF envelope peak — the larger of the midpoint (½·½) and edge-sign (rising → HV+, "
+             "falling → HV−) models; the basis of the design figures (required attenuation)"), "info")
+    s.add(tr("상한: 두 포트·4개 귀환 모델(중점·에지 부호·HV+·HV−)의 선합과 가우시안 IF 가중합 중 최대 — 합격 판정(FEASIBLE)의 근거",
+             "bound: the largest of the line sums over both ports and four return models (midpoint, edge sign, HV+, HV−) "
+             "and the Gaussian-IF weighted sum — the basis of a FEASIBLE claim"), "info")
+    s.add(tr("반례: 4개 귀환 모델 중 가장 작은 포락 피크 − U− — 위반(INFEASIBLE)은 이것이 한계를 넘어야만",
+             "witness: the smallest envelope peak over the four return models − U− — a violation (INFEASIBLE) only when "
+             "it exceeds the limit"), "info")
     for d in dom:
         if d.get("min_margin_dB") is None:
             continue
         w = d.get("witness") or {}
         s = ins.section(tr("판정 근거 (정확 열거)", "the evidence (exact enumeration)"))
-        s.add(tr(f"수신기 창 {num(d.get('lines'))}개 선 · 후보 {num(d.get('candidates'))}개 전부 열거: 최대 방출 {num(d.get('E_sup_dBuV'), 5)} dBµV @ "
-                 f"{num(d.get('f_E_sup_Hz', 0) / 1e6, 5)} MHz", f"{num(d.get('lines'))} lines · {num(d.get('candidates'))} candidate "
-                 f"windows enumerated: peak {num(d.get('E_sup_dBuV'), 5)} dBµV @ {num(d.get('f_E_sup_Hz', 0) / 1e6, 5)} MHz"), "info")
+        s.add(tr(f"수신기 창 {num(d.get('lines'))}개 선 · 후보 {num(d.get('candidates'))}개 전부 열거 (창당 선 최대 "
+                 f"{num(d.get('lines_per_window_max'))}개): 추정 최대 {num(d.get('E_est_sup_dBuV'), 5)} dBµV @ "
+                 f"{num((d.get('f_E_est_sup_Hz') or 0) / 1e6, 5)} MHz, 상한 최대 {num(d.get('E_sup_dBuV'), 5)} dBµV @ "
+                 f"{num((d.get('f_E_sup_Hz') or 0) / 1e6, 5)} MHz (창당 선 {num(d.get('lines_at_E_sup'))}개)",
+                 f"{num(d.get('lines'))} lines · {num(d.get('candidates'))} candidate windows enumerated (up to "
+                 f"{num(d.get('lines_per_window_max'))} lines per window): estimate peak {num(d.get('E_est_sup_dBuV'), 5)} dBµV @ "
+                 f"{num((d.get('f_E_est_sup_Hz') or 0) / 1e6, 5)} MHz, bound peak {num(d.get('E_sup_dBuV'), 5)} dBµV @ "
+                 f"{num((d.get('f_E_sup_Hz') or 0) / 1e6, 5)} MHz ({num(d.get('lines_at_E_sup'))} lines in that window)"), "info")
         if w:
             s.add(tr(f"반례 창 {num(w.get('f_Hz', 0) / 1e6, 5)} MHz: 방출 하한 {num(w.get('E_lower_dBuV'), 5)} dBµV vs 한계 {num(w.get('limit_dBuV'))} "
                      f"(예비 뺀 {num(w.get('limit_minus_reserve_dBuV'))}) dBµV",
                      f"witness window {num(w.get('f_Hz', 0) / 1e6, 5)} MHz: emission lower bound {num(w.get('E_lower_dBuV'), 5)} dBµV "
                      f"vs limit {num(w.get('limit_dBuV'))} (less reserve {num(w.get('limit_minus_reserve_dBuV'))}) dBµV"), "bad")
+    if band.get("estimate_capped"):
+        s = ins.section(tr("추정 계산 한도", "estimate budget"))
+        s.add(tr("포락 분지한정 계산이 한도에서 멈춤 — 추정 수치는 대역 값의 하한이며 반례를 놓쳤을 수 있음 (상한 쪽은 정확)",
+                 "the envelope branch and bound stopped at its budget — the estimate figures are lower bounds of their "
+                 "band values and a witness may be missed (the bound side is exact)"), "warn")
+    if prof.get("design_reserve_declared") is False:
+        ins.metrics.append((tr("설계 예비", "design reserve"), tr("미선언 (0 dB 사용)", "not declared (0 dB used)"), "warn"))
     so = res.get("source") or {}
     if so:
         s = ins.section(tr("소스 (스위칭 파형)", "the source (switching waveform)"))

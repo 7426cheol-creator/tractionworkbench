@@ -879,7 +879,7 @@ def capability_comparison(drive: DriveModel, VA_V: float, speeds_rpm, zero_seque
 # --------------------------------------------------------------------------------------------- paired safe states
 
 def paired_state_screen(topo: OewTopology, stateA: str, stateB: str, emf_phase_peak_V: float | None = None,
-                        L0_H: float | None = None) -> dict:
+                        L0_H: float | None = None, omega_e: float | None = None) -> dict:
     """Screening of one (bridge A state, bridge B state) pair; a safe state is a property of the pair.
 
     States: pwm, asc_top (all phases to +), asc_bottom (all phases to -), off (gates off, diodes remain).
@@ -939,10 +939,47 @@ def paired_state_screen(topo: OewTopology, stateA: str, stateB: str, emf_phase_p
         out["reason"] = "back-EMF not known at this speed / temperature: rectification threshold not evaluable"
         out["reason_code"] = "MISSING_INPUT"
         return out
+    if stateA == "off" and stateB == "off" and topo.kind == "common_bus":
+        # each open winding phase sees the whole per-phase EMF, triplen (zero-sequence) part included: it is not
+        # cancelled on one bus (review 3, P3 of the OEW audit)
+        zs = topo.zero_sequence
+        out["path"] = "per phase through the A and B diodes into the one bus (phase EMF incl. the triplen part vs V)"
+        out["threshold_phase_peak_V"] = VA
+        out["emf_phase_peak_V"] = emf_phase_peak_V
+        if zs is None or omega_e is None:
+            out["status"] = "UNKNOWN"
+            out["reason"] = ("the per-phase path of a common bus carries the triplen (zero-sequence) back-EMF, which is "
+                             "not declared (never assumed zero): rectification threshold not evaluable")
+            out["reason_code"] = "MISSING_INPUT"
+            return out
+        w = abs(float(omega_e))
+        e3 = float(sum(n * w * a for n, a, _ph in zs.psi0_harmonics))
+        th = np.linspace(0.0, 2.0 * math.pi, 7201)
+        wave = -emf_phase_peak_V * np.sin(th) + w * zs.dpsi0(th)
+        k = int(np.argmax(np.abs(wave)))
+        exact = float(np.abs(wave[k]))
+        bound = emf_phase_peak_V + e3
+        out.update(emf_triplen_peak_V=e3, emf_total_bound_V=bound, emf_total_declared_phase_V=exact)
+        if exact > VA:
+            out["status"] = "UNKNOWN"
+            out["reason"] = (f"per-phase back-EMF with its triplen part peaks at {exact:.4g} V > {VA:.4g} V: diode "
+                             f"rectification charges the bus - with the source disconnected this is an overvoltage risk")
+            out["reason_code"] = "COUPLED_MODEL_REQUIRED"
+        elif bound > VA:
+            out["status"] = "UNKNOWN"
+            out["reason"] = (f"with the declared triplen phase the per-phase back-EMF peaks at {exact:.4g} V <= "
+                             f"{VA:.4g} V, but fundamental + triplen {emf_phase_peak_V:.4g} + {e3:.4g} = {bound:.4g} V "
+                             f"> {VA:.4g} V: the answer depends on the triplen phase - confirm it (FEA / measurement)")
+            out["reason_code"] = "COUPLED_MODEL_REQUIRED"
+        else:
+            out["status"] = "FEASIBLE"
+            out["reason"] = (f"per-phase back-EMF <= fundamental + triplen {bound:.4g} V <= {VA:.4g} V whatever the "
+                             f"triplen phase: no steady diode conduction (ideal diodes; transients and stray paths not "
+                             f"covered)")
+        return out
     if stateA == "off" and stateB == "off":
-        thr = VA if topo.kind == "common_bus" else (VA + VB) / SQRT3
-        path = ("per phase through the A and B diodes into the one bus (phase EMF peak vs V)" if topo.kind == "common_bus"
-                else "two phases in series through both islands (line EMF peak vs VA + VB)")
+        thr = (VA + VB) / SQRT3
+        path = "two phases in series through both islands (line EMF peak vs VA + VB; the triplen part cancels)"
     else:
         clamped = stateB if stateA == "off" else stateA
         if topo.kind == "common_bus":
@@ -969,10 +1006,11 @@ def paired_state_screen(topo: OewTopology, stateA: str, stateB: str, emf_phase_p
     return out
 
 
-def paired_state_table(topo: OewTopology, emf_phase_peak_V: float | None = None, L0_H: float | None = None) -> list:
+def paired_state_table(topo: OewTopology, emf_phase_peak_V: float | None = None, L0_H: float | None = None,
+                       omega_e: float | None = None) -> list:
     rows = []
     for a, b in itertools.product(BRIDGE_STATES, BRIDGE_STATES):
-        rows.append(paired_state_screen(topo, a, b, emf_phase_peak_V, L0_H))
+        rows.append(paired_state_screen(topo, a, b, emf_phase_peak_V, L0_H, omega_e))
     return rows
 
 

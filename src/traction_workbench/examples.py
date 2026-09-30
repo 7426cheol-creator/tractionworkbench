@@ -139,6 +139,10 @@ DRIVELINE_ROM = {
              "validated torsional model",
 }
 
+# -- fault simulation: protection architecture and safety requirements (synthetic) --------------------------------
+from .extensions.faultsim.example import FAULT_SIM  # noqa: E402  (engine-side data, used by the project below)
+
+
 SYNTHETIC_PROJECT = {
     "schema": "twb-project/1",
     "project": {
@@ -221,6 +225,11 @@ SYNTHETIC_PROJECT = {
             "provenance": {"origin": "synthetic", "source": "example FTTI chain and project rule", "revision": "1",
                            "qualified": False, "evidence": ""},
             "data": {"ftti_chains": [FTTI_CHAIN], "safe_state_rules": SAFE_STATE_RULES}},
+        "fault_sim": {
+            "provenance": {"origin": "synthetic", "source": "synthetic protection architecture and safety requirements "
+                                                          "(demonstration of the causal fault simulation)",
+                           "revision": "1", "qualified": False, "evidence": ""},
+            "data": FAULT_SIM},
         "emi_setup": {
             "provenance": {"origin": "synthetic", "source": "synthetic HV network and test setup", "revision": "1",
                            "qualified": False, "evidence": ""},

@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from conftest import emi_rail_lines, envelope_brute
 from traction_workbench import api
 from traction_workbench import spec_fixtures as sf
 from traction_workbench.errors import InputValidationError
@@ -197,9 +198,13 @@ def test_a1_module_physical_capability_keeps_the_accepted_policy_witness():
 def _env(approval=None, conditions=(), status="text is not approval", origin=None):
     from traction_workbench.analysis.rating import RatingEnvelope
     from traction_workbench.models.provenance import DataOrigin, Provenance
+    # the required conditions not stated are declared irrelevant: the rules pinned here are about approval, NaN and
+    # quadrants (an envelope with open required conditions decides nothing - engineering review 2 of 63a2b61, F-15)
+    open_ = tuple(k for k in ("coolant_temp_C", "Vdc_V", "initial_state") if k not in dict(conditions))
     return RatingEnvelope("AUDIT", "A", 10.0, (-16000.0, 16000.0), (200.0, 200.0),
                           Provenance(origin or DataOrigin.SUPPLIER, "rating sheet", "A", status),
-                          min_braking_torque_Nm=(-120.0, -120.0), conditions=conditions, approval=approval)
+                          min_braking_torque_Nm=(-120.0, -120.0), conditions=conditions, approval=approval,
+                          irrelevant_conditions=open_)
 
 
 @pytest.mark.parametrize("state", ["rejected", "not_approved", "unknown", None])
@@ -419,8 +424,12 @@ def test_pt04_current_split_and_heat_are_solved_at_one_temperature():
     src = SourceImpedance(0.005, 1e-9, "synthetic")
     r = ripple_analysis(350.0, 0.8, 0.3, 200.0, 10e3, 600.0, bank, src, T_ref_C=65.0)
     h = r["hotspot"]
-    assert h["converged"] and h["T_hot_C"] == pytest.approx(110.5491, abs=1e-4)       # not the frozen 120.4158
-    w = switching_waveform(350.0, 0.8, 0.3, 200.0, 10e3)
+    # not the frozen 120.4158; the samples per carrier follow this 10 MHz ESR table (engineering review 2 of 63a2b61,
+    # F-10): at the former fixed 128 the spectrum stopped at 640 kHz and left the table's upper band out (110.5491)
+    assert h["converged"] and h["T_hot_C"] == pytest.approx(112.1889, abs=1e-4)
+    spc = r["model_band"]["samples_per_carrier"]
+    assert spc * 10e3 / 2 >= 2 * 1e7                                     # Nyquist beyond twice the table's top
+    w = switching_waveform(350.0, 0.8, 0.3, 200.0, 10e3, "svpwm", spc)
     sp = spectrum(w["i_inv_A"], 200.0)
     f, x = sp["f_Hz"][1:], sp["complex"][1:]
     wt = np.full(f.size, 2.0)
@@ -458,7 +467,9 @@ def test_pt05_capacitor_branch_aliases_agree_and_mappings_are_explicit():
                                requirement={"location": loc, "quantity": qty, "limit": lim, "bandwidth_Hz": bw})
     a = run("capacitor_branch", "current_ac_rms")
     b = run("capacitor_branch", "capacitor_current_rms")
-    assert a["requirement_value"] == pytest.approx(110.7757, abs=1e-4) == b["requirement_value"]
+    # 110.7757 at the former fixed 128 samples per carrier: the pulse-edge time quantisation (review 2 of 63a2b61,
+    # sub-report F8) is smaller at the samples the ESR table band now sets
+    assert a["requirement_value"] == pytest.approx(110.6962, abs=1e-4) == b["requirement_value"]
     assert a["claims"]["ripple_requirement"]["status"] == b["claims"]["ripple_requirement"]["status"] == "FEASIBLE"
     assert a["requirement"]["branch"] == "capacitor_current"
     inv = run("inverter_dc_input", "current_ac_rms")
@@ -498,8 +509,12 @@ def test_pt05_frequency_wise_kcl_nyquist_band_edge_and_sampling_resolution():
     below = ripple_analysis(350.0, 0.8, 0.3, 200.0, 10e3, 600.0, _cap(), src,
                             requirement={**req, "bandwidth_Hz": 1e4 - 1.0})
     assert at["requirement_value"] > below["requirement_value"]            # the harmonic at the band edge counts
+    # the requested samples per carrier no longer set the FFT length (review 2 of 63a2b61, F-10): the resolution is the
+    # change at twice the samples actually used
+    used = at["model_band"]["samples_per_carrier"]
     fine = ripple_analysis(350.0, 0.8, 0.3, 200.0, 10e3, 600.0, _cap(), src, requirement={**req, "bandwidth_Hz": 1e4},
-                           samples_per_carrier=256)
+                           samples_per_carrier=2 * used)
+    assert fine["model_band"]["samples_per_carrier"] == 2 * used
     assert at["requirement"]["resolution_delta"] == pytest.approx(abs(fine["requirement_value"] -
                                                                       at["requirement_value"]), rel=1e-9)
     assert 0.0 < at["requirement"]["resolution_delta"] < 0.05 * at["requirement_value"]
@@ -1024,21 +1039,28 @@ def test_emc01_band_supremum_is_exact_and_independent_of_the_display_grid():
         sups.append(r["domain"][0]["E_sup_dBuV"])
         claims.append((r["claim"]["status"], tuple(r["claim"]["reasons"])))
         assert np.nanmax(r["E_dBuV"]) <= sups[-1]                    # the display grid never exceeds the bound
+        assert np.nanmax(r["E_bound_dBuV"]) <= sups[-1]
     assert max(sups) - min(sups) == 0.0 and len(set(claims)) == 1
     assert claims[0] == ("UNKNOWN", ("UNCERTAINTY_OVERLAP",))       # E + 3 > 126.2 > E - 3: neither side proven
-    # independent check: a dense receiver sweep of the direct edge sum + nodal solve reaches the same supremum
-    lo, hi = 205e3, 215e3
-    prof = _emi_profile(E, lo, hi)
-    row = E.conducted_emission_screening(src, net, prof, lo, hi, n_grid=5)["domain"][0]
-    fr = np.arange(lo, hi + 1.0, 400.0 / 8)
-
-    def port(f, key):
-        sl = E.source_lines(src, f)
-        return E.solve_network(net, f, sl["v_cm"], sl["i_dm"])[key]
-    vp, _ = E.line_sum_estimate(fr, 9000.0, 400.0, lambda f: port(f, "v_meas_plus"))
-    vm, _ = E.line_sum_estimate(fr, 9000.0, 400.0, lambda f: port(f, "v_meas_minus"))
-    dense = float(np.max(20 * np.log10(np.maximum(vp, vm) / 1e-6)))
-    assert row["E_sup_dBuV"] == pytest.approx(dense, abs=2e-6) and row["E_sup_dBuV"] >= dense
+    # independent check: a dense receiver sweep over the four CM return models (superposed solve_network runs,
+    # review 3 F-23) reaches the line-sum part of the bound exactly; the Gaussian-IF part bounds the dense Gaussian sum
+    lo, hi, fe, rbw = 205e3, 215e3, 400.0, 9000.0
+    row = E.conducted_emission_screening(src, net, _emi_profile(E, lo, hi), lo, hi, n_grid=5)["domain"][0]
+    n = np.arange(math.ceil((lo - 4.5 * rbw) / fe), math.floor((hi + 4.5 * rbw) / fe) + 1)
+    f = n * fe
+    V = emi_rail_lines(E, src, net, f)
+    absV = np.abs(np.concatenate([V[m] for m in V]))                  # 4 models x 2 ports
+    peak = absV.max(axis=0)
+    rect, gauss = [], []
+    for x in np.arange(lo, hi + 1.0, fe / 8):
+        w = (f >= x - rbw / 2 - 1e-6) & (f <= x + rbw / 2 + 1e-6)
+        rect.append(float(absV[:, w].sum(axis=1).max()))
+        gauss.append(float(np.sum(peak * 2.0 ** (-(2.0 * (f - x) / rbw) ** 2))))
+    dense_rect = 20 * math.log10(max(rect) / math.sqrt(2) / 1e-6)
+    dense_gauss = 20 * math.log10(max(gauss) / math.sqrt(2) / 1e-6)
+    assert row["E_sup_line_sum_dBuV"] == pytest.approx(dense_rect, abs=2e-6) and row["E_sup_line_sum_dBuV"] >= dense_rect
+    assert dense_gauss <= row["E_sup_gaussian_dBuV"] <= dense_gauss + 0.05       # bounded over every tuning cell
+    assert row["E_sup_dBuV"] == max(row["E_sup_line_sum_dBuV"], row["E_sup_gaussian_dBuV"])
 
 
 def test_emc01_partial_limit_units_detector_and_calibration_completeness():
@@ -1151,17 +1173,22 @@ def test_emc03_an_upper_bound_exceedance_is_not_a_violation_witness():
     sup = ref["domain"][0]["E_sup_dBuV"]
     over = E.conducted_emission_screening(src, net, _emi_profile(E, level=sup + 1.0), n_grid=20, calibration=rec)
     assert over["claim"]["status"] == "UNKNOWN" and over["claim"]["reasons"] == ["UNCERTAINTY_OVERLAP"]
-    bad = E.conducted_emission_screening(src, net, _emi_profile(E, level=sup - 4.0), n_grid=20, calibration=rec)
+    # review 3 F-11: the line sum only bounds a receiver reading from above - 4 dB below it no CM return model's
+    # rectangular-IF envelope exceeds, so there is no witness and no violation (it was INFEASIBLE on the line sum)
+    mid = E.conducted_emission_screening(src, net, _emi_profile(E, level=sup - 4.0), n_grid=20, calibration=rec)
+    assert mid["claim"]["status"] == "UNKNOWN" and mid["claim"]["reasons"] == ["UNCERTAINTY_OVERLAP"]
+    wit = float(np.nanmax(ref["E_lower_dBuV"]))              # uncalibrated: the witness level on the display grid
+    bad = E.conducted_emission_screening(src, net, _emi_profile(E, level=wit - 4.0), n_grid=20, calibration=rec)
     assert bad["claim"]["status"] == "INFEASIBLE"
     w = bad["claim"]["evidence"][0]["data"]
     assert w["E_lower_dBuV"] > w["limit_minus_reserve_dBuV"]
-    # the witness is a real receiver frequency: re-evaluating its window reproduces the lower bound's exceedance
+    # the witness is a real receiver reading: every CM return model's envelope in its window (dense time sampling of
+    # independently computed lines) reaches the reported level
     f0, f1 = w["window_Hz"]
-    n = np.arange(math.ceil(f0 / 400.0), math.floor(f1 / 400.0) + 1) * 400.0
-    sl = E.source_lines(src, n)
-    nw = E.solve_network(net, n, sl["v_cm"], sl["i_dm"])
-    lvl = 20 * np.log10(max(np.abs(nw["v_meas_plus"]).sum(), np.abs(nw["v_meas_minus"]).sum()) / math.sqrt(2) / 1e-6)
-    assert lvl - 3.0 > sup - 4.0
+    n = np.arange(math.ceil(f0 / 400.0), math.floor(f1 / 400.0) + 1)
+    V = emi_rail_lines(E, src, net, n * 400.0)
+    lvl = 20 * math.log10(min(max(envelope_brute(V[m][0]), envelope_brute(V[m][1])) for m in V) / math.sqrt(2) / 1e-6)
+    assert lvl >= w["E_dBuV"] - 1e-4 and lvl - 3.0 > w["limit_minus_reserve_dBuV"]
 
 
 def test_emc04_dead_time_sequence_is_physical_and_matches_a_switching_simulation():

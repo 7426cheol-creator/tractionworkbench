@@ -36,7 +36,8 @@ RUNS = {"decision": ["run"], "requirement_set": ["run"], "explorer": ["run"], "t
         "emi": ["run", "run_oew"], "efficiency": ["run_point", "run_map", "run_mission", "run_ab"],
         "pwm_driveline": ["run_policies", "run_timing", "run_ripple", "run_transients", "run_driveline",
                           "run_stability"],
-        "machine": ["run_trade", "run_wind", "run_size"]}
+        "machine": ["run_trade", "run_wind", "run_size"],
+        "fault_sim": ["run", "run_compare", "run_campaign", "run_validation"]}
 SAFETY_API = ("timing", "passive", "discharge", "overvoltage", "safe_state")
 
 
@@ -143,6 +144,8 @@ def _perturb(win):
     sf = win.pages["safety"]                                     # a project rule added with its choices
     sf.s_rules.add({"rule_id": "PRJ-WS", "when": {"speed_rpm_min": 1000.0, "hv_state": "battery_connected"},
                     "require": "ASC", "basis": "workspace test"})
+    fs = win.pages["fault_sim"]                                  # a fault row with its choice cell
+    fs.faults.add({"kind": "switch_short", "t_ms": 12.5, "params": {"leg": "b", "device": "lower"}})
     grid = win.pages["power"].grid                               # a curve stored, the next one edited, not stored
     grid.pick.setCurrentIndex((grid.pick.currentIndex() + 1) % grid.pick.count())
     if grid.table.rowCount() and grid.table.columnCount():
@@ -179,7 +182,7 @@ def test_every_page_input_has_a_place_in_the_workspace(app):
     w = _window()
     try:
         pages = WS.pages_with_inputs(w)
-        assert len(pages) == 15
+        assert len(pages) == 16
         for key in pages:
             missing = WS.uncaptured(w.pages[key], WS.input_roots(w, key))
             assert not missing, (key, [type(x).__name__ for x in missing])

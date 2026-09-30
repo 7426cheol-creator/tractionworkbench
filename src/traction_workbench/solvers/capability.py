@@ -172,32 +172,47 @@ def _iq_sets_constant(k: DriveKernel, d: float, include_dc: bool):
     return ivs
 
 
-def _best_q(k: DriveKernel, d: float, direction: int, include_dc: bool):
+def _best_q(k: DriveKernel, d: float, direction: int, include_dc: bool, with_interval: bool = False):
+    """The iq-interval end with the largest direction * torque at this id (and, on request, its interval)."""
     ivs = _iq_sets_constant(k, d, include_dc)
     if not ivs:
         return None
     kd = k.psi + (k.Ld - k.Lq) * d
-    ends = [x for iv in ivs for x in iv if math.isfinite(x)]
-    if not ends:
-        return None
     kp = 1.5 * k.p
-    vals = [(direction * (kp * kd * q), q) for q in ends]
-    return max(vals)[1]
+    vals = [(direction * (kp * kd * q), q, iv) for iv in ivs for q in iv if math.isfinite(q)]
+    if not vals:
+        return None
+    best = max(vals, key=lambda v: (v[0], v[1]))
+    return (best[1], best[2]) if with_interval else best[1]
 
 
 def _torque(k: DriveKernel, d: float, q: float) -> float:
     return 1.5 * k.p * (k.psi + (k.Ld - k.Lq) * d) * q - k.tau_rot_or_zero
 
 
-def _verify(k: DriveKernel, d: float, q: float, include_dc: bool, direction: int):
-    """Evaluate a witness; if rounding lands it marginally outside, pull it towards the origin."""
-    for shrink in (0.0, 1e-12, 1e-10, 1e-8):
-        dd, qq = d * (1 - shrink), q * (1 - shrink)
+def _verify(k: DriveKernel, d: float, q: float, include_dc: bool, direction: int, interval=None):
+    """Evaluate a witness; if rounding lands it marginally outside, move it into the exact feasible set.
+
+    An interval end sits on a constraint (often a DC limit's tolerance edge).  The first moves keep id and step iq
+    into its exact feasible interval at this id (engineering review 2 of 63a2b61, F-19: a braking capability beyond
+    a charge limit - reached by raising the losses - lost its witness, because pulling (id, iq) towards the origin
+    changed kd = psi + (Ld - Lq) id with Ld > Lq and pushed P_dc further outside).  Pulling towards the origin is the
+    fallback."""
+    tries = [(d, q)]
+    if interval is not None:
+        lo, hi = interval
+        mid = 0.5 * (lo + hi) if math.isfinite(lo) and math.isfinite(hi) else (lo if math.isfinite(lo) else hi)
+        if math.isfinite(mid) and mid != q:
+            for eps in (1e-12, 1e-10, 1e-8, 1e-6):
+                step = min(eps * max(1.0, abs(q)), 0.5 * abs(mid - q))
+                tries.append((d, q + math.copysign(step, mid - q)))
+    tries += [(d * (1 - s), q * (1 - s)) for s in (1e-12, 1e-10, 1e-8)]
+    groups = ("VOLTAGE", "CURRENT", "DOMAIN") + (("DISCHARGE_SOURCE", "CHARGE_SOURCE") if include_dc else ())
+    for dd, qq in tries:
         try:
             pt = evaluate_point(k, dd, qq)
         except OutsideModelDomain:
             continue
-        groups = ("VOLTAGE", "CURRENT", "DOMAIN") + (("DISCHARGE_SOURCE", "CHARGE_SOURCE") if include_dc else ())
         if pt.all_satisfied(groups):
             return pt
     return None
@@ -212,11 +227,12 @@ def _physical_constant(k: DriveKernel, direction: int, include_dc: bool):
     ids = np.linspace(d_lo, d_hi, s.physical_grid_points)
     vals = np.full(ids.size, -math.inf)
     qs = np.full(ids.size, math.nan)
+    ivs = [None] * ids.size
     for i, d in enumerate(ids):
-        q = _best_q(k, float(d), direction, include_dc)
-        if q is not None:
-            vals[i] = direction * _torque(k, float(d), q)
-            qs[i] = q
+        bq = _best_q(k, float(d), direction, include_dc, with_interval=True)
+        if bq is not None:
+            vals[i] = direction * _torque(k, float(d), bq[0])
+            qs[i], ivs[i] = bq
     if not np.any(np.isfinite(vals)):
         return None, f"no feasible point on {ids.size} id samples"
     # refine the best few local maxima
@@ -237,14 +253,14 @@ def _physical_constant(k: DriveKernel, direction: int, include_dc: bool):
             q = _best_q(k, d, direction, include_dc)
             return math.inf if q is None else -direction * _torque(k, d, q)
 
-        pts = [(ids[i], qs[i])]
+        pts = [(ids[i], qs[i], ivs[i])]
         if b > a:
             r = minimize_scalar(f, bounds=(a, b), method="bounded", options={"xatol": 1e-11})
-            q = _best_q(k, r.x, direction, include_dc)
-            if q is not None:
-                pts.append((r.x, q))
-        for d, q in pts:
-            pt = _verify(k, float(d), float(q), include_dc, direction)
+            bq = _best_q(k, r.x, direction, include_dc, with_interval=True)
+            if bq is not None:
+                pts.append((r.x, bq[0], bq[1]))
+        for d, q, iv in pts:
+            pt = _verify(k, float(d), float(q), include_dc, direction, iv)
             if pt is not None and (best is None or direction * pt.Tshaft_Nm > direction * best.Tshaft_Nm):
                 best = pt
     return best, f"exact iq intervals on {ids.size} id samples + bounded refinement of local extrema"

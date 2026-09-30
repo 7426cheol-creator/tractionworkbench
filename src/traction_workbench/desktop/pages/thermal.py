@@ -18,6 +18,7 @@ from ...plots import schematics as SC
 from ...plots.labels import reason_label
 from ...viz import safety as SF
 from ..thermal_editor import ThermalModelEditor
+from ...insight.texts import engine_parts, engine_text
 from ...insight.thermal import cycle_insight, thermal_insight
 from ..widgets import (ConceptNote, KeyValueTable, PlotPanel, check, combo, error_box, fmt, hint, integer, number,
                        primary_button, reading_tab)
@@ -57,7 +58,8 @@ def _task(progress, body, spec):
     if req.get("nodes"):
         ttl = [float(n["time_to_limit_s"]) for n in req["nodes"] if isinstance(n["time_to_limit_s"], (int, float))]
         t_end = max([body["duration_s"] * 3] + [3 * t for t in ttl if math.isfinite(t)] + [10.0])
-        curves = SF.thermal_curves(model, req["nodes"], body["coolant_temp_C"], t_end)
+        curves = SF.thermal_curves(model, req["nodes"], body["coolant_temp_C"], t_end,
+                                   trace=(req.get("coupled") or {}).get("trace"))
     ask = {k: body.get(k) for k in ("torque_Nm", "speed_rpm", "duration_s", "Vdc_V", "coolant_temp_C")}
     return {"res": res, "curves": curves, "validated": model.validated, "ask": ask}
 
@@ -308,10 +310,26 @@ class ThermalPage(QWidget):
             rows.append((tr("첫 펄스 후 반복 전 필요 휴지", "rest before repeating after the first pulse"),
                          rest("rest_before_repeat")))
             rows.append((tr("주기 유지에 필요한 최소 휴지", "shortest rest for the periodic cycle"), rest("periodic_min_rest")))
-            rows.append((tr("허용값 근거", "basis of allowed values"), al.get("basis", "")))
+            rows.append((tr("허용값 근거", "basis of allowed values"), engine_text(al.get("basis", ""))))
+            lb = al.get("loss_bound") or {}
+            if lb:
+                box = " · ".join(f"{k} {v[0]:g}–{v[1]:g} °C" for k, v in (lb.get("temperatures_C") or {}).items())
+                viol = "; ".join(f"{v['phase']}: {v['loss']} {v['W']:.4g} W > {v['corner_max_W']:.4g} W "
+                                 f"@ {v['temperatures_C']}" for v in lb.get("violations") or [])
+                rows.append((tr("손실 상한 점검", "loss bound check"),
+                             f"{engine_text(lb.get('check', ''))} · {tr('모서리', 'corners')} {lb.get('corners')} · "
+                             f"{tr('내부 표본', 'interior samples')} {lb.get('interior_samples')}" + (f" · {box}" if box else "")
+                             + (f" · {viol}" if viol else "")))
+        rc = res.get("resolution_check")
+        if rc:
+            rows.append((tr("해상도 점검 (스텝 2배·캐시 ½)", "resolution check (2x steps, ½ cache)"),
+                         (tr("판정 유지", "stable") if rc["stable"] else tr("판정이 바뀜", "verdict changes")) + " · "
+                         + engine_parts(rc.get("note", ""))))
         fbk = res["feedback"]
         rows.append((tr("피드백", "feedback"), f"R_s(T): {fbk['rs']} ({fbk['winding_node']}) · T_j: {fbk['module']} "
-                                               f"({fbk['junction_node']}) · " + "; ".join(fbk["notes"])))
+                                               f"({fbk['junction_node']}) · {tr('자석', 'magnet')}: {fbk.get('magnet')} "
+                                               f"({fbk.get('magnet_node')}) · "
+                                               + "; ".join(engine_text(n) for n in fbk["notes"])))
         rows.append((tr("시작 온도", "initial temperatures"),
                      " · ".join(f"{k}: {v:.1f} °C" for k, v in res["initial"]["temperatures_C"].items())))
         for a in res["assumptions"]:

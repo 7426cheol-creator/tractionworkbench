@@ -62,8 +62,10 @@ def test_outside_the_source_model_or_no_fixed_point_is_unknown():
     out = api.evaluate({"requirement": {**BASE, "Vdc_port": "battery_ocv"},
                         "source_model": {"R_eq_mohm": 20, "basis": "t", "valid_current_A": [-100, 100]}})
     assert out["verdict"]["verdict"] == "UNKNOWN" and "OUTSIDE_MODEL_DOMAIN" in out["verdict"]["reasons"]
-    col = _ocv(400.0)                                    # the drop takes the voltage where no electrical point exists
-    assert col["verdict"]["verdict"] == "UNKNOWN" and col["source_coupling"]["status"] == "NOT_RESOLVED"
+    # engineering review 2 of 63a2b61, F-14: the drop takes every operating point below the electrical edge - no
+    # point can see more than V_hi, and there is no electrical solution even there: a proven FAIL (was UNKNOWN)
+    col = _ocv(400.0)
+    assert col["verdict"]["verdict"] == "FAIL" and col["source_coupling"]["status"] == "NO_SOLUTION"
     assert any("no operating point can see more than" in q for q in col["verdict"]["qualifiers"])
 
 

@@ -105,7 +105,52 @@ def decision_markdown(rec) -> str:
           f"| requirement | {lay['requirement']['status']} | "
           + ("; ".join(lay['requirement']['open_items']) or "complete for this question") + " |",
           f"| qualification | {lay['qualification']['status']} | {lay['qualification']['meaning']} |",
+          f"| robustness | {lay['robustness']['status']} | {lay['robustness']['meaning']} |",
           "", "Simplified sub-models: " + "; ".join(lay["qualification"]["sub_models"])]
+    rob = lay["robustness"]
+    if rob.get("budget"):
+        L += ["", "## Margin vs the declared error budget (the model verdict is unchanged)", "",
+              f"Combination: {rob.get('combination', '')}. Requirement torque: {rob.get('T_edge_basis', '')}. "
+              f"Scope: {rob.get('scope', '')}.", "",
+              "| source | kind | quantity | declared | basis |", "|---|---|---|---|---|"]
+        for it in rob["budget"]["items"]:
+            unit = it.get("unit", "N*m").replace("N*m", "N·m")
+            size = (fmt(it["value"], 4, unit) if it.get("value") is not None else
+                    f"{it['percent']:g} % of {it.get('percent_of', 'the model value')}")
+            L.append(f"| {it['source']} | {it['kind']} | {it.get('quantity', 'torque')} | {size} | "
+                     f"{it.get('basis') or 'not stated'} |")
+        L += ["", "**Torque capability** (requirement torque vs the model capability)", "",
+              "| condition | capability | margin | declared error | result |", "|---|---|---|---|---|"]
+        for name, x in zip(rob.get("names") or [], rob.get("conditions") or []):
+            L.append(f"| {name} | {fmt(x.get('capability_Nm'), 6, 'N·m')} | {fmt(x.get('margin_Nm'), 5, 'N·m')} | "
+                     f"{fmt(x.get('delta_Nm'), 4, 'N·m')} | {x['status']}"
+                     + (f" ({x['reason']})" if x.get("reason") else "") + " |")
+        if rob.get("checks"):
+            names = rob.get("names") or []
+            L += ["", "**Limits at the witness** (y + Δ ≤ y_max)", "",
+                  "| condition | limit | demand | limit value | margin | declared error | result |",
+                  "|---|---|---|---|---|---|---|"]
+            for c in rob["checks"]:
+                unit = c.get("unit", "")
+                L.append(f"| {names[c['condition']] if c.get('condition') is not None and names else ''} | "
+                         f"{c.get('constraint') or c.get('quantity')} | {fmt(c.get('demand'), 6, unit)} | "
+                         f"{fmt(c.get('limit'), 6, unit)} | {fmt(c.get('slack'), 5, unit)} | {fmt(c.get('delta'), 4, unit)} | "
+                         f"{c['status']}" + (f" ({c['reason']})" if c.get("reason") else "") + " |")
+    ms = rec.margin_sensitivity
+    if ms:
+        L += ["", "## Loss-limited margin (automatic sensitivity; the verdict is unchanged)", "",
+              f"Condition {ms['condition']}: margin {fmt(ms['margin_Nm'], 3, 'N·m')} to the capability "
+              f"{fmt(ms['capability_Nm'], 5, 'N·m')} limited by {', '.join(ms['active'])}."
+              + ("" if ms.get("loss_budget_W") is None else
+                 f" Loss budget: {fmt(ms['loss_budget_W'] / 1e3, 3, 'kW')} of additional loss at the witness reaches "
+                 f"the DC limit ({ms['loss_budget_basis']}).")
+              + " Loss models: " + "; ".join(ms["loss_models"]) + ".", "",
+              "| parameter | value | capability change per step | break-even (linear) |", "|---|---|---|---|"]
+        for p in ms["parameters"]:
+            step = f"{p['step']:+g}" if p["step_kind"] == "absolute" else f"{100 * p['step']:+g} %"
+            L.append(f"| {p['label']} | {p['value']:.4g} {p['unit']} | {fmt(p['capability_change_Nm'], 3, 'N·m')} "
+                     f"({step}) | {p['text']} |")
+        L += ["", f"Method: {ms['method']}."]
     r = rec.requirement
     L += ["", "## Requirement (original wording, unchanged)", "", f"> {r.text}", "",
           "| item | interpretation |", "|---|---|",
@@ -114,7 +159,9 @@ def decision_markdown(rec) -> str:
           f"| speed | {fmt(r.speed_rpm, 6, 'rpm')} mechanical |",
           f"| DC terminal voltage | " + (f"{r.Vdc_V[0]:g}…{r.Vdc_V[1]:g} V for all values (examined at sampled points)"
                                         if r.is_range else f"{r.Vdc_V:g} V (single point)") + " |",
-          f"| duration | {r.duration_text()} |"]
+          f"| duration | {r.duration_text()} |",
+          "| quantifiers | " + "; ".join(f"{k}: {v}" for k, v in lay["requirement"].get("quantifiers", {}).items())
+          + " |"]
     if r.exclusions:
         L.append(f"| exclusions | {'; '.join(r.exclusions)} |")
     for cr in rec.conditions:

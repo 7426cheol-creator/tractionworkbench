@@ -1,0 +1,52 @@
+{
+  "schema": "traction-workbench/case@1",
+  "drive": {
+    "builtin": "SYNTH_IPMSM_200KW_REF_V1"
+  },
+  "requirement": {
+    "id": "REQ-TS-012-EB",
+    "revision": "A",
+    "text": "REQ-TS-012: inverter DC terminal 600 V, motor shaft 12,000 rpm에서 shaft torque 150 N·m를 유지한다. (설계 판단: 선언한 오차 예산 대비 여유 확인)",
+    "target": {
+      "value": 150,
+      "unit": "N*m",
+      "torque": "shaft"
+    },
+    "conditions": {
+      "speed": {
+        "value": 12000,
+        "unit": "rpm",
+        "kind": "mechanical"
+      },
+      "Vdc": {
+        "value": 600,
+        "unit": "V",
+        "port": "inverter_dc_terminal"
+      }
+    }
+  },
+  "analyses": {},
+  "error_budget": [
+    {
+      "source": "flux-map torque accuracy (example)",
+      "kind": "model",
+      "quantity": "torque",
+      "percent": 3.0,
+      "basis": "example value: supplier FEA vs dynamometer correlation at the rated points (replace with the product's)"
+    },
+    {
+      "source": "current-sensor gain (example)",
+      "kind": "input",
+      "quantity": "phase_current",
+      "percent": 2.0,
+      "basis": "example value: sensor datasheet gain accuracy over temperature (replace with the calibration record)"
+    },
+    {
+      "source": "loss model: DC power (example)",
+      "kind": "model",
+      "quantity": "dc_power",
+      "value": 2000.0,
+      "basis": "example value: inverter + iron loss uncertainty at 12,000 rpm (replace with the loss-map correlation)"
+    }
+  ]
+}

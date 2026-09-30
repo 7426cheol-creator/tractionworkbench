@@ -32,7 +32,9 @@ ALLOWED = {"eta_mot", "eta_regen", "P_shaft", "P_dc", "iq_min", "id_A", "iq_A", 
            "f_e", "v_d", "I_dc", "P_ESR", "x_N", "x_lim", "t_req", "V_f", "V_nom", "V_max", "V_lim", "P_in", "E_in",
            "E_after", "V_tr", "R_p", "R_a", "T_j", "L_hf", "L_d", "L_q", "k_t", "k_N", "L_q,diff", "u0", "i0", "e0",
            "I_fund", "v_cm", "P_mesh", "P_drag", "T_em", "T_shaft", "E_cap", "T_ntc", "T_coolant", "P_hot", "P_o",
-           "P_m", "P_em", "V_r", "N_eff", "t_confirm", "t_action", "t_limit", "t_xcross", "c_p", "T_mag"}
+           "P_m", "P_em", "V_r", "N_eff", "t_confirm", "t_action", "t_limit", "t_xcross", "c_p", "T_mag",
+           # phase / dq symbols in the fault simulation's formulas and validation comparisons
+           "i_a", "i_b", "i_c", "i_d", "i_q", "v_d", "v_q", "i_dq", "w_e", "i_phase"}
 _CAPTURED: list = []
 
 
@@ -71,7 +73,11 @@ def win():
             "emi": ["run", "run_oew"], "efficiency": ["run_point", "run_map", "run_mission", "run_ab"],
             "pwm_driveline": ["run_policies", "run_timing", "run_ripple", "run_transients", "run_driveline",
                               "run_stability"],
-            "machine": ["run_trade", "run_wind", "run_size"]}
+            "machine": ["run_trade", "run_wind", "run_size"],
+            "fault_sim": ["run", "run_compare", "run_campaign", "run_validation"]}
+    fs = w.pages["fault_sim"]                        # a scenario that fails, with its suggested campaign
+    fs.preset.setCurrentIndex(fs.preset.findData("res_lost"))
+    fs._load_preset()
     for page, actions in runs.items():
         w.show_page(page)
         for a in actions:
@@ -93,7 +99,8 @@ def test_every_page_reading_is_made_and_readable_in_both_languages(win):
                 "safe_state", "thermal", "thermal_cycle", "protection", "asc", "module", "ripple", "lifetime", "oew",
                 "oew_compare", "hev_joint", "hev_crank", "hev_rejection", "hev_planetary", "emi", "emi_oew", "point",
                 "map", "mission", "module_compare", "pwm_policies", "pwm_timing", "pwm_ripple", "pwm_transients",
-                "driveline", "driveline_stability", "machine_trade", "winding", "concept_sizing"}
+                "driveline", "driveline_stability", "machine_trade", "winding", "concept_sizing", "fault_sim",
+                "fault_compare", "fault_campaign", "fault_validation"}
     assert expected <= keys, sorted(expected - keys)
     problems = []
     for key, fn, args, before in _CAPTURED:

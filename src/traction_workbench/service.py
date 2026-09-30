@@ -27,6 +27,7 @@ from .settings import DEFAULT_SETTINGS, NumericalSettings
 from .solvers.capability import physical_capability, policy_capability
 from .solvers.common import dc_ok, electrical_ok
 from .solvers.policy import PolicyEvaluator
+from .units import shown as _shown
 from .units import Conversions
 
 CURVE_SETTINGS = DEFAULT_SETTINGS.with_(physical_grid_points=401, capability_scan_samples=13)
@@ -148,8 +149,10 @@ def resolve_case_source(case_dict: dict):
     """A requirement whose Vdc is the battery OCV (``conditions.Vdc.port = "battery_ocv"``) with a declared Thevenin
     ``source_model`` -> (the case at the resolved inverter terminal voltage(s), the source record, the source claim).
     Any other case is returned unchanged with (None, ()).  When no terminal voltage is resolved the drive side is
-    judged at the OCV itself (no source drop: an optimistic view, stated) and the source claim decides: INFEASIBLE
-    when the shaft power alone exceeds the source's maximum transfer (proven), otherwise UNKNOWN."""
+    shown at V_hi, the highest terminal voltage any operating point can see (P_dc >= P_shaft) - the optimistic bound
+    for motoring AND regeneration, where the OCV would be pessimistic (engineering review 2 of 63a2b61, F-04) - and
+    the source claim decides: INFEASIBLE when no operating point exists on this source (proven), otherwise UNKNOWN,
+    and then a drive-side violation at V_hi is not decisive (``evaluate_requirement``)."""
     import copy
     from .analysis.source import resolve_terminal_voltage, source_from_dict
     from .status import Claim, Reason, Status
@@ -176,30 +179,42 @@ def resolve_case_source(case_dict: dict):
                       "NO_SOLUTION" if any(p["status"] == "NO_SOLUTION" for p in pts) else "NOT_RESOLVED"}
     q = f"inverter terminal voltage from battery OCV {' .. '.join(f'{v:g}' for v in ocvs)} V"
     scope = f"declared Thevenin source R_eq = {1e3 * src.R_eq_ohm:g} mOhm ({src.basis})"
+
+    def at(volts):
+        out = copy.deepcopy(case_dict)
+        out["requirement"]["conditions"]["Vdc"] = {"value": sorted(volts) if r.is_range else volts[0], "unit": "V",
+                                                   "port": "inverter_dc_terminal"}
+        return out
     if info["status"] == "RESOLVED":
         vt = [p["V_terminal_V"] for p in pts]
         info["V_terminal_V"] = vt
-        out = copy.deepcopy(case_dict)
-        out["requirement"]["conditions"]["Vdc"] = {"value": sorted(vt) if r.is_range else vt[0], "unit": "V",
-                                                   "port": "inverter_dc_terminal"}
-        text = "; ".join(f"OCV {p['V_oc_V']:g} V -> terminal {p['V_terminal_V']:.5g} V (I_dc {p['I_dc_A']:.5g} A, "
-                         f"{'drop' if p['sag_V'] >= 0 else 'rise'} {abs(p['sag_V']):.4g} V)" for p in pts)
+        text = "; ".join(f"OCV {p['V_oc_V']:g} V -> terminal {_shown(p['V_terminal_V'], 'voltage')} V"
+                         + ("" if p.get("I_dc_A") is None else f" (I_dc {_shown(p['I_dc_A'], 'current')} A, "
+                            f"{'drop' if p['sag_V'] >= 0 else 'rise'} {_shown(abs(p['sag_V']), 'voltage')} V)")
+                         for p in pts)
         claim = Claim("source_coupling", Status.FEASIBLE, q, scope,
                       detail=f"Vdc stated as battery OCV: judged at the resolved inverter terminal voltage ({text}; "
                              f"resolved at the requirement's target torque)")
-        return out, info, (claim,)
+        return at(vt), info, (claim,)
     bad = [p for p in pts if p["status"] != "RESOLVED"]
+    # every point is shown at a voltage it can actually see: the resolved terminal voltage, else the ceiling V_hi
+    shown = [p.get("V_terminal_V") or p.get("V_terminal_max_V") or p["V_oc_V"] for p in pts]
+    info["V_shown_V"] = shown
+    where = ("the drive-side conditions below are shown at the highest terminal voltage an operating point can see "
+             "(" + ", ".join(f"{_shown(v, 'voltage')} V" for v in shown) + ")"
+             if any(p.get("V_terminal_max_V") for p in bad) else
+             "the drive-side conditions below are shown at the OCV, without a source drop")
     if info["status"] == "NO_SOLUTION":
         claim = Claim("source_coupling", Status.INFEASIBLE, q, scope, reasons=(Reason.NECESSARY_CONDITION_VIOLATED,),
-                      detail=bad[0]["reason"] + " (the drive-side conditions below are shown at the OCV, without "
-                                               "a source drop)")
+                      detail=bad[0]["reason"] + f" ({where})")
     else:
         why = (Reason.OUTSIDE_MODEL_DOMAIN,) if any(p["status"] == "OUTSIDE_SOURCE_MODEL" for p in bad) else \
+            (Reason.BOUNDARY_WITHIN_TOLERANCE,) if any(p.get("boundary") for p in bad) else \
             (Reason.NUMERICAL_UNRESOLVED,)
         claim = Claim("source_coupling", Status.UNKNOWN, q, scope, reasons=why,
-                      detail=bad[0]["reason"] + " (no terminal voltage resolved: the drive-side conditions below are "
-                                               "shown at the OCV, without a source drop - optimistic)")
-    return base, info, (claim,)
+                      detail=bad[0]["reason"] + f" (no terminal voltage resolved: {where} - optimistic; a drive-side "
+                                                "violation there is not decisive)")
+    return at(shown), info, (claim,)
 
 
 def evaluate_decision(case_dict: dict):
@@ -207,7 +222,8 @@ def evaluate_decision(case_dict: dict):
     case_dict, source_info, extra = resolve_case_source(case_dict)
     case = case_from_dict(case_dict)
     rec = evaluate_requirement(case.requirement, case.drive, scenario=case.scenario, source_limits=case.limits,
-                               ratings=case.ratings, extra_claims=extra, source_coupling=source_info)
+                               ratings=case.ratings, extra_claims=extra, source_coupling=source_info,
+                               error_budget=case.error_budget)
     return rec, case
 
 

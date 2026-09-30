@@ -219,6 +219,59 @@ def run_self_test(app, out_dir) -> int:
         shot(win, "25_asc_transient")
         pro.asc_tabs.setCurrentWidget(pro.i_asc)
         shot(win, "25a_asc_reading")
+        # causal fault simulation: a representative scenario judged on the truth, the reaction candidates from the
+        # same initial condition, a campaign whose counterexample is re-run, and the plant's validation (Radau)
+        fs = visit("fault_sim", 0, [lambda pg: pg.preset.setCurrentIndex(pg.preset.findData("cs_offset")),
+                                    lambda pg: pg._load_preset(), "run"], [])
+        ok_v = (fs.last or {}).get("verdicts") or {}
+        check("fault:protection_success", fs.last is not None and all(
+            x in ("PASS", "NOT_APPLICABLE") for k, x in ok_v.items() if k.startswith("TSR")), str(ok_v))
+        fs.preset.setCurrentIndex(fs.preset.findData("res_lost"))
+        fs._load_preset()
+        fs.run()
+        app.processEvents()
+        v = (fs.last or {}).get("verdicts") or {}
+        acts = [e.get("reaction") for e in (fs.last or {}).get("events", []) if e["kind"] == "actuation"]
+        check("fault:wrong_reaction", v.get("TSR-06") == "FAIL" and fs.t_req.rowCount() == 12
+              and acts[:1] == ["six_switch_off"], f"{ {k: x for k, x in v.items() if x != 'PASS'} } {acts[:2]}")
+        reading("fault_sim", fs.insight, "fault_sim")
+        for tab, name in ((fs.p_wave, "25b_fault_waveforms"), (fs.tab_timeline, "25c_fault_timeline"),
+                          (fs.tab_req, "25d_fault_requirements"), (fs.insight, "25e_fault_reading")):
+            fs.tabs.setCurrentWidget(tab)
+            if tab is fs.tab_req:
+                fs.t_req.selectRow(next(r for r in range(fs.t_req.rowCount()) if fs.t_req.item(r, 0).text() == "TSR-06"))
+            shot(win, name)
+        fs.run_compare()
+        rows = {r["candidate"]: r for r in (fs.last_cmp or {}).get("rows", [])}
+        check("fault:candidates", len(rows) == 6 and rows["policy"]["overall"] == "FAIL"
+              and "TSR-06" not in rows["asc_low"]["failing"], str({k: r["overall"] for k, r in rows.items()}))
+        reading("fault:candidates", fs.i_cmp, "fault_compare")
+        shot(win, "25f_fault_candidates")
+        fs.set_axes([{"path": "speed_rpm", "values": [9000, 12000]}])
+        fs.cref.setValue(0)
+        fs.counterexamples = []
+        fs.run_campaign()
+        fs.tabs.setCurrentWidget(fs.tab_camp)
+        cx = [c for c in fs.counterexamples if c["scenario"]["speed_rpm"] == 12000]
+        rerun_ok = False
+        if cx:
+            fs.t_cx.selectRow(fs.counterexamples.index(cx[0]))
+            fs.rerun_selected()
+            rerun_ok = "재현" in fs.cx_state.text() or "reproduced" in fs.cx_state.text()
+        check("fault:campaign", fs.last_camp is not None and len(fs.last_camp["runs"]) == 2 and bool(cx) and rerun_ok
+              and fs.last_camp["scope"]["region"] == "NOT_ESTABLISHED", fs.cx_state.text())
+        reading("fault:campaign", fs.i_camp, "fault_campaign")
+        shot(win, "25g_fault_campaign")
+        fs.run_validation()
+        fs.tabs.setCurrentWidget(fs.tab_val)
+        val = fs.last_val or {}
+        check("fault:validation", val.get("total", 0) >= 10 and val.get("passed") == val.get("total"),
+              f"{val.get('passed')}/{val.get('total')}")
+        reading("fault:validation", fs.i_val, "fault_validation")
+        shot(win, "25h_fault_validation")
+        fs.tabs.setCurrentWidget(fs.tab_dep)
+        fs.show_dependencies()
+        shot(win, "25i_fault_dependencies")
         pw = visit("power", 0, ["run_module"], [(lambda pg: pg.mod_tabs.setCurrentIndex(1), "26_power_module"),
                                                 (lambda pg: pg.mod_tabs.setCurrentWidget(pg.i_mod), "26a_power_module_reading")])
         check("power:module", pw.last_module is not None and pw.last_module["losses"]["established"]

@@ -31,6 +31,8 @@ def _cons(op: dict | None, name: str) -> dict | None:
 
 def _cond_name(sc: dict) -> str:
     s = f"{num(sc['speed_rpm_mechanical'], 6)} rpm · Vdc {num(sc['Vdc_V_inverter_dc_terminal'], 5)} V"
+    if sc.get("winding_temp_C") is not None:
+        s += tr(f" · 권선 {num(sc['winding_temp_C'], 4)} °C", f" · winding {num(sc['winding_temp_C'], 4)} °C")
     if sc.get("magnet_temp_C") is not None:
         s += tr(f" · 자석 {num(sc['magnet_temp_C'], 4)} °C", f" · magnet {num(sc['magnet_temp_C'], 4)} °C")
     return s
@@ -119,6 +121,11 @@ def decision_insight(rec: dict, pwm_risk: dict | None = None, pending=(), runnin
         else:
             ins.headline = tr(f"{what} @ {scope_txt}: <b>미확정</b> — {why}", f"{what} @ {scope_txt}: <b>undecided</b> — {why}")
 
+    rob = (v.get("layers") or {}).get("robustness") or {}
+    if rob.get("budget"):                   # 'met in the model' vs 'with the declared error' at the top
+        rlabel, _rt, rlevel = robustness_summary(rob)
+        ins.headline += tr(f" · 선언 오차 대비 <b>{rlabel}</b>", f" · against the declared error: <b>{rlabel}</b>")
+
     # ------------------------------------------------------------------ key numbers (cards)
     ins.metrics.append((tr("판정", "verdict"), verdict, status_level(verdict)))
     if cap is not None:
@@ -126,6 +133,8 @@ def decision_insight(rec: dict, pwm_risk: dict | None = None, pending=(), runnin
                             "info"))
     if margin is not None:
         ins.metrics.append((tr("토크 여유", "torque margin"), mtxt, "ok" if margin >= 0 else "bad"))
+    if rob.get("budget"):
+        ins.metrics.append((tr("선언 오차 대비", "against the declared error"), rlabel, rlevel))
     if limited:
         ins.metrics.append((tr("한계를 정하는 제약", "limited by"), ", ".join(limited), "info"))
     if op and op.get("efficiency") is not None:
@@ -142,7 +151,8 @@ def decision_insight(rec: dict, pwm_risk: dict | None = None, pending=(), runnin
                        "실행하면 계산됩니다.",
                        "this run stopped before the stages after its verdict finished (cancelled or failed). The "
                        "verdict is complete; these are computed when you run again.")).add(pending_text(pending), "open")
-    _claims_section(ins, c, ps, op, T)
+    _claims_section(ins, c, ps, op, T, rec)
+    robustness_section(ins, rec)
     if multi:
         _conditions_section(ins, rec, gi)
     if op:
@@ -159,11 +169,33 @@ def decision_insight(rec: dict, pwm_risk: dict | None = None, pending=(), runnin
 
 
 # ---------------------------------------------------------------------- judged items
-def _claims_section(ins: Insight, c: dict, ps: dict, op: dict | None, T: float) -> None:
+def _claims_section(ins: Insight, c: dict, ps: dict, op: dict | None, T: float, rec: dict | None = None) -> None:
     s = ins.section(tr("판정 항목별 분석", "the judged items"),
                     tr("요구 판정은 아래 항목의 AND입니다 — 증명된 위반이 하나라도 있으면 FAIL, 위반 없이 미확정이 있으면 UNKNOWN.",
                        "the verdict is the AND of these items — any proven violation gives FAIL, an open item without a "
                        "violation gives UNKNOWN."))
+    if rec is not None:
+        rq = rec.get("requirement") or {}
+        temps = [x["scenario"].get("magnet_temp_C") for x in rec.get("conditions") or []]
+        wtemps = [x["scenario"].get("winding_temp_C") for x in rec.get("conditions") or []
+                  if "/winding" in str(x["scenario"].get("scenario_id", ""))]
+        law = str(((rec.get("verdict") or {}).get("layers") or {}).get("requirement", {}).get("quantifiers", {})
+                  .get("magnet", "")).find("psi_PM law") >= 0
+        notes = []
+        if rq.get("operator") == "band":
+            notes.append(tr("∃: 대역 안의 토크 하나가 모든 항목을 같은 운전점에서 만족하면 충분 (대역 전체의 추종이 아님)",
+                            "∃: one torque inside the band meeting every item at the same point is enough (not tracking "
+                            "of the whole band)"))
+        if isinstance((rq.get("conditions") or {}).get("Vdc_V_inverter_dc_terminal"), (list, tuple)) \
+                or len({t for t in temps if t is not None}) > 1 or wtemps:
+            notes.append(tr("∀: 범위의 모든 값에서 성립해야 함 (표본점 또는 인증서로 검토)",
+                            "∀: must hold at every value of the range (examined at samples or by a certificate)"))
+        if wtemps or law:
+            notes.append(tr("요구에 온도가 없어 모델이 선언한 온도 전 범위로 읽음 — 한 온도에서만 필요하면 요구에 온도를 적으세요",
+                            "the requirement states no temperature, so it is read over every temperature the model "
+                            "declares — state it if it applies at one temperature only"))
+        s.add(tr("판정한 질문: ", "the question judged: ") + requirement_reading(rq, temps, wtemps, law), "info",
+              " · ".join(notes))
     for cl in ps.get("claims") or []:
         name, st = cl["name"], cl["status"]
         text, detail = _claim_reading(cl, op, T)
@@ -182,6 +214,316 @@ def _claims_section(ins: Insight, c: dict, ps: dict, op: dict | None, T: float) 
             text = ", ".join(reason_label(r) for r in dc.get("reasons") or []) or st
         own = st == "UNKNOWN" and "UNVALIDATED_DURATION" in (dc.get("reasons") or [])
         s.add(f"<b>{claim_label('duration')}</b>: {text}", status_level(st), "" if own else esc(dc.get("detail", "")))
+
+
+# ---------------------------------------------------------------------- the question judged (quantifiers)
+def requirement_reading(req: dict, magnet_temps=None, winding_temps=None, magnet_law: bool = False) -> str:
+    """The requirement as the question the verdict answers, with its quantifiers written out: a band is existence of
+    ONE torque in it (∃), a Vdc range and an unstated magnet temperature on a multi-plane flux map are for every value
+    (∀).  ``req``: a record's requirement (``Requirement.describe``); ``magnet_temps``: the magnet temperatures the
+    conditions examine (for-all when there are several)."""
+    c = req.get("conditions") or {}
+    T = float(req.get("target_Nm") or 0.0)
+    n = c.get("speed_rpm_mechanical")
+    v = c.get("Vdc_V_inverter_dc_terminal")
+    if req.get("operator") == "band":
+        b = float(req.get("band_Nm") or 0.0)
+        tq = tr(f"축 토크 {num(T - b)}–{num(T + b)} N·m 중 <b>어느 하나(∃)</b>",
+                f"<b>some</b> shaft torque in {num(T - b)}–{num(T + b)} N·m <b>(∃)</b>")
+    else:
+        tq = tr(f"축 토크 {num(T)} N·m", f"the shaft torque {num(T)} N·m")
+    if T < 0:
+        tq += tr(" (회생 제동)", " (regenerative braking)")
+    if isinstance(v, (list, tuple)):
+        vd = tr(f"Vdc {num(v[0])}–{num(v[1])} V의 <b>모든 값(∀)</b>", f"<b>every</b> Vdc in {num(v[0])}–{num(v[1])} V "
+                                                                  f"<b>(∀)</b>")
+    else:
+        vd = f"Vdc {num(v)} V"
+    temps = sorted({float(t) for t in magnet_temps or () if t is not None})
+    wts = sorted({float(t) for t in winding_temps or () if t is not None})
+    mt, wt = c.get("magnet_temp_C"), c.get("winding_temp_C")
+    if wt is not None:
+        wd = tr(f", 권선 {num(wt)} °C", f", winding {num(wt)} °C")
+    elif wts:
+        pts = ", ".join(num(t) for t in wts)
+        wd = tr(f", Rs 법칙의 <b>모든 권선 온도(∀: {'최악단 ' if len(wts) == 1 else ''}{pts} °C)</b>",
+                f", <b>every</b> winding temperature of the Rs law <b>(∀: {'worst end ' if len(wts) == 1 else ''}"
+                f"{pts} °C)</b>")
+    else:
+        wd = ""
+    if mt is not None:
+        mg = tr(f", 자석 {num(mt)} °C", f", magnet {num(mt)} °C")
+    elif len(temps) > 1 and magnet_law:
+        mg = tr(f", ψ 법칙의 <b>모든 자석 온도(∀, 표본: {', '.join(num(t) for t in temps)} °C)</b>",
+                f", <b>every</b> magnet temperature of the ψ law <b>(∀, sampled: {', '.join(num(t) for t in temps)} "
+                f"°C)</b>")
+    elif len(temps) > 1:
+        mg = tr(f", flux map의 <b>모든 자석 온도(∀: {', '.join(num(t) for t in temps)} °C)</b>",
+                f", <b>every</b> flux-map magnet temperature <b>(∀: {', '.join(num(t) for t in temps)} °C)</b>")
+    else:
+        mg = ""
+    mg = wd + mg
+    dur = str(req.get("duration") or "")
+    if not dur or dur.startswith("not stated"):
+        dt = tr("정적으로 (지속시간 없음)", "statically (no duration)")
+    elif dur == "continuous":
+        dt = tr("연속으로", "continuously")
+    else:
+        dt = tr(f"{dur} 동안", f"for {dur}")
+    return tr(f"{num(n)} rpm, {vd}{mg}에서 {tq}를 {dt} 낼 수 있는가",
+              f"at {num(n)} rpm, {vd}{mg}: can the drive deliver {tq} {dt}?")
+
+
+# ---------------------------------------------------------------------- margin vs the declared error budget
+ROBUST_STATUS = {"ROBUST": ("견고", "robust", "ok"), "WITHIN_ERROR": ("오차 범위 안", "within the error", "warn"),
+                 "NOT_ESTABLISHED": ("미확립", "not established", "open"),
+                 "NOT_ASSESSED": ("평가 안 함", "not assessed", "info")}
+ROBUST_KIND = {"model": ("모델 불일치", "model mismatch"), "input": ("입력·측정", "input / measurement"),
+               "numerical": ("수치 (공급 데이터)", "numerical (supplied data)")}
+ROBUST_QUANTITY = {"torque": ("토크", "torque", "능력치", "the capability"),
+                   "phase_current": ("상전류", "phase current", "운전점 상전류", "the phase current at the witness"),
+                   "dc_power": ("DC 전력", "DC power", "운전점 DC 전력", "the DC power at the witness"),
+                   "dc_current": ("DC 전류", "DC current", "운전점 DC 전류", "the DC current at the witness"),
+                   "voltage": ("명령 전압", "command voltage", "운전점 명령 전압", "the command voltage at the witness")}
+ROBUST_CONDITION = {"ROBUST_MET": ("충족 — 오차를 넘는 여유", "met, margin beyond the error"),
+                    "MET_WITHIN_ERROR": ("충족 — 오차 범위 안", "met, within the error"),
+                    "ROBUST_NOT_MET": ("불충족 — 오차를 넘는 부족", "not met, short beyond the error"),
+                    "NOT_MET_WITHIN_ERROR": ("불충족 — 오차 범위 안", "not met, within the error"),
+                    "NOT_MET_NOT_ESTABLISHED": ("불충족 — 오차 대비 미확립", "not met, not established against the error"),
+                    "NOT_ESTABLISHED_SOURCE": ("소스 결합으로 미확립", "not established (source coupling)"),
+                    "NOT_ASSESSED": ("평가 안 함", "not assessed")}
+ROBUST_CHECK = {"ROBUST": ("오차를 넘는 여유", "margin beyond the error", "ok"),
+                "WITHIN_ERROR": ("오차 범위 안", "within the error", "warn"),
+                "ADAPTED": ("전압 한계 위 — 정책이 운전점을 옮겨 대응 (토크 쪽으로 비교)",
+                            "on the voltage limit — the policy moves the point (compare in torque)", "open"),
+                "NOT_EVALUATED": ("비교할 한계 없음", "no limit to compare", "open"),
+                "NOT_ESTABLISHED_SOURCE": ("소스 결합으로 미확립", "not established (source coupling)", "open")}
+_ROBUST_OTHER = {"duration": ("지속시간 부분(자체 정격 근거)", "the duration part (its own rating evidence)"),
+                 "source": ("소스 결합", "the source coupling"),
+                 "coverage": ("연속 범위의 커버리지", "the coverage of the continuous range")}
+
+
+def _unit(u: str) -> str:
+    return "N·m" if u == "N*m" else u
+
+
+def _check_words(c: dict, at: str = "") -> str:
+    """One limit comparison at the witness in words (no bare comparison signs: the reading is rich text)."""
+    qk, qe = ROBUST_QUANTITY[c["quantity"]][:2]
+    u = _unit(c["unit"])
+    if c.get("robust"):
+        return tr(f"{qk} 여유 {num(c['slack'])} {u} ≥ 선언 오차 {num(c['delta'])} {u}{at}",
+                  f"{qe} margin {num(c['slack'])} {u} ≥ declared error {num(c['delta'])} {u}{at}")
+    return tr(f"{qk} 여유 {num(c['slack'])} {u}가 선언 오차 {num(c['delta'])} {u}보다 작음{at}",
+              f"{qe} margin {num(c['slack'])} {u} is below the declared error {num(c['delta'])} {u}{at}")
+
+
+def robustness_summary(rob: dict | None) -> tuple[str, str, str]:
+    """(status label, one sentence, level) of the robustness layer: the model's margins against the declared error
+    budget.  Built from the layer's numbers (never a new threshold: the budget is the engineer's)."""
+    rob = rob or {}
+    st = rob.get("status", "NOT_ASSESSED")
+    ko, en, level = ROBUST_STATUS.get(st, ROBUST_STATUS["NOT_ASSESSED"])
+    label = tr(ko, en)
+    per, names, g = rob.get("conditions") or [], rob.get("names") or [], rob.get("governing")
+    checks, gc = rob.get("checks") or [], rob.get("governing_check")
+    several = len(per) > 1
+
+    def at(i):
+        return f" ({names[i]})" if several and i is not None and i < len(names) else ""
+    p = per[g] if g is not None and g < len(per) else {}
+    model = rob.get("model_static")
+    budget = rob.get("budget")
+    torque = any(it.get("quantity", "torque") == "torque" for it in (budget or {}).get("items") or [])
+    if st == "NOT_ASSESSED" and not budget:
+        if p.get("margin_Nm") is None:
+            text = tr("오차 예산 미선언 — 토크 능력치가 확립되지 않아 여유도 없습니다",
+                      "no error budget declared — and no established torque capability to compare")
+        elif model == "not met":
+            text = tr(f"오차 예산 미선언: 모델상 부족 {num(-p['margin_Nm'])} N·m{at(g)}만 있습니다 — 이 부족이 모델·입력 "
+                      f"오차보다 큰지는 평가하지 않았습니다",
+                      f"no error budget declared: a model shortfall of {num(-p['margin_Nm'])} N·m{at(g)} only — whether "
+                      f"it exceeds the model and input error is not assessed")
+        else:
+            text = tr(f"오차 예산 미선언: 모델 여유 {num(p['margin_Nm'])} N·m{at(g)}만 있습니다 — 설계 판단에 충분한지는 "
+                      f"평가하지 않았습니다",
+                      f"no error budget declared: a model margin of {num(p['margin_Nm'])} N·m{at(g)} only — its "
+                      f"sufficiency for a design decision is not assessed")
+    elif st == "NOT_ASSESSED" and model == "not met":
+        text = tr(f"모델상 부족 {num(-p.get('margin_Nm', 0.0))} N·m{at(g)}: FAIL은 토크 능력치로 비교하는데 토크 오차가 선언되지 "
+                  f"않았습니다 (한계 오차는 요구를 만족하는 운전점에서만 비교합니다)",
+                  f"a model shortfall of {num(-p.get('margin_Nm', 0.0))} N·m{at(g)}: a FAIL is compared on the torque "
+                  f"capability and no torque error is declared (limit errors are compared at witnesses that meet the "
+                  f"requirement)")
+    elif st == "NOT_ASSESSED":
+        text = tr("선언한 오차 가운데 여기서 비교할 수 있는 것이 없습니다 (토크 오차가 없고, 선언한 한계 오차에 맞는 한계가 운전점에 없음)",
+                  "none of the declared errors can be compared here (no torque error, and no declared limit error meets "
+                  "a limit at the witnesses)")
+    elif model == "not met" and st == "ROBUST":
+        text = tr(f"인증 상한 기준으로도 {num(p['shortfall_at_bound_Nm'])} N·m 부족해 선언 오차 합 "
+                  f"{num(p['delta_at_bound_Nm'])} N·m보다 큽니다{at(g)}: 선언 오차를 고려해도 불충족",
+                  f"short by at least {num(p['shortfall_at_bound_Nm'])} N·m at the certified bound, more than the "
+                  f"declared error {num(p['delta_at_bound_Nm'])} N·m{at(g)}: not met even with the declared error")
+    elif model == "not met" and st == "WITHIN_ERROR":
+        text = tr(f"모델상 {num(-p['margin_Nm'])} N·m 부족 ≤ 선언 오차 합 {num(p['delta_Nm'])} N·m{at(g)}: 오차 범위 안이라 "
+                  f"실제 제품은 충족할 수도 있습니다 — 모델 FAIL만으로 설계를 기각하지 마세요",
+                  f"short by {num(-p['margin_Nm'])} N·m in the model ≤ declared error {num(p['delta_Nm'])} N·m{at(g)}: "
+                  f"within the error, so the product may still meet it — do not reject the design on the model FAIL "
+                  f"alone")
+    elif st == "WITHIN_ERROR" and gc is not None and gc.get("robust") is False:
+        text = (_check_words(gc, at(gc.get("condition")))
+                + tr(": 모델상으로는 충족하지만 이 한계를 선언 오차보다 크게 지키지 못합니다 — 이 근거만으로는 설계 판단에 부족",
+                     ": met in the model, but the limit is not held by more than the declared error — not sufficient "
+                     "for a design decision on this evidence"))
+    elif st == "WITHIN_ERROR":
+        text = tr(f"토크 여유 {num(p['margin_Nm'])} N·m가 선언 오차 합 {num(p['delta_Nm'])} N·m보다 작습니다{at(g)}: "
+                  f"모델상으로는 충족하지만 이 근거만으로는 설계 판단에 부족",
+                  f"torque margin {num(p['margin_Nm'])} N·m is below the declared error {num(p['delta_Nm'])} N·m"
+                  f"{at(g)}: met in the model, but not sufficient for a design decision on this evidence")
+    elif st == "ROBUST":
+        parts = []
+        if torque and p.get("delta_Nm") is not None:
+            parts.append(tr(f"토크 여유 {num(p['margin_Nm'])} N·m ≥ 선언 오차 합 {num(p['delta_Nm'])} N·m{at(g)}",
+                            f"torque margin {num(p['margin_Nm'])} N·m ≥ declared error {num(p['delta_Nm'])} N·m{at(g)}"))
+        if checks and gc is not None:
+            parts.append(tr("선언한 한계 오차를 운전점에서 모두 덮음 (가장 빠듯한 것: ", "every declared limit error is covered at "
+                            "the witnesses (tightest: ") + _check_words(gc, at(gc.get("condition"))) + ")")
+        text = "; ".join(parts) + tr(": 선언 오차를 고려해도 충족 — 설계 판단에 쓸 수 있는 여유",
+                                     ": met with the declared error — a margin a design decision can use")
+    else:
+        why = [engine_text(x.get("reason", "")) for x in per if x.get("reason") and x.get("robust") is None]
+        why += [engine_text(c.get("reason", "")) for c in checks if c.get("robust") is None and c.get("reason")]
+        text = tr("선언 오차 대비 판단이 서지 않습니다: ", "not decidable against the declared error: ") + esc(
+            "; ".join(dict.fromkeys(why)))
+    rel = rob.get("verdict_relation")
+    if rel:
+        parts = " · ".join(tr(*_ROBUST_OTHER[x]) for x in rel.get("parts") or [] if x in _ROBUST_OTHER)
+        text += tr(f" — 판정({rel['verdict']})은 {parts}이(가) 정하며, 이 비교는 그 부분을 다루지 않습니다",
+                   f" — the verdict ({rel['verdict']}) is decided by {parts}, which this comparison does not cover")
+    cov = rob.get("coverage")
+    if cov == "examined_only":
+        text += tr(" (검토한 조건에서만의 비교 — 연속 범위는 미확립)",
+                   " (at the examined conditions only — the continuous range is not established)")
+    elif cov == "range_certified":
+        text += tr(" (정적 판정은 Vdc 범위 전체로 인증됐지만, 여유 비교는 검토한 조건에서만)",
+                   " (the static claim is certified over the Vdc range; the margin comparison is at the examined "
+                   "conditions)")
+    return label, text, level
+
+
+_SENS_LABEL = {"Rs": ("Rs", "Rs"), "a0": ("인버터 손실 a0", "inverter loss a0"),
+               "a2": ("인버터 손실 a2", "inverter loss a2"), "b": ("회전·철손 b", "rotational / iron loss b"),
+               "c": ("회전·철손 c", "rotational / iron loss c"), "r_v": ("전압 예비율", "voltage reserve"),
+               "psi": ("자석 쇄교자속", "PM flux linkage"), "Ld": ("Ld", "Ld"), "Lq": ("Lq", "Lq")}
+
+
+def _sens_text(p: dict) -> str:
+    lab = tr(*_SENS_LABEL.get(p["key"], (p["label"], p["label"])))
+    b = p.get("break_even")
+    if b is None:
+        return tr(f"{lab}: 이 범위에서 여유를 없애지 않음", f"{lab}: does not erase the margin in range")
+    if p["key"] == "r_v":
+        return tr(f"{lab} +{num(b, 2)} ({num(p['value'])}에서)", f"{lab} +{num(b, 2)} (from {num(p['value'])})")
+    if p["key"] == "a0":
+        return f"{lab} +{kw(b * p['value'])}"
+    return f"{lab} {'+' if b > 0 else '−'}{num(100 * abs(b), 3)} %"
+
+
+def _sensitivity_lines(s, rec: dict) -> None:
+    """A loss-limited margin in watts and in the parameter changes that erase it (engineering review 2, F-03)."""
+    ms = rec.get("margin_sensitivity") or {}
+    if not ms:
+        return
+    b = ms.get("loss_budget_W")
+    erased = [p for p in ms.get("parameters") or [] if p.get("break_even") is not None][:3]
+    s.add(tr(f"손실로 제한된 여유 {num(ms['margin_Nm'], 3)} N·m ({esc(ms['condition'])})"
+             + ("" if b is None else f" — 운전점에서 손실이 {kw(b)} 더 늘면 DC 한계에 닿음")
+             + (" · 여유를 없애는 변화(선형 추정): " + ", ".join(_sens_text(p) for p in erased) if erased else ""),
+             f"loss-limited margin {num(ms['margin_Nm'], 3)} N·m ({esc(ms['condition'])})"
+             + ("" if b is None else f" — {kw(b)} of additional loss at the witness reaches the DC limit")
+             + (" · erased by (linear estimate): " + ", ".join(_sens_text(p) for p in erased) if erased else "")),
+          "warn",
+          tr("근거 손실 모델: ", "loss models behind it: ") + "; ".join(_loss_model_words(x)
+                                                                      for x in ms.get("loss_models") or [])
+          + tr(" — 이 값들의 근거 있는 오차를 오차 예산에 선언하면 판정 여유와 비교합니다",
+               " — declare their error with a basis in the error budget to compare it with the margin"))
+
+
+def _loss_model_words(x: str) -> str:
+    if x.startswith("inverter loss:"):
+        if "module" in x:
+            return tr("인버터 손실: 데이터시트 모듈 모델", "inverter loss: datasheet module model")
+        if "not modelled" in x:
+            return tr("인버터 손실: 모델 없음", "inverter loss: not modelled")
+        return tr("인버터 손실: 2차 대체식 a0 + a2·I² (Vdc·fsw·Tj 의존 없음)",
+                  "inverter loss: quadratic surrogate a0 + a2·I² (no Vdc / fsw / Tj dependence)")
+    if "not modelled" in x:
+        return tr("회전·철손: 모델 없음", "rotational / iron loss: not modelled")
+    return tr("회전·철손: 속도만의 함수 (부하·자속 의존 없음)", "rotational / iron loss: speed-only (no load / flux dependence)")
+
+
+def robustness_section(ins: Insight, rec: dict) -> None:
+    """'Met in the model' and 'met with enough margin for a design decision' kept apart (review of 63a2b61, 4)."""
+    rob = ((rec.get("verdict") or {}).get("layers") or {}).get("robustness") or {}
+    label, text, level = robustness_summary(rob)
+    s = ins.section(tr("설계 판단 여유 — 선언 오차 대비", "margin for a design decision — against the declared error"),
+                    tr("모델 판정(위)은 바뀌지 않습니다. 선언한 오차를 물리량마다 최악 조합으로 합쳐 따로 비교합니다: 토크는 능력치 여유"
+                       "(충족은 찾은 능력치, 불충족은 인증 상한), 전류·DC·전압은 운전점의 한계 여유(y + Δ ≤ y_max).",
+                       "the model verdict above does not change. The declared error of each quantity is summed worst "
+                       "case and compared separately: torque with the capability margin ('met' at the found "
+                       "capability, 'not met' at the certified bound), current, DC and voltage with the limit margins "
+                       "at the witness (y + Δ ≤ y_max)."))
+    s.add(f"<b>{label}</b>: {text}", level)
+    _sensitivity_lines(s, rec)
+    budget = rob.get("budget")
+    per, names, g = rob.get("conditions") or [], rob.get("names") or [], rob.get("governing")
+    checks = rob.get("checks") or []
+    several = len(per) > 1
+    if not budget:
+        s.add(tr("요구 폼의 '오차 예산'에 모델 불일치(예: flux map 토크 정확도 %), 입력·측정 오차(예: 전류 센서 이득 %), 공급 데이터의 "
+                 "수치 오차를 근거와 함께 적으면 이 비교를 합니다. Vdc·온도의 불확실성은 범위 요구(∀)로 넣으세요.",
+                 "declare model mismatch (e.g. the flux-map torque accuracy in %), input / measurement error (e.g. the "
+                 "current-sensor gain in %) and the numerical error of supplied data, each with its basis, in the "
+                 "form's error budget to get this comparison. Put Vdc and temperature uncertainty in the requirement "
+                 "as ranges (for all)."), "info")
+        return
+    p = per[g] if g is not None and g < len(per) else {}
+    if (rec.get("requirement") or {}).get("operator") == "band" and rob.get("T_edge_Nm") is not None:
+        s.add(tr(f"대역 요구(∃): 대역 안의 토크 하나면 되므로 토크 여유는 대역 끝 {num(rob['T_edge_Nm'])} N·m 기준입니다 "
+                 f"(위의 토크 여유는 대역 중심 기준)",
+                 f"band requirement (exists): one torque inside the band is enough, so the torque margin is taken at "
+                 f"the band edge {num(rob['T_edge_Nm'])} N·m (the torque margin above is at the band centre)"), "info")
+    for it in budget.get("items") or []:
+        qd = ROBUST_QUANTITY.get(it.get("quantity", "torque"), ROBUST_QUANTITY["torque"])
+        size = (f"{num(it['value'])} {_unit(it.get('unit', 'N*m'))}" if it.get("value") is not None else
+                tr(f"{qd[2]}의 {num(it['percent'])} %", f"{num(it['percent'])} % of {qd[3]}"))
+        s.add(f"{esc(it['source'])} ({tr(*ROBUST_KIND.get(it['kind'], (it['kind'], it['kind'])))}, "
+              f"{tr(qd[0], qd[1])}): {size}", "info",
+              tr("근거: ", "basis: ") + (esc(it.get("basis") or "") or tr("명시 안 됨", "not stated")))
+    if p.get("delta_Nm") is not None:
+        s.add(tr(f"토크 오차 합 Δ = {num(p['delta_Nm'])} N·m (능력치 {num(abs(p['capability_Nm']))} N·m 기준) — 선언한 한계의 "
+                 f"최악 조합 합, 확률을 붙이지 않음",
+                 f"torque error sum Δ = {num(p['delta_Nm'])} N·m (at the capability {num(abs(p['capability_Nm']))} N·m) — "
+                 f"worst-case sum of the declared bounds, no probability"), "info")
+    if several and any(x.get("delta_Nm") is not None for x in per):
+        for n, x in zip(names, per):
+            m = x.get("margin_Nm")
+            s.add(f"{esc(n)}: " + (tr("토크 여유 ", "torque margin ") + f"{num(m)} N·m" if m is not None else "—")
+                  + ("" if x.get("delta_Nm") is None else f" / Δ {num(x['delta_Nm'])} N·m")
+                  + f" → {tr(*ROBUST_CONDITION.get(x['status'], (x['status'], x['status'])))}",
+                  {"ROBUST_MET": "ok", "ROBUST_NOT_MET": "ok", "MET_WITHIN_ERROR": "warn",
+                   "NOT_MET_WITHIN_ERROR": "warn"}.get(x["status"], "open"))
+    for c in checks:
+        ko, en, lv = ROBUST_CHECK.get(c["status"], (c["status"], c["status"], "open"))
+        where = f"{esc(names[c['condition']])}: " if several and c.get("condition") is not None else ""
+        if c.get("constraint") is None or c.get("slack") is None:
+            s.add(where + tr(f"{ROBUST_QUANTITY[c['quantity']][0]}: {ko}", f"{ROBUST_QUANTITY[c['quantity']][1]}: {en}"),
+                  lv, esc(engine_text(c.get("reason", ""))))
+            continue
+        u = _unit(c["unit"])
+        s.add(where + f"{constraint_label(c['constraint'])} {num(c['demand'])} / {num(c['limit'])} {u} — "
+              + tr(f"여유 {num(c['slack'])} {u}, 선언 오차 {num(c['delta'])} {u} → {ko}",
+                   f"margin {num(c['slack'])} {u}, declared error {num(c['delta'])} {u} → {en}"), lv)
 
 
 def _claim_reading(cl: dict, op: dict | None, T: float) -> tuple[str, str]:
@@ -580,6 +922,8 @@ def _scope_section(ins: Insight, rec: dict, op: dict | None) -> None:
         s.add(tr(f"데이터 등급: {esc(_qual_ko(qual))} — 모델 판정이나 수치 인증서가 하드웨어 적격성을 뜻하지 않습니다",
                  f"data qualification: {esc(qual.get('status', ''))} — a model verdict or a numerical certificate is not "
                  f"hardware qualification"), "warn" if "NOT" in str(qual.get("status", "")) else "info")
+    for x in qual.get("iron_loss_scope") or []:
+        s.add(*_iron_scope_reading(x, len(rec.get("conditions") or []) > 1))
     vol = _cons(op, "VOLTAGE")
     if vol is not None and vol.get("state") == "ACTIVE":
         s.add(tr("전압 여유 0 V: 전류 제어·과도 응답에 쓸 전압 헤드룸이 없습니다 (과도·제어 동특성은 평가 범위 밖)",
@@ -587,6 +931,49 @@ def _scope_section(ins: Insight, rec: dict, op: dict | None) -> None:
                  "evaluation)"), "warn")
     for x in rec.get("not_evaluated") or []:
         s.add(tr("평가 안 함: ", "not evaluated: ") + esc(engine_text(x)), "open")
+
+
+def _iron_scope_reading(x: dict, several: bool) -> tuple[str, str, str]:
+    """(text, level, detail) of the iron-loss scope at a field-weakening witness (review of 63a2b61, 3.1)."""
+    r = x.get("flux_ratio")
+    where = f" · {esc(x['condition'])}" if several else ""
+    head = tr("약계자 운전점 (전압 한계 활성" + ("" if r is None else f", |ψ| = 무부하 자속의 {100 * r:.0f} %") + f"){where}",
+              "field-weakening point (voltage limit active" + ("" if r is None else f", |ψ| = {100 * r:.0f} % of the "
+                                                                                 f"no-load flux") + f"){where}")
+    m, dc, k = x.get("torque_margin_Nm"), x.get("dc_margin_W"), x.get("Nm_per_kW")
+    marg = tr(("" if m is None else f"토크 여유 {num(m)} N·m") + ("" if dc is None else f", DC 방전 여유 {q(dc, 'W')}"),
+              ("" if m is None else f"torque margin {num(m)} N·m") + ("" if dc is None else f", DC discharge margin "
+                                                                                       f"{q(dc, 'W')}"))
+    per_kw = "" if k is None else tr(f" — 이 속도에서 손실 1 kW = {num(k)} N·m", f" — 1 kW of loss is {num(k)} N·m at this "
+                                                                           f"speed")
+    stages = tr("단계적 충실도: 지금은 속도만의 손실 토크 → 선언 계수로 자속을 따르는 철손 → FEA 철손 맵(id, iq, n). 정적·동적 "
+                "적격성은 따로 판단합니다 (데이터 감사).",
+                "staged fidelity: a speed-only loss torque now → iron loss following the flux with declared coefficients "
+                "→ FEA iron-loss maps over (id, iq, n). Static and dynamic qualification stay separate (data audit).")
+    # the loss model's own basis text stays in the record (qualification layer): it is model data, and may quote
+    # its formula with code names
+    d = x.get("direction")
+    if d == "unmodelled":
+        return (tr(f"{head}: 철손이 모델에 없습니다 (회전 손실은 기계 손실만). 이 운전점의 철손만큼 {marg}가 줄어듭니다"
+                   f"{per_kw}. 철손을 오차 예산(모델)에 넣거나 철손을 포함한 손실 데이터를 쓰세요.",
+                   f"{head}: the iron loss is not in the model (mechanical rotational loss only). The iron loss at this "
+                   f"point would lower the {marg}{per_kw}. Declare it in the error budget (model) or use loss data "
+                   f"that include it."), "warn", stages)
+    if d == "conservative":
+        return (tr(f"{head}: 철손이 모델에 없지만, 회생 제동에서는 모델 밖 손실이 제동 토크를 더하고 충전 한계를 덜어 주므로 이 "
+                   f"판정에는 보수 측입니다.",
+                   f"{head}: the iron loss is not in the model, but for regenerative braking an unmodelled loss adds "
+                   f"braking torque and eases a charge limit, so the model is on the conservative side for this "
+                   f"claim."), "info", stages)
+    help_ = (tr("구동: 모델보다 손실이 작음", "motoring: less loss than modelled") if x.get("motoring") else
+             tr("제동: 모델보다 제동 보조가 작음", "braking: less braking help than modelled"))
+    return (tr(f"{head}: 철손이 속도만의 손실 토크라 자속 감소를 따르지 않습니다 — 줄어든 자속에서 기본파 철손은 더 작을 "
+               f"가능성이 크고({help_}), 고조파·자석 와전류 손실은 없으므로 어느 쪽인지 증명되지 않습니다. 회전·철손 "
+               f"{q(x.get('P_rot_W'), 'W')} 대 {marg}{per_kw}.",
+               f"{head}: the iron loss is a speed-only loss torque that does not follow the flux — at reduced "
+               f"flux the fundamental iron loss is likely smaller ({help_}), harmonic and PM eddy-current loss are not "
+               f"represented, so neither direction is proven. Rotational / iron loss {q(x.get('P_rot_W'), 'W')} against "
+               f"the {marg}{per_kw}."), "open", stages)
 
 
 def _next_section(ins: Insight, rec: dict, an: dict, verdict: str, pending=()) -> None:

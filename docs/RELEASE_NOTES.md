@@ -5,6 +5,89 @@
 
 ## 0.5.0 변경 사항 (v0.4.0 대비)
 
+**공학 리뷰 3(남은 영역 수치 감사) 반영** — 효율·드라이브라인·OEW·HEV·모터 설계·EMI·보호·ASC를 수치 실험으로 감사한 리뷰에서
+새로 나온 지적만 현재 헤드에서 재현하고 판단해 반영했습니다(상세: `docs/LOGIC_REVIEW.html` §21, [`TRACEABILITY.md`](TRACEABILITY.md) §18,
+회귀 시험 `tests/test_review_r3.py`).
+
+1. **보호 PROT-04는 반응으로 판정(F-10)** — 지평 안에서 고장이 확정되면 반응 시각이 정해지므로, 반응 전 교차(이분법 교차 시각)와 작동 후
+   상한을 플랜트 정확해로 판정. 확정이 지평 밖이면 UNKNOWN(결코 INFEASIBLE 아님). 지연 2 ms 예제: 지평 0.3 ms의 거짓 FEASIBLE과 0.1 ms의
+   거짓 INFEASIBLE이 각각 INFEASIBLE(0.375 ms 교차, 1·5 ms 지평과 같은 판정)과 UNKNOWN으로. PROT-03과 해석 지표도 같은 규칙.
+2. **EMI 수신기(F-11)와 CM 귀환 레일(F-23)** — 추정 = 직사각 IF·피크 검출기의 포락 최대(FFT 과표본 + 뉴턴, 전수 탐색과 일치),
+   상한 = 두 포트·네 귀환 모델(중점·에지 부호·HV+·HV−)의 선합과 가우시안 IF 가중합, 반례 = 네 모델 중 최소 포락. 필요 감쇠는 추정 기준
+   (상한 기준 병기; 화면 표·해석 지표의 최대값도 판정과 같은 대역 정확값), 창당 선 수 표시. 예제의 예측 초과 68.9 dB → 63.0 dB(상한 68.9 dB). 같은 운전점에서 \(f_e\) 400/200/100 Hz의 추정이
+   0.65 dB 안(선합은 창당 선 수에 따라 7.3 → 9.7 dB 위). 선합을 위반 증거로 쓰던 것도 고침. 세 레일 탭을 한 번의 분해로(Woodbury).
+3. **HEV·ASC(F-22, F-24)** — HEV 운전점 캐시를 기계 객체로, 한 버스의 기계 이름은 유일. ASC 피크·전체 dq 피크·최소 i_d를 정확해로 표본
+   사이까지 정밀화하고 허용치는 한계로(두 격자 차만으로는 한계가 아님), 궤적이 모델의 선언 전류 영역을 벗어나면 배율과 함께 표시(예제 2.12배).
+4. **P3** — OEW 공통 버스 off/off 임계에 3고조파 역기전력(선언 위상 정확 피크 + 위상 무관 상한, 없으면 UNKNOWN), 드라이브라인 최종 가속을
+   정수 개 비틀림 주기로 평균, 모듈 A/B 오차대의 근거(선언 한계의 선형합)와 독립 오차 RSS 표시, EMI 설계 예비 공란 메모와 FEASIBLE 문구의
+   선언 공백 구간.
+
+**인과 고장 시뮬레이션·기능안전(FuSa)** — 새 화면(안전·보호 → 고장 시뮬레이션·FuSa). 인버터 고장이 측정·추정 → 제어·감시 → 보호 반응 →
+실제 토크·전류·DC-link → 안전 요구 판정으로 이어지는 **하나의 인과 궤적**을 계산합니다(상세: `docs/LOGIC_REVIEW.html` §20,
+[`TRACEABILITY.md`](TRACEABILITY.md) §17, 회귀 시험 `tests/test_faultsim.py`·`tests/test_fault_page.py`).
+
+1. **참값·측정·추정·명령·실제 분리** — 감시 메커니즘과 반응 정책은 측정값과 자기 진단 플래그만 읽고, 반응 명령과 실제 브리지 상태를 따로
+   기록하며, 요구는 플랜트 참값으로 판정합니다.
+2. **플랜트** — 절연 중성점 dq PMSM + 스위칭 다리의 상보성(떠 있는 다리, 다이오드 도통, 레일 한 걸음 앞 보기), 6SO 정류와 ASC를 가정 없이
+   그대로, DC-link·Thevenin 배터리(인덕턴스)·접촉기·BMS 충전 수용·블리더·능동 방전, 사건 1 ns 위치, 매 실행 에너지 수지. 평균값 / 스위칭 PWM.
+3. **센서·제어기·안전 메커니즘** — 센서 고장 모드(오프셋·이득·고착·마지막 값·소실·수송 지연), 이산 FOC, MCU 리셋과 flying/cold 재시동,
+   SW 주기 감시·HW 비교기·스위치별 desat·UVLO·워치독, 지연과 필요 자원을 가진 반응 경로, 공유 자원 상실에 의한 공통 원인, 측정 정보만 보는
+   안전 상태 정책 — 모두 프로젝트의 `fault_sim` 섹션 데이터(검증 단계 포함).
+4. **요구·판정** — SG → FSR → TSR, 판정 다섯 종류(동적 토크 창, 한계, 안전 상태, 오반응 없음, 시간)와 FDTI/FRTI/FHTI 사건 정의. 관측 위반은
+   FAIL, 창을 끝까지 못 보면 UNKNOWN, 안전 상태는 마감 관측 시 FAIL, FRTI·FHTI 하한, 적용 범위(시나리오 하나 / 탐색 집합) 명시. SG는 인버터
+   근거와 차량 지표만(차량 안전성·ISO 26262 적합성을 승인하지 않음).
+5. **대표 시나리오·후보 비교·캠페인·반례** — 성공·지연·잘못된 반응·경로 상실·공통 원인·오검출·복귀 실패 예제(분류는 결과에서 옴), 같은 초기
+   조건의 반응 후보 비교, 격자·무작위 캠페인과 판정 경계 이분, 물리량별 최악값과 그 실행, 프로젝트·코드 식별이 붙은 반례의 저장·열기·재실행과
+   입력 변경 표시.
+6. **검증** — 폐형식, 독립 abc 정식화(회전자 위치 인덕턴스, 컨덕턴스 소자, 강성 적분 — 이상화 경향으로 부분 단락 결함을 찾아 고침), 행렬 지수,
+   스텝 수렴, 에너지 수지.
+
+**공학 리뷰 2(63a2b61) 반영** — 본 보고서(F-01…F-19, P3)와 DC 전원·DC-link, 열 하위 보고서의 지적을 현재 헤드에서 다시 재현하고
+판단해 반영했습니다(상세: `docs/LOGIC_REVIEW.html` §19, [`TRACEABILITY.md`](TRACEABILITY.md) §16, 회귀 시험
+`tests/test_engineering_review_63a2b61.py`). 바뀐 판정은 모두 "증명할 수 없는 것을 결론으로 쓰지 않는다"는 방향입니다.
+
+1. **DC 전원 결합** — 배터리 OCV + Thevenin의 단자 전압을 수동성 상한 V_hi에서 시작하는 단조 반복으로 풂. 회생이 풀리고(−203.72
+   N·m: 거짓 FAIL → 604.04 / 611.99 V에서 PASS), 구동에서 전원이 감당할 수 없는 요구는 증명된 FAIL(350 mΩ). 해가 없을 때 드라이브
+   쪽은 V_hi에서 보여 주고 거기서의 위반은 결정적이지 않음.
+2. **판정 엔진** — 자속맵 정책을 결과로 인증(최소전류 구간 양 끝이 같은 판정이면 구간 전체; UNKNOWN 띠 제거). 온도를 말하지 않은 요구는
+   선언 법칙의 모든 온도에서 판정(구동은 최대 R_s 인증서, 그 외 표본) — 판정 폼에 권선 온도. DC 한계로 정해진 여유에 손실 예산과
+   파라미터 손익분기를 자동 표시(판정 불변). 조건을 밝히지 않은 rating envelope은 판정에 쓰지 않음(APPLICABILITY_UNCONFIRMED).
+   구간 분석의 꼭짓점 인증서(모든 모서리 통과 → 연속 박스 전체 FEASIBLE, 공통 운전점이면 적응형도). 충전 한계 경계 위의 제동
+   능력 witness를 잃지 않음. 효율 결과는 "모델 효율"로 표시.
+3. **열** — 온도 법칙·자석 되먹임이 있으면 지속시간을 반복 부하 엔진으로 결합(400 N·m: 158.5 °C FEASIBLE → INFEASIBLE), 반복
+   부하는 지평 전체 계산과 주기 초과를 claim에(500주기 사례: 449주기에서 INFEASIBLE), 검증 안 된 모델의 되먹임 정지는 결정적이지 않음,
+   열원 감시는 모든 단계, Heun 되먹임 스텝, 선언된 불확도 대역(`uncertainty_K`) 안은 UNKNOWN, 냉각수 단순화 보고.
+4. **DC-link·안전** — 차단 과전압의 반응 경로(freewheel / 미지정 / ASC)와 전압 한계 유입 전력 상한, 음의 허용 시간 대신 증명된 위반,
+   ESR 게이트를 에너지 기준으로(결과가 FFT 길이와 무관, 10–30 kHz FEASIBLE), 커패시터 수명은 요구 수명이 있을 때만 판정.
+5. **표시·변조** — 물리량 종류별 표시 자릿수(모델 한정 추정값 3자리)와 커패시터 손실·hotspot의 샘플링 분해능. DPWM1을 모든 펄스
+   패턴 소비자(EMI 소스, 상전류 리플, 샘플링 창, PWM 정책)가 받음.
+
+**로직 검토 의견(63a2b61) 반영** — `docs/LOGIC_REVIEW.html`에 대한 검토 의견을 재현하고 판단해 반영했습니다(상세: 문서 §18,
+[`TRACEABILITY.md`](TRACEABILITY.md) §15, 회귀 시험 `tests/test_review_63a2b61.py`).
+
+1. **결함 4건 수정** — (2.1) 가변 PWM Pareto에서 같은 에너지 불확도 구간이 정책을 지우던 규칙: 구간은 분리될 때만 지배.
+   (2.2) 반복 부하의 첫 한계가 노드 목록 순서에 따라 달라지던 것: 모든 노드의 최솟값. (2.3) 단계 내부 최고 온도와 한계 교차가 빠른
+   열 모드의 피크를 놓치던 것: 지수합 정류점의 정확한 근 분리(격자 없음). (2.4) Thevenin 결합의 제곱근 정의역 오류: 증명과 근이
+   같은 경계 대역을 쓰고, 대역 안은 UNKNOWN(BOUNDARY_WITHIN_TOLERANCE).
+2. **열 반복 부하** — 노드가 대표하는 온도를 선언(`temperature_of`: winding / junction / magnet)하고 자석 노드 온도가 운전점 자속을
+   정함. 허용값의 손실 상한은 온도 상자의 모든 모서리 최댓값(좌표별 단조면 방향 무관)이며 모서리 중점·중심으로 점검(실패 시 추정).
+   주기 수렴은 모든 Foster 항의 잔차로, 매 실행에 해상도 점검(스텝 2배·캐시 ½ — 첫 한계·피크·주기 피크·허용값)을 하고
+   판정이 바뀌면 UNKNOWN.
+3. **가변 PWM** — 비정수 f_sw/f_e는 요청 주파수를 사이에 둔 두 동기 캐리어를 모두 평가하고 두 답이 같을 때만 판정(민감도 괄호).
+   커패시터 ESR 손실을 에너지 비교 경계 안으로 선언할 수 있음(판정 화면 체크 박스).
+4. **판정의 견고성 층** — 선언한 오차 예산(모델 불일치 / 입력·측정 / 공급 데이터의 수치 오차; 물리량 토크·상전류·DC 전력·DC
+   전류·명령 전압; 절대값 또는 모델값의 %; 근거·적용 범위 필수)을 물리량마다 최악 조합으로 합쳐 "모델상 가능"과 "선언 오차를 고려해도
+   가능"을 구분(ROBUST / WITHIN_ERROR / NOT_ESTABLISHED / NOT_ASSESSED). 토크는 능력 여유(충족은 찾은 능력치, 불충족은 인증 상한),
+   한계는 요구를 만족하는 운전점에서 y + Δ ≤ y_max(약계자점의 전압 한계는 정책이 대응하므로 토크 쪽으로). 모델 판정은 바뀌지
+   않음. case 파일의 `error_budget`(예제 `examples/cases/req_ts_012_600V_error_budget.json`), 판정 화면의 "오차 예산" 입력(행마다
+   물리량·단위 선택), 판정 배너·해석·Markdown·PDF 기록.
+5. **한정자** — 판정 폼이 토크 해석(achieve / band ±)을 직접 받고 "판정할 질문"을 ∃(대역)·∀(Vdc 범위, 다평면 자석 온도)로 보여 줌.
+   결과의 "판정한 질문"과 기록의 `quantifiers`에도 같은 의미.
+6. **약계자 철손 범위** — witness가 전압 한계에 걸린 운전점이면 자속비 |ψ|/|ψ₀|, 토크·DC 여유, 이 속도의 1 kW ↔ N·m 환산과 오차
+   방향을 기록·해석에 표시(합성 기준 모델: 12,000 rpm·150 N·m에서 철손이 없는 회전 손실, 약 3.2 kW면 토크 여유가 사라짐).
+   커널의 손실 형태는 바꾸지 않음(증명 구조의 전제), 자속 의존 철손은 다음 단계.
+
+
 **MathWorks 이식 패키지 `twb-mathworks/1`** — Python Workbench를 실행 가능한 reference 구현으로 보고, 그 요구·모델·파라미터·
 시나리오·계산 의미·결과를 MATLAB / Simulink / System Composer로 재현 가능하게 옮깁니다. 새 verification framework가 아니라
 기존 구조(twb-project/1, twb-exchange/1, 결정 기록의 claim·evidence, provenance·content hash)를 그대로 싣고 이식에 필요한 것만
@@ -14,7 +97,7 @@
    fingerprint: canonical ASCII JSON이라 byte 동일 ⇔ 의미 동일), `contract.json`(검사 가능한 규약 열거값, 물리량 사전의 단위·tolerance
    class, 제약·에너지 모드·사유·claim 어휘, 수치 설정, map·손실 규칙, 세 층), `models/*.json`(제품 드라이브 + 참조·검증 fixture:
    파라미터·온도 법칙·flux plane(행 = id)·mask·대칭·온도 보간·손실 closure·**손실 소유권**·content SHA-256·provenance·자기 qualification),
-   `cases/*.json`(forward 48, flux lookup 21, 요구 witness 11 — 각 case에 Python 값과 oracle 값·tolerance), `architecture/`
+   `cases/*.json`(forward 48, flux lookup 21, 요구 witness 12 — 예제 case 파일마다 1건, 각 case에 Python 값과 oracle 값·tolerance), `architecture/`
    (System Composer/SLDD 후보와 회사 profile 양식), `source/`(프로젝트, 교환 패키지, 참조 패키지 manifest), `gap_report.json`,
    `matlab/+twb/`, 사람용 이식 안내(`README.md`)와 agent 작업표(`AGENT_TASKS.md`).
 2. **MathWorks에서 무엇이 재현되는가** — native MATLAB: 상수 dq(D1)와 flux map(D2)의 정상상태 forward 평가(전압·토크·전력·손실·
@@ -31,7 +114,7 @@
    계약 수식, map의 집합 정의로 계산합니다. 내보낼 때 (2)↔(1) 불일치는 보고되고 숨겨지지 않습니다(현재 0건). 대상 보고서는 Python이
    **원시 값에서 다시 계산**해 판정합니다. 비교에 이빨이 있는지 CI가 확인합니다: MATLAB 코드에 심은 결함 — 토크 계수, 모서리 규칙
    제거, UNKNOWN 대신 clip, 결측 DC 한계 = 무제한, ACTIVE = 위반, map 전치, power-invariant Park, 온도 보간 제거, Rs 법칙 무시 — 이
-   모두 그 결함을 겨냥한 case에서 FAIL/ERROR가 됩니다. 이 환경과 CI에서 GNU Octave 8.4(MATLAB 언어 호환 proxy)로 **79 PASS · 0 FAIL ·
+   모두 그 결함을 겨냥한 case에서 FAIL/ERROR가 됩니다. 이 환경과 CI에서 GNU Octave 8.4(MATLAB 언어 호환 proxy)로 **80 PASS · 0 FAIL ·
    0 ERROR · 1 NOT_SUPPORTED**(witness가 없는 INFEASIBLE 요구), guard 6/6. MATLAB 자체·Simulink·System Composer는 실행하지 않았습니다.
 4. **작업이 System Composer → Simulink → Simscape로 발전해도 연결을 어떻게 유지하는가** — 보고서는 semantic fingerprint와 소비한 모든
    파일의 SHA-256을 기록하고, 재수입은 그 패키지에만(다른 패키지 → FOREIGN_REPORT), 그 설계 개정에만(project digest가 다르면 현재

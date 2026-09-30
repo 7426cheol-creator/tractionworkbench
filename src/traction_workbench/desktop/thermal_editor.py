@@ -33,6 +33,12 @@ STATIONS = (("inverter", lambda: tr("인버터 냉각판", "inverter cold plate"
             ("motor", lambda: tr("모터 워터재킷", "motor water jacket")),
             (None, lambda: tr("냉각수 입구 (유량 효과 없음)", "coolant inlet (no flow effect)")))
 
+ROLES = ((None, lambda: tr("자동 (발열원으로 권선·접합 추정, 자석은 선언해야 함)",
+                          "automatic (winding / junction from the heat source; a magnet must be declared)")),
+         ("winding", lambda: tr("권선 온도 → R_s(T)", "winding temperature → R_s(T)")),
+         ("junction", lambda: tr("접합 온도 → 모듈 손실 T_j", "junction temperature → module loss T_j")),
+         ("magnet", lambda: tr("자석 온도 → 자속 ψ_PM(T) / 자속맵 온도 평면", "magnet temperature → ψ_PM(T) / map plane")))
+
 TEMPLATE_4 = {"foster": ([0.010, 0.030, 0.080, 0.080], [0.002, 0.03, 0.4, 2.5]),
               "cauer": ([0.012, 0.035, 0.070, 0.083], [0.2, 1.5, 6.0, 30.0])}
 
@@ -200,6 +206,13 @@ class NodeEditor(QWidget):
         self.station = QComboBox()
         for key, lab in STATIONS:
             self.station.addItem(lab(), key)
+        self.role = QComboBox()
+        for key, lab in ROLES:
+            self.role.addItem(lab(), key)
+        self.role.setToolTip(tr("반복 부하에서 이 노드의 온도를 운전점 계산의 어느 온도로 되먹일지. 자석 온도는 추정하지 않으며, "
+                                "노드를 '자석'으로 선언해야 자속(ψ_PM(T) 법칙 또는 자속맵 온도 평면)에 반영됩니다.",
+                                "which operating-point temperature this node feeds back in the repeated load; the magnet "
+                                "temperature is never inferred - declare the node as the magnet to feed the flux"))
         self.r_foster = QRadioButton("Foster (R_i, τ_i)")
         self.r_cauer = QRadioButton("Cauer (R_i, C_i)")
         grp = QButtonGroup(self)
@@ -222,6 +235,7 @@ class NodeEditor(QWidget):
         row.addWidget(self.share, 1)
         form.addRow(tr("발열원 × 비율", "heat source × share"), row)
         form.addRow(tr("기준 냉각수 위치", "coolant reference"), self.station)
+        form.addRow(tr("이 노드의 온도 (피드백)", "this node's temperature (feedback)"), self.role)
         kind_row = QHBoxLayout()
         kind_row.addWidget(self.r_foster)
         kind_row.addWidget(self.r_cauer)
@@ -256,7 +270,7 @@ class NodeEditor(QWidget):
             w.textChanged.connect(self.changed)
         for w in (self.limit, self.share, self.flow_ref, self.flow_exp):
             w.valueChanged.connect(self.changed)
-        for w in (self.source, self.station):
+        for w in (self.source, self.station, self.role):
             w.currentIndexChanged.connect(self.changed)
         self.table.changed.connect(self._update_summary)
         self.table.changed.connect(self.changed)
@@ -295,6 +309,8 @@ class NodeEditor(QWidget):
         self.share.setValue(float(next(iter(shares.values()))) if shares else 1.0)
         st = spec.get("station")
         self.station.setCurrentIndex(next((i for i, (k, _l) in enumerate(STATIONS) if k == st), 2 if st is None else 0))
+        ro = spec.get("temperature_of") or None
+        self.role.setCurrentIndex(next((i for i, (k, _l) in enumerate(ROLES) if k == ro), 0))
         kind = str(spec.get("network", "foster")).lower()
         (self.r_cauer if kind == "cauer" else self.r_foster).setChecked(True)
         self.table.set_kind(kind)
@@ -315,6 +331,8 @@ class NodeEditor(QWidget):
                "loss_share": {k: self.share.value() for k in keys}, "station": self.station.currentData()}
         if any(F):
             out.update(flow_dependent=F, flow_ref_L_per_min=self.flow_ref.value(), flow_exponent=self.flow_exp.value())
+        if self.role.currentData():
+            out["temperature_of"] = self.role.currentData()
         return out
 
     def _update_summary(self):

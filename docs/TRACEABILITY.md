@@ -233,10 +233,10 @@ EMI·PWM 예시의 데드타임 불일치(1.0 µs vs 손실 1.5 µs — 프로�
 | §3.3 | map 축·index·mask·cell 규칙·모서리·외삽 금지·온도 plane·대칭 근거, 행/열 순서를 전치로 추측하지 않음 | `contract.map_rules`, `+twb/checkModel.m`, `fluxMapLookup.m`, `selectPlane.m` | VF.MAP.* 21 case, 전치 거부 guard | implemented |
 | §3.3 | 이중 온도 보정·손실 이중 계산 검출 | `checkModel.m`, `loss_ownership`, `lossOwnershipConflicts.m` | guard X05 2건 | implemented |
 | §3.4 | 동적 모델의 상태·초기값·event 의미 | — | — | not_applicable (동적 모델 미이식, gap report) |
-| §3.5 | 요구의 quantity·comparator·조건, claim을 boolean으로 평탄화하지 않음, 출처 유지 | `cases.requirement_cases`, `architecture.requirement_links` | 요구 witness 11 case | implemented / uncertainty set 이식은 missing |
+| §3.5 | 요구의 quantity·comparator·조건, claim을 boolean으로 평탄화하지 않음, 출처 유지 | `cases.requirement_cases`, `architecture.requirement_links` | 요구 witness 12 case | implemented / uncertainty set 이식은 missing |
 | §4.1-1 | versioned 패키지 생성·검사, target compatibility report | `export_package`, `check_package`, `+twb/preflight.m`, `gap_report.json` | `test_check_refuses_…`, preflight.json | implemented |
 | §4.1-2 | 회사 환경 local entry point, 로그·오류 결과 | `+twb/runAll.m`, `run_local` (MATLAB `-batch` / Octave) | Octave 실행 | implemented (MATLAB 실행은 NOT_RUN) |
-| §4.1-3 | native constant dq evaluator + nonlinear flux-map evaluator, Python·analytical 대조 | `+twb/staticPoint.m`, `evaluatePoint.m`, `fluxMapLookup.m` | Octave 79 PASS, 심은 결함 9종 검출 | implemented |
+| §4.1-3 | native constant dq evaluator + nonlinear flux-map evaluator, Python·analytical 대조 | `+twb/staticPoint.m`, `evaluatePoint.m`, `fluxMapLookup.m` | Octave 80 PASS, 심은 결함 9종 검출 | implemented |
 | §4.1-4 | Simulink 정적 평가 harness 생성 recipe | `+twb/buildEvaluationHarness.m`, `runHarness.m` | Octave 구문 검사만 | implemented, NOT_RUN (Simulink 없음) |
 | §4.1-5 | System Composer/SLDD 후보 mapping과 충돌 검출 | `architecture.py`, `+twb/compareDataItems.m`, `checkDictionary.m`, `buildArchitectureCandidate.m` | guard X09 2건 (Octave), `test_architecture_candidates_…` | candidates·충돌 논리 implemented; 모델 생성·SLDD 읽기 NOT_RUN |
 | §4.1-6 | machine-readable 보고서 저장·읽기, 미실행은 NOT_RUN | `runAll.m`, `verify_report` | `test_report_reimport_statuses_and_identity` | implemented |
@@ -316,7 +316,99 @@ PR #5의 코드는 병합하지 않고 이 문서의 의미를 현재 코드 기
 | §19 A | 시간 적분 RMS ≈ 스펙트럼 RMS, fsw 2배 → 리플 1/2, m = 0 리플 0, 비정수 fsw/fe | 기존 모델 확인 | A1–A4 | implemented |
 | §6·§7 | Fe/PM ROM, THD→철손 계수 금지 | THD 계수를 만들지 않음, 보정 ROM은 자료가 생기면(P3) | — | deliberately unsupported (P3) |
 
-## 15. 비목표 (handoff §15, 추가 명세 비목표)
+## 15. 로직 검토 의견 (기준 63a2b61, `docs/LOGIC_REVIEW.html`)
+
+로직 검토 문서에 대한 검토 의견을 하나씩 재현하고 판단했습니다. 타당한 지적은 반영했고, 더 나은 방법이 있으면 그 방법으로 진행했으며
+(표의 "구현"에 이유), 상세 설명은 `docs/LOGIC_REVIEW.html` §18에 있습니다. 회귀 시험은 `tests/test_review_63a2b61.py`에 있습니다.
+
+| 항목 | 의견 | 구현 | 확인 | 상태 |
+|---|---|---|---|---|
+| 2.1 | Pareto: 같은 에너지 불확도 구간이 정책을 지움 | `_pareto`: 구간은 분리될 때만 지배, 같은 구간은 아무것도 정하지 않음(점 구간만 같은 값). 기존 시험 E3·E5 기대값 수정 | `test_equal_energy_intervals_never_remove_a_policy` | fixed |
+| 2.2 | 반복 부하: 첫 한계가 노드 순서에 의존 | `repeated_load`: 모든 노드 교차 시각의 최솟값, 같은 시각 노드 목록 | `test_the_first_limit_does_not_depend_on_the_node_order` | fixed |
+| 2.3 | 단계 내부 피크·교차를 놓침 | 적응 격자 대신 지수합 정류점의 정확한 근 분리(`_expsum_zeros`, Descartes 규칙, Brent) — 격자 없이 모든 정류점 | `test_exponential_sum_zeros_are_isolated_exactly`, `test_a_peak_microseconds_into_a_long_phase_is_found_exactly`, `test_the_phase_maximum_is_never_below_a_dense_sample_of_the_trajectory` | fixed |
+| 2.4 | Thevenin: 제곱근 정의역 오류 | 증명과 근이 같은 경계 대역(`MAX_TRANSFER_REL_TOL`), 대역 안은 UNKNOWN(BOUNDARY_WITHIN_TOLERANCE) | `test_the_maximum_transfer_boundary_is_one_rule`, `test_a_boundary_source_case_is_an_open_answer_at_the_boundary` | fixed |
+| 3.1 | 고속 약계자 철손, 단계적 충실도 | 약계자 witness의 \|ψ\|/\|ψ₀\|, 토크·DC 여유, 1 kW ↔ N·m, 방향(비보수/보수/미증명)을 기록·해석에 표시(`iron_loss_scope`), 오차 예산과 연결. 커널은 그대로(증명이 속도만 손실 형태를 전제) | `test_a_field_weakening_witness_states_what_rests_on_the_loss_model`, `test_a_point_below_the_voltage_limit_has_no_field_weakening_statement` | implemented (단계 0); 자속 의존 철손·FEA 맵 remaining |
+| 3.2 | 자석 온도 피드백 | 노드의 선언 역할 `temperature_of`(winding/junction/magnet), 자석 노드 온도가 운전점 자속을 정함 | `test_a_declared_magnet_node_feeds_the_flux_of_the_operating_point`, `test_one_node_per_represented_temperature` | implemented |
+| 3.2 | hot-corner 단조성 가정 | 온도 상자 2^k 모서리의 최댓값(방향 무관) + 모서리 중점·중심 점검, 실패 시 ESTIMATE | `test_the_allowed_values_say_when_the_corner_losses_are_not_a_bound` | implemented |
+| 3.2 | 주기 수렴은 내부 상태로 | 모든 Foster 항의 잔차(`_state_residual`, 0.02 K) | `test_the_periodic_cycle_is_judged_on_every_foster_term` | implemented |
+| 3.2 | 시간 스텝·캐시 민감도 | 스텝 2배·캐시 ½ 재계산(`_resolution_compare`: 첫 한계·피크·주기 피크·허용값), 판정이 바뀌면 UNKNOWN(NUMERICAL_UNRESOLVED) | `test_a_verdict_that_changes_with_the_resolution_is_not_a_verdict`, `test_the_default_run_reports_its_resolution_check` | implemented |
+| 3.3 | 동기 캐리어 근사 | 요청 주파수를 사이에 둔 두 동기 캐리어(`carrier_brackets`)를 모두 평가, 두 답이 같을 때만 판정(민감도 괄호 — 비동기 드리프트 상한 아님) | `test_the_waveform_models_bracket_a_non_integer_pulse_ratio`, `test_a_limit_between_the_two_bracketing_carriers_is_not_decided` | implemented; 비동기 재평가 remaining |
+| 3.3 | 에너지 목표가 커패시터를 뺌 | 선언 시 커패시터 ESR 손실 구간을 에너지 구간에 포함(`capacitor_in_energy_boundary`), 제어 체적 설명이 따라감 | `test_control_volume_…`(test_pwm_handoff) | implemented |
+| 3.3 | 폐루프 vs 공급 센서 | 기존 `thermal_scope` 문구 유지 | F | implemented; 폐루프 remaining |
+| 4 | 모델 판정 vs 오차 예산에 강건 (y + Δ ≤ y_max, Δ의 출처) | 다섯째 판정 층 `robustness`(`analysis/error_budget.py`, `requirement_robustness`): 물리량별 최악 조합 합; 토크는 능력 여유(충족은 witness·불충족은 인증 상한), 상전류·DC 전력·DC 전류·명령 전압은 운전점의 한계 여유(`constraint_robustness`; 약계자 전압 한계는 토크 쪽으로); 판정 불변; 판정 화면 입력·배너·해석·기록 | `test_a_limit_margin_is_compared_with_its_declared_error_in_its_own_unit`(의견의 500 A·488 A·±20 A 예), `test_the_limits_at_the_witness_join_the_torque_margin_in_one_statement`, `test_the_guarded_rule_on_the_capability_margin`, `test_the_layer_never_changes_the_model_verdict` 외 | implemented; 요구 묶음·열·PWM 한계 확장 remaining |
+| 4 | 한정자 의미(대역 ∃, 범위 ∀)를 입력·결과에 | 판정 폼의 토크 해석(achieve/band)과 "판정할 질문", 결과의 "판정한 질문", 기록 `quantifiers` | `test_the_quantifiers_are_written_out_in_the_record_and_the_reading`, `test_the_form_states_the_question_and_sends_the_band_and_the_error_budget` | implemented |
+
+## 16. 공학 리뷰 2 (기준 63a2b61: 본 보고서 F-01…F-19·P3, DC 전원·DC-link 하위 F1…F12, 열 하위 F1…F11)
+
+리뷰는 로직 검토 반영(§15) 이전 판을 보았으므로 모든 지적을 리뷰어 스크립트로 b9fb69c에서 다시 재현한 뒤 판단했습니다. 타당한
+지적은 반영했고, 더 나은 방법이 있으면 그 방법으로 진행했으며(표의 "구현"에 이유), 상세 설명은 `docs/LOGIC_REVIEW.html` §19에
+있습니다. 회귀 시험은 `tests/test_engineering_review_63a2b61.py`에 있습니다.
+
+| 항목 | 의견 | 구현 | 확인 | 상태 |
+|---|---|---|---|---|
+| F-04 (하위 F1) | 회생 OCV를 OCV에서 판정 → 거짓 FAIL(−203.72 N·m, 10/30 mΩ) | `resolve_terminal_voltage`: 수동성 상한 V_hi에서 시작하는 단조 반복(I² 손실에서 f(V) 단조 → 가장 큰 고정점), 604.04/611.99 V에서 PASS; 해가 없으면 드라이브 쪽은 V_hi에서 표시, 그 위반은 결정적이지 않음(`_not_decisive`) | `test_f04_regeneration_is_resolved_above_the_ocv_where_the_point_exists`, `test_an_unresolved_source_never_turns_a_drive_side_violation_into_a_fail` | fixed |
+| F-14 (하위 F2) | 증명 가능한 구동 FAIL이 UNKNOWN(350 mΩ: 455 V < 479.6 V) | 반복점에 정책점이 없거나 판별식 음수면 NO_SOLUTION(단조성이 있을 때만) | `test_f14_a_motoring_request_the_source_cannot_carry_is_a_proven_fail`, `test_without_the_i2_form_leaving_the_existence_set_proves_nothing` | fixed |
+| 하위 F3 | Picard에 괄호·이력 없음 | 반복 이력·수축률·고정점 문구 기록 | `test_the_iteration_records_its_history_and_conditioning` | implemented |
+| F-01 | 자속맵 정책 UNKNOWN 띠(B&B 절대 간격) | 결과로 인증: [lb, found]의 I² 구간 양 끝이 같은 판정이면 구간 전체(P_dc가 I²에 단조), DC 한계를 가로지르면 UNKNOWN | `test_f01_an_uncertified_map_point_is_decided_by_its_consequence`, `test_f01_the_status_is_monotone_in_torque_and_the_capability_scan_has_no_unknown_swath`, `test_f01_a_bracket_that_straddles_a_dc_limit_stays_unknown` | fixed |
+| F-02 | 말하지 않은 온도를 기준 온도에서 판정 | 선언 법칙의 모든 온도(∀): 권선은 구동에서 최대 Rs 인증서(`winding_law_certificate`), 그 외 표본(FEASIBLE → UNKNOWN(SAMPLED_COVERAGE)); 판정 폼 권선 온도, 기록·해석의 한정자 | `test_f02_a_request_that_fails_hot_is_no_longer_a_pass_at_the_reference_temperature`, `test_f02_motoring_is_certified_from_the_largest_rs_and_regen_stays_sampled`, `test_f02_the_worst_end_certificate_holds_numerically`, `test_f02_a_stated_temperature_is_judged_at_that_temperature_only` | fixed |
+| F-03 | 손실 제한 여유의 민감도 없음 | `analysis/margin_sensitivity.py`: DC 한계로 정해진 여유에 손실 예산(W)과 파라미터 손익분기(한 스텝 유한차분), 기록·해석·Markdown 표; 판정 불변 | `test_f03_the_flagship_margin_is_stated_as_a_loss_budget_and_break_even_changes`, `test_f03_a_current_limited_margin_carries_no_loss_sensitivity`, `test_f03_the_markdown_record_has_the_sensitivity_table` | implemented |
+| F-15 | 조건 없는 rating envelope이 FEASIBLE | `open_conditions`: 필요한 조건이 없거나 무관 선언이 없으면 UNKNOWN(APPLICABILITY_UNCONFIRMED) + 요구 층 미결 항목 | `test_f15_a_condition_less_envelope_is_not_a_duration_pass_at_any_condition`, `test_f15_stated_or_declared_irrelevant_conditions_restore_the_envelope`, `test_case_file_rating_fields_and_the_decision_record` | fixed |
+| F-17 | 효율 맵 = 모델 효율 | `MODEL_EFFICIENCY`를 점·지도·미션·A/B 결과, 그림 제목, 해석에 | `test_f17_efficiency_results_are_labelled_model_efficiency` | implemented |
+| F-18 | 구간 분석: 모든 모서리 통과여도 UNKNOWN | `vertex_certificate`: 고정점의 게이트 양이 파라미터마다 아핀·볼록·단조 → 꼭짓점이 최악; 고정 캘리브레이션 FEASIBLE, 토크를 움직이는 파라미터가 없으면 공통 운전점으로 적응형도 FEASIBLE | `test_f18_all_corners_passing_is_a_proof_where_the_vertex_certificate_applies`, `test_f18_a_common_witness_settles_the_adaptive_claim_when_the_nominal_calibration_fails`, `test_f18_the_certified_point_holds_inside_the_box` 외 2 | implemented; 토크를 움직이는 파라미터의 적응형 claim remaining |
+| F-19 | 충전 한계 제동 능력에 witness 없음(seed 2·3) | `_verify`: id 고정, iq를 정확한 가능 구간 안쪽으로(원점 쪽 당김은 대체) | `test_f19_a_witness_on_a_charge_limit_edge_is_moved_inside_not_lost` | fixed |
+| F-05 (열 F1) | 지속시간이 Rs(T) 무시 | 법칙·되먹임이 관련되면 반복 부하 엔진으로 결합(`_coupled_duration`), 가용 토크는 뜨거운 모서리 손실 상한 | `test_f05_a_declared_rs_law_makes_the_duration_claim_self_consistent`, `test_f05_availability_with_the_law_is_bounded_at_the_hot_corner` | fixed |
+| F-06 (열 F2) | 반복 부하 조기 종료·지평 단축 | 주기 정상상태 먼저, 지평 전체(도달 후 반복), 주기 초과를 claim에 | `test_f06_the_requested_horizon_is_never_truncated`, `test_f06_a_periodic_exceedance_is_part_of_the_claim`, `test_f06_a_run_that_reaches_the_periodic_state_repeats_it_for_the_rest_of_the_horizon` | fixed |
+| F-07 (열 F3) | 검증 안 된 모델이 되먹임으로 INFEASIBLE | 정지는 t = 0 또는 적격 모델일 때만 결정적 | `test_f07_an_unqualified_model_never_proves_a_violation_through_its_own_temperature_estimate` | fixed |
+| F-08 (열 F4) | 열원 감시를 첫 단계만 | 모든 단계 손실의 합집합 + 뜨거운 모서리 | `test_f08_heat_source_coverage_is_checked_over_every_phase` | fixed |
+| F-11 (열 F6) | 되먹임 스텝 지연 | Heun 예측-수정(2차) | `test_f11_the_feedback_step_is_second_order` | fixed |
+| F-13 (열 F7) | 열 판정 허용 대역 | 선언된 `uncertainty_K`(근거 필수) 안은 UNKNOWN(BOUNDARY_WITHIN_TOLERANCE), 없으면 한정어 | `test_f13_a_margin_inside_the_declared_uncertainty_is_not_decided` | implemented |
+| F-12 | 교차 탐색 다봉 | 이미 반영(§15의 2.3) | 기존 회귀 시험 | already fixed |
+| 열 F5·F10·F11 | 가용 토크 적격 문구, 냉각수 단순화 보고, 기타(None → NaN, 휴지 창) | 손실을 넘겨 같은 적격 규칙, 물성 평가 온도·클램프·스테이션 없는 노드 보고, 421점 탐색 | `test_thermal_f5_…`, `test_thermal_f10_…`, `test_thermal_f11_…` | fixed |
+| F-09 (하위 F4) | UCG 위 차단 과전압 FEASIBLE | 반응 경로 입력(freewheel → INFEASIBLE, 미지정 → UNKNOWN(COUPLED_MODEL_REQUIRED), ASC → 수지), 전압 한계 유입 전력으로 V_peak 상한 | `test_f09_above_the_ucg_speed_the_reaction_path_decides`, `test_f09_the_inflow_is_bounded_at_the_voltage_limit` | fixed |
+| 하위 F5 | 음의 허용 반응 시간 | 0으로 자르고 램프만의 위반은 증명된 위반, 허용 최대 램프 | `test_f5_a_ramp_longer_than_the_headroom_is_a_proven_violation_not_a_negative_time` | fixed |
+| F-10 (하위 F6·F9) | ESR 게이트가 FFT 길이를 잼, 게이트는 I_inv | 모델 대역에 맞춘 샘플 수 + 에너지 기준(표 밖 전류 제곱 ≤ 5 %면 최대 ESR로 실음), 결과가 요청 샘플 수와 무관 | `test_f10_the_esr_gate_follows_energy_not_the_fft_length`, `test_f10_the_result_does_not_depend_on_the_requested_samples_per_carrier`, `test_f10_a_table_that_misses_the_switching_band_still_gates` | fixed |
+| F-16 (하위 F7) | 요구 수명 없이 수명 FEASIBLE | 요구 수명 필수(없으면 UNKNOWN(REQUIREMENT_INCOMPLETE)), 전압 점검은 Vdc + 리플 피크 | `test_f16_an_expected_life_is_not_a_pass_without_a_required_life` | fixed |
+| 하위 F12, P3 | 거짓 정밀도 | `units.shown`: 물리량 종류별 표시 자릿수; 커패시터 손실·hotspot 샘플링 분해능 | `test_f12_model_limited_quantities_are_shown_at_the_precision_the_model_supports`, `test_f12_the_capacitor_loss_and_hotspot_carry_their_sampling_resolution`, `test_f12_terminal_voltage_text_is_rounded_the_value_is_not` | implemented |
+| P3 | DPWM1 지원 불일치 | 모든 펄스 패턴 소비자가 `MODULATIONS`와 `duties`를 공유, 클램프 레그를 레일에 정확히 | `test_p3_dpwm1_is_accepted_by_every_pulse_pattern_consumer_and_matches_a_brute_force_ripple`, `test_p3_the_clamped_leg_sits_exactly_on_its_rail` | fixed |
+
+## 17. 인과 고장 시뮬레이션·기능안전 (FuSa)
+
+요구: 인버터 고장과 기능안전 반응을 고장 → 측정·추정 → 제어·감시 → 보호 → 실제 토크·전류·DC-link → 안전 요구 판정까지
+**하나의 인과 궤적**으로 계산하고, SG/FSR/TSR 추적, FDTI/FRTI/FHTI, 캠페인·반례, provenance·stale, 검증, 화면·저장·내보내기까지
+갖출 것. 상세 설명은 `docs/LOGIC_REVIEW.html` §20, 회귀 시험은 `tests/test_faultsim.py`·`tests/test_fault_page.py`에 있습니다.
+
+| 항목 | 요구 | 구현 | 확인 | 상태 |
+|---|---|---|---|---|
+| 인과 사슬 | 참값·측정·추정·명령·실제를 나누고, 감시·반응은 측정만 봄 | `extensions/faultsim/engine.py` (`_Sim.apply_fault` · `read` · `update_bridge` · `actual_bridge` · `simulate`): 센서 고장은 측정을 바꾸고 폐루프가 실제 전류·토크를 바꿈, 반응 명령과 실제 브리지 상태를 따로 기록, 판정은 참값 | `test_sensor_fault_acts_through_closed_loop_control_and_is_seen_by_measured_channels_only`, `test_fault_free_operation_keeps_the_kernel_operating_point_and_never_reacts` | implemented |
+| 플랜트 | 스위칭 다리, 6SO 정류, ASC, DC-link·배터리·접촉기·BMS·블리더·능동 방전 | `extensions/faultsim/plant.py`: 상보성 다리(떠 있는 다리, 다이오드 도통, 레일 한 걸음 앞 보기), 사건 1 ns 위치, Zeno 구간 고정 스텝, 에너지 수지 매 실행, 평균값 / 스위칭 PWM | `test_plant_against_closed_forms_independent_abc_reference_and_convergence`, `test_a_floating_leg_at_the_rail_conducts_instead_of_floating_beyond_it`, `test_open_circuit_below_the_onset_carries_no_current_and_six_switch_off_above_it_brakes`, `test_asc_is_not_torque_free_at_low_speed_and_six_switch_off_is_not_current_free_at_high_speed` | implemented |
+| 센서·제어기 | 고장 모드, 지연, 제어 격자, MCU 리셋·재시동 | `sensors.py`(오프셋·이득·고착·마지막 값·소실·수송 지연, 자기 진단), `control.py`(정책표 전류 지령의 이산 FOC, 각도 지연 보상, 명령 경로, flying / cold 재시동) | `test_flying_restart_recovers_and_cold_restart_ends_in_the_safe_state`, `test_recovery_attempts_with_a_persistent_fault_trip_again_and_latch` | implemented |
+| 메커니즘·경로·자원 | 검출·반응 경로·공유 자원·우선순위·안전 상태 선택을 데이터로 | `faultsim/protection.py`(`SafeStatePolicy.decide`: 측정 정보만, 속도 히스테리시스, 실행 불가 ASC 교체), `ResourceBook`(자원 상실 → 센서·메커니즘·경로 동시 상실), `configure.py`(`validate_section`) | `test_protection_path_lost_backup_reacts_later_and_delay_violates_the_rating`, `test_shared_current_sensor_supply_blinds_control_and_the_hardware_comparator`, `test_gate_supply_loss_reported_by_uvlo_selects_the_other_side`, `test_shorted_switch_selects_the_asc_of_its_own_side_and_a_speed_only_policy_does_not`, `test_architecture_is_project_data_and_is_validated`, `test_independence_view_names_the_shared_sensors_and_resources` | implemented |
+| 요구·판정 | SG → FSR → TSR, 동적 토크 창, 한계, 안전 상태, 오반응 없음, 시간 | `faultsim/safety.py` `Evaluator`: 판정 다섯 종류, 사건 정의(\(t_F, t_V, t_D, t_R, t_S\)), 관측 위반 FAIL, 창 미관측 UNKNOWN, 안전 상태 마감 규칙, FRTI·FHTI 하한, 분해능·모델 허용 대역, 적용 범위(시나리오 하나), SG는 인버터 근거 + 차량 지표만 | `test_event_definitions_are_explicit`, `test_a_violation_before_leaving_the_model_is_a_fail_and_an_unobserved_window_is_unknown`, `test_a_safe_state_missed_by_its_deadline_is_a_fail_even_if_the_hold_window_is_cut_off`, `test_sg_carries_inverter_evidence_and_a_vehicle_indicator_never_a_vehicle_approval`, `test_tight_monitor_trips_on_a_healthy_torque_step_false_detection`, `test_monitor_without_independent_request_misses_a_stale_command_common_cause` | implemented |
+| 대표 시나리오·후보 비교 | 성공·지연·잘못된 반응·경로 상실·공통 원인·오검출·복귀 실패 | `faultsim/study.py`(`explain`, `compare`): 분류는 결과와 맞아야 함(시험이 확인), 같은 초기 조건에서 보호 적용/미적용·ASC-low·ASC-high·6SO·토크 0 | `test_every_representative_scenario_is_declared_with_its_category`, `test_frozen_position_sensor_makes_the_policy_choose_six_switch_off_at_high_speed_wrong_reaction`, `test_candidate_comparison_finds_no_executable_safe_reaction`, `test_candidate_comparison_on_regeneration_disconnect_prefers_asc`, `test_fault_instant_and_initial_angle_change_the_peaks_and_the_timing` | implemented |
+| 캠페인·반례 | 탐색, 경계, 최악값, 반례 기록·재실행·stale | `faultsim/campaign.py`: 격자·시드 고정 무작위, 판정 경계 이분, 물리량별 최악값과 그 실행, 반례(시나리오·판정·수치·프로젝트/코드 식별) 저장·열기·재실행, 관련 섹션 변경 시 stale | `test_campaign_brackets_the_failure_boundary_and_keeps_worst_cases_per_run`, `test_campaign_axes_and_scenario_paths`, `test_a_counterexample_is_rerun_saved_opened_loaded_and_marked_stale` | implemented |
+| 검증 | 같은 식의 다른 적분만으로는 부족 | `faultsim/reference.py`: 폐형식(대칭 ASC 정상상태, 개방 회로), 독립 abc 정식화(\(L(\theta)\), 컨덕턴스 소자, Radau, 이상화 경향), 행렬 지수, 스텝 수렴, 에너지 수지 — 찾은 부분 단락 결함 수정 | `test_plant_against_closed_forms_independent_abc_reference_and_convergence` | implemented |
+| 화면·저장 | 실행·해석·비교·캠페인·검증 화면, 저장·내보내기, 작업 공간 | `desktop/pages/fault_sim.py`(안전·보호 → 고장 시뮬레이션·FuSa), `insight/fault.py`, `plots/fault_figures.py`, 시나리오 파일·반례 파일, CSV/JSON, 작업 공간 복원, self-test 화면 25b–25i | `test_a_representative_scenario_runs_and_reads_on_the_page`, `test_reaction_candidates_run_from_the_same_initial_condition`, `test_scenario_files_round_trip_and_the_page_survives_a_workspace`, `test_insight_pages`, `test_workspace` | implemented |
+| 한계 | — | 상수 파라미터 모터(자속 지도 드라이브 거절), 이상 소자(SOA·단락 내량 없음, 다리 단락은 모델 밖), 평균값 PWM 기본, 3상 2-level만(다른 토폴로지 선언은 거절), 강체 구동계·일정 속도, 열 비적분 | `docs/LOGIC_REVIEW.html` §20.10 | remaining |
+
+## 18. 공학 리뷰 3 (남은 영역 수치 감사: 새 지적만 — F-10, F-11, F-22, F-23, F-24, 새 P3)
+
+앞선 검토에서 다룬 지적(§16)은 제외하고, 이번 리뷰에서 새로 나온 지적만 130fb33에서 재현한 뒤 판단했습니다. 상세 설명은
+`docs/LOGIC_REVIEW.html` §21, 회귀 시험은 `tests/test_review_r3.py`(리뷰의 적대 사례 A21–A25 포함)에 있습니다.
+
+| 항목 | 의견 | 구현 | 확인 | 상태 |
+|---|---|---|---|---|
+| F-10 (P1) | PROT-04가 사용자 지평으로 결정(지연 2 ms: 지평 0.3 ms FEASIBLE, 0.1 ms INFEASIBLE) | `_prot04`: 지평 안에서 확정되면 반응 시각이 정해지므로 플랜트 정확해로 판정(예정 반응 전 교차는 이분법 교차 시각과 함께 INFEASIBLE, 아니면 작동 후 정확한 상한), 확정이 지평 밖이면 UNKNOWN(결코 INFEASIBLE 아님). PROT-03도 같은 정확해. 해석 지표는 PROT-04를 따름. 리뷰 기대(0.3 ms UNKNOWN)와 달리 INFEASIBLE — 같은 모델의 정확해가 0.375 ms 교차를 증명하고 1·5 ms 지평과 같은 판정·교차 시각 | `test_a21_prot04_is_decided_by_the_reaction_not_by_the_horizon`, `test_a21_an_action_after_the_horizon_is_judged_on_the_exact_solution`, `test_f10_prot03_reads_the_same_exact_solution_beyond_the_horizon`, `test_f10_the_reading_follows_the_prot04_verdict` | fixed |
+| F-11 (P1) | RBW 창의 선합은 추정이 아니라 상한(+8.8 / +11.1 dB), 필요 감쇠 과대 | 추정 = 직사각 IF 포락 최대(`envelope_peak`: FFT 과표본 + 표본 극대마다 뉴턴, 전수 탐색 대비 2.7×10⁻¹⁶), 상한 = 선합·가우시안 IF 가중합(`_gaussian_cells`), 반례 = 네 귀환 모델의 최소 포락; 필요 감쇠는 추정 기준(상한 기준 병기, 화면·해석의 최대값도 판정과 같은 대역 정확값), 창당 선 수. 추가로 선합을 반례의 하한으로 쓰던 것을 고침 | `test_a22_the_estimate_does_not_depend_on_the_fundamental_the_line_sum_does`, `test_f11_the_estimate_equals_an_independent_dense_receiver_sweep`, `test_f11_gaussian_if_cells_bound_every_tuning_inside_them`, `test_f11_a_line_sum_exceedance_alone_is_never_a_witness`, `test_envelope_peak_is_an_attained_maximum_never_above_the_line_sum`, `test_f11_the_largest_required_attenuation_is_the_exact_band_figure_on_the_page_and_the_reading` | fixed |
+| F-23 (P2) | CM 귀환 ½·½ 고정, 에지 부호 주입과 12.6 MHz +7.7 dB | 네 귀환 모델(`RAIL_MODELS`: 중점·에지 부호·HV+·HV−), 한 번 분해 + Woodbury(`port_transfers`), 추정은 물리적 두 모델, 상한·반례는 네 모델. 예제 3.8 MHz에서 에지 부호가 정적 두 극단보다 7.2 dB 높음(감싸지 못함)을 확인 | `test_f23_the_edge_sign_return_is_not_bracketed_by_the_static_rails`, `test_f23_the_bound_covers_every_cm_return_model` | fixed; LPTV 망은 remaining |
+| F-22 (P2) | HEV 캐시가 (이름, T, V) — 같은 이름 두 기계가 한 점 공유(거짓 FEASIBLE) | 캐시 키 = 기계 객체(항목이 객체 보유), 한 버스 기계 이름 유일(결합 집합·비조정 버스) | `test_a23_hev_points_are_cached_per_machine_and_names_are_unique` | fixed |
+| F-24 (P2) | ASC 수치 허용치가 격자 오차의 1/18, 궤적이 선언 영역 2.1배 밖 | 정속 해의 피크·전체 dq 피크·최소 i_d를 표본 사이 정확해로 정밀화(`_refine_max`), 허용치는 정밀화 뒤 하한·두 격자 차·표본 곡률 한계 중 최대, 소자 생존 피크 비교에 곡률 한계; 모델 전류 영역 항목(OUTSIDE_DECLARED_DOMAIN 2.12배)을 결과·claim·해석에 | `test_a24_asc_peak_is_refined_and_the_allowance_bounds_the_grid_error`, `test_f24_the_event_peak_and_minimum_id_are_refined_like_the_requirements` | fixed |
+| P3 OEW | 공통 버스 off/off 임계에 3고조파 역기전력 누락 | 기본파 + 3고조파의 선언 위상 정확 피크와 위상 무관 상한, 영상분 없으면 UNKNOWN(MISSING_INPUT) | `test_a25_common_bus_off_off_threshold_includes_the_triplen_emf` | fixed |
+| P3 드라이브라인 | `a_final` = 마지막 5 % 평균(반 주기 → 1.052) | 창 뒤쪽 정수 개 비틀림 주기 평균, 근거 문구 | `test_driveline_final_level_is_averaged_over_whole_torsional_periods` | fixed |
+| P3 A/B | 오차대 선형합의 성격 미표기 | 근거 문구(선언 한계의 최악)와 독립 오차 RSS를 보고, 순위는 선형합 | `test_ab_error_band_is_the_linear_sum_of_the_declared_bounds_and_states_it` | implemented |
+| P3 EMI | 설계 예비 공란 → 조용히 0 dB, 공백이 많은데 "모든 수신 주파수" | 공란 메모·플래그·해석 지표, FEASIBLE 문구에 판정하지 않은 선언 공백 구간 | `test_emi_p3_blank_reserve_is_stated_and_declared_gaps_are_named` | fixed |
+| P3 EMI | 획득 메타데이터 없는 측정 trace는 INDETERMINATE(FAIL 아님) | 리뷰대로 보수적 — 변경 없음 | 기존 시험 | kept |
+
+## 19. 비목표 (handoff §15, 추가 명세 비목표)
 
 generic motor CAD/FEA 복제, 정적 ASC로 demag/SOA 승인, 일반 IGBT 식으로 SiC 수명 보증, 드라이버 typical delay로 ASIL 승인,
 class 번호로 EMC 합격률, 평균 dq로 NVH/베어링/MHz 임피던스, 생산 anti-jerk 제어기 자동 납품, 보편 안정성 인증서,

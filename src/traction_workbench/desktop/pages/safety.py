@@ -469,9 +469,15 @@ class SafetyPage(QWidget):
         self.o_T = number(-80, -5000, 0, "N·m", 2, 5)
         self.o_react = number(2, 0, 1e4, "ms", 3, 0.1)
         self.o_profile = combo([(tr("일정 전력", "constant power"), "constant"), (tr("선형 감소", "linear ramp-down"), "linear_ramp_down")])
+        # what removes the inflow (engineering review 2 of 63a2b61, F-09): above the uncontrolled-generation speed a
+        # freewheel reaction charges the link towards the back-EMF peak, so the path must be stated
+        self.o_reaction = combo([(tr("미지정", "unspecified"), "unspecified"), (tr("ASC (능동 단락)", "ASC (active short)"),
+                                                                              "asc"),
+                                 (tr("프리휠 (전 스위치 개방)", "freewheel (all switches open)"), "freewheel")])
         for lab, wd in (("C", self.o_C), ("V1", self.o_V1), (tr("전압 한계", "voltage limit"), self.o_Vlim), (tr("속도", "speed"), self.o_n),
                         (tr("회생 토크", "regen torque"), self.o_T), (tr("반응 시간", "reaction time"), self.o_react),
-                        (tr("전력 프로파일", "power profile"), self.o_profile)):
+                        (tr("전력 프로파일", "power profile"), self.o_profile),
+                        (tr("반응 경로", "reaction path"), self.o_reaction)):
             f.addRow(lab, wd)
         b = primary_button(tr("과전압 계산", "compute overvoltage"))
         b.clicked.connect(self.run_overvoltage)
@@ -617,7 +623,8 @@ class SafetyPage(QWidget):
     def run_overvoltage(self):
         s = self.win.state
         body = s.body(C_uF=self.o_C.value(), V1_V=self.o_V1.value(), V_limit_V=self.o_Vlim.value(), speed_rpm=self.o_n.value(),
-                      torque_Nm=self.o_T.value(), reaction_time_ms=self.o_react.value(), profile=self.o_profile.currentData())
+                      torque_Nm=self.o_T.value(), reaction_time_ms=self.o_react.value(), profile=self.o_profile.currentData(),
+                      reaction=self.o_reaction.currentData())
         try:
             res = api.overvoltage(body)
         except Exception as exc:  # noqa: BLE001
@@ -639,7 +646,10 @@ class SafetyPage(QWidget):
                        title=tr("회생 중 배터리 차단", "battery disconnect while regenerating"), name="overvoltage_circuit")
         rows = _claim_rows(res["claim"])
         rows += [(tr("유입 전력 / 에너지", "power / energy in"), f"{res['P_in_W'] / 1e3:.4g} kW / {res['energy_in_J']:.4g} J"),
-                 (tr("최고 전압 / 한계", "peak / limit"), f"{res['V_peak_V']:.5g} V / {res['V_limit_V']:g} V"),
+                 (tr("최고 전압 / 한계", "peak / limit"), f"{res['V_peak_V']:.4g} V / {res['V_limit_V']:g} V"
+                  + ("" if res.get("V_peak_bound_V") is None else
+                     tr(f" (상한 {res['V_peak_bound_V']:.4g} V: 한계 전압에서의 유입 전력)",
+                        f" (bound {res['V_peak_bound_V']:.4g} V: inflow at the limit voltage)"))),
                  (tr("허용 반응 시간 / 선언", "allowed / declared reaction time"),
                   f"{fmt(ms_(res.get('max_reaction_time_s')))} ms / {fmt(ms_(res.get('reaction_time_s')))} ms")]
         if op:

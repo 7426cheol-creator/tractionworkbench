@@ -286,7 +286,12 @@ def test_threshold_chatter_needs_hysteresis_above_the_measurement_noise():
 def test_policy_evaluation_reports_the_failure_cases_and_keeps_unknown_apart_from_violation():
     r = api.pwm_policies({})
     for p in r["policies"]:
-        assert all(s["sampling"]["status"] == "OK" for s in p["segments"])
+        for s in p["segments"]:
+            # 16 kHz at 733 Hz (ratio 21.8): the carrier at 22 x f_e samples in valid windows, the one at 21 x f_e does
+            # not - the verdict depends on the synchronous approximation and stays open (review of 63a2b61, 3.3)
+            split = [u for u in s["sampling"]["unknown"] if "depends on the synchronous-carrier approximation" in u]
+            assert s["sampling"]["status"] == "OK" or (split and s["sampling"]["status"] == "UNKNOWN"
+                                                       and len(s["fsw_waveform_brackets_Hz"]) == 2)
         for e in p["transitions"]:
             if e["carrier_change"]:
                 assert e["transient"]["evaluated"] and e["transient"]["bumpless"]
@@ -329,8 +334,13 @@ def test_one_pulse_pattern_for_losses_ripple_and_sampling():
     assert r["module_modulation"] == {**r["module_modulation"], "declared": "svpwm", "used": "spwm"}
     base = api.pwm_policies({})
     assert r["policies"][0]["E_inv_J"] != base["policies"][0]["E_inv_J"]         # the losses follow the pattern
+    # DPWM1 runs through every model with the same pattern (engineering review 2 of 63a2b61, P3: it used to be
+    # rejected by the edge models only): a leg rests a third of the period, so the switching loss energy drops
+    d1 = api.pwm_policies({"modulation": "dpwm1"})
+    assert d1["module_modulation"]["used"] == "dpwm1"
+    assert d1["policies"][0]["E_inv_J"] < base["policies"][0]["E_inv_J"]
     with pytest.raises(InputValidationError):
-        api.pwm_policies({"modulation": "dpwm1"})                                 # not supported by the edge models
+        api.pwm_policies({"modulation": "dpwm2"})                                 # not a declared family
 
 
 def test_loop_margin_is_checked_on_both_machine_axes():
