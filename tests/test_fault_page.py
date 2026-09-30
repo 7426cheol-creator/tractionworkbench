@@ -141,10 +141,12 @@ def test_reaction_candidates_run_from_the_same_initial_condition(win):
     from PySide6.QtWidgets import QApplication
     for i in range(page.cand_list.count()):
         page.cand_list.item(i).setCheckState(Qt.Unchecked)
-    before = list(QApplication.instance().property("twb_errors") or [])
+    app = QApplication.instance()
+    before = list(app.property("twb_errors") or [])
     page.run_compare()                                             # nothing chosen: refused with the reason
-    after = list(QApplication.instance().property("twb_errors") or [])
+    after = list(app.property("twb_errors") or [])
     assert len(after) == len(before) + 1 and "후보" in after[-1]
+    app.setProperty("twb_errors", before)                          # the expected refusal is not a leftover error
     for i in range(page.cand_list.count()):
         page.cand_list.item(i).setCheckState(Qt.Checked)
 
@@ -268,10 +270,12 @@ def test_the_design_editor_changes_ftti_tsr_limits_debounce_and_strategies_witho
     # an invalid design is refused before a run, with the editor's reason
     _edit(ed.t_sg, "SG-01", "ftti_ms", "-5")
     assert ed.error and "설계 오류" in page.design_variant.label.text()
-    before = list(QApplication.instance().property("twb_errors") or [])
+    app = QApplication.instance()
+    before = list(app.property("twb_errors") or [])
     page.run()
-    after = list(QApplication.instance().property("twb_errors") or [])
+    after = list(app.property("twb_errors") or [])
     assert len(after) == len(before) + 1 and "편집 탭에 오류" in after[-1]
+    app.setProperty("twb_errors", before)                          # the expected refusal is not a leftover error
     _edit(ed.t_sg, "SG-01", "ftti_ms", "80")
     assert ed.error is None
     # loading a scenario asks before replacing edited changes: 'no' keeps the design, 'yes' takes the scenario's
