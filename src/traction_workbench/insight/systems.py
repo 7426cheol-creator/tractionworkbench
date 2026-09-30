@@ -350,16 +350,21 @@ def emi_insight(res: dict) -> Insight:
                         (tr("최대 방출 추정 / 상한", "peak emission estimate / bound"),
                          f"{num(d0.get('E_est_sup_dBuV'), 4)} / {num(d0.get('E_sup_dBuV'), 4)} dBµV", "info")]
     fin = np.isfinite(A) if A.size else np.array([], bool)
+    ax = res.get("required_attenuation_max")
     if A.size and fin.any():
         j = int(np.nanargmax(np.where(fin, A, -np.inf)))
-        ins.metrics.append((tr("최대 필요 감쇠 (추정)", "max required attenuation (estimate)"), f"{num(A[j], 4)} dB",
-                            "warn" if A[j] > 0 else "ok"))
+        a_max = ax["estimate_dB"] if ax else float(A[j])      # exact over the band when evaluated, else the grid
+        ins.metrics.append((tr("최대 필요 감쇠 (추정)", "max required attenuation (estimate)"), f"{num(a_max, 4)} dB",
+                            "warn" if a_max > 0 else "ok"))
         s = ins.section(tr("대역별 필요 감쇠와 지배 경로", "required attenuation and dominant path per band"),
                         tr("필요 감쇠 = 추정 방출 + 보정 오차 − (한계 − 설계 예비). 선합 상한 기준 값을 옆에 적습니다 — 필터를 상한으로 "
-                           "설계하면 추정보다 그만큼 과설계됩니다. CM(공통모드)·DM(차동모드) 중 큰 쪽이 필터 설계를 정합니다.",
+                           "설계하면 추정보다 그만큼 과설계됩니다. CM(공통모드)·DM(차동모드) 중 큰 쪽이 필터 설계를 정합니다. "
+                           "대역별 값은 표시 격자 점에서 읽은 값이고, 대역 전체의 정확한 최대는 위 지표입니다.",
                            "required attenuation = estimated emission + model error − (limit − design reserve); the figure on "
                            "the line-sum bound is shown next to it — a filter sized on the bound is over-specified by the "
-                           "difference. The larger of the common-mode and differential-mode paths drives the filter."))
+                           "difference. The larger of the common-mode and differential-mode paths drives the filter. The "
+                           "per-band values are read at the display-grid points; the exact maximum over the band is the "
+                           "metric above."))
         for lo, hi in ((0.15e6, 0.5e6), (0.5e6, 2e6), (2e6, 10e6), (10e6, 30e6)):
             mk = (g >= lo) & (g <= hi) & fin
             if not mk.any():

@@ -1689,8 +1689,20 @@ def conducted_emission_screening(src: SwitchingSource, net: HvNetwork, profile: 
             claim = Claim("conducted_emission", Status.UNKNOWN, q, scope, reasons=tuple(reasons),
                           evidence=(Evidence.make(EvidenceKind.EXACT_ENUMERATION, band["method"]),),
                           detail="; ".join(parts))
+    # the largest required attenuation over the band, exact (the claim's figures): the display-grid arrays only
+    # sample it - a grid point misses the receiver window that gives the maximum
+    att_rows = [r for r in rows if r.get("required_attenuation_est_dB") is not None] if certified else []
+    att_max = None
+    if att_rows:
+        we = max(att_rows, key=lambda r: r["required_attenuation_est_dB"])
+        wb = max(att_rows, key=lambda r: r.get("required_attenuation_bound_dB") or 0.0)
+        att_max = {"estimate_dB": we["required_attenuation_est_dB"], "f_Hz": we["f_min_margin_est_Hz"],
+                   "bound_dB": wb.get("required_attenuation_bound_dB"), "f_bound_Hz": wb.get("f_min_margin_Hz"),
+                   "basis": "exact over the covered band (every receiver window change and limit vertex); the "
+                            "display-grid arrays are samples of it"}
     return {"grid_Hz": grid, "E_dBuV": E, "E_bound_dBuV": E_b, "E_upper_dBuV": EU, "E_lower_dBuV": EL,
             "margin_est_dB": margin_est, "required_attenuation_bound_dB": A_req_b,
+            "required_attenuation_max": att_max,
             "lines_per_window": vals["lines"], "receiver_model": {
                 "estimate": "rectangular IF (width RBW), peak detector: envelope peak of the in-window lines, the "
                             "larger of the midpoint and edge-sign CM return models",

@@ -540,12 +540,23 @@ class EmiPage(QWidget):
             rows.append((tr("보정 기록", "calibration record"),
                          tr("적용", "applicable") if cal["applicable"] else
                          "; ".join((cal.get("problems") or []) + (cal.get("mismatches") or []))))
+        ax = res.get("required_attenuation_max")
+        if ax:
+            # exact over the band: the claim's figures (the grid rows below sample it)
+            jd = int(np.argmin(np.abs(g - ax["f_Hz"]))) if g.size else None
+            rows.append((tr("최대 필요 감쇠 (추정, 대역 정확)", "max required attenuation (estimate, exact over the band)"),
+                         f"{ax['estimate_dB']:.1f} dB at {ax['f_Hz'] / 1e6:.4g} MHz"
+                         + (f" ({res['dominant_source'][jd]}-dominated)" if jd is not None else "") + "; "
+                         + tr("상한 기준", "on the bound")
+                         + (f" {ax['bound_dB']:.1f} dB at {ax['f_bound_Hz'] / 1e6:.4g} MHz" if ax.get("bound_dB") is not None
+                            else " —")))
         if np.any(np.isfinite(A)):
-            j = int(np.nanargmax(A))
-            Ab = np.asarray(res.get("required_attenuation_bound_dB", A), dtype=float)
-            rows.append((tr("최대 필요 감쇠 (추정)", "max required attenuation (estimate)"),
-                         f"{A[j]:.1f} dB at {g[j] / 1e6:.3g} MHz ({res['dominant_source'][j]}-dominated); "
-                         + tr("상한 기준", "on the bound") + f" {np.nanmax(Ab):.1f} dB"))
+            if not ax:
+                j = int(np.nanargmax(A))
+                Ab = np.asarray(res.get("required_attenuation_bound_dB", A), dtype=float)
+                rows.append((tr("최대 필요 감쇠 (추정, 표시 격자)", "max required attenuation (estimate, display grid)"),
+                             f"{A[j]:.1f} dB at {g[j] / 1e6:.3g} MHz ({res['dominant_source'][j]}-dominated); "
+                             + tr("상한 기준", "on the bound") + f" {np.nanmax(Ab):.1f} dB"))
             for lo, hi in ((0.15e6, 0.5e6), (0.5e6, 2e6), (2e6, 10e6), (10e6, 30e6)):
                 m = (g >= lo) & (g <= hi)
                 if m.any() and np.any(np.isfinite(A[m])):

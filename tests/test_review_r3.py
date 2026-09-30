@@ -378,3 +378,16 @@ def test_f24_the_event_peak_and_minimum_id_are_refined_like_the_requirements():
     tt = np.linspace(t[max(j - 1, 0)], t[j + 1], 4001)
     fine = float(np.min(transient_constant(k, pre["id_A"], pre["iq_A"], tt)[0]))
     assert r["min_id_A"] == pytest.approx(fine, abs=1e-6)
+
+
+def test_f11_the_largest_required_attenuation_is_the_exact_band_figure_on_the_page_and_the_reading():
+    from traction_workbench.insight.systems import emi_insight
+    r = api.emi(api.EXAMPLE_EMI)
+    ax = r["required_attenuation_max"]
+    d = next(x for x in r["domain"] if x.get("min_margin_est_dB") is not None)
+    assert ax["estimate_dB"] == pytest.approx(-d["min_margin_est_dB"]) and ax["f_Hz"] == d["f_min_margin_est_Hz"]
+    assert ax["bound_dB"] == pytest.approx(-d["min_margin_dB"])
+    assert ax["estimate_dB"] >= float(np.nanmax(np.asarray(r["required_attenuation_dB"], float))) - 1e-9
+    assert f"up to {ax['estimate_dB']:.1f} dB" in r["claim"]["detail"]          # the claim quotes the same figure
+    metric = next(m for m in emi_insight(r).metrics if "필요 감쇠" in m[0] or "required attenuation" in m[0])
+    assert float(metric[1].split()[0]) == pytest.approx(ax["estimate_dB"], abs=0.01)   # not the grid sample
