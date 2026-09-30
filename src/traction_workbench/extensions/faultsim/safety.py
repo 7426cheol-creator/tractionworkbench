@@ -291,8 +291,10 @@ class Evaluator:
         prim = [f for f in faults if f["kind"] not in LATENT_KINDS and f["t_s"] <= self.valid_end + 1e-12]
         self.t_F = min((f["t_s"] for f in prim), default=None)
         self.has_fault = bool(prim)
-        self.detections = [e for e in result.events if e["kind"] == "detection"]
-        self.actuations = [e for e in result.events if e["kind"] == "actuation"]
+        self.detections = [e for e in result.events if e["kind"] == "detection" and e.get("mech_kind") != "system"]
+        # the system's own safe-state requests (a supervisor reason, a scenario command) are not fault reactions
+        self.actuations = [e for e in result.events if e["kind"] == "actuation"
+                           and not str(e["source"]).startswith(("SYS:", "SCN:"))]
         self.bridge_changes = [e for e in result.events if e["kind"] == "bridge"]
         self.speed_sign = 1.0 if setup.speed_rpm >= 0 else -1.0
         self.h = float(setup.h_max_s)

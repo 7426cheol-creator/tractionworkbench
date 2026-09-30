@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from ...errors import InputValidationError
 
 FAULT_MODES = ("offset", "gain", "stuck", "stuck_last", "lost", "delay")
-KINDS = ("current", "position", "voltage", "temperature")
+KINDS = ("current", "position", "voltage", "temperature", "dc_current")
 TWO_PI = 2.0 * math.pi
 
 

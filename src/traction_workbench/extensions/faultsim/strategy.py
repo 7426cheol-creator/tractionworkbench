@@ -49,7 +49,11 @@ BRIDGE_ACTIONS = ("asc_low", "asc_high", "six_switch_off")
 CONTROL_ACTIONS = ("torque_zero", "torque_ramp", "current_to_asc", "voltage_ramp")
 LEG_ACTIONS = ("sequential_asc_low", "sequential_asc_high")
 HYST_ACTIONS = ("vdc_hysteresis_low", "vdc_hysteresis_high")
-ACTIONS = BRIDGE_ACTIONS + CONTROL_ACTIONS + LEG_ACTIONS + HYST_ACTIONS
+# the hardware's HV-dependent selection (e.g. with the gate-driver enable withdrawn): six-switch-off below the lower
+# threshold, the ASC above the upper one, the previous state in between (initial: declared) - evaluated on the
+# hardware comparator's DC voltage, so a hardware path can execute it (a software path uses its measurement)
+HV_SELECT_ACTIONS = ("hv_select_low", "hv_select_high")
+ACTIONS = BRIDGE_ACTIONS + CONTROL_ACTIONS + LEG_ACTIONS + HYST_ACTIONS + HV_SELECT_ACTIONS
 EXITS = ("none", "time", "done", "i_below", "speed_below", "vdc_below", "vdc_above")
 MEASURED_EXITS = ("i_below", "speed_below", "vdc_below", "vdc_above")
 
@@ -67,13 +71,20 @@ ACTION_PARAMS = {
                            ("v_off_V", "V", 700.0, "measured DC voltage below which it freewheels again")),
     "vdc_hysteresis_high": (("v_on_V", "V", 740.0, "measured DC voltage at which the ASC is applied"),
                             ("v_off_V", "V", 700.0, "measured DC voltage below which it freewheels again")),
+    "hv_select_low": (("v_upp_V", "V", 100.0, "DC voltage above which the hardware selects the ASC"),
+                      ("v_low_V", "V", 60.0, "DC voltage below which it selects six-switch-off"),
+                      ("initial_asc", "-", 0.0, "between the thresholds at the start: 1 = ASC, 0 = six-switch-off")),
+    "hv_select_high": (("v_upp_V", "V", 100.0, "DC voltage above which the hardware selects the ASC"),
+                       ("v_low_V", "V", 60.0, "DC voltage below which it selects six-switch-off"),
+                       ("initial_asc", "-", 0.0, "between the thresholds at the start: 1 = ASC, 0 = six-switch-off")),
 }
 # which exits make sense for which action
 EXITS_FOR = {**{a: ("none", "time", "i_below", "speed_below", "vdc_below", "vdc_above") for a in BRIDGE_ACTIONS},
              "torque_zero": ("none", "time"), "torque_ramp": ("none", "time", "done"),
              "current_to_asc": ("time", "done"), "voltage_ramp": ("time", "done"),
              **{a: ("none", "time", "done") for a in LEG_ACTIONS},
-             **{a: ("none", "time", "speed_below") for a in HYST_ACTIONS}}
+             **{a: ("none", "time", "speed_below") for a in HYST_ACTIONS},
+             **{a: ("none", "time") for a in HV_SELECT_ACTIONS}}
 
 
 def action_kind(action: str) -> str:
@@ -83,6 +94,8 @@ def action_kind(action: str) -> str:
         return "control"
     if action in LEG_ACTIONS:
         return "legs"
+    if action in HV_SELECT_ACTIONS:
+        return "hv_select"
     return "hysteresis"
 
 
@@ -115,6 +128,8 @@ class StepSpec:
             raise InputValidationError("a ramp needs ramp_ms > 0", field=f"{where}.params.ramp_ms")
         if self.action in HYST_ACTIONS and not float(self.param("v_off_V")) < float(self.param("v_on_V")):
             raise InputValidationError("the hysteresis needs v_off_V < v_on_V", field=f"{where}.params")
+        if self.action in HV_SELECT_ACTIONS and not float(self.param("v_low_V")) < float(self.param("v_upp_V")):
+            raise InputValidationError("the HV selection needs v_low_V < v_upp_V", field=f"{where}.params")
 
     def param(self, key: str):
         for k, _u, d, _w in ACTION_PARAMS.get(self.action, ()):
@@ -161,14 +176,15 @@ class StrategySpec:
         for s in reversed(self.steps):
             if s.action in BRIDGE_ACTIONS:
                 return s.action
-            if s.action in ("sequential_asc_low", "vdc_hysteresis_low"):
+            if s.action in ("sequential_asc_low", "vdc_hysteresis_low", "hv_select_low"):
                 return "asc_low"
-            if s.action in ("sequential_asc_high", "vdc_hysteresis_high"):
+            if s.action in ("sequential_asc_high", "vdc_hysteresis_high", "hv_select_high"):
                 return "asc_high"
         return "six_switch_off"
 
     def needs_software(self) -> bool:
-        return any(action_kind(s.action) != "bridge" or s.exit in MEASURED_EXITS for s in self.steps)
+        return any(action_kind(s.action) not in ("bridge", "hv_select") or s.exit in MEASURED_EXITS
+                   for s in self.steps)
 
     def min_duration_s(self) -> float:
         """Lower bound of the time before the final step starts: time exits exactly, a voltage / current ramp at

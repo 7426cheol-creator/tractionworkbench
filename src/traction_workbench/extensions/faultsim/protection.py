@@ -32,8 +32,10 @@ from dataclasses import dataclass, field
 from ...errors import InputValidationError
 
 SW_KINDS = ("torque_monitor", "current_plausibility", "overcurrent_sw", "overvoltage_sw", "undervoltage_sw",
-            "position_los", "command_timeout")
-HW_KINDS = ("overcurrent_hw", "overvoltage_hw", "desat", "gate_uvlo", "watchdog")
+            "position_los", "command_timeout", "torque_window_signed", "torque_integral", "osc_power", "osc_energy",
+            "rx_monitor", "rotor_plausibility", "vdc_plausibility", "estimator_domain", "pwm_feedback")
+HW_KINDS = ("overcurrent_hw", "overvoltage_hw", "desat", "gate_uvlo", "watchdog", "dc_overcurrent_hw", "gde_monitor")
+SYS_KINDS = ("system",)                         # a safe state requested by the system layer (not a detection)
 REACTIONS = ("safe_state", "asc_low", "asc_high", "six_switch_off", "torque_zero", "report_only")
 BRIDGE_REACTIONS = ("asc_low", "asc_high", "six_switch_off")
 RULE_KEYS = ("speed_above_rpm", "speed_below_rpm", "vdc_above_V", "vdc_below_V", "detected_by", "device",
@@ -66,13 +68,65 @@ KIND_PARAMS = {
     "desat": (("threshold_A", "A", 1500.0, "device current at which the switch desaturates"),
               ("turnoff_us", "us", 2.0, "soft turn-off time of the gate driver")),
     "gate_uvlo": (("delay_us", "us", 2.0, "report delay of the under-voltage lockout"),),
-    "watchdog": (("timeout_ms", "ms", 5.0, "alive-signal timeout"),),
+    "watchdog": (("timeout_ms", "ms", 5.0, "alive-signal timeout"),
+                 ("service_by", ("control", "safety_task"), "control",
+                  "what services it: the control task's alive signal or the safety task's checkpoints")),
+    "torque_window_signed": (("limit_source", ("factor", "envelope", "both"), "factor",
+                              "window: the request scaled by the limit factor and / or the received envelope"),
+                             ("limit_factor", "-", 1.2, "limit factor F (high = max(T F, T / F), low = min(...))"),
+                             ("abs_Nm", "N*m", 20.0, "absolute margin added to the factor window"),
+                             ("env_above_Nm", "N*m", 50.0, "received maximum above the request (no static max)"),
+                             ("env_below_Nm", "N*m", 50.0, "received minimum below the request (no static min)"),
+                             ("tol_Nm", "N*m", 0.0, "tolerance when no speed map is declared"),
+                             ("tol_rule", ("add", "widen"), "add",
+                              "add: T + tol > high / T - tol < low (as recovered); widen: T - tol > high / T + tol "
+                              "< low"),
+                             ("debounce_ms", "ms", 5.0, "time outside the window before the trip"),
+                             ("response_tau_ms", "ms", 0.0, "healthy first-order response the window also covers "
+                                                            "(0: the literal formula)"),
+                             ("delay_ms", "ms", 0.0, "request delay the window also covers (0: none)"),
+                             ("request_input", ("monitor_message", "control_command", "vehicle"), "monitor_message",
+                              "which request the window is built on")),
+    "torque_integral": (("limit_source", ("factor", "envelope", "both"), "factor", "window as the time monitor"),
+                        ("limit_factor", "-", 1.2, "limit factor F"),
+                        ("abs_Nm", "N*m", 20.0, "absolute margin added to the factor window"),
+                        ("tol_Nm", "N*m", 0.0, "tolerance when no speed map is declared"),
+                        ("tol_rule", ("add", "widen"), "add", "tolerance rule (as the time monitor)"),
+                        ("limit_Nms", "N*m*s", 0.5, "integral of the excess beyond the window that trips"),
+                        ("leak_per_s", "1/s", 0.0, "leak of the integral (0: none)"),
+                        ("request_input", ("monitor_message", "control_command", "vehicle"), "monitor_message",
+                         "which request the window is built on")),
+    "osc_power": (("f_hp_Hz", "Hz", 2.0, "high-pass corner of the estimate-minus-request oscillation"),
+                  ("tau_env_ms", "ms", 20.0, "envelope time constant of the oscillating power"),
+                  ("threshold_W", "W", 5000.0, "oscillating-power threshold"),
+                  ("debounce_ms", "ms", 50.0, "time above the threshold before the trip")),
+    "osc_energy": (("f_hp_Hz", "Hz", 2.0, "high-pass corner"),
+                   ("allow_W", "W", 1000.0, "oscillating power that accumulates nothing"),
+                   ("limit_J", "J", 200.0, "accumulated oscillation energy that trips"),
+                   ("leak_per_s", "1/s", 0.0, "leak of the accumulation (0: none)")),
+    "rx_monitor": (("max_age_ms", "ms", 30.0, "maximum age of the last ACCEPTED torque frame"),
+                   ("max_invalid", "-", 0, "consecutive invalid frames that trip (0: age only)"),
+                   ("debounce_ms", "ms", 0.0, "time in violation before the trip")),
+    "rotor_plausibility": (("threshold_deg", "deg", 20.0, "allowed angle difference of the two position channels"),
+                           ("debounce_ms", "ms", 1.0, "time beyond the threshold before the trip")),
+    "vdc_plausibility": (("threshold_V", "V", 30.0, "allowed difference of the two DC-voltage channels"),
+                         ("debounce_ms", "ms", 1.0, "time beyond the threshold before the trip")),
+    "estimator_domain": (("speed_max_rpm", "rpm", 11000.0, "qualified speed domain of the torque estimate"),
+                         ("current_max_A", "A", 1000.0, "qualified current domain of the torque estimate"),
+                         ("debounce_ms", "ms", 0.0, "time outside the domain before the trip")),
+    "pwm_feedback": (("duty_tol", "-", 0.05, "allowed difference of the observed and commanded duty"),
+                     ("debounce_ms", "ms", 0.2, "time in mismatch before the trip")),
+    "dc_overcurrent_hw": (("threshold_A", "A", 600.0, "comparator threshold on the analog DC-current output"),
+                          ("filter_us", "us", 2.0, "glitch filter: the condition must persist this long")),
+    "gde_monitor": (("delay_us", "us", 1.0, "logic delay from the lost enable to the hardware selection"),),
 }
 REQUIRED_PARAMS = {"current_plausibility": ("threshold_A",), "overcurrent_sw": ("threshold_A",),
                    "overvoltage_sw": ("threshold_V",), "undervoltage_sw": ("threshold_V",),
                    "command_timeout": ("timeout_s",), "overcurrent_hw": ("threshold_A",),
                    "overvoltage_hw": ("threshold_V",), "desat": ("threshold_A",), "watchdog": ("timeout_s",),
-                   "torque_monitor": ("abs_Nm",)}
+                   "torque_monitor": ("abs_Nm",), "torque_integral": ("limit_Nms",), "osc_power": ("threshold_W",),
+                   "osc_energy": ("limit_J",), "rotor_plausibility": ("threshold_deg",),
+                   "vdc_plausibility": ("threshold_V",), "dc_overcurrent_hw": ("threshold_A",)}
 
 
 @dataclass(frozen=True)
@@ -105,7 +159,7 @@ class MechanismSpec:
     text: str = ""
 
     def __post_init__(self):
-        if self.kind not in SW_KINDS + HW_KINDS:
+        if self.kind not in SW_KINDS + HW_KINDS + SYS_KINDS:
             raise InputValidationError(f"mechanism kind must be one of {SW_KINDS + HW_KINDS}",
                                        field=f"mechanisms.{self.mech_id}.kind")
         # a primitive reaction or a declared strategy id (checked against the strategies where the set is known)
@@ -213,6 +267,7 @@ class MechanismState:
     pending_since: float | None = None         # hardware glitch filter: violation seen since
     lag_ref: float | None = None               # torque monitor: lagged reference state
     ref_hist: list = field(default_factory=list)   # torque monitor: (t, reference) over the delay allowance
+    aux: dict = field(default_factory=dict)    # the extended monitors' own states (integrals, filters)
 
 
 class ResourceBook:

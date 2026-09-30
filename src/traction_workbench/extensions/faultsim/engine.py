@@ -34,13 +34,15 @@ import numpy as np
 from ...errors import InputValidationError
 from ...modulation import duties as _duties
 from .control import CommandPath, ControlConfig, Controller, ReferenceTable
-from .plant import (E_BAT, E_BLEED, E_CU, E_INV, E_MECH, ID, IQ, PHASES, TH, VDC, WM, DcParams, ExternalEvent,
+from .plant import (E_BAT, E_BLEED, E_CU, E_EXT, E_INV, E_MECH, ID, IQ, PHASES, TH, VDC, WM, DcParams,
+                    ExternalEvent,
                     LegCommand, MachineParams, OutOfModel, Plant, ShootThrough, integrate, phase_currents)
 from .labels import exit_label, fault_text, reaction_label
-from .protection import (BRIDGE_REACTIONS, REACTIONS, Detection, MechanismState, PathSpec, ResourceBook,
-                         SafeStatePolicy, torque_window)
+from .protection import (BRIDGE_REACTIONS, REACTIONS, Detection, MechanismSpec, MechanismState, PathSpec,
+                         ResourceBook, SafeStatePolicy, torque_window)
 from .sensors import make_sensor, unwrap_delta
 from .strategy import MEASURED_EXITS, StrategySpec, action_kind
+from .system import SystemLayer
 
 TWO_PI = 2.0 * math.pi
 PWM_MODELS = ("averaged", "switched")
@@ -48,18 +50,24 @@ ROLE_DEFAULTS = {"current_hw_a": "current_a", "current_hw_b": "current_b", "curr
                  "current_mon_a": "current_a", "current_mon_b": "current_b", "current_mon_c": "current_c",
                  "position_monitor": "position_control", "vdc_monitor": "vdc_control", "vdc_hw": "vdc_control"}
 REQUIRED_ROLES = ("current_a", "current_b", "current_c", "position_control", "vdc_control")
+# the software mechanisms of the extended catalogue (customer-style torque window and its integral, oscillation power /
+# energy, the receive monitor, plausibility of redundant channels, the estimator's domain, the PWM feedback)
+EXT_SW_KINDS = ("torque_window_signed", "torque_integral", "osc_power", "osc_energy", "rx_monitor",
+                "rotor_plausibility", "vdc_plausibility", "estimator_domain", "pwm_feedback")
 BRIDGE_CODES = {"pwm": 0, "asc_low": 1, "asc_high": 2, "six_switch_off": 3, "off": 4, "seq_asc_low": 5,
-                "seq_asc_high": 6}
+                "seq_asc_high": 6, "test": 7}
 
 # fault kinds: description and parameters (name, kind, choices / default) - the UI builds its editors from this
 FAULT_KINDS = {
     "sensor": ("a sensor's reading (offset / gain / stuck / stuck_last / lost / delay)",
                (("target", "sensor", None), ("mode", ("offset", "gain", "stuck", "stuck_last", "lost", "delay"),
                                               "offset"), ("value", "float", 0.0))),
-    "torque_command": ("the torque command message (stale / value / offset / sign_flip / loss) on the control's "
-                       "message, the monitor's copy or both (a common source, e.g. the sender)",
-                       (("mode", ("stale", "value", "offset", "sign_flip", "loss"), "value"), ("value", "float", 0.0),
-                        ("paths", ("control", "monitor", "both"), "control"))),
+    "torque_command": ("the torque command message (stale / value / offset / sign_flip / loss / oscillation: value "
+                       "N*m amplitude at freq_Hz) on the control's message, the monitor's copy or both (a common "
+                       "source, e.g. the sender)",
+                       (("mode", ("stale", "value", "offset", "sign_flip", "loss", "oscillation"), "value"),
+                        ("value", "float", 0.0), ("paths", ("control", "monitor", "both"), "control"),
+                        ("freq_Hz", "float", 20.0))),
     "control_task_stop": ("the control task stops (the PWM unit keeps its last compare values)", ()),
     "mcu_reset": ("the MCU resets (PWM outputs take their reset state; software halted until booted)",
                   (("duration_s", "float", 0.005),)),
@@ -82,6 +90,22 @@ FAULT_KINDS = {
     "path_lost": ("a reaction path cannot actuate (latent fault)", (("path", "path", None),)),
     "resource_loss": ("a shared resource is lost (every sensor, mechanism and path that needs it)",
                       (("resource", "resource", None),)),
+    "command_reaction": ("the reaction under test is commanded at this instant through a path (a scenario element: "
+                         "no detection; not blocked by 'protection off')",
+                         (("reaction", "reaction", "asc_low"), ("path", "path", None))),
+    "gde_disable": ("the processor's gate-driver enable (GDE) is withdrawn: no PWM authority; a hardware GDE monitor "
+                    "selects the safe state", ()),
+    "lv_loss": ("the low-voltage supply (terminal 30) is lost (needs the system's supply model)", ()),
+    "hv_supply_fault": ("the HV-derived auxiliary supply fails (needs the system's supply model)", ()),
+    "e2e": ("an end-to-end fault on the received torque message (needs the system's receive path)",
+            (("mode", ("crc", "counter_repeat", "counter_jump", "data_id", "em_swap", "loss", "value"), "crc"),
+             ("value", "float", 0.0))),
+    "envelope": ("the received torque envelope is corrupted: contradiction (maximum <= minimum) or a wrong maximum",
+                 (("mode", ("contradiction", "value"), "contradiction"), ("value", "float", 0.0))),
+    "latch_corruption": ("the default-error latch word is corrupted in RAM (needs the system's supervisor)", ()),
+    "safety_task_stop": ("the safety-monitor task stops (the control task keeps running)", ()),
+    "application_limit_fail": ("the application's torque limitation fails (the interface envelope no longer "
+                               "limits the command)", ()),
 }
 
 
@@ -180,6 +204,7 @@ class SimSetup:
     active_discharge_delay_s: float | None = None   # contactor opened -> active discharge on after this delay
     identity: dict = field(default_factory=dict)
     strategies: dict = field(default_factory=dict)   # strategy id -> StrategySpec (reactions as step sequences)
+    system: object | None = None       # system.SystemSpec: supervisor, operating states, supply, interface, ...
 
     def __post_init__(self):
         if self.pwm_model not in PWM_MODELS:
@@ -212,6 +237,11 @@ class SimSetup:
             raise InputValidationError(f"reaction override must be one of {over}", field="reaction_override")
         if self.control.updates_per_period not in (1, 2):
             raise InputValidationError("updates per PWM period must be 1 or 2", field="control.updates_per_period")
+        sup = getattr(self.system, "supervisor", None)
+        for pth in ([sup.path] + list(sup.paths.values())) if sup is not None else []:
+            if pth not in self.paths:
+                raise InputValidationError(f"the supervisor's path {pth} is not declared",
+                                           field="system.supervisor.path")
 
     def role(self, r: str) -> str:
         return self.roles.get(r) or self.roles.get(ROLE_DEFAULTS.get(r, ""), "")
@@ -379,6 +409,10 @@ class _Sim:
         self.mcu_state = "run"                        # run | reset | halted
         self.last_alive = 0.0
         self.wd_token = 0
+        # the watchdog's service: the control task's alive signal (default) or the safety task's checkpoints (a
+        # halted safety task with a running control task is then seen)
+        self.wd_by_safety = any(m.spec.kind == "watchdog" and m.spec.params.get("service_by") == "safety_task"
+                                for m in self.mechs)
         self.recovery_attempts = 0
         self.contactor_welded = False
         self.bms_limit = None if s.bms is None else float(s.bms["charge_current_max_A"])
@@ -394,6 +428,16 @@ class _Sim:
         self.strat = {"hw": None, "sw": None}          # the running strategy of each channel (see strategy.py)
         self.strat_log: list = []                      # every step entered: (t, channel, strategy, step, action)
         self.strat_token = 0
+        self.sys = SystemLayer(s.system) if s.system is not None else None
+        self.gde_enabled = True                        # the processor's gate-driver enable
+        self.selftest = None                           # an active self-test pulse pattern {legs, side}
+        self.criteria: list = []                       # the first violating sample of each monitor episode
+        self.t_now, self.x_now = 0.0, None
+        self.app_limit_failed = False
+        self.safety_task_stopped = False
+        self.env_fault = None                          # (mode, value, t) of a corrupted received envelope
+        self.tw_view = {"hi": math.nan, "lo": math.nan, "tol": math.nan, "int": math.nan}
+        self.res_lost_sensors: set = set()
 
     # -- helpers ---------------------------------------------------------------------------------------------
     def sensor(self, role: str):
@@ -428,10 +472,11 @@ class _Sim:
             if which not in ("control", "monitor", "both"):
                 raise InputValidationError("torque command fault paths must be control, monitor or both",
                                            field="faults.params.paths")
+            fq = float(p.get("freq_Hz", 20.0))
             if which in ("control", "both"):
-                self.cmd_path.inject(t, p.get("mode", "value"), float(p.get("value", 0.0)))
+                self.cmd_path.inject(t, p.get("mode", "value"), float(p.get("value", 0.0)), fq)
             if which in ("monitor", "both"):
-                self.mon_cmd_path.inject(t, p.get("mode", "value"), float(p.get("value", 0.0)))
+                self.mon_cmd_path.inject(t, p.get("mode", "value"), float(p.get("value", 0.0)), fq)
         elif k == "control_task_stop":
             self.ctrl.state = "frozen"
             self.task_stopped = True
@@ -475,6 +520,35 @@ class _Sim:
             self.paths_lost[p.get("path")] = t
         elif k == "resource_loss":
             self._lose_resource(t, x, str(p.get("resource")))
+        elif k == "command_reaction":
+            self._command_reaction(t, str(p.get("reaction", "asc_low")), p.get("path"))
+        elif k == "gde_disable":
+            self.gde_enabled = False
+            self.ev(t, "controller", "GDE", "gate-driver enable withdrawn: the processor has no PWM authority")
+            for m in self.mechs:
+                if m.spec.kind == "gde_monitor" and not m.disabled_reason and self.res.ok(m.spec.resources):
+                    self.schedule(t + float(m.spec.params.get("delay_s", 1e-6)), 1, "gde_trip", m)
+        elif k in ("lv_loss", "hv_supply_fault"):
+            if self.sys is None or self.sys.spec.supply is None:
+                raise InputValidationError(f"a {k} fault needs the system's supply model (system.supply)",
+                                           field="faults.kind")
+            self.sys.source_event(self, t, "LV" if k == "lv_loss" else "HV_fault", False,
+                                  "terminal 30 lost" if k == "lv_loss" else "HV-derived supply converter failed")
+        elif k == "e2e":
+            if self.sys is None:
+                raise InputValidationError("an e2e fault needs the system's receive path (system.interface.e2e)",
+                                           field="faults.kind")
+            self.sys.rx_fault(t, str(p.get("mode", "crc")), float(p.get("value", 0.0)))
+        elif k == "envelope":
+            self.env_fault = (str(p.get("mode", "contradiction")), float(p.get("value", 0.0)), t)
+        elif k == "latch_corruption":
+            if self.sys is None:
+                raise InputValidationError("a latch corruption needs the system's supervisor", field="faults.kind")
+            self.sys.corrupt_latch(self, t)
+        elif k == "safety_task_stop":
+            self.safety_task_stopped = True
+        elif k == "application_limit_fail":
+            self.app_limit_failed = True
         dur = p.get("duration_s")
         if dur is not None and k not in ("mcu_reset", "switch_short", "switch_open", "diode_open", "phase_open"):
             self.schedule(t + float(dur), 0, "fault_clear", f)
@@ -517,6 +591,19 @@ class _Sim:
             for m in self.mechs:
                 if m.spec.mech_id == p.get("mechanism"):
                     m.disabled_reason = None
+        elif k == "gde_disable":
+            self.gde_enabled = True
+        elif k in ("lv_loss", "hv_supply_fault") and self.sys is not None:
+            self.sys.source_event(self, t, "LV" if k == "lv_loss" else "HV_fault", True,
+                                  "terminal 30 back" if k == "lv_loss" else "HV-derived supply converter back")
+        elif k == "e2e" and self.sys is not None:
+            self.sys.rx_clear()
+        elif k == "envelope":
+            self.env_fault = None
+        elif k == "safety_task_stop":
+            self.safety_task_stopped = False
+        elif k == "application_limit_fail":
+            self.app_limit_failed = False
         self.ev(t, "fault_cleared", f.kind, f"{f.text()} cleared (intermittent fault)")
 
     def _truth_for(self, sen, x):
@@ -531,14 +618,18 @@ class _Sim:
             return x[VDC]
         if sen.spec.kind == "temperature":
             return self.s.temperature_C or 0.0
+        if sen.spec.kind == "dc_current":
+            return self.plant.battery_current(x)
         return 0.0
 
     def _lose_resource(self, t, x, r: str):
         if r in self.res.lost:
             return
         self.res.lose(r, t)
-        for obj in self.sens.values():
+        for name, obj in self.sens.items():
             if r in obj.spec.resources:
+                if obj.mode != "lost":
+                    self.res_lost_sensors.add(name)
                 obj.lose(t, self._truth_for(obj, x))
         if r in ("GATE_UPPER", "GATE_LOWER"):
             side = r[5:].lower()
@@ -549,6 +640,73 @@ class _Sim:
                     self.schedule(t + float(m.spec.params.get("delay_s", 2e-6)), 1, "uvlo_report", (m, side))
         if r == "MCU" and self.mcu_state != "reset":
             self._mcu_reset(t, math.inf)
+
+    def restore_resource(self, t, r: str):
+        """A lost resource is back (its supply returned): its sensors, gates and the MCU (after its boot) work
+        again; a desaturation latch or a fault of its own is not cleared by this."""
+        if r not in self.res.lost:
+            return
+        self.res.restore(r)
+        if r in ("GATE_UPPER", "GATE_LOWER"):
+            side = r[5:].lower()
+            for h in self.plant.health:
+                setattr(h, f"{side}_gate", True)
+            self.uvlo_sides.discard(side)
+        for name, obj in self.sens.items():
+            if name in self.res_lost_sensors and self.res.ok(obj.spec.resources):
+                obj.mode, obj.value, obj.frozen, obj.lost_since = None, 0.0, None, None
+                self.res_lost_sensors.discard(name)
+        if r == "MCU" and self.mcu_state == "reset":
+            self.res.lose("MCU", t)                     # the MCU is back only after its boot
+            self.schedule(t + self.s.control.boot_s, 1, "mcu_boot", None)
+        self.ev(t, "plant", r, f"resource {r} available again")
+
+    # -- system-requested safe states (supervisor reasons, scenario commands) ------------------------------------
+    def _command_reaction(self, t, reaction, path_id):
+        known = REACTIONS + tuple(self.s.strategies)
+        if reaction not in known:
+            raise InputValidationError(f"command_reaction: reaction must be one of {known}",
+                                       field="faults.params.reaction")
+        if path_id is None:
+            path_id = next((pid for pid, pp in self.s.paths.items() if "MCU" not in pp.resources),
+                           next(iter(self.s.paths)))
+        if path_id not in self.s.paths:
+            raise InputValidationError(f"command_reaction: no path {path_id}", field="faults.params.path")
+        m = MechanismState(MechanismSpec(f"SCN:{reaction}", "system", path_id, reaction,
+                                         resources=self.s.paths[path_id].resources, text="scenario command"))
+        self.system_request(t, m, f"reaction {reaction} commanded by the scenario (path {path_id})")
+
+    def system_request(self, t, mech: MechanismState, detail: str):
+        """A safe state requested by the system (no detection): the same reaction manager, path and priorities."""
+        self.ev(t, "safe_state_request", mech.spec.mech_id, detail, reaction=mech.spec.reaction)
+        path = self.s.paths[mech.spec.path]
+        why = self._path_down(path)
+        if why:
+            self.ev(t, "reaction_blocked", mech.spec.mech_id, why)
+            return
+        self.schedule(t + path.delay_s, 2, "actuate", (mech, path, t, {"detected_by": "system",
+                                                                        "mechanism": mech.spec.mech_id}))
+
+    def system_release(self, t, why: str) -> bool:
+        """The system's torque permit is back: leave the safe state the software holds (a hardware reaction stays;
+        the current control restarts)."""
+        if self.hw_reaction is not None:
+            return False
+        for m in self.mechs:
+            if not m.spec.hardware:
+                m.tripped, m.t_trip, m.count_s, m.cleared_since = False, None, 0.0, None
+                m.lag_ref, m.ref_hist = None, []
+                m.aux = {}
+        self.reaction_by = []
+        self.sw_reaction = None
+        self.torque_override = None
+        self.strat["sw"] = None
+        self.ctrl.set_mode(None)
+        if self.mcu_state == "run":
+            self.ctrl.restart(self.s.policy.restart_mode)
+        self.ev(t, "recovery", "supervisor", why)
+        self.update_bridge(t, why)
+        return True
 
     # -- MCU, contactor ----------------------------------------------------------------------------------------
     def _mcu_reset(self, t, duration):
@@ -564,6 +722,11 @@ class _Sim:
         self.sw_reaction, self.torque_override = None, None          # RAM cleared: the software reaction is gone
         self.strat["sw"] = None
         self.ctrl.set_mode(None)
+        if self.selftest is not None:
+            self.selftest = None
+            self.ev(t, "selftest", "self-test", "self-test aborted by the reset")
+        if self.sys is not None:
+            self.sys.on_mcu_reset(self, t)
         if math.isfinite(duration):
             self.schedule(t + max(duration, self.s.control.boot_s), 1, "mcu_boot", None)
         out = {"off": "all gates off", "lower_on": "lower switches on", "upper_on": "upper switches on"}
@@ -589,11 +752,15 @@ class _Sim:
         """Resolve who commands the bridge and apply it to the legs."""
         if self.hw_reaction is not None:
             cmd = self._bridge_of("hw")
+        elif self.selftest is not None:
+            cmd = "test"
+        elif not self.gde_enabled:
+            cmd = "six_switch_off"                     # the gate drivers are disabled: every switch off
         elif self.mcu_state == "reset":
             cmd = {"off": "six_switch_off", "lower_on": "asc_low", "upper_on": "asc_high"}[self.s.control.reset_output]
         elif self.sw_reaction is not None:
             cmd = self._bridge_of("sw")
-        elif self.mcu_state == "halted" or self.ctrl.state in ("halted", "starting"):
+        elif self.mcu_state == "halted" or self.ctrl.state in ("halted", "starting", "standby"):
             cmd = "six_switch_off"
         else:
             cmd = "pwm"
@@ -619,6 +786,10 @@ class _Sim:
                 c = LegCommand("lower_on")
             elif self.bridge_cmd == "asc_high":
                 c = LegCommand("upper_on")
+            elif self.bridge_cmd == "test":
+                st = self.selftest or {}
+                on = "lower_on" if st.get("side", "lower") == "lower" else "upper_on"
+                c = LegCommand(on if PHASES[k] in st.get("legs", ()) else "off")
             elif self.bridge_cmd in ("seq_asc_low", "seq_asc_high"):
                 st = self.strat["sw"] or self.strat["hw"] or {}
                 on = "lower_on" if self.bridge_cmd == "seq_asc_low" else "upper_on"
@@ -678,7 +849,12 @@ class _Sim:
             self.ev(t, "reaction_blocked", mech.spec.mech_id, why + " before actuation")
             return
         spec = mech.spec
-        reaction, rule = path.fixed_reaction or spec.reaction, "fixed by the path" if path.fixed_reaction else ""
+        if self.selftest is not None:
+            self.selftest = None
+            self.ev(t, "selftest", "self-test", "self-test aborted: a reaction is requested")
+        reaction, rule = path.fixed_reaction or spec.reaction, ("fixed by the path" if path.fixed_reaction else
+                                                                 "requested by the system" if spec.kind == "system"
+                                                                 else "")
         if reaction == "safe_state":
             # the deciding logic knows the MCU's last measurement (a hardware path gets it as the MCU's pre-selection,
             # frozen when the MCU stops), the reporting mechanism, its device and the drivers' UVLO reports
@@ -705,6 +881,9 @@ class _Sim:
                 self.reaction_by.append(spec.mech_id)
                 self.ev(t, "actuation", spec.mech_id, f"torque command forced to zero (PWM continues) - {rule}",
                         reaction="torque_zero", requested_at=t_req)
+                if self.sys is not None:
+                    self.sys.on_actuation(self, t, spec, "torque_zero")
+                    self.sys.on_reaction(self, t)
             return
         ch = "hw" if hw else "sw"
         cur = self.hw_reaction if hw else self.sw_reaction
@@ -753,6 +932,9 @@ class _Sim:
         if reaction in self.s.strategies:
             self._start_strategy(t, ch, self.s.strategies[reaction], spec.mech_id)
         self.update_bridge(t, f"{spec.mech_id} -> {reaction_label(reaction)}")
+        if self.sys is not None:
+            self.sys.on_actuation(self, t, spec, reaction)
+            self.sys.on_reaction(self, t)
 
     # -- reaction strategies (strategy.py) ------------------------------------------------------------------
     def _rank(self, reaction) -> int:
@@ -797,7 +979,7 @@ class _Sim:
         st["k"], st["t_step"] = k, t
         kind = action_kind(step.action)
         label = f"{spec.strategy_id} step {k + 1}/{len(spec.steps)}: {reaction_label(step.action)}"
-        if kind != "bridge":
+        if kind != "bridge" and not (kind == "hv_select" and ch == "hw"):
             why = ("a hardware path cannot execute it (software action)" if ch == "hw" else self._software_ready())
             if why:
                 return self._strategy_fallback(t, ch, f"{label} not executable - {why}")
@@ -821,6 +1003,15 @@ class _Sim:
             st["bridge"] = "seq_asc_low" if step.action.endswith("low") else "seq_asc_high"
         elif kind == "hysteresis":
             st["bridge"] = "six_switch_off"
+        elif kind == "hv_select":
+            on = "asc_low" if step.action.endswith("low") else "asc_high"
+            v = self._hv_seen(t, ch)
+            if v is not None and v >= float(step.param("v_upp_V")):
+                st["bridge"] = on
+            elif v is not None and v <= float(step.param("v_low_V")):
+                st["bridge"] = "six_switch_off"
+            else:
+                st["bridge"] = on if float(step.param("initial_asc")) >= 0.5 else "six_switch_off"
         else:
             st["bridge"] = step.action
         note = ""
@@ -841,6 +1032,28 @@ class _Sim:
                                "action": step.action, "exit": step.exit, "fallback": None})
         self.ev(t, "strategy", spec.strategy_id, f"{label} {ex}{note}", channel=ch, step=k + 1,
                 action=step.action)
+
+    def _hv_seen(self, t, ch):
+        """The DC voltage as the selecting logic sees it: the hardware comparator's analog output (hardware path)
+        or the control's conversion (software path)."""
+        if ch == "hw":
+            x = self.x_now
+            return None if x is None else self.sensor("vdc_hw").analog(x[VDC])
+        return self.read(t, "vdc_control")
+
+    def _hv_select_fire(self, new):
+        def fire(t, x):
+            st = self.strat.get("hw")
+            if st is None:
+                return True
+            st["bridge"] = new
+            self.ev(t, "strategy", st["spec"].strategy_id, f"hardware HV selection: {reaction_label(new)} (DC link "
+                                                           f"{self.sensor('vdc_hw').analog(x[VDC]):.1f} V at the "
+                                                           f"comparator)", channel="hw")
+            self.x_now = x
+            self.update_bridge(t, "hardware HV selection")
+            return True
+        return fire
 
     def _strategy_fallback(self, t, ch: str, why: str):
         st = self.strat[ch]
@@ -907,14 +1120,16 @@ class _Sim:
                                                          f"{', '.join(f'{i_meas[k]:.0f} A' for k in new)})",
                         channel="sw", legs=[PHASES[k] for k in new])
             done = len(st["closed"]) == 3
-        elif kind == "hysteresis" and vdc is not None:
+        elif kind in ("hysteresis", "hv_select") and vdc is not None:
             on = "asc_low" if step.action.endswith("low") else "asc_high"
-            if st["bridge"] == "six_switch_off" and vdc >= float(step.param("v_on_V")):
+            v_on = float(step.param("v_on_V" if kind == "hysteresis" else "v_upp_V"))
+            v_off = float(step.param("v_off_V" if kind == "hysteresis" else "v_low_V"))
+            if st["bridge"] == "six_switch_off" and vdc >= v_on:
                 st["bridge"] = on
-                self.update_bridge(t, f"{spec.strategy_id}: measured Vdc {vdc:.0f} V >= {step.param('v_on_V'):g} V")
-            elif st["bridge"] == on and vdc <= float(step.param("v_off_V")):
+                self.update_bridge(t, f"{spec.strategy_id}: measured Vdc {vdc:.0f} V >= {v_on:g} V")
+            elif st["bridge"] == on and vdc <= v_off:
                 st["bridge"] = "six_switch_off"
-                self.update_bridge(t, f"{spec.strategy_id}: measured Vdc {vdc:.0f} V <= {step.param('v_off_V'):g} V")
+                self.update_bridge(t, f"{spec.strategy_id}: measured Vdc {vdc:.0f} V <= {v_off:g} V")
         ex = step.exit
         if ex == "done" and done:
             return self._next_step(t, "sw", "done")
@@ -949,6 +1164,8 @@ class _Sim:
             return x[VDC]
         if k == "temperature":
             return self.s.temperature_C or 0.0
+        if k == "dc_current":
+            return self.plant.battery_current(x)
         return 0.0
 
     def read(self, t, role):
@@ -956,12 +1173,26 @@ class _Sim:
         return v
 
     # -- software mechanisms -----------------------------------------------------------------------------------
+    def _wd_alive(self, t):
+        self.last_alive = t
+        self.wd_token += 1
+        for m in self.mechs:
+            if m.spec.kind == "watchdog" and not m.tripped:
+                self.schedule(t + float(m.spec.params["timeout_s"]), 7, "wd_expire", (m, self.wd_token))
+
     def run_mechanism(self, t, x, m: MechanismState):
         spec = m.spec
+        if (self.wd_by_safety and spec.params.get("task", "monitor") != "control" and not self.safety_task_stopped
+                and self.mcu_state == "run" and t - self.last_alive >= spec.period_s - 1e-12):
+            self._wd_alive(t)                       # the safety task's checkpoint services the watchdog
         if m.disabled_reason or not self.res.ok(spec.resources):
             return
         if spec.params.get("task", "monitor") == "control" and (self.task_stopped or self.ctrl.state != "run"):
             return
+        if spec.params.get("task", "monitor") != "control" and self.safety_task_stopped:
+            return
+        if spec.kind in EXT_SW_KINDS:
+            return self._run_ext_mechanism(t, x, m)
         P = spec.params
         viol, detail = False, ""
         if spec.kind == "torque_monitor" and (self.hw_reaction or self.sw_reaction):
@@ -1044,9 +1275,247 @@ class _Sim:
             viol = age > float(P["timeout_s"])
             detail = f"torque command age {age * 1e3:.4g} ms > {float(P['timeout_s']) * 1e3:g} ms"
         if viol:
+            if m.count_s == 0.0 and not m.tripped:
+                self.criteria.append({"t": t, "mech": spec.mech_id, "detail": detail})
             m.count_s += spec.period_s
             m.cleared_since = None
             if not m.tripped and m.count_s >= float(P.get("debounce_s", 0.0)) - 1e-12:
+                m.tripped, m.t_trip = True, t
+                self.request(t, m, detail)
+        else:
+            m.count_s = 0.0
+            if m.tripped and m.cleared_since is None:
+                m.cleared_since = t
+
+    # -- the extended software mechanisms ---------------------------------------------------------------------
+    def _mon_estimate(self, t, P):
+        """The monitor's torque estimate from its own current and position channels (as the torque monitor)."""
+        ia, ib = self.read(t, "current_mon_a"), self.read(t, "current_mon_b")
+        th = self.read(t, "position_monitor")
+        if ia is None or ib is None or th is None:
+            return None
+        ic = self.read(t, "current_mon_c") if P.get("three_sensors") else -ia - ib
+        th = th + self.ctrl.w_est * float(P.get("angle_delay_comp_s", self.sensor("position_monitor").spec.delay_s))
+        cs, sn = math.cos(th), math.sin(th)
+        i_al, i_be = (2 * ia - ib - ic) / 3.0, (ib - ic) / math.sqrt(3.0)
+        i_d, i_q = i_al * cs + i_be * sn, -i_al * sn + i_be * cs
+        c = self.s.control
+        w_m = self.ctrl.w_est / c.p
+        return 1.5 * c.p * (c.psi * i_q + (c.Ld - c.Lq) * i_d * i_q) - (c.b_rot * w_m + c.c_rot * w_m * abs(w_m))
+
+    def _mon_request(self, t, P):
+        src = P.get("request_input", "monitor_message")
+        if src == "vehicle":
+            return self.s.request(max(0.0, t - float(P.get("request_latency_s", 0.0))))
+        if src == "monitor_message":
+            pay, _ts = self.mon_cmd_path.newest(t, self.s.request)
+            return pay if pay is not None else self.s.request(0.0)
+        return self.last_cmd if self.last_cmd is not None else 0.0
+
+    def _signed_window(self, t, T_req, P):
+        """(high, low, contradiction) of the customer-style window: the received envelope (around the request or
+        declared static) and / or the request scaled by the limit factor (high = max(T F, T / F) + abs, low =
+        min(T F, T / F) - abs - signed, never |T|), bounded by independent limits."""
+        src = P.get("limit_source", "factor")
+        hi, lo = math.inf, -math.inf
+        if src in ("envelope", "both"):
+            e_hi, e_lo = P.get("env_max_Nm"), P.get("env_min_Nm")
+            e_hi = T_req + float(P.get("env_above_Nm", 50.0)) if e_hi is None else float(e_hi)
+            e_lo = T_req - float(P.get("env_below_Nm", 50.0)) if e_lo is None else float(e_lo)
+            if self.env_fault is not None and t >= self.env_fault[2] - 1e-12:
+                md, val, _ = self.env_fault
+                e_hi = (e_lo - abs(val or 1.0)) if md == "contradiction" else val
+            if e_hi <= e_lo:
+                return e_hi, e_lo, f"received envelope contradiction: maximum {e_hi:.1f} <= minimum {e_lo:.1f} N*m"
+            hi, lo = e_hi, e_lo
+        if src in ("factor", "both"):
+            F = float(P.get("limit_factor", 1.2))
+            a = float(P.get("abs_Nm", 0.0))
+            f_hi, f_lo = max(T_req * F, T_req / F) + a, min(T_req * F, T_req / F) - a
+            hi, lo = (f_hi, f_lo) if src == "factor" else (min(hi, f_hi), max(lo, f_lo))
+        if P.get("independent_max_Nm") is not None:
+            hi = min(hi, float(P["independent_max_Nm"]))
+        if P.get("independent_min_Nm") is not None:
+            lo = max(lo, float(P["independent_min_Nm"]))
+        return hi, lo, None
+
+    def _tol(self, P):
+        """The speed-dependent tolerance (a map over the MEASURED speed, linear, flat outside)."""
+        tm = P.get("tol_map")
+        if not tm:
+            return float(P.get("tol_Nm", 0.0))
+        sp = self.ctrl.w_est / self.s.control.p * 60.0 / TWO_PI
+        if P.get("tol_speed_abs", True):
+            sp = abs(sp)
+        return float(np.interp(sp, [float(a) for a, _ in tm], [float(b) for _, b in tm]))
+
+    def _run_ext_mechanism(self, t, x, m: MechanismState):
+        spec, P, a = m.spec, m.spec.params, m.aux
+        dt = spec.period_s
+        k = spec.kind
+        viol, detail = False, ""
+        if k in ("torque_window_signed", "torque_integral", "osc_power", "osc_energy"):
+            if self.hw_reaction or self.sw_reaction:
+                # a bridge-level safe state is active: the torque against the request means nothing there
+                m.count_s, m.aux = 0.0, {}
+                if m.tripped and m.cleared_since is None:
+                    m.cleared_since = t
+                return
+            T_est = self._mon_estimate(t, P)
+            if T_est is None:
+                return
+        if k in ("torque_window_signed", "torque_integral"):
+            T_req = self._mon_request(t, P)
+            hi, lo, contra = self._signed_window(t, T_req, P)
+            tau, dly = float(P.get("response_tau_s") or 0.0), float(P.get("delay_s") or 0.0)
+            if not contra and (tau > 0.0 or dly > 0.0):
+                # the healthy drive's allowance: the window also covers the request of the last delay and its
+                # first-order response (the window of each, united) - both 0 is the literal formula
+                hist = a.setdefault("hist", [])
+                hist.append((t, T_req))
+                while len(hist) > 1 and hist[1][0] <= t - dly + 1e-12:
+                    hist.pop(0)
+                lag = a.get("lag", T_req)
+                lag += (1.0 - math.exp(-dt / tau)) * (hist[0][1] - lag) if tau > 0.0 else hist[0][1] - lag
+                a["lag"] = lag
+                for ref in [v for _, v in hist] + [lag]:
+                    h2, l2, _c = self._signed_window(t, ref, P)
+                    hi, lo = max(hi, h2), min(lo, l2)
+            tol = self._tol(P)
+            self.mon_view = {"T_est": T_est, "lo": lo, "hi": hi}
+            x_hi = x_lo = -math.inf
+            if not contra:
+                add = P.get("tol_rule", "add") == "add"
+                x_hi = (T_est + tol - hi) if add else (T_est - tol - hi)
+                x_lo = (lo - (T_est - tol)) if add else (lo - (T_est + tol))
+                sides = P.get("sides", "both")
+                if sides == "high":
+                    x_lo = -math.inf
+                elif sides == "low":
+                    x_hi = -math.inf
+            if k == "torque_window_signed":
+                viol = bool(contra) or x_hi > 0.0 or x_lo > 0.0
+                detail = contra or (f"estimated torque {T_est:.1f} N*m (tolerance {tol:.1f} N*m) outside "
+                                    f"[{lo:.1f}, {hi:.1f}] N*m on the {'high' if x_hi > 0 else 'low'} side")
+                self.tw_view.update(hi=hi, lo=lo, tol=tol)
+            else:
+                leak = float(P.get("leak_per_s") or 0.0)
+                ex_hi, ex_lo = max(x_hi, 0.0), max(x_lo, 0.0)
+                if P.get("cancel"):             # a net signed integral: positive and negative excess cancel
+                    net = a.get("net", 0.0)
+                    net += (ex_hi - ex_lo - leak * net) * dt
+                    a["net"] = net
+                    I = abs(net)
+                else:
+                    ih = max(0.0, a.get("ih", 0.0) + (ex_hi - leak * a.get("ih", 0.0)) * dt)
+                    il = max(0.0, a.get("il", 0.0) + (ex_lo - leak * a.get("il", 0.0)) * dt)
+                    if P.get("clamp_Nms") is not None:
+                        ih, il = min(ih, float(P["clamp_Nms"])), min(il, float(P["clamp_Nms"]))
+                    a["ih"], a["il"] = ih, il
+                    I = max(ih, il)
+                dev = ex_hi > 0.0 or ex_lo > 0.0
+                if dev and not a.get("dev_on") and not m.tripped:
+                    self.criteria.append({"t": t, "mech": spec.mech_id, "detail": "torque deviation starts"})
+                a["dev_on"] = dev
+                lim = float(P["limit_Nms"])
+                self.tw_view["int"] = I             # the time monitor's window stays on the dashboard
+                if not any(mm.spec.kind == "torque_window_signed" for mm in self.mechs):
+                    self.tw_view.update(hi=hi, lo=lo, tol=tol)
+                if (contra or I > lim) and not m.tripped:
+                    m.tripped, m.t_trip = True, t
+                    self.request(t, m, contra or f"torque deviation integral {I:.4g} N*m*s > {lim:g} N*m*s")
+                return
+        elif k in ("osc_power", "osc_energy"):
+            # the oscillation of the estimate against the request (a healthy step follows its request), high-passed
+            dev = T_est - self._mon_request(t, P)
+            tau = 1.0 / (2.0 * math.pi * float(P.get("f_hp_Hz", 2.0)))
+            alpha = tau / (tau + dt)
+            y = 0.0 if a.get("T_prev") is None else alpha * (a.get("y", 0.0) + dev - a["T_prev"])
+            a["T_prev"], a["y"] = dev, y
+            p_osc = abs(y * self.ctrl.w_est / self.s.control.p)
+            if k == "osc_power":
+                te = float(P.get("tau_env_s") or 0.02)
+                env = a.get("env", 0.0) + (p_osc - a.get("env", 0.0)) * min(1.0, dt / te)
+                a["env"] = env
+                thr = float(P["threshold_W"])
+                viol = env > thr
+                detail = f"oscillating power {env / 1e3:.4g} kW > {thr / 1e3:g} kW"
+            else:
+                leak = float(P.get("leak_per_s") or 0.0)
+                E = max(0.0, a.get("E", 0.0) + (max(p_osc - float(P.get("allow_W", 0.0)), 0.0)
+                                                 - leak * a.get("E", 0.0)) * dt)
+                a["E"] = E
+                if p_osc > float(P.get("allow_W", 0.0)) and not a.get("dev_on") and not m.tripped:
+                    self.criteria.append({"t": t, "mech": spec.mech_id, "detail": "oscillating power above the "
+                                                                                  "allowance"})
+                a["dev_on"] = p_osc > float(P.get("allow_W", 0.0))
+                lim = float(P["limit_J"])
+                if E > lim and not m.tripped:
+                    m.tripped, m.t_trip = True, t
+                    self.request(t, m, f"oscillation energy {E:.4g} J > {lim:g} J")
+                return
+        elif k == "rx_monitor":
+            if self.sys is None or self.sys.rx is None:
+                return
+            rx = self.sys.rx
+            if P.get("repeat_check") == "per_task":
+                # a (non-approved) check: no new accepted frame since the last task run counts as a repetition
+                last = a.get("k_seen")
+                a["k_seen"] = rx["t_acc"]
+                viol = last is not None and rx["t_acc"] == last
+                detail = "no new frame since the last task run (counted as a repeated message)"
+            else:
+                age = self.sys.rx_age(t)
+                max_age = float(P.get("max_age_s") or 0.05)
+                n_inv = int(P.get("max_invalid") or 0)
+                viol = age > max_age or (n_inv > 0 and rx["invalid_run"] >= n_inv)
+                detail = (f"no accepted torque frame for {age * 1e3:.4g} ms > {max_age * 1e3:g} ms" if age > max_age
+                          else f"{rx['invalid_run']} consecutive invalid frames")
+        elif k == "rotor_plausibility":
+            a1, a2 = self.read(t, "position_control"), self.read(t, "position_monitor")
+            if a1 is None or a2 is None:
+                return
+            from .sensors import unwrap_delta
+            d = abs(math.degrees(unwrap_delta(a1, a2)))
+            thr = float(P["threshold_deg"])
+            viol = d > thr
+            detail = f"control and monitor rotor angles {d:.1f} deg apart > {thr:g} deg"
+        elif k == "vdc_plausibility":
+            v1, v2 = self.read(t, "vdc_control"), self.read(t, "vdc_monitor")
+            if v1 is None or v2 is None:
+                return
+            thr = float(P["threshold_V"])
+            viol = abs(v1 - v2) > thr
+            detail = f"control and monitor DC voltages {abs(v1 - v2):.1f} V apart > {thr:g} V"
+        elif k == "estimator_domain":
+            sp = abs(self.ctrl.w_est / self.s.control.p * 60.0 / TWO_PI)
+            ii = [self.read(t, f"current_mon_{ph}") for ph in PHASES]
+            imax = max((abs(v) for v in ii if v is not None), default=0.0)
+            why = []
+            if P.get("speed_max_rpm") is not None and sp > float(P["speed_max_rpm"]):
+                why.append(f"speed {sp:.0f} rpm > {float(P['speed_max_rpm']):g} rpm")
+            if P.get("current_max_A") is not None and imax > float(P["current_max_A"]):
+                why.append(f"current {imax:.0f} A > {float(P['current_max_A']):g} A")
+            viol = bool(why)
+            detail = "torque estimate outside its qualified domain: " + "; ".join(why)
+        elif k == "pwm_feedback":
+            if self.bridge_cmd != "pwm" or self.mcu_state != "run":
+                return
+            bad = []
+            for kk in range(3):
+                want = self.pwm.leg_command(kk)
+                got = self.plant.cmd[kk]
+                if got.kind != want.kind or (got.kind == "pwm" and abs(got.duty - want.duty) > float(
+                        P.get("duty_tol", 0.05))):
+                    bad.append(PHASES[kk])
+            viol = bool(bad)
+            detail = f"observed PWM of leg(s) {', '.join(bad)} differs from the command"
+        if viol:
+            if m.count_s == 0.0 and not m.tripped:
+                self.criteria.append({"t": t, "mech": spec.mech_id, "detail": detail})
+            m.count_s += spec.period_s
+            m.cleared_since = None
+            if not m.tripped and m.count_s >= float(P.get("debounce_s") or 0.0) - 1e-12:
                 m.tripped, m.t_trip = True, t
                 self.request(t, m, detail)
         else:
@@ -1093,6 +1562,33 @@ class _Sim:
                         out.append(ExternalEvent(f"{spec.mech_id}:{PHASES[k]}-",
                                                  lambda t, x, k=k: I + phase_currents(x[ID], x[IQ], x[TH])[k],
                                                  self._desat_fire(m, k, "lower")))
+        for m in self.mechs:
+            spec = m.spec
+            if (spec.kind != "dc_overcurrent_hw" or m.tripped or m.disabled_reason or not self.res.ok(spec.resources)
+                    or m.pending_since is not None):
+                continue
+            thr = float(spec.params["threshold_A"])
+            sv = self.sensor("dc_current")
+
+            def val(t, x, sv=sv, thr=thr):
+                return thr - abs(sv.analog(pl.battery_current(x)))
+            out.append(ExternalEvent(spec.mech_id, val, self._hw_fire(m, val, "analog DC-current comparator")))
+        st = self.strat.get("hw")
+        if st is not None and st["fallback"] is None and st["k"] < len(st["spec"].steps):
+            step = st["spec"].steps[st["k"]]
+            if action_kind(step.action) == "hv_select":
+                sv = self.sensor("vdc_hw")
+                on = "asc_low" if step.action.endswith("low") else "asc_high"
+                if st["bridge"] == "six_switch_off":
+                    thr = float(step.param("v_upp_V"))
+                    out.append(ExternalEvent("HV select up", lambda t, x, sv=sv, thr=thr: thr - sv.analog(x[VDC]),
+                                             self._hv_select_fire(on)))
+                else:
+                    thr = float(step.param("v_low_V"))
+                    out.append(ExternalEvent("HV select down", lambda t, x, sv=sv, thr=thr: sv.analog(x[VDC]) - thr,
+                                             self._hv_select_fire("six_switch_off")))
+        if self.sys is not None:
+            out.extend(self.sys.externals(self))
         if self.s.bms is not None and self.bms_limit is not None and self.dc.contactor_closed:
             lim = self.bms_limit
             if self.bms_since is None:
@@ -1104,6 +1600,7 @@ class _Sim:
     def _hw_fire(self, m: MechanismState, val, what: str):
         def fire(t, x):
             f = float(m.spec.params.get("filter_s", 0.0))
+            self.criteria.append({"t": t, "mech": m.spec.mech_id, "detail": f"{what}: threshold crossed"})
             if f > 0.0:
                 m.pending_since = t
                 self.schedule(t + f, 6, "hw_confirm", (m, val, what))
@@ -1117,6 +1614,16 @@ class _Sim:
     def _thr_text(m):
         P = m.spec.params
         return f"{P['threshold_A']:g} A" if "threshold_A" in P else f"{P.get('threshold_V', 0):g} V"
+
+    def _hw_value(self, m, x):
+        P = m.spec.params
+        if m.spec.kind == "overcurrent_hw":
+            ia = phase_currents(x[ID], x[IQ], x[TH])
+            return float(P["threshold_A"]) - max(abs(self.sensor(f"current_hw_{ph}").analog(i))
+                                                 for ph, i in zip(PHASES, ia))
+        if m.spec.kind == "dc_overcurrent_hw":
+            return float(P["threshold_A"]) - abs(self.sensor("dc_current").analog(self.plant.battery_current(x)))
+        return float(P["threshold_V"]) - self.sensor("vdc_hw").analog(x[VDC])
 
     def _desat_fire(self, m: MechanismState, leg: int, device: str):
         def fire(t, x):
@@ -1138,6 +1645,8 @@ class _Sim:
 
     # -- recovery ----------------------------------------------------------------------------------------------
     def _check_recovery(self, t, x):
+        if self.sys is not None and self.sys.owns_recovery:
+            return                                     # the supervisor decides the release (re-arm contract)
         pol = self.s.policy
         if pol.latch or (self.sw_reaction is None and self.hw_reaction is None and self.torque_override is None):
             return
@@ -1147,7 +1656,7 @@ class _Sim:
         for m in causes:
             if m.spec.hardware:
                 # a comparator clears when its analog condition is back inside the threshold
-                if m.spec.kind in ("overcurrent_hw", "overvoltage_hw"):
+                if m.spec.kind in ("overcurrent_hw", "overvoltage_hw", "dc_overcurrent_hw"):
                     ok = self._hw_value(m, x) > 0.0
                     if ok and m.cleared_since is None:
                         m.cleared_since = t
@@ -1174,37 +1683,31 @@ class _Sim:
                                                    f"for {pol.recovery_after_s * 1e3:g} ms, {pol.restart_mode} restart")
         self.update_bridge(t, "recovery")
 
-    def _hw_value(self, m, x):
-        P = m.spec.params
-        if m.spec.kind == "overcurrent_hw":
-            ia = phase_currents(x[ID], x[IQ], x[TH])
-            return float(P["threshold_A"]) - max(abs(self.sensor(f"current_hw_{ph}").analog(i))
-                                                 for ph, i in zip(PHASES, ia))
-        return float(P["threshold_V"]) - self.sensor("vdc_hw").analog(x[VDC])
-
     # -- control step ------------------------------------------------------------------------------------------
     def control_step(self, t, x):
         s = self.s
+        self.t_now, self.x_now = t, x
         self.convert_all(t, x)                     # the ADC trigger grid; a converter on a lost resource is silent
         if self.mcu_state != "run":
             return
-        if self.ctrl.state in ("run", "starting"):
-            self.last_alive = t
-            self.wd_token += 1
-            for m in self.mechs:
-                if m.spec.kind == "watchdog" and not m.tripped:
-                    self.schedule(t + float(m.spec.params["timeout_s"]), 7, "wd_expire", (m, self.wd_token))
+        if self.ctrl.state in ("run", "starting", "standby") and not self.wd_by_safety:
+            self._wd_alive(t)
         i_meas = tuple(self.read(t, f"current_{ph}") for ph in PHASES)
         th = self.read(t, "position_control")
         vdc = self.read(t, "vdc_control")
         temp = self.read(t, "temperature") if s.roles.get("temperature") else None
         if any(v is None for v in i_meas) or th is None or vdc is None:
             return
-        T_cmd, t_sent = self.cmd_path.newest(t, s.request)
+        if self.sys is not None and self.sys.rx is not None:
+            T_cmd, t_sent = self.sys.rx_newest(self, t, s.request)
+        else:
+            T_cmd, t_sent = self.cmd_path.newest(t, s.request)
         if T_cmd is not None:
             self.last_cmd, self.cmd_sent = T_cmd, t_sent
         age = t - self.cmd_sent if self.cmd_sent is not None else math.inf
         use = self.torque_override if self.torque_override is not None else self.last_cmd
+        if self.sys is not None and self.torque_override is None:
+            use = self.sys.limit_command(self, t, use)
         if s.reaction_override == "torque_zero" and self.torque_override is not None:
             use = 0.0
         prev_state = self.ctrl.state
@@ -1225,6 +1728,13 @@ class _Sim:
         w_e = m.p * w_m
         T0 = s.request(0.0)
         i_d, i_q, T_used = s.table.at(T0)
+        stage = self.sys.initial_stage(self) if self.sys is not None else None
+        if stage in ("asc_low", "asc_high"):          # the system holds the ASC from the start: its steady state
+            from .strategy import asc_steady_point
+            i_d, i_q = asc_steady_point(w_e, m.Ld, m.Lq, m.psi, m.Rs)
+            T_used = 0.0
+        elif stage is not None:                       # six-switch-off below the onset: no current
+            i_d = i_q = T_used = 0.0
         v_d = m.Rs * i_d - w_e * m.Lq * i_q
         v_q = m.Rs * i_q + w_e * (m.Ld * i_d + m.psi)
         P = 1.5 * (v_d * i_d + v_q * i_q)
@@ -1240,11 +1750,11 @@ class _Sim:
                                            field="operating_point")
         else:
             v_dc, i_bat = self.dc.V_oc, 0.0
-        x = [i_d, i_q, s.theta0 % TWO_PI, w_m, v_dc, i_bat, 0.0, 0.0, 0.0, 0.0, 0.0]
+        x = [i_d, i_q, s.theta0 % TWO_PI, w_m, v_dc, i_bat, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
         # the controller starts in equilibrium at the initial reading; the PWM holds the steady-state duties (the
         # history before t = 0 is the steady rotation: the angle runs back at the initial speed)
         w0 = x[WM] * s.machine.p
-        self.hist.add(-1.0, [i_d, i_q, x[TH] - w0 * 1.0, w_m, v_dc, i_bat, 0.0, 0.0, 0.0, 0.0, 0.0])
+        self.hist.add(-1.0, [i_d, i_q, x[TH] - w0 * 1.0, w_m, v_dc, i_bat, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
         self.hist.add(0.0, x)
         self.convert_all(0.0, x)
         th_meas = self.read(0.0, "position_control")
@@ -1266,6 +1776,7 @@ class _Sim:
     def run(self) -> SimResult:
         s, pl, c = self.s, self.plant, self.s.control
         x, init = self.initial_state()
+        self.x_now = x
         modes = pl.decide_modes(x)
         rec = _Recorder(self)
         H = s.horizon_s
@@ -1279,7 +1790,7 @@ class _Sim:
             k += 1
         self.schedule(0.0, 4, "control", None)
         for mst in self.mechs:
-            if not mst.spec.hardware and mst.spec.kind != "watchdog":
+            if not mst.spec.hardware and mst.spec.kind not in ("watchdog", "system"):
                 per = mst.spec.period_s
                 n = 0
                 while (n + mst.spec.phase) * per <= H + 1e-12:
@@ -1293,6 +1804,9 @@ class _Sim:
                 self.schedule(tb, 8, "breakpoint", None)
         self.schedule(H, 9, "end", None)
         t, status = 0.0, "completed"
+        if self.sys is not None:
+            self.sys.start(self, H)
+            modes = pl.decide_modes(x)
         rec.add(0.0, x, modes)
         ext = self.externals()
         while self.heap:
@@ -1328,7 +1842,9 @@ class _Sim:
                     if kind == "end":
                         ended = True
                         break
+                    self.t_now, self.x_now = t, x
                     x = self._handle(t, x, kind, payload)
+                    self.x_now = x
                 modes = pl.decide_modes(x)
             except ShootThrough as st:
                 if not self._desat_handles(st, t):
@@ -1360,9 +1876,16 @@ class _Sim:
         pl = self.plant
         if kind == "fault_clear":
             self.clear_fault(t, x, payload)
+        elif kind.startswith("sys:"):
+            x = self.sys.handle(self, t, x, kind, payload)
+        elif kind == "gde_trip":
+            m = payload
+            if not m.tripped and not m.disabled_reason and self.res.ok(m.spec.resources) and not self.gde_enabled:
+                m.tripped, m.t_trip = True, t
+                self.request(t, m, "gate-driver enable lost: the hardware selects the safe state (GDE monitor)")
         elif kind == "fault":
             x = self.apply_fault(t, x, payload)
-            if payload.kind in ("gate_supply_loss", "resource_loss", "pwm_output", "mcu_reset"):
+            if payload.kind in ("gate_supply_loss", "resource_loss", "pwm_output", "mcu_reset", "gde_disable"):
                 self.update_bridge(t, payload.kind)
                 self.apply_leg_commands()
         elif kind == "actuate":
@@ -1398,6 +1921,9 @@ class _Sim:
         elif kind == "mcu_boot":
             self.res.restore("MCU")
             self.mcu_state = "run"
+            if self.sys is not None and self.sys.on_mcu_boot(self, t):
+                self.update_bridge(t, "MCU booted (the supervisor decides)")
+                return x
             if self.s.policy.after_reset == "restart" and self.hw_reaction is None:
                 self.ctrl.restart(self.s.policy.restart_mode)
                 self.ev(t, "controller", "MCU", f"MCU booted: {self.s.policy.restart_mode} restart of the current "
@@ -1437,7 +1963,8 @@ class _Sim:
             if (token == self.wd_token and not m.tripped and not m.disabled_reason
                     and self.res.ok(m.spec.resources)):
                 m.tripped, m.t_trip = True, t
-                self.request(t, m, f"no control-task alive signal for {(t - self.last_alive) * 1e3:.4g} ms")
+                self.request(t, m, f"no {'safety-task checkpoint' if self.wd_by_safety else 'control-task alive signal'} "
+                                   f"for {(t - self.last_alive) * 1e3:.4g} ms")
         return x
 
     def _desat_handles(self, st: ShootThrough, t: float) -> bool:
@@ -1468,7 +1995,7 @@ class _Sim:
         E1_cap = 0.5 * self.dc.C * x[VDC] ** 2
         E0_mag = self.plant.magnetic_energy(tr["i_d"][0], tr["i_q"][0])
         E1_mag = self.plant.magnetic_energy(x[ID], x[IQ])
-        dc_res = x[E_BAT] - x[E_BLEED] - x[E_INV] - (E1_cap - E0_cap)
+        dc_res = x[E_BAT] - x[E_BLEED] - x[E_INV] - x[E_EXT] - (E1_cap - E0_cap)
         m_res = x[E_INV] - x[E_CU] - x[E_MECH] - (E1_mag - E0_mag)
         scale = max(abs(x[E_BAT]), abs(x[E_INV]), abs(x[E_CU]), abs(x[E_MECH]), abs(E1_cap - E0_cap), 1e-9)
         det = [e for e in self.events if e["kind"] == "detection"]
@@ -1493,11 +2020,14 @@ class _Sim:
             "first_detection": det[0] if det else None, "first_actuation": act[0] if act else None,
             "detections": len(det), "final_bridge": self.bridge_cmd, "final_actual": self.actual_bridge(),
             "energy": {"E_bat_J": x[E_BAT], "E_cu_J": x[E_CU], "E_mech_J": x[E_MECH], "E_bleed_J": x[E_BLEED],
-                       "E_inv_J": x[E_INV], "dE_cap_J": E1_cap - E0_cap, "dE_mag_J": E1_mag - E0_mag,
+                       "E_inv_J": x[E_INV], "E_ext_J": x[E_EXT], "dE_cap_J": E1_cap - E0_cap,
+                       "dE_mag_J": E1_mag - E0_mag,
                        "E_arc_J": self.plant.E_arc, "dc_residual_J": dc_res, "machine_residual_J": m_res,
                        "relative_residual": max(abs(dc_res), abs(m_res)) / scale},
             "n_samples": int(len(t)),
             "zeno": dict(self.plant.zeno),
+            "criteria": list(self.criteria),
+            "system": self.sys.report() if self.sys is not None else None,
         }
 
 
@@ -1511,7 +2041,10 @@ class _Recorder:
 
     def __init__(self, sim: _Sim):
         self.sim = sim
-        self.d = {k: [] for k in self.KEYS}
+        self.extra = tuple(sim.sys.channels()) if sim.sys is not None else ()
+        if any(m.spec.kind in ("torque_window_signed", "torque_integral") for m in sim.mechs):
+            self.extra += ("tw_hi", "tw_lo", "tw_tol", "tw_int")
+        self.d = {k: [] for k in self.KEYS + self.extra}
         self.modes = []
         self.legs = []
 
@@ -1520,7 +2053,7 @@ class _Recorder:
         sim.hist.add(t, x)
         d = self.d
         if d["t"] and t <= d["t"][-1] + 1e-15:
-            for k in self.KEYS:                          # a discrete instant: the sample after it replaces the last
+            for k in self.KEYS + self.extra:             # a discrete instant: the sample after it replaces the last
                 d[k].pop()
             self.modes.pop()
             self.legs.pop()
@@ -1563,6 +2096,12 @@ class _Recorder:
         elif sim.sw_reaction in sim.s.strategies and sim.mcu_state != "reset":
             st = sim.strat.get("sw")
         d["strategy_step"].append(0 if st is None else -1 if st["fallback"] else st["k"] + 1)
+        if self.extra:
+            sim.t_now, sim.x_now = t, x
+            vals = sim.sys.sample(sim) if sim.sys is not None else {}
+            vals.update({f"tw_{k}": v for k, v in sim.tw_view.items()})
+            for k in self.extra:
+                d[k].append(float(vals.get(k, math.nan)))
         self.modes.append(tuple(modes))
         self.legs.append(tuple(c.kind for c in pl.cmd))
 

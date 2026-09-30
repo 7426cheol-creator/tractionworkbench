@@ -28,6 +28,8 @@ from .protection import KIND_PARAMS, REACTIONS, MechanismSpec, PathSpec, SafeSta
 from .safety import requirements_from_dict
 from .sensors import SensorSpec
 from .strategy import strategies_from
+from .system import system_from_dict
+from .vehicle import vehicle_from_dict
 
 TOPOLOGIES = ("two_level_vsi_star",)
 
@@ -59,7 +61,7 @@ def sensors_from(data: dict, tol: dict) -> tuple:
     for s in data.get("sensors") or []:
         name, kind = str(s["name"]), str(s["kind"])
         g = float(tol.get(f"{name}.gain_err", 0.0))
-        if kind == "current":
+        if kind in ("current", "dc_current"):
             off, q = float(tol.get(f"{name}.offset", 0.0)), _f(s, "quant_A", default=0.0)
             vr = tuple(s.get("valid_range_A") or (-math.inf, math.inf))
             lost = _f(s, "lost_value_A", default=0.0)
@@ -186,6 +188,8 @@ def validate_section(data: dict) -> None:
         if r not in known:
             raise InputValidationError(f"priority names {r!r}: neither a reaction nor a declared strategy",
                                        field="fault_sim.policy.priority")
+    if data.get("system"):
+        system_from_dict(data["system"])            # the declared system components parse
     if data.get("requirements"):
         reqs = requirements_from_dict(data["requirements"])
         mids = {m.mech_id for m in mechanisms_from(data)}
@@ -237,6 +241,41 @@ def vehicle_equivalent(project) -> dict | None:
                      f"{J / float(r) ** 2:.0f} kg"}
 
 
+def apply_additions(data: dict, additions: dict | None) -> dict:
+    """Scenario-level additions to the architecture data (a mechanism, a sensor, a path, a role that the project does
+    not declare, e.g. for a study): list sections get the item appended (or replaced by id / name), mappings updated."""
+    if not additions:
+        return data
+    data = copy.deepcopy(data)
+    for sec, val in additions.items():
+        if isinstance(val, list):
+            lst = data.setdefault(sec, [])
+            for it in val:
+                key = it.get("id") if isinstance(it, dict) else None
+                key = key if key is not None else (it.get("name") if isinstance(it, dict) else None)
+                idx = next((i for i, x in enumerate(lst) if isinstance(x, dict) and key is not None
+                            and key in (x.get("id"), x.get("name"))), None)
+                if idx is None:
+                    lst.append(copy.deepcopy(it))
+                else:
+                    lst[idx] = copy.deepcopy(it)
+        elif isinstance(val, dict):
+            node = data.setdefault(sec, {})
+            node.update(copy.deepcopy(val))
+        else:
+            data[sec] = copy.deepcopy(val)
+    return data
+
+
+def _deep_merge(base, patch):
+    if isinstance(base, dict) and isinstance(patch, dict):
+        out = dict(base)
+        for k, v in patch.items():
+            out[k] = _deep_merge(base.get(k), v) if k in base else copy.deepcopy(v)
+        return out
+    return copy.deepcopy(patch)
+
+
 def apply_overrides(data: dict, overrides: dict | None) -> dict:
     """Scenario-level design variants of the architecture data (sensitivity studies, candidate designs): dotted
     paths into the section, list items addressed by their id / name, e.g. ``mechanisms.SM-TQ.params.response_tau_ms``,
@@ -278,21 +317,39 @@ def apply_overrides(data: dict, overrides: dict | None) -> dict:
     return data
 
 
+def _system(data: dict, sc_in: dict):
+    """The system components of a scenario: its ``system`` merged over the project's declared ``system`` (``True``:
+    the project's as declared); none when the scenario does not ask for them."""
+    req = sc_in.get("system")
+    if req is None or req is False:
+        return None
+    base = copy.deepcopy(data.get("system") or {})
+    return system_from_dict(base if req is True else _deep_merge(base, req))
+
+
 def build_setup(product: ProductData, scenario: dict) -> tuple:
     """(SimSetup, RequirementSet, info) for one scenario on a product (project + resolved drive)."""
     from ...scenario import DcSourceLimits, Scenario
     project, drive = product.project, product.drive
     sc_in = dict(scenario or {})
     data = copy.deepcopy(project.data("fault_sim")) if project.has("fault_sim") else copy.deepcopy(FAULT_SIM_EXAMPLE)
+    data = apply_additions(data, sc_in.get("additions"))
     data = apply_overrides(data, sc_in.get("overrides"))
     validate_section(data)
     tol = dict(sc_in.get("tolerances") or {})
-    speed = float(sc_in.get("speed_rpm", 12000.0))
+    vs = vehicle_from_dict(sc_in.get("vehicle"))
+    if "speed_rpm" not in sc_in and vs is not None and (sc_in.get("vehicle") or {}).get("v0_kph") is not None:
+        speed = vs.machine_rpm(float(sc_in["vehicle"]["v0_kph"]) / 3.6)
+    else:
+        speed = float(sc_in.get("speed_rpm", 12000.0))
     dcs = project.data("dc_source")
     V_oc = float(sc_in.get("Voc_V") or dcs["Vdc_nominal_V"])
     tmag, twind = sc_in.get("magnet_temp_C"), sc_in.get("winding_temp_C")
     plant_sc = Scenario("faultsim", speed, V_oc, DcSourceLimits(), magnet_temp_C=tmag, winding_temp_C=twind)
-    m = MachineParams.from_drive(drive, plant_sc, J=_f(sc_in, "J_kgm2"), T_load=float(sc_in.get("T_load_Nm") or 0.0))
+    J = _f(sc_in, "J_kgm2")
+    if J is None and vs is not None:
+        J = vs.J_eq_machine()                       # the vehicle seen at the shaft (no road load in the run)
+    m = MachineParams.from_drive(drive, plant_sc, J=J, T_load=float(sc_in.get("T_load_Nm") or 0.0))
     for k, attr in (("machine.psi_scale", "psi"), ("machine.Ld_scale", "Ld"), ("machine.Lq_scale", "Lq"),
                     ("machine.Rs_scale", "Rs")):
         if k in tol:
@@ -373,7 +430,7 @@ def build_setup(product: ProductData, scenario: dict) -> tuple:
         bms=bms_d, active_discharge_delay_s=_f(dl, "active_discharge_delay_ms", 1e-3),
         identity={"project": project.label, "project_digest": project.digest(),
                   "fault_sim_from": "project" if project.has("fault_sim") else "built-in synthetic example"},
-        strategies=strategies_from(data))
+        strategies=strategies_from(data), system=_system(data, sc_in))
     setup.vehicle = vehicle_equivalent(project)
     reqs = requirements_from_dict(data.get("requirements") or {})
     info = {"architecture_basis": data.get("basis", ""), "policy_basis": setup.policy.basis,

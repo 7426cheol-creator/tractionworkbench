@@ -40,7 +40,7 @@ from ...modulation import duties as _duties
 from .sensors import unwrap_delta
 
 SQ3 = math.sqrt(3.0)
-COMMAND_FAULTS = ("stale", "value", "offset", "sign_flip", "loss")
+COMMAND_FAULTS = ("stale", "value", "offset", "sign_flip", "loss", "oscillation")
 RESTART_MODES = ("flying", "cold")
 
 
@@ -53,11 +53,12 @@ class CommandPath:
     fault: str | None = None
     value: float = 0.0
     t_fault: float = math.inf
+    freq_Hz: float = 20.0
 
-    def inject(self, t: float, mode: str, value: float = 0.0):
+    def inject(self, t: float, mode: str, value: float = 0.0, freq_Hz: float = 20.0):
         if mode not in COMMAND_FAULTS:
             raise InputValidationError(f"command fault must be one of {COMMAND_FAULTS}", field="fault.mode")
-        self.fault, self.value, self.t_fault = mode, float(value), t
+        self.fault, self.value, self.t_fault, self.freq_Hz = mode, float(value), t, float(freq_Hz)
 
     def newest(self, t: float, request) -> tuple[float | None, float]:
         """(payload of the newest arrived message, its send time); None when no message ever arrived."""
@@ -81,6 +82,8 @@ class CommandPath:
                 payload = payload + self.value
             elif self.fault == "sign_flip":
                 payload = -payload
+            elif self.fault == "oscillation":
+                payload = payload + self.value * math.sin(2.0 * math.pi * self.freq_Hz * (t_send - self.t_fault))
         return payload, t_send
 
 
@@ -189,7 +192,8 @@ class Controller:
     def __init__(self, cfg: ControlConfig, table: ReferenceTable):
         self.cfg, self.table = cfg, table
         self.int_d = self.int_q = 0.0
-        self.state = "run"             # run | frozen | reset | halted | starting
+        self.state = "run"             # run | frozen | reset | halted | starting | standby (software runs, no current
+        #                                control: a passive operating state of the system layer)
         self.reset_until = -math.inf
         self.duties = (0.5, 0.5, 0.5)
         self.theta_prev: float | None = None
@@ -242,8 +246,8 @@ class Controller:
             if t < self.reset_until:
                 return ControlOutput(None, False, {"state": "reset"})
             self.state = "halted"      # booted: the software decides (the reaction manager restarts or latches)
-        if self.state == "halted":
-            return ControlOutput(None, False, {"state": "halted"})
+        if self.state in ("halted", "standby"):
+            return ControlOutput(None, False, {"state": self.state})
         Ts = c.Ts
         if self.state == "starting":
             if self.theta_prev is None:
