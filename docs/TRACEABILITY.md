@@ -338,7 +338,40 @@ PR #5의 코드는 병합하지 않고 이 문서의 의미를 현재 코드 기
 | 4 | 모델 판정 vs 오차 예산에 강건 (y + Δ ≤ y_max, Δ의 출처) | 다섯째 판정 층 `robustness`(`analysis/error_budget.py`, `requirement_robustness`): 물리량별 최악 조합 합; 토크는 능력 여유(충족은 witness·불충족은 인증 상한), 상전류·DC 전력·DC 전류·명령 전압은 운전점의 한계 여유(`constraint_robustness`; 약계자 전압 한계는 토크 쪽으로); 판정 불변; 판정 화면 입력·배너·해석·기록 | `test_a_limit_margin_is_compared_with_its_declared_error_in_its_own_unit`(의견의 500 A·488 A·±20 A 예), `test_the_limits_at_the_witness_join_the_torque_margin_in_one_statement`, `test_the_guarded_rule_on_the_capability_margin`, `test_the_layer_never_changes_the_model_verdict` 외 | implemented; 요구 묶음·열·PWM 한계 확장 remaining |
 | 4 | 한정자 의미(대역 ∃, 범위 ∀)를 입력·결과에 | 판정 폼의 토크 해석(achieve/band)과 "판정할 질문", 결과의 "판정한 질문", 기록 `quantifiers` | `test_the_quantifiers_are_written_out_in_the_record_and_the_reading`, `test_the_form_states_the_question_and_sends_the_band_and_the_error_budget` | implemented |
 
-## 16. 비목표 (handoff §15, 추가 명세 비목표)
+## 16. 공학 리뷰 2 (기준 63a2b61: 본 보고서 F-01…F-19·P3, DC 전원·DC-link 하위 F1…F12, 열 하위 F1…F11)
+
+리뷰는 로직 검토 반영(§15) 이전 판을 보았으므로 모든 지적을 리뷰어 스크립트로 b9fb69c에서 다시 재현한 뒤 판단했습니다. 타당한
+지적은 반영했고, 더 나은 방법이 있으면 그 방법으로 진행했으며(표의 "구현"에 이유), 상세 설명은 `docs/LOGIC_REVIEW.html` §19에
+있습니다. 회귀 시험은 `tests/test_engineering_review_63a2b61.py`에 있습니다.
+
+| 항목 | 의견 | 구현 | 확인 | 상태 |
+|---|---|---|---|---|
+| F-04 (하위 F1) | 회생 OCV를 OCV에서 판정 → 거짓 FAIL(−203.72 N·m, 10/30 mΩ) | `resolve_terminal_voltage`: 수동성 상한 V_hi에서 시작하는 단조 반복(I² 손실에서 f(V) 단조 → 가장 큰 고정점), 604.04/611.99 V에서 PASS; 해가 없으면 드라이브 쪽은 V_hi에서 표시, 그 위반은 결정적이지 않음(`_not_decisive`) | `test_f04_regeneration_is_resolved_above_the_ocv_where_the_point_exists`, `test_an_unresolved_source_never_turns_a_drive_side_violation_into_a_fail` | fixed |
+| F-14 (하위 F2) | 증명 가능한 구동 FAIL이 UNKNOWN(350 mΩ: 455 V < 479.6 V) | 반복점에 정책점이 없거나 판별식 음수면 NO_SOLUTION(단조성이 있을 때만) | `test_f14_a_motoring_request_the_source_cannot_carry_is_a_proven_fail`, `test_without_the_i2_form_leaving_the_existence_set_proves_nothing` | fixed |
+| 하위 F3 | Picard에 괄호·이력 없음 | 반복 이력·수축률·고정점 문구 기록 | `test_the_iteration_records_its_history_and_conditioning` | implemented |
+| F-01 | 자속맵 정책 UNKNOWN 띠(B&B 절대 간격) | 결과로 인증: [lb, found]의 I² 구간 양 끝이 같은 판정이면 구간 전체(P_dc가 I²에 단조), DC 한계를 가로지르면 UNKNOWN | `test_f01_an_uncertified_map_point_is_decided_by_its_consequence`, `test_f01_the_status_is_monotone_in_torque_and_the_capability_scan_has_no_unknown_swath`, `test_f01_a_bracket_that_straddles_a_dc_limit_stays_unknown` | fixed |
+| F-02 | 말하지 않은 온도를 기준 온도에서 판정 | 선언 법칙의 모든 온도(∀): 권선은 구동에서 최대 Rs 인증서(`winding_law_certificate`), 그 외 표본(FEASIBLE → UNKNOWN(SAMPLED_COVERAGE)); 판정 폼 권선 온도, 기록·해석의 한정자 | `test_f02_a_request_that_fails_hot_is_no_longer_a_pass_at_the_reference_temperature`, `test_f02_motoring_is_certified_from_the_largest_rs_and_regen_stays_sampled`, `test_f02_the_worst_end_certificate_holds_numerically`, `test_f02_a_stated_temperature_is_judged_at_that_temperature_only` | fixed |
+| F-03 | 손실 제한 여유의 민감도 없음 | `analysis/margin_sensitivity.py`: DC 한계로 정해진 여유에 손실 예산(W)과 파라미터 손익분기(한 스텝 유한차분), 기록·해석·Markdown 표; 판정 불변 | `test_f03_the_flagship_margin_is_stated_as_a_loss_budget_and_break_even_changes`, `test_f03_a_current_limited_margin_carries_no_loss_sensitivity`, `test_f03_the_markdown_record_has_the_sensitivity_table` | implemented |
+| F-15 | 조건 없는 rating envelope이 FEASIBLE | `open_conditions`: 필요한 조건이 없거나 무관 선언이 없으면 UNKNOWN(APPLICABILITY_UNCONFIRMED) + 요구 층 미결 항목 | `test_f15_a_condition_less_envelope_is_not_a_duration_pass_at_any_condition`, `test_f15_stated_or_declared_irrelevant_conditions_restore_the_envelope`, `test_case_file_rating_fields_and_the_decision_record` | fixed |
+| F-17 | 효율 맵 = 모델 효율 | `MODEL_EFFICIENCY`를 점·지도·미션·A/B 결과, 그림 제목, 해석에 | `test_f17_efficiency_results_are_labelled_model_efficiency` | implemented |
+| F-18 | 구간 분석: 모든 모서리 통과여도 UNKNOWN | `vertex_certificate`: 고정점의 게이트 양이 파라미터마다 아핀·볼록·단조 → 꼭짓점이 최악; 고정 캘리브레이션 FEASIBLE, 토크를 움직이는 파라미터가 없으면 공통 운전점으로 적응형도 FEASIBLE | `test_f18_all_corners_passing_is_a_proof_where_the_vertex_certificate_applies`, `test_f18_a_common_witness_settles_the_adaptive_claim_when_the_nominal_calibration_fails`, `test_f18_the_certified_point_holds_inside_the_box` 외 2 | implemented; 토크를 움직이는 파라미터의 적응형 claim remaining |
+| F-19 | 충전 한계 제동 능력에 witness 없음(seed 2·3) | `_verify`: id 고정, iq를 정확한 가능 구간 안쪽으로(원점 쪽 당김은 대체) | `test_f19_a_witness_on_a_charge_limit_edge_is_moved_inside_not_lost` | fixed |
+| F-05 (열 F1) | 지속시간이 Rs(T) 무시 | 법칙·되먹임이 관련되면 반복 부하 엔진으로 결합(`_coupled_duration`), 가용 토크는 뜨거운 모서리 손실 상한 | `test_f05_a_declared_rs_law_makes_the_duration_claim_self_consistent`, `test_f05_availability_with_the_law_is_bounded_at_the_hot_corner` | fixed |
+| F-06 (열 F2) | 반복 부하 조기 종료·지평 단축 | 주기 정상상태 먼저, 지평 전체(도달 후 반복), 주기 초과를 claim에 | `test_f06_the_requested_horizon_is_never_truncated`, `test_f06_a_periodic_exceedance_is_part_of_the_claim`, `test_f06_a_run_that_reaches_the_periodic_state_repeats_it_for_the_rest_of_the_horizon` | fixed |
+| F-07 (열 F3) | 검증 안 된 모델이 되먹임으로 INFEASIBLE | 정지는 t = 0 또는 적격 모델일 때만 결정적 | `test_f07_an_unqualified_model_never_proves_a_violation_through_its_own_temperature_estimate` | fixed |
+| F-08 (열 F4) | 열원 감시를 첫 단계만 | 모든 단계 손실의 합집합 + 뜨거운 모서리 | `test_f08_heat_source_coverage_is_checked_over_every_phase` | fixed |
+| F-11 (열 F6) | 되먹임 스텝 지연 | Heun 예측-수정(2차) | `test_f11_the_feedback_step_is_second_order` | fixed |
+| F-13 (열 F7) | 열 판정 허용 대역 | 선언된 `uncertainty_K`(근거 필수) 안은 UNKNOWN(BOUNDARY_WITHIN_TOLERANCE), 없으면 한정어 | `test_f13_a_margin_inside_the_declared_uncertainty_is_not_decided` | implemented |
+| F-12 | 교차 탐색 다봉 | 이미 반영(§15의 2.3) | 기존 회귀 시험 | already fixed |
+| 열 F5·F10·F11 | 가용 토크 적격 문구, 냉각수 단순화 보고, 기타(None → NaN, 휴지 창) | 손실을 넘겨 같은 적격 규칙, 물성 평가 온도·클램프·스테이션 없는 노드 보고, 421점 탐색 | `test_thermal_f5_…`, `test_thermal_f10_…`, `test_thermal_f11_…` | fixed |
+| F-09 (하위 F4) | UCG 위 차단 과전압 FEASIBLE | 반응 경로 입력(freewheel → INFEASIBLE, 미지정 → UNKNOWN(COUPLED_MODEL_REQUIRED), ASC → 수지), 전압 한계 유입 전력으로 V_peak 상한 | `test_f09_above_the_ucg_speed_the_reaction_path_decides`, `test_f09_the_inflow_is_bounded_at_the_voltage_limit` | fixed |
+| 하위 F5 | 음의 허용 반응 시간 | 0으로 자르고 램프만의 위반은 증명된 위반, 허용 최대 램프 | `test_f5_a_ramp_longer_than_the_headroom_is_a_proven_violation_not_a_negative_time` | fixed |
+| F-10 (하위 F6·F9) | ESR 게이트가 FFT 길이를 잼, 게이트는 I_inv | 모델 대역에 맞춘 샘플 수 + 에너지 기준(표 밖 전류 제곱 ≤ 5 %면 최대 ESR로 실음), 결과가 요청 샘플 수와 무관 | `test_f10_the_esr_gate_follows_energy_not_the_fft_length`, `test_f10_the_result_does_not_depend_on_the_requested_samples_per_carrier`, `test_f10_a_table_that_misses_the_switching_band_still_gates` | fixed |
+| F-16 (하위 F7) | 요구 수명 없이 수명 FEASIBLE | 요구 수명 필수(없으면 UNKNOWN(REQUIREMENT_INCOMPLETE)), 전압 점검은 Vdc + 리플 피크 | `test_f16_an_expected_life_is_not_a_pass_without_a_required_life` | fixed |
+| 하위 F12, P3 | 거짓 정밀도 | `units.shown`: 물리량 종류별 표시 자릿수; 커패시터 손실·hotspot 샘플링 분해능 | `test_f12_model_limited_quantities_are_shown_at_the_precision_the_model_supports`, `test_f12_the_capacitor_loss_and_hotspot_carry_their_sampling_resolution`, `test_f12_terminal_voltage_text_is_rounded_the_value_is_not` | implemented |
+| P3 | DPWM1 지원 불일치 | 모든 펄스 패턴 소비자가 `MODULATIONS`와 `duties`를 공유, 클램프 레그를 레일에 정확히 | `test_p3_dpwm1_is_accepted_by_every_pulse_pattern_consumer_and_matches_a_brute_force_ripple`, `test_p3_the_clamped_leg_sits_exactly_on_its_rail` | fixed |
+
+## 17. 비목표 (handoff §15, 추가 명세 비목표)
 
 generic motor CAD/FEA 복제, 정적 ASC로 demag/SOA 승인, 일반 IGBT 식으로 SiC 수명 보증, 드라이버 typical delay로 ASIL 승인,
 class 번호로 EMC 합격률, 평균 dq로 NVH/베어링/MHz 임피던스, 생산 anti-jerk 제어기 자동 납품, 보편 안정성 인증서,

@@ -117,7 +117,7 @@ class PwmDrivelinePage(QWidget):
                             (tr("전력변환 페이지 모듈", "power page module"), "power")], "igbt")
         self.p_rth = number(ex["Rth_K_per_W"], 0.001, 10, "K/W", 4, 0.01)
         self.p_cool = number(ex["coolant_C"], -40, 120, "°C", 1, 5)
-        self.p_mdl = combo([("SVPWM", "svpwm"), ("SPWM", "spwm")], ex["modulation"])
+        self.p_mdl = combo([("SVPWM", "svpwm"), ("SPWM", "spwm"), ("DPWM1", "dpwm1")], ex["modulation"])
         self.p_lhf = number(ex["L_hf_uH"], 1, 1e5, "µH", 1, 10, tip=tr("캐리어 주파수에서의 차동 인덕턴스 (선언)",
                                                                       "differential inductance at the carrier (declared)"))
         self.p_base = number(ex["baseline_fsw_kHz"], 0.5, 200, "kHz", 2, 1)

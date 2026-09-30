@@ -13,12 +13,13 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as _replace
 
 import numpy as np
 
 from . import __version__, progress
 from .analysis.error_budget import ErrorBudget, aggregate_robustness, constraint_robustness, torque_robustness
+from .analysis.margin_sensitivity import loss_limited_margin
 from .analysis.rating import RatingEnvelope, duration_claim
 from .identity import content_sha256, implementation
 from .models.components import DriveModel, RotationalLossModel
@@ -29,6 +30,7 @@ from .settings import DEFAULT_SETTINGS, NumericalSettings
 from .solvers.capability import CapabilityResult, physical_capability, policy_capability
 from .solvers.policy import POLICY_TEXT, PolicyEvaluator, PolicySolution
 from .status import Aggregate, Claim, Evidence, EvidenceKind, Reason, Status, aggregate_and
+from .units import shown
 
 
 def jsonable(x):
@@ -132,6 +134,7 @@ class DecisionRecord:
     source_coupling: dict = field(default_factory=dict)
     robustness: dict = field(default_factory=dict)     # model margin vs the declared error budget (never the verdict)
     iron_loss_scope: tuple = ()                        # field-weakening witnesses: what rests on the loss model
+    margin_sensitivity: dict = field(default_factory=dict)   # loss-limited margin: loss budget + break-even changes
 
     @property
     def layers(self) -> dict:
@@ -159,6 +162,7 @@ class DecisionRecord:
             "conditions": [c.to_dict() for c in self.conditions],
             "vdc_range_certificates": list(self.range_certificates),
             **({"source_coupling": self.source_coupling} if self.source_coupling else {}),
+            **({"margin_sensitivity": self.margin_sensitivity} if self.margin_sensitivity else {}),
             "limiting_factors": list(self.limiting_factors),
             "next_actions": list(self.next_actions),
             "not_evaluated": list(self.unevaluated),
@@ -230,7 +234,7 @@ def claim_layers(req: Requirement, drive: DriveModel, conditions, verdict: Aggre
         if acc and not acc.get("passed", True):
             acc_ok = False
         mc = dict(sol.certificates).get("minimum_current")
-        if mc and not mc.get("certified"):
+        if mc and not mc.get("certified") and not mc.get("decided_by_consequence"):
             cert_ok = False
     v_cert = bool(certificates) and all(c.get("applies") for c in certificates)
     sampled = (any(Reason.SAMPLED_COVERAGE in c.requirement_claim.reasons for c in conditions)
@@ -253,8 +257,15 @@ def claim_layers(req: Requirement, drive: DriveModel, conditions, verdict: Aggre
                           "denser analysis")
     if req.operator == "band":
         open_items.append("band requirement: existence of one torque inside the band (not tracking of every torque)")
+    from .models.flux import FluxMapModel
+    law_m = not isinstance(drive.motor.flux, FluxMapModel)
+    if any("/winding" in cr.scenario.scenario_id for cr in conditions):
+        open_items.append("winding temperature not stated: examined for all temperatures of the declared Rs law "
+                          "(for-all)")
     if any("/magnet" in cr.scenario.scenario_id for cr in conditions):
-        open_items.append("magnet temperature not stated: examined for all flux-map temperatures (for-all)")
+        open_items.append("magnet temperature not stated: examined for all temperatures of the declared psi_PM law "
+                          "(for-all, sampled)" if law_m else
+                          "magnet temperature not stated: examined for all flux-map temperatures (for-all)")
     if source_coupling:
         src = source_coupling.get("source") or {}
         open_items.append(f"Vdc stated as battery OCV: judged at the inverter terminal voltage of a declared Thevenin "
@@ -262,11 +273,20 @@ def claim_layers(req: Requirement, drive: DriveModel, conditions, verdict: Aggre
                           f"the source model's own validity (SOC, temperature, current) is part of the answer")
     quant = req.quantifiers()
     temps = sorted({cr.scenario.magnet_temp_C for cr in conditions if cr.scenario.magnet_temp_C is not None})
-    quant["magnet"] = (f"for all: every flux-map magnet temperature examined ({', '.join(f'{t:g}' for t in temps)} "
-                       f"degC)" if len(temps) > 1 and req.magnet_temp_C is None else
+    quant["magnet"] = ((f"for all: every magnet temperature of the declared psi_PM law, sampled at "
+                        f"{', '.join(f'{t:g}' for t in temps)} degC" if law_m else
+                        f"for all: every flux-map magnet temperature examined ({', '.join(f'{t:g}' for t in temps)} "
+                        f"degC)") if len(temps) > 1 and req.magnet_temp_C is None else
                        f"at {req.magnet_temp_C:g} degC (stated)" if req.magnet_temp_C is not None else
                        f"at {temps[0]:g} degC (scenario)" if temps else
                        "not stated: the model's reference or single flux-map plane")
+    wtemps = sorted({cr.scenario.winding_temp_C for cr in conditions if "/winding" in cr.scenario.scenario_id})
+    quant["winding"] = (f"at {req.winding_temp_C:g} degC (stated)" if req.winding_temp_C is not None else
+                        (f"for all: every winding temperature of the declared Rs law ("
+                         + ("worst end " if len(wtemps) == 1 else "sampled at ")
+                         + f"{', '.join(f'{t:g}' for t in wtemps)} degC)") if wtemps else
+                        "not stated: the model's Rs as supplied (no Rs temperature law declared)"
+                        if drive.motor.rs_temperature is None else "stated in the scenario")
     unconf = sorted({q for cr in conditions if cr.duration is not None for q in cr.duration.qualifiers
                      if q.startswith("applicability to this product")})
     if unconf:
@@ -311,10 +331,11 @@ def _condition_points(req: Requirement, samples: int) -> tuple[list[float], bool
 
 
 def _scenario_for(req: Requirement, base: Scenario | None, limits: DcSourceLimits | None, vdc: float,
-                  magnet_temp_C: float | None = None) -> Scenario:
+                  magnet_temp_C: float | None = None, winding_temp_C: float | None = None) -> Scenario:
     kw = dict(
-        scenario_id=f"{req.req_id}@{req.speed_rpm:g}rpm/{vdc:g}V" + ("" if magnet_temp_C is None
-                                                                      else f"/magnet {magnet_temp_C:g}C"),
+        scenario_id=f"{req.req_id}@{req.speed_rpm:g}rpm/{vdc:g}V" + ("" if winding_temp_C is None
+                                                                      else f"/winding {winding_temp_C:g}C")
+        + ("" if magnet_temp_C is None else f"/magnet {magnet_temp_C:g}C"),
         speed_rpm=req.speed_rpm,
         Vdc_V=vdc,
         winding_temp_C=req.winding_temp_C,
@@ -332,6 +353,8 @@ def _scenario_for(req: Requirement, base: Scenario | None, limits: DcSourceLimit
         kw["description"] = base.description
     if magnet_temp_C is not None:
         kw["magnet_temp_C"] = float(magnet_temp_C)
+    if winding_temp_C is not None:
+        kw["winding_temp_C"] = float(winding_temp_C)
     return Scenario(source_limits=limits or DcSourceLimits(), **kw)
 
 
@@ -345,6 +368,21 @@ def _magnet_points(req: Requirement, drive: DriveModel, base: Scenario | None, s
     from .models.flux import FluxMapModel
     stated = req.magnet_temp_C if req.magnet_temp_C is not None else (None if base is None else base.magnet_temp_C)
     flux = drive.motor.flux
+    m = drive.motor
+    if stated is None and not isinstance(flux, FluxMapModel) and m.psi_temperature is not None \
+            and m.reference_magnet_temp_C is not None:
+        # a declared psi_PM(T) law: the model's answer depends on a temperature the requirement does not state -
+        # for all temperatures of the law, like the planes of a map (engineering review 2 of 63a2b61, F-02); the
+        # law is continuous and psi_PM moves both the torque per ampere and the back-EMF, so no end is the worst
+        # case in general: the range is sampled (ends + reference), never certified
+        dep, ref = m.psi_temperature, m.reference_magnet_temp_C
+        pts = _law_points(dep, ref)
+        note = (f"magnet temperature not stated: examined for ALL magnet temperatures of the declared psi_PM law "
+                f"({dep.valid_C[0]:g}..{dep.valid_C[1]:g} degC) at {', '.join(f'{t:g}' for t in pts)} degC (the ends "
+                f"and the reference); psi_PM changes both the torque per ampere and the back-EMF, so the continuous "
+                f"range is sampled, not certified - state the magnet temperature if the requirement applies at one "
+                f"temperature only")
+        return pts, True, note
     if stated is not None or not isinstance(flux, FluxMapModel) or len(flux.planes) < 2:
         return [None], False, ""
     temps = sorted(float(pl.magnet_temp_C) for pl in flux.planes if pl.magnet_temp_C is not None)
@@ -361,6 +399,82 @@ def _magnet_points(req: Requirement, drive: DriveModel, base: Scenario | None, s
                 f"degC" if sampled else "; no interpolation declared: the model has no other temperatures")
             + ") - state the magnet temperature if the requirement applies at one temperature only")
     return pts, sampled, note
+
+
+def _law_points(dep, ref: float | None) -> list[float]:
+    lo, hi = (float(x) for x in dep.valid_C)
+    return sorted({lo, hi} | ({float(ref)} if ref is not None and lo <= ref <= hi else set()))
+
+
+def _motoring(req: Requirement) -> bool:
+    """Every requested shaft torque has the sign of the speed (or standstill) - so P_em >= 0 on the torque curve."""
+    if req.operator == "band":
+        ts = (req.target_Nm - req.band_Nm, req.target_Nm + req.band_Nm)
+        return all(t * req.speed_rpm >= 0 for t in ts) and not (ts[0] <= 0.0 <= ts[1] and req.speed_rpm != 0)
+    return req.target_Nm != 0 and req.target_Nm * req.speed_rpm >= 0
+
+
+def winding_law_certificate(req: Requirement, drive: DriveModel, worst_C: float) -> dict:
+    """Sufficient condition for an unstated winding temperature: the largest Rs of the declared law is the worst case.
+
+    At a fixed operating point |v_cmd|^2 = |(Rs + R_drop) i + j w psi|^2 has d/dRs = 2 (v . i) + 2 R_drop I^2 =
+    (4/3) P_ac + 2 R_drop I^2, and P_dc = P_ac + P_inv has d/dRs = 1.5 I^2; current, domain and torque do not depend
+    on Rs.  For a motoring request P_ac = T_em w_m + P_cu >= 0 at EVERY point of the torque curve (T_em = T_shaft +
+    tau_rot, passive drag), so every constraint only tightens as Rs grows: the feasible set shrinks.  The
+    minimum-current point at a smaller Rs then has no more current, and with the I^2-form inverter loss no more P_dc.
+    So the static claim at the largest Rs holds at every smaller Rs of the law (and a violation at the smallest Rs
+    holds at every larger one).  Regeneration (P_ac changes sign on the curve), a pointwise module loss or a duration
+    are outside it."""
+    from .models.components import LOSS_QUADRATIC
+    inv = drive.inverter
+    checks = []
+
+    def chk(name, ok, detail):
+        checks.append({"condition": name, "holds": bool(ok), "detail": detail})
+    chk("static motoring request (torque and speed of one sign, or standstill): P_ac >= 0 on the whole torque curve",
+        _motoring(req), f"{req.target_Nm:g} N*m at {req.speed_rpm:g} rpm")
+    quad = inv.module_loss is None and (inv.loss is None or (inv.loss_kind == LOSS_QUADRATIC and
+                                                           inv.loss.ipk2_coeff_W_per_A2 >= 0))
+    chk("inverter loss of the I^2 form a0 + a2 I^2 (or none)", quad,
+        "datasheet module loss (pointwise)" if inv.module_loss is not None else "I^2 form")
+    rot = drive.motor.rotational_loss
+    chk("speed-only rotational loss (the torque curve does not move with Rs)",
+        rot is None or isinstance(rot, RotationalLossModel), "speed-only" if rot is not None else "none")
+    chk("static requirement (a duration is not covered)", req.duration_s is None,
+        "static" if req.duration_s is None else req.duration_text())
+    ok = all(c["holds"] for c in checks)
+    return {"applies": ok, "worst_C": worst_C, "checks": checks,
+            "statement": (f"motoring: d|v|^2/dRs = (4/3) P_ac >= 0 and dP_dc/dRs = 1.5 I^2 at every point of the "
+                          f"torque curve, so the largest Rs ({worst_C:g} degC) is the worst case for every constraint "
+                          f"- the static claim there holds for the whole law range")}
+
+
+def _winding_points(req: Requirement, drive: DriveModel, base: Scenario | None) -> tuple[list, bool, str, dict | None]:
+    """Winding temperatures to examine -> (points, sampled, note, certificate).  A requirement without a winding
+    temperature on a drive that declares an Rs(T) law is examined for all temperatures of the law (engineering review
+    2 of 63a2b61, F-02): at the worst end only when ``winding_law_certificate`` holds, else at the ends and the
+    reference (sampled).  [None] = no expansion."""
+    stated = req.winding_temp_C if req.winding_temp_C is not None else (None if base is None else base.winding_temp_C)
+    m = drive.motor
+    dep, ref = m.rs_temperature, m.reference_winding_temp_C
+    if stated is not None or dep is None or ref is None:
+        return [None], False, "", None
+    lo, hi = (float(x) for x in dep.valid_C)
+
+    def rs(t):
+        return m.Rs_ohm * (1.0 + dep.coeff_per_K * (t - ref))
+    worst = hi if rs(hi) >= rs(lo) else lo
+    cert = winding_law_certificate(req, drive, worst)
+    law = f"the declared Rs law ({lo:g}..{hi:g} degC, {dep.basis})"
+    if cert["applies"]:
+        return [worst], False, (f"winding temperature not stated: examined for ALL winding temperatures of {law}: "
+                                + cert["statement"]), cert
+    pts = _law_points(dep, ref)
+    failed = "; ".join(c["condition"] for c in cert["checks"] if not c["holds"])
+    return pts, True, (f"winding temperature not stated: examined for ALL winding temperatures of {law} at "
+                       f"{', '.join(f'{t:g}' for t in pts)} degC; no worst-end certificate ({failed}): the continuous "
+                       f"range is sampled - state the winding temperature if the requirement applies at one "
+                       f"temperature only"), cert
 
 
 def vdc_range_certificate(req: Requirement, drive: DriveModel, low: "ConditionResult") -> dict:
@@ -382,11 +496,7 @@ def vdc_range_certificate(req: Requirement, drive: DriveModel, low: "ConditionRe
 
     def chk(name, ok, detail):
         checks.append({"condition": name, "holds": bool(ok), "detail": detail})
-    if req.operator == "band":
-        ts = (req.target_Nm - req.band_Nm, req.target_Nm + req.band_Nm)
-        motoring = all(t * req.speed_rpm >= 0 for t in ts) and not (ts[0] <= 0.0 <= ts[1] and req.speed_rpm != 0)
-    else:
-        motoring = req.target_Nm != 0 and req.target_Nm * req.speed_rpm >= 0
+    motoring = _motoring(req)
     chk("static motoring request (torque and speed of one sign, or standstill)", motoring,
         f"{req.target_Nm:g} N*m at {req.speed_rpm:g} rpm" + (f" (band +/-{req.band_Nm:g} N*m)"
                                                             if req.operator == "band" else ""))
@@ -522,8 +632,9 @@ def _limiting_and_actions(req: Requirement, results: list[ConditionResult], samp
 
     for cr in results:
         sol = cr.primary                     # the accepted witness when a band found one (review R2 D-R2-03)
-        tag = f"[Vdc={cr.scenario.Vdc_V:g} V" + (f", magnet {cr.scenario.magnet_temp_C:g} degC"
-                                                 if "/magnet" in cr.scenario.scenario_id else "") + "]"
+        tag = (f"[Vdc={cr.scenario.Vdc_V:g} V" + (f", winding {cr.scenario.winding_temp_C:g} degC"
+                                                  if "/winding" in cr.scenario.scenario_id else "")
+               + (f", magnet {cr.scenario.magnet_temp_C:g} degC" if "/magnet" in cr.scenario.scenario_id else "") + "]")
         rc = cr.rejected_centre
         if rc is not None:
             add(limiting, f"{tag} band centre {rc.T_request_Nm:g} N*m is {rc.policy_claim.status.value} (rejected "
@@ -550,7 +661,7 @@ def _limiting_and_actions(req: Requirement, results: list[ConditionResult], samp
                     f"the request exceeds the policy capability by {-m:.4g} N*m") +
                     ": the limit is voltage/DC, not current")
         if cr.capability is not None and cr.capability.witness is not None and cr.capability.accepted:
-            add(limiting, f"{tag} policy capability {cr.capability.value_Nm:.6g} N*m limited by: "
+            add(limiting, f"{tag} policy capability {shown(cr.capability.value_Nm, 'capability')} N*m limited by: "
                           f"{', '.join(cr.capability.active_constraints) or 'n/a'}")
         elif cr.capability is not None and cr.capability.gate_messages:
             add(limiting, f"{tag} policy capability not established (diagnostic only): "
@@ -648,8 +759,9 @@ def iron_loss_scope(drive: DriveModel, k, pt, torque_margin_Nm: float | None) ->
             "dc_margin_W": dc_w, "Nm_per_kW": nm_per_kw, "statement": text}
 
 
-def _condition_tag(sc: Scenario, several_magnets: bool) -> str:
-    return f"Vdc {sc.Vdc_V:g} V" + (f" / magnet {sc.magnet_temp_C:g} degC" if several_magnets else "")
+def _condition_tag(sc: Scenario, several_magnets: bool, several_windings: bool = False) -> str:
+    return (f"Vdc {sc.Vdc_V:g} V" + (f" / winding {sc.winding_temp_C:g} degC" if several_windings else "")
+            + (f" / magnet {sc.magnet_temp_C:g} degC" if several_magnets else ""))
 
 
 def requirement_robustness(req: Requirement, results, budget: ErrorBudget | None, *, sampled: bool = False,
@@ -665,6 +777,7 @@ def requirement_robustness(req: Requirement, results, budget: ErrorBudget | None
     else:
         edge, edge_basis = req.target_Nm, f"the requested torque {req.target_Nm:g} N*m"
     several = len({cr.scenario.magnet_temp_C for cr in results}) > 1
+    several_w = any("/winding" in cr.scenario.scenario_id for cr in results)
     source_reason = ("the capability is evaluated at the terminal voltage resolved for the target torque; with the "
                      "declared source the terminal voltage moves with the torque, so this margin is not the coupled "
                      "system's margin")
@@ -684,7 +797,7 @@ def requirement_robustness(req: Requirement, results, budget: ErrorBudget | None
         if source_coupled and r["robust"] is not None:
             r = {**r, "robust": None, "status": "NOT_ESTABLISHED_SOURCE", "reason": source_reason}
         per.append(r)
-        names.append(_condition_tag(cr.scenario, several))
+        names.append(_condition_tag(cr.scenario, several, several_w))
         # the declared limit errors at a witness that meets the requirement (y + Delta <= y_max per limit)
         wit_ok = (cr.witness_torque_Nm is not None if req.operator == "band"
                   else cr.solution.policy_claim.status is Status.FEASIBLE)
@@ -726,6 +839,43 @@ def requirement_robustness(req: Requirement, results, budget: ErrorBudget | None
             "tolerance needs no budget line"}
 
 
+def _loss_limited_sensitivity(req: Requirement, drive: DriveModel, results, settings, several=(False, False)):
+    """The governing loss-limited FEASIBLE condition's loss budget and break-even parameter changes (engineering
+    review 2 of 63a2b61, F-03); None when no FEASIBLE condition is limited by a DC limit."""
+    if req.operator == "band":
+        edge = req.target_Nm - req.band_Nm if req.direction > 0 else req.target_Nm + req.band_Nm
+    else:
+        edge = req.target_Nm
+    best = None
+    for cr in results:
+        cap = cr.capability
+        if cr.requirement_claim.status is not Status.FEASIBLE or cap is None or not cap.accepted:
+            continue
+        if not any(a.startswith("DC_") for a in cap.active_constraints or ()):
+            continue
+        m = req.direction * (cap.value_Nm - edge)
+        if best is None or m < best[0]:
+            best = (m, cr)
+    if best is None:
+        return None
+    cr = best[1]
+    with progress.span(1, "margin sensitivity (loss-limited)") as steps:
+        steps.step()
+        out = loss_limited_margin(drive, cr.scenario, req.direction, edge, cr.capability, cr.primary.point, settings)
+    if out is None:
+        return None
+    return {"condition": _condition_tag(cr.scenario, *several), **out}
+
+
+def _not_decisive(c: Claim) -> Claim:
+    if c.status is not Status.INFEASIBLE:
+        return c
+    note = ("terminal voltage not resolved: a violation at the highest terminal voltage an operating point can see "
+            "is not decisive")
+    return _replace(c, status=Status.UNKNOWN, reasons=(Reason.COUPLED_MODEL_REQUIRED,),
+                    qualifiers=tuple(dict.fromkeys((*c.qualifiers, note))), detail=f"{c.detail} ({note})")
+
+
 def evaluate_requirement(req: Requirement, drive: DriveModel, *, scenario: Scenario | None = None,
                          source_limits: DcSourceLimits | None = None, ratings: tuple[RatingEnvelope, ...] = (),
                          settings: NumericalSettings = DEFAULT_SETTINGS, range_samples: int = 5,
@@ -737,16 +887,17 @@ def evaluate_requirement(req: Requirement, drive: DriveModel, *, scenario: Scena
     declared error the torque margin is compared with (a separate layer - the verdict never changes)."""
     vdcs, sampled_v = _condition_points(req, range_samples)
     mags, sampled_t, mag_note = _magnet_points(req, drive, scenario, range_samples)
-    sampled = sampled_v or sampled_t
+    winds, sampled_w, wind_note, wind_cert = _winding_points(req, drive, scenario)
+    sampled = sampled_v or sampled_t or sampled_w
     results: list[ConditionResult] = []
     product = ({"drive_id": drive.drive_id, "drive_revision": drive.revision,
                 "drive_content_sha256": content_sha256(drive)} if ratings else None)
-    points = [(v, t) for t in mags for v in vdcs]
+    points = [(v, w, t) for w in winds for t in mags for v in vdcs]
     iron = []
     with progress.span(len(points), "operating conditions") as steps:
-        for vdc, mag in points:
+        for vdc, wind, mag in points:
             steps.step()
-            sc = _scenario_for(req, scenario, source_limits, vdc, mag)
+            sc = _scenario_for(req, scenario, source_limits, vdc, mag, wind)
             ev = PolicyEvaluator(drive, sc, settings)
             sol = ev.solve(req.target_Nm)
             cap = None
@@ -760,22 +911,31 @@ def evaluate_requirement(req: Requirement, drive: DriveModel, *, scenario: Scena
             fw = iron_loss_scope(drive, ev.k, (wit_sol or sol).point, margin)
             if fw is not None:
                 iron.append((len(results) - 1, fw))
+    if (source_coupling or {}).get("status") == "NOT_RESOLVED":
+        # the drive side is shown at the highest terminal voltage an operating point can see; with the terminal
+        # voltage not resolved a violation there is not decisive (e.g. a regen charge limit loosens as the voltage
+        # falls): never a FAIL from it (engineering review 2 of 63a2b61, F-04)
+        results = [_replace(r, requirement_claim=_not_decisive(r.requirement_claim)) for r in results]
     agg = aggregate_and([*(r.requirement_claim for r in results), *extra_claims])
-    qualifiers = [mag_note] if mag_note else []
+    qualifiers = [q for q in (wind_note, mag_note) if q]
     certificates = []
-    if sampled_v:                          # a Vdc range: the monotonicity certificate per magnet temperature
-        for mag in mags:
-            group = [r for r in results if r.scenario.magnet_temp_C == mag or mag is None]
-            certificates.append({"magnet_temp_C": mag, **vdc_range_certificate(req, drive, group[0])})
+    if sampled_v:                          # a Vdc range: the monotonicity certificate per temperature condition
+        for wind in winds:
+            for mag in mags:
+                group = [r for r in results if (mag is None or r.scenario.magnet_temp_C == mag)
+                         and (wind is None or r.scenario.winding_temp_C == wind)]
+                certificates.append({"magnet_temp_C": mag, **({} if wind is None else {"winding_temp_C": wind}),
+                                     **vdc_range_certificate(req, drive, group[0])})
     v_cert = bool(certificates) and all(c["applies"] for c in certificates)
     if sampled and agg.status is Status.FEASIBLE:
-        if v_cert and not sampled_t:
+        if v_cert and not sampled_t and not sampled_w:
             qualifiers.append(certificates[0]["statement"] + " (conditions: " + "; ".join(
                 c["condition"] for c in certificates[0]["checks"]) + ")")
         else:
             agg = Aggregate(Status.UNKNOWN, (Reason.SAMPLED_COVERAGE,), agg.deciding_claims)
-            what = (f"{len(vdcs)} Vdc point(s)" if sampled_v else "") + (" x " if sampled_v and sampled_t else "") + (
-                f"{len(mags)} magnet temperature(s)" if sampled_t else "")
+            what = " x ".join(x for x in (f"{len(vdcs)} Vdc point(s)" if sampled_v else "",
+                                          f"{len(winds)} winding temperature(s)" if sampled_w else "",
+                                          f"{len(mags)} magnet temperature(s)" if sampled_t else "") if x)
             qualifiers.append(f"FEASIBLE at every examined point ({what}); the continuous range is not established")
     if sampled_v and certificates and not v_cert:
         failed = sorted({c["condition"] for cert in certificates for c in cert["checks"] if not c["holds"]})
@@ -783,10 +943,12 @@ def evaluate_requirement(req: Requirement, drive: DriveModel, *, scenario: Scena
         qualifiers.append("the static part is certified over the Vdc range by monotonicity; the duration part stays "
                           "sampled" if static_only else
                           "no Vdc-monotonicity certificate (" + "; ".join(failed) + ")")
-    if agg.status is Status.INFEASIBLE and (sampled or len(mags) > 1):
+    several_w = winds != [None]
+    if agg.status is Status.INFEASIBLE and (sampled or len(mags) > 1 or several_w):
         bad = [r.scenario for r in results if r.requirement_claim.status is Status.INFEASIBLE]
         qualifiers.append("counterexample(s) inside the examined range at " + ", ".join(
-            f"{sc.Vdc_V:g} V" + ("" if sc.magnet_temp_C is None or len(mags) < 2 else f" / magnet {sc.magnet_temp_C:g} degC")
+            f"{sc.Vdc_V:g} V" + ("" if not several_w else f" / winding {sc.winding_temp_C:g} degC")
+            + ("" if sc.magnet_temp_C is None or len(mags) < 2 else f" / magnet {sc.magnet_temp_C:g} degC")
             for sc in bad) + ": the for-all requirement fails")
     for r in results:
         for q in r.requirement_claim.qualifiers:
@@ -801,9 +963,15 @@ def evaluate_requirement(req: Requirement, drive: DriveModel, *, scenario: Scena
              f"declared operating domain; n = {req.speed_rpm:g} rpm; Vdc "
              + (f"in [{req.Vdc_V[0]:g}, {req.Vdc_V[1]:g}] V ({'certified by monotonicity' if v_cert else 'sampled'})"
                 if req.is_range else f"= {req.Vdc_V:g} V")
+             + ("" if not several_w else f"; winding temperature for all of the declared Rs law ("
+                + ("worst end " if not sampled_w else "sampled at ") + ', '.join(f'{t:g}' for t in winds) + " degC)")
              + ("" if len(mags) < 2 else f"; magnet temperature for all of {', '.join(f'{t:g}' for t in mags)} degC")
              + ("" if req.duration_s is None else f"; duration {req.duration_text()}"))
-    limiting, actions, unevaluated = _limiting_and_actions(req, results, sampled and not (v_cert and not sampled_t))
+    limiting, actions, unevaluated = _limiting_and_actions(req, results, sampled_v and not (v_cert and not sampled_t
+                                                                                           and not sampled_w))
+    if sampled_w or sampled_t or several_w:
+        actions.append("state the winding / magnet temperature (or its range) in the requirement: an unstated "
+                       "temperature on a temperature-dependent model is judged for every temperature the model declares")
     assumptions = [
         "balanced three-phase, no zero sequence, single 2-level VSI, wye (or declared wye-equivalent), fundamental "
         "steady state, linear SVPWM",
@@ -837,6 +1005,14 @@ def evaluate_requirement(req: Requirement, drive: DriveModel, *, scenario: Scena
         snapshot["error_budget"] = error_budget.describe()
     if extra_claims:
         snapshot["extra_claims"] = [c.to_dict() for c in extra_claims]
+    sens = _loss_limited_sensitivity(req, drive, results, settings, several=(len(mags) > 1, several_w))
+    if sens:
+        qualifiers.append(
+            f"loss-limited margin {sens['margin_Nm']:.3g} N*m at {sens['condition']}"
+            + ("" if sens["loss_budget_W"] is None else
+               f": {sens['loss_budget_W'] / 1e3:.3g} kW of additional loss at the witness reaches the DC limit")
+            + (f"; erased by about {'; '.join(sens['erased_by'])} (linear estimate)" if sens["erased_by"] else "")
+            + " - the loss models behind it: " + "; ".join(sens["loss_models"]))
     robustness = requirement_robustness(req, results, error_budget, sampled=sampled, range_certified=v_cert,
                                         source_coupled=bool(source_coupling), verdict=agg,
                                         source_status=(source_coupling or {}).get("status"))
@@ -850,8 +1026,9 @@ def evaluate_requirement(req: Requirement, drive: DriveModel, *, scenario: Scena
         next_actions=tuple(actions), unevaluated=tuple(unevaluated), assumptions=tuple(assumptions),
         snapshot=jsonable(snapshot), input_sha256=digest, settings=settings, implementation=dict(impl),
         source_coupling=dict(source_coupling or {}), robustness=jsonable(robustness),
-        iron_loss_scope=tuple(jsonable({"condition": _condition_tag(results[i].scenario, len(mags) > 1), **x})
-                              for i, x in iron))
+        iron_loss_scope=tuple(jsonable({"condition": _condition_tag(results[i].scenario, len(mags) > 1, several_w),
+                                        **x}) for i, x in iron),
+        margin_sensitivity=jsonable(sens or {}))
 
 
 _jsonable = jsonable          # former private name (compatibility)

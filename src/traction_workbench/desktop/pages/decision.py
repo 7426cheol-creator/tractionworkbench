@@ -406,9 +406,10 @@ class DecisionPage(QWidget):
         self.reading = hint("")
         self.reading.setTextFormat(Qt.RichText)
         f.addRow(tr("판정할 질문", "question"), self.reading)
-        for w in (self.torque, self.speed, self.vdc, self.vdc_hi, self.band, self.duration, self.magnet):
+        for w in (self.torque, self.speed, self.vdc, self.vdc_hi, self.band, self.duration, self.magnet,
+                  self.winding):
             w.valueChanged.connect(self._update_reading)
-        for w in (self.range_on, self.magnet_on, self.dur_none, self.dur_sec, self.dur_cont):
+        for w in (self.range_on, self.magnet_on, self.winding_on, self.dur_none, self.dur_sec, self.dur_cont):
             w.toggled.connect(self._update_reading)
         self.operator.currentIndexChanged.connect(self._update_reading)
         v.addWidget(g)
@@ -483,16 +484,25 @@ class DecisionPage(QWidget):
         return {"operator": self.operator.currentData(), "target_Nm": self.torque.value(), "band_Nm": self.band.value(),
                 "duration": dur,
                 "conditions": {"speed_rpm_mechanical": self.speed.value(), "Vdc_V_inverter_dc_terminal": vdc,
-                               "magnet_temp_C": self.magnet.value() if self.magnet_on.isChecked() else None}}
+                               "magnet_temp_C": self.magnet.value() if self.magnet_on.isChecked() else None,
+                               "winding_temp_C": self.winding.value() if self.winding_on.isChecked() else None}}
 
     def _update_reading(self, *_):
         """The question the verdict will answer, quantifiers written out; an unstated magnet temperature on a
-        multi-plane flux map is examined for every plane (∀)."""
+        multi-plane flux map is examined for every plane (∀), an unstated temperature on a declared Rs / psi_PM law
+        for every temperature of the law (∀)."""
         try:
             temps = SW.plane_temperatures(self.win.state.drive)
         except Exception:  # noqa: BLE001 - the reading is a help text, never an error
             temps = []
-        self.reading.setText(requirement_reading(self._form_requirement(), temps))
+        wtemps, law = [], False
+        m = getattr(self.win.state.drive, "motor", None)
+        if m is not None:
+            if m.rs_temperature is not None and m.reference_winding_temp_C is not None:
+                wtemps = list(m.rs_temperature.valid_C)
+            if m.psi_temperature is not None and m.reference_magnet_temp_C is not None:
+                temps, law = sorted({*m.psi_temperature.valid_C, m.reference_magnet_temp_C}), True
+        self.reading.setText(requirement_reading(self._form_requirement(), temps, wtemps, law))
 
     def _error_budget(self) -> list:
         """The declared error-budget items of the form (none checked: the robustness layer is not assessed)."""

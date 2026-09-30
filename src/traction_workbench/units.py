@@ -15,6 +15,28 @@ from dataclasses import dataclass, field
 
 from .errors import InputValidationError
 
+# Display precision per quantity class (engineering review 2 of 63a2b61, F12): the data carry full precision; a
+# sentence shows what the model behind the number supports.  Model-limited estimates - a terminal voltage from an R_eq
+# known to about +/-20 %, a lossless overvoltage estimate, ripple, loss and hotspot at a finite sampling resolution, an
+# onset speed from psi_PM at an often unstated magnet temperature - get 3 significant digits, a torque capability 4.
+# Numerical evidence (witness points, residuals, certified bounds) keeps its precision: it is numerical evidence, not
+# an engineering estimate.
+DISPLAY_SIG = {"voltage": 3, "current": 3, "ripple": 3, "loss": 3, "temperature": 3, "speed": 3, "life": 3,
+               "capability": 4}
+
+
+def shown(value, quantity: str) -> str:
+    """``value`` at the display precision of its quantity class (``DISPLAY_SIG``), no exponent in the usual range."""
+    if value is None:
+        return "-"
+    v = float(value)
+    if not math.isfinite(v) or v == 0.0:
+        return f"{v:g}"
+    n = DISPLAY_SIG[quantity]
+    r = float(f"{v:.{n}g}")
+    return f"{r:g}" if 1e-4 <= abs(r) < 1e7 else f"{r:.{n}g}"
+
+
 SCALE = {
     "current": {"A": 1.0, "kA": 1e3, "mA": 1e-3},
     "voltage": {"V": 1.0, "kV": 1e3, "mV": 1e-3},

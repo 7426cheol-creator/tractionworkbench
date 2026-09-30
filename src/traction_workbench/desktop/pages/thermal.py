@@ -58,7 +58,8 @@ def _task(progress, body, spec):
     if req.get("nodes"):
         ttl = [float(n["time_to_limit_s"]) for n in req["nodes"] if isinstance(n["time_to_limit_s"], (int, float))]
         t_end = max([body["duration_s"] * 3] + [3 * t for t in ttl if math.isfinite(t)] + [10.0])
-        curves = SF.thermal_curves(model, req["nodes"], body["coolant_temp_C"], t_end)
+        curves = SF.thermal_curves(model, req["nodes"], body["coolant_temp_C"], t_end,
+                                   trace=(req.get("coupled") or {}).get("trace"))
     ask = {k: body.get(k) for k in ("torque_Nm", "speed_rpm", "duration_s", "Vdc_V", "coolant_temp_C")}
     return {"res": res, "curves": curves, "validated": model.validated, "ask": ask}
 

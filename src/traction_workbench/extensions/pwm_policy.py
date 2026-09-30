@@ -25,7 +25,7 @@ from dataclasses import dataclass, replace
 import numpy as np
 
 from ..errors import InputValidationError
-from ..modulation import duties as _duties
+from ..modulation import MODULATIONS, duties as _duties
 from ..validation import finite as _finite
 from .emi import SwitchingSource, edge_lines, pwm_edges
 
@@ -1303,9 +1303,8 @@ def evaluate_policies(base_drive, cand, segments: list[dict], policies: list, co
     current loop at the new segment's operating point (gain / integrator mapping, saturation)."""
     if not policies:
         raise InputValidationError("no policies", field="policies")
-    if modulation not in ("svpwm", "spwm"):
-        raise InputValidationError("the policy evaluation's ripple / sampling / edge models support svpwm and spwm",
-                                   field="modulation")
+    if modulation not in MODULATIONS:
+        raise InputValidationError(f"modulation must be one of {', '.join(MODULATIONS)}", field="modulation")
     declared_mod = getattr(cand.model, "modulation", modulation)
     if declared_mod != modulation:                   # ONE pulse pattern for losses, ripple, sampling and capacitor
         cand = replace(cand, model=replace(cand.model, modulation=modulation))

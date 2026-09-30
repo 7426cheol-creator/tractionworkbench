@@ -55,11 +55,15 @@ def test_markdown_render(drive, limits):
     assert "Verdict: PASS" in md and TEXT in md and "Voltage budget" in md and "Next actions" in md
 
 
-def _rating(duration=10.0, table=(330.0, 330.0, 200.0, 160.0), conditions=(("coolant_temp_C", 65.0),)):
+def _rating(duration=10.0, table=(330.0, 330.0, 200.0, 160.0), conditions=(("coolant_temp_C", 65.0),),
+            irrelevant=("Vdc_V", "initial_state")):
+    # every required condition is stated or declared irrelevant: a rating with open conditions decides nothing
+    # (engineering review 2 of 63a2b61, F-15)
     from traction_workbench.analysis.rating import ApprovalState, RatingApproval
     prov = Provenance(DataOrigin.SUPPLIER, "test envelope", "A", "supplier-rated (test data)")
     return RatingEnvelope("ENV-10S", "A", duration, (0.0, 6000.0, 9000.0, 12000.0), table, prov,
                           conditions=conditions, condition_tolerances=(("coolant_temp_C", 1.0),),
+                          irrelevant_conditions=irrelevant,
                           approval=RatingApproval(ApprovalState.APPROVED, "TEST-RS-1", "A",
                                                   "rating for requirement verification (test)"))
 
@@ -76,6 +80,10 @@ def test_duration_needs_matching_envelope(drive, limits):
     rec3 = evaluate_requirement(req(duration_s=30.0, coolant_temp_C=65.0), drive, source_limits=limits,
                                 ratings=(_rating(),))
     assert rec3.conditions[0].duration.reasons[0].value == "UNVALIDATED_DURATION"
+    # open required conditions (Vdc, initial state neither stated nor declared irrelevant): not a rating for it
+    rec4 = evaluate_requirement(r10, drive, source_limits=limits, ratings=(_rating(irrelevant=()),))
+    assert rec4.conditions[0].duration.status is Status.UNKNOWN
+    assert rec4.conditions[0].duration.reasons[0].value == "APPLICABILITY_UNCONFIRMED"
 
 
 def test_duration_envelope_violation_fails(drive, limits):

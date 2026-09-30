@@ -219,7 +219,7 @@ def point_insight(res: dict) -> Insight:
                              f"inverter model: {esc(sc.get('model', ''))} ({esc(sc.get('technology', ''))}, "
                              f"{esc(sc.get('value_kind', ''))})"))
     claims_section(ins, claims)
-    notes_section(ins, [led.get("note")])
+    notes_section(ins, [res.get("model_efficiency"), led.get("note")])
     return ins.nonempty()
 
 
@@ -253,8 +253,8 @@ def map_insight(mp: dict) -> Insight:
     braking = feas & (tq[:, None] < 0) if tq.size and st.ndim == 2 else feas & False
     ed = grids.get("edrive")
     head_b = best(ed, motoring) if ed is not None else None
-    head = tr(f"효율 지도 (Vdc {q(mp.get('Vdc_V'), 'V')}, {len(sp)}×{len(tq)}점): 가능 {counts['FEASIBLE']} · 미확정 {counts['UNKNOWN']} · "
-              f"불가능 {counts['INFEASIBLE']}", f"efficiency maps (Vdc {q(mp.get('Vdc_V'), 'V')}, {len(sp)}×{len(tq)} points): "
+    head = tr(f"모델 효율 지도 (Vdc {q(mp.get('Vdc_V'), 'V')}, {len(sp)}×{len(tq)}점): 가능 {counts['FEASIBLE']} · 미확정 {counts['UNKNOWN']} · "
+              f"불가능 {counts['INFEASIBLE']}", f"model efficiency maps (Vdc {q(mp.get('Vdc_V'), 'V')}, {len(sp)}×{len(tq)} points): "
               f"feasible {counts['FEASIBLE']} · unknown {counts['UNKNOWN']} · infeasible {counts['INFEASIBLE']}")
     if head_b:
         head += tr(f" — eDrive 구동 최고 {_eta(head_b[0])} @ {at(head_b)}", f" — best eDrive motoring {_eta(head_b[0])} @ {at(head_b)}")
@@ -290,7 +290,7 @@ def map_insight(mp: dict) -> Insight:
         if b:
             s = ins.section(tr("손실", "loss"))
             s.add(tr(f"알려진 손실 최대 {q(b[0], 'W')} @ {at(b)}", f"largest known loss {q(b[0], 'W')} @ {at(b)}"), "info")
-    notes_section(ins, [mp.get("meaning")])
+    notes_section(ins, [mp.get("model_efficiency"), mp.get("meaning")])
     return ins.nonempty()
 
 
@@ -386,7 +386,7 @@ def mission_insight(res: dict) -> Insight:
                  f"port powers unknown for {q(pt.get('undetermined_s'), 's')} — the mission direction efficiencies are "
                  f"undecided (known segments only: traction {_eta(pt.get('eta_traction_partial'))}, regeneration "
                  f"{_eta(pt.get('eta_regeneration_partial'))})"), "open")
-    notes_section(ins, [e.get("note")])
+    notes_section(ins, [res.get("model_efficiency"), e.get("note")])
     return ins.nonempty()
 
 
@@ -497,4 +497,6 @@ def ab_insight(res: dict) -> Insight:
     for x in res.get("not_evaluated") or []:
         s.add(esc(engine_text(x)), "open")
     s.add(esc(engine_text(res.get("meaning", ""))), "info")
+    if res.get("model_efficiency"):
+        s.add(esc(engine_text(res["model_efficiency"])), "info")
     return ins.nonempty()

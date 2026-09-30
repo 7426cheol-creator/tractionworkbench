@@ -49,9 +49,15 @@ def references(theta, m: float, alpha: float = 0.0) -> np.ndarray:
 
 
 def duties(theta, m: float, alpha: float = 0.0, modulation: str = "svpwm") -> np.ndarray:
-    """Average leg duty cycles (3 x N, unclipped) of the declared family."""
+    """Average leg duty cycles (3 x N, unclipped) of the declared family.
+
+    A clamping family puts the clamped leg exactly on its rail (0 or 1): the rounding of u_m + (sign(u_m) - u_m)
+    would otherwise leave a 1e-16 pulse that every edge, window and minimum-pulse model reads as switching."""
     u = references(theta, m, alpha)
-    return 0.5 * (1.0 + u + zero_sequence(u, modulation))
+    d = 0.5 * (1.0 + u + zero_sequence(u, modulation))
+    if modulation == "dpwm1":
+        d = np.where(np.abs(d) <= 1e-12, 0.0, np.where(np.abs(d - 1.0) <= 1e-12, 1.0, d))
+    return d
 
 
 def overmodulated(d: np.ndarray, tol: float = 1e-9) -> bool:

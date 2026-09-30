@@ -693,6 +693,11 @@ class PowerPage(QWidget):
         self.r_life_basis = QLineEdit(cap.get("life_basis", ""))
         f.addRow(tr("수명 정격 전압", "life rated voltage"), self.r_life_v)
         f.addRow(tr("수명 근거", "life basis"), self.r_life_basis)
+        # the life verdict needs a required life: an expected life alone is not a pass (engineering review 2, F-16)
+        self.r_life_req = number(0, 0, 1e7, "h", 0, 1000, tip=tr("0 = 미선언 (수명 판정 UNKNOWN)",
+                                                                 "0 = not declared (life claim UNKNOWN)"),
+                                 special=tr("미선언", "not declared"))
+        f.addRow(tr("요구 수명", "required life"), self.r_life_req)
         b = QPushButton(tr("커패시터 데이터시트 값 입력…", "enter capacitor datasheet values…"))
         b.clicked.connect(lambda: self.win.pages["project"].enter_datasheet("capacitor"))
         f.addRow(b)
@@ -749,6 +754,7 @@ class PowerPage(QWidget):
                "ESR_table": esr, "ESR_unit": "mohm", "life_hours_table": self.r_life.values(),
                "life_voltage_V": self.r_life_v.value() or None, "life_basis": self.r_life_basis.text().strip()}
         cfg = {"capacitor": cap, "fsw_kHz": self.r_fsw.value(), "modulation": self.r_mod.currentData(),
+               "required_life_h": self.r_life_req.value() or None,
                "source": ({"R_mohm": self.r_srcR.value(), "L_uH": self.r_srcL.value(),
                            "basis": self.r_src_basis.text().strip()} if self.r_src_on.isChecked() else None),
                "requirement": ({"location": self.r_loc.currentData(), "quantity": self.r_qty.currentData(),

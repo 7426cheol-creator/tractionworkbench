@@ -136,6 +136,21 @@ def decision_markdown(rec) -> str:
                          f"{c.get('constraint') or c.get('quantity')} | {fmt(c.get('demand'), 6, unit)} | "
                          f"{fmt(c.get('limit'), 6, unit)} | {fmt(c.get('slack'), 5, unit)} | {fmt(c.get('delta'), 4, unit)} | "
                          f"{c['status']}" + (f" ({c['reason']})" if c.get("reason") else "") + " |")
+    ms = rec.margin_sensitivity
+    if ms:
+        L += ["", "## Loss-limited margin (automatic sensitivity; the verdict is unchanged)", "",
+              f"Condition {ms['condition']}: margin {fmt(ms['margin_Nm'], 3, 'N·m')} to the capability "
+              f"{fmt(ms['capability_Nm'], 5, 'N·m')} limited by {', '.join(ms['active'])}."
+              + ("" if ms.get("loss_budget_W") is None else
+                 f" Loss budget: {fmt(ms['loss_budget_W'] / 1e3, 3, 'kW')} of additional loss at the witness reaches "
+                 f"the DC limit ({ms['loss_budget_basis']}).")
+              + " Loss models: " + "; ".join(ms["loss_models"]) + ".", "",
+              "| parameter | value | capability change per step | break-even (linear) |", "|---|---|---|---|"]
+        for p in ms["parameters"]:
+            step = f"{p['step']:+g}" if p["step_kind"] == "absolute" else f"{100 * p['step']:+g} %"
+            L.append(f"| {p['label']} | {p['value']:.4g} {p['unit']} | {fmt(p['capability_change_Nm'], 3, 'N·m')} "
+                     f"({step}) | {p['text']} |")
+        L += ["", f"Method: {ms['method']}."]
     r = rec.requirement
     L += ["", "## Requirement (original wording, unchanged)", "", f"> {r.text}", "",
           "| item | interpretation |", "|---|---|",

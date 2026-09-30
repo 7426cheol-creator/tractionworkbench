@@ -275,6 +275,14 @@ def applicability(env: RatingEnvelope, duration_s: float, stated_conditions: dic
     return False, f"a {env.duration_text} rating is shorter than the required {duration_s:g} s", "both"
 
 
+def open_conditions(env: RatingEnvelope) -> list[str]:
+    """Required conditions the envelope neither states nor declares irrelevant (a finite rating also needs its initial
+    state: duration monotonicity only holds from the same declared start)."""
+    need = REQUIRED_CONDITIONS + (() if math.isinf(env.duration_s) else ("initial_state",))
+    have = {k for k, _v in env.conditions} | set(env.irrelevant_conditions)
+    return [k for k in need if k not in have]
+
+
 def binding(env: RatingEnvelope, product: dict | None) -> tuple[str, list[str]]:
     """Is this envelope bound to the evaluated product and its conditions (review G1)?
 
@@ -293,9 +301,7 @@ def binding(env: RatingEnvelope, product: dict | None) -> tuple[str, list[str]]:
                     "drive_content_sha256)")
     elif product is None or not any(k in bind and prod.get(k) is not None for k in BINDING_KEYS):
         msgs.append(f"{env.envelope_id}: its product binding could not be checked against the evaluated drive")
-    need = REQUIRED_CONDITIONS + (() if math.isinf(env.duration_s) else ("initial_state",))
-    have = {k for k, _v in env.conditions} | set(env.irrelevant_conditions)
-    open_ = [k for k in need if k not in have]
+    open_ = open_conditions(env)
     if open_:
         msgs.append(f"{env.envelope_id}: required condition(s) neither stated nor declared irrelevant: "
                     + ", ".join(open_))
@@ -358,7 +364,7 @@ def duration_claim(envelopes, duration_s: float | None, speed_rpm: float, torque
     dtext = "continuous" if math.isinf(duration_s) else f"{duration_s:g} s"
     q = f"{torque_Nm:g} N*m at {speed_rpm:g} rpm sustained for {dtext}"
     scope = "external rating envelope lookup under matching conditions only"
-    notes, results, experiments, undecided, unconfirmed = [], [], [], [], []
+    notes, results, experiments, undecided, unconfirmed, open_env = [], [], [], [], [], []
     for env in envelopes:
         app, why, direction = applicability(env, duration_s, stated_conditions)
         if not app:
@@ -378,6 +384,15 @@ def duration_claim(envelopes, duration_s: float | None, speed_rpm: float, torque
                                f"({res[1].summary})")
             continue
         status, ev = res
+        missing = open_conditions(env)
+        if missing:
+            # a rating whose conditions are not stated does not decide a request at stated conditions: a condition-
+            # less envelope read FEASIBLE at 105 degC coolant from a hot soak (engineering review 2 of 63a2b61, F-15);
+            # the product binding alone stays a flagged qualifier (review G1)
+            open_env.append((env, ev, f"{env.envelope_id}: required condition(s) {', '.join(missing)} neither stated "
+                                      f"nor declared irrelevant - its applicability to this request's conditions is "
+                                      f"not established (it reads {status.value})", bmsgs))
+            continue
         if status is not Status.FEASIBLE:
             # evidence direction (review F1): a longer / continuous rating only establishes torques inside it; a
             # demonstrated region only shows where the torque holds - above either, nothing is concluded
@@ -396,6 +411,16 @@ def duration_claim(envelopes, duration_s: float | None, speed_rpm: float, torque
     ucq = (("applicability to this product / its conditions not confirmed (APPLICABILITY_UNCONFIRMED): "
             + "; ".join(dict.fromkeys(unconfirmed)),) if unconfirmed else ())
     if not results:
+        if open_env:
+            oq = ("applicability to this product / its conditions not confirmed (APPLICABILITY_UNCONFIRMED): "
+                  + "; ".join(dict.fromkeys(m for *_x, ms in open_env for m in ms)),)
+            return Claim("duration", Status.UNKNOWN, q, scope, None, time_horizon=dtext,
+                         reasons=(Reason.APPLICABILITY_UNCONFIRMED,),
+                         evidence=tuple(ev for _e, ev, *_x in open_env) + tuple(ev for _e, ev, _n in undecided),
+                         qualifiers=tuple(n for *_x, n in undecided) + oq,
+                         detail="; ".join(n for _e, _ev, n, _m in open_env) + " - state the envelope's conditions "
+                                "(coolant, Vdc, initial state) or declare the irrelevant ones"
+                                + (f" ({'; '.join(notes)})" if notes else ""))
         if undecided:
             return Claim("duration", Status.UNKNOWN, q, scope, None, time_horizon=dtext,
                          reasons=(Reason.UNVALIDATED_DURATION,),
@@ -420,7 +445,9 @@ def duration_claim(envelopes, duration_s: float | None, speed_rpm: float, torque
     ignored = [r[0].envelope_id for r in results if r[0].priority < top]
     quals = tuple(dict.fromkeys(r[3] for r in group)) + (
         (f"lower-priority envelope(s) not used: {', '.join(ignored)}",) if ignored else ()) + tuple(
-        n for *_x, n in undecided) + ucq
+        n for *_x, n in undecided) + ucq + (
+        (f"envelope(s) not used (required conditions open): {', '.join(e.envelope_id for e, *_x in open_env)}",)
+        if open_env else ())
     if feas and bad:
         return Claim("duration", Status.UNKNOWN, q, scope, None, time_horizon=dtext,
                      reasons=(Reason.CONFLICTING_EVIDENCE,) + ((Reason.APPLICABILITY_UNCONFIRMED,) if ucq else ()),

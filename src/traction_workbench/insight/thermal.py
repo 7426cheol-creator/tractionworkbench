@@ -127,8 +127,13 @@ def cycle_insight(res: dict) -> Insight:
         head = tr(f"반복 부하: <b>{fl['cycle']}번째 주기에서 한계 도달</b> — {esc(fl['node'])} ({num(fl['t_s'], 3)} s)",
                   f"repeated load: <b>a limit is reached in cycle {fl['cycle']}</b> — {esc(fl['node'])} ({num(fl['t_s'], 3)} s)")
     else:
-        head = tr(f"반복 부하: {res.get('cycles_run')}주기 동안 한계 도달 없음", f"repeated load: no limit in {res.get('cycles_run')} "
-                  f"cycles")
+        n_req = res.get("cycles_requested") or res.get("cycles_run")
+        head = tr(f"반복 부하: 요청한 {n_req}주기 동안 한계 도달 없음", f"repeated load: no limit in the {n_req} requested cycles")
+        if per.get("exceeds") and gov:
+            over = -per["margin_K"][gov]
+            head += tr(f" — 단, 계속 반복하면 {esc(gov)}가 주기 정상상태에서 한계를 {num(over, 2)} K 넘음",
+                       f" — but repeated indefinitely {esc(gov)} exceeds its limit by {num(over, 2)} K in the periodic "
+                       f"cycle")
     ins = Insight(headline=head, verdict=verdict_of(claim))
     if per.get("peak_C") and gov:
         ins.metrics.append((tr("주기 정상상태 최고온도", "periodic peak"), f"{num(per['peak_C'][gov])} °C", "info"))

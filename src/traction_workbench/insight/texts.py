@@ -272,9 +272,17 @@ _FIXED = {
     "eta_interval_incl_pwm_hf, not in eta)":
         "전자기 변환 전력 T_em·ω_m은 축 출력이 아님; 각 경계는 자기 포트로 판정; PWM 고조파 항목은 기본파 포트 전력에 "
         "더해지는 것이며 η가 아니라 PWM 포함 η 구간에 나타남",
-    "values at minimum-current policy points; only FEASIBLE cells are feasible operation, UNKNOWN cells are shown "
-    "hatched, INFEASIBLE cells are blank":
-        "최소전류 정책 운전점의 값 — '가능' 셀만 실제 운전 가능, '미확정' 셀은 빗금, '불가능' 셀은 빈칸",
+    "model efficiency map: values at minimum-current policy points; only FEASIBLE cells are feasible operation, "
+    "UNKNOWN cells are shown hatched, INFEASIBLE cells are blank":
+        "모델 효율 지도: 최소전류 정책 운전점의 값 — '가능' 셀만 실제 운전 가능, '미확정' 셀은 빗금, '불가능' 셀은 빈칸",
+    "model efficiency: the minimum-current policy point with the declared loss models, not a loss-optimal point - "
+    "minimum current is minimum loss only while every loss grows with the current alone (I^2 copper and inverter "
+    "terms, a speed-only rotational / iron loss); a control that trades current for flux (field weakening to cut iron "
+    "loss) can differ by several efficiency points at high speed, so this is neither a measured nor an optimised "
+    "efficiency":
+        "모델 효율: 선언된 손실 모델로 계산한 최소전류 정책 운전점의 값이며 손실 최적점이 아님 — 최소전류가 최소손실인 "
+        "것은 모든 손실이 전류만으로 커질 때(I² 동손·인버터 항, 속도만의 회전·철손)뿐이고, 전류와 자속을 맞바꾸는 "
+        "제어(철손을 줄이는 약계자)는 고속에서 효율이 몇 %p 다를 수 있음 — 측정값도 최적화된 효율도 아님",
     "net output / net DC is not a conversion efficiency (drive and regeneration cancel); direction efficiencies are "
     "energy ratios of their own segments":
         "순 출력 / 순 DC는 변환 효율이 아님 (구동과 회생이 상쇄) — 방향별 효율은 각자 구간의 에너지 비",
@@ -444,6 +452,14 @@ _PATTERNS = [
      r"배터리 충전 수용 한계가 걸립니다 (\1) — 손실을 일부러 늘리는 것은 에너지 회수 정책이 아닙니다. 해당 SOC·온도의 충전 "
      r"한계를 확인하거나 마찰 브레이크와 제동을 나누세요 (이 모델 밖)"),
     (r"data needed: (.*)", r"필요한 데이터: \1"),
+    (r"(.*?): required condition\(s\) (.*) neither stated nor declared irrelevant - its applicability to this "
+     r"request's conditions is not established \(it reads (\S+)\) - state the envelope's conditions \(coolant, Vdc, "
+     r"initial state\) or declare the irrelevant ones(.*)",
+     r"\1: 필요한 조건 \2을(를) 적지도 무관 선언도 하지 않아 이 요구 조건에서의 적용성이 확립되지 않음(판정은 \3) — "
+     r"envelope의 조건(냉각수, Vdc, 초기 상태)을 적거나 무관한 조건을 선언하세요\4"),
+    (r"envelope\(s\) not used \(required conditions open\): (.*)", r"쓰지 않은 envelope(필요 조건 미기재): \1"),
+    (r"applicability to this product / its conditions not confirmed \(APPLICABILITY_UNCONFIRMED\): (.*)",
+     r"이 제품·조건에 대한 적용성 미확인(APPLICABILITY_UNCONFIRMED): \1"),
     (r"extend flux-map coverage \(nearest uncovered allowed point \|i\| = (.*) A\) before claiming infeasibility "
      r"beyond the data",
      r"자속 지도의 범위를 넓히세요 (가장 가까운 미포함 허용점 |i| = \1 A) — 데이터 밖에서는 불가능을 주장하지 않습니다"),
@@ -497,7 +513,18 @@ _PATTERNS += [
     (r"screening estimate of the link voltage held across R: (.*) V \((above|below) the target, not a bound\)",
      r"R에 걸리는 링크 전압의 스크리닝 추정 \1 V (목표보다 \2 — 상한 아님)"),
     (r"constant model psi_PM = (.*) Wb", r"상수 모델 ψ_PM = \1 Wb"),
+    (r"peak (\S+) V \(bound (\S+) V with the inflow at (\S+) V\) vs limit (.*) V \(allowed reaction (.*) ms\)",
+     r"최고 \1 V (한계 전압 \3 V에서의 유입 전력으로 상한 \2 V) vs 한계 \4 V (허용 반응 \5 ms)"),
     (r"peak (.*) V vs limit (.*) V \(allowed reaction (.*) ms\)", r"최고 \1 V vs 한계 \2 V (허용 반응 \3 ms)"),
+    (r"freewheel at (\S+) rpm: the diodes rectify the back-EMF, which alone charges the isolated link towards (\S+) V "
+     r"\(line-line peak\) > (\S+) V - whatever the reaction time",
+     r"\1 rpm에서 프리휠: 다이오드가 역기전력을 정류해 그것만으로 고립된 링크를 \2 V(선간 peak) > \3 V까지 충전 — 반응 시간과 무관"),
+    (r"reaction path not stated: the peak holds only if the reaction stops the inflow \(active short circuit\); a "
+     r"freewheel reaction charges the link towards the (\S+) V back-EMF peak",
+     r"반응 경로 미지정: 최고 전압은 반응이 유입을 멈출 때(ASC)만 성립 — 프리휠이면 링크가 역기전력 peak \1 V까지 충전됨"),
+    (r"the ramp alone \((\S+) ms\) brings more energy than the headroom: no delay is allowed and the ramp must be "
+     r"shorter than (\S+) ms",
+     r"램프만으로({1} ms) 여유 에너지를 넘음 — 지연은 허용되지 않고 램프는 \2 ms보다 짧아야 함".replace("{1}", "\\1")),
     (r"regenerated power profile: (\S+) from P_in to 0 over the reaction time",
      r"회생 전력 프로파일: \1 (반응 시간 동안 P_in에서 0으로)"),
     (r"if the inverter opens \(freewheel\) at (.*) rpm the rectified back-EMF \((.*) V line-line peak\) can drive the "
@@ -623,6 +650,110 @@ _PATTERNS += [
      r"contiguous here, a single margin does not describe it",
      r"정적 판정(\1)과 능력치 여유(\2 N·m)가 어긋남 — 여기서는 가능한 토크 집합이 연속이 아니라 여유 하나로 설명되지 않음"),
 ]
+# engineering review 2 of 63a2b61
+_FIXED.update({
+    "policy point located within the certified current bracket; the verdict holds over the whole bracket (certified "
+    "by consequence)":
+        "운전점 위치는 인증된 전류 구간 안에 있고, 판정은 그 구간 전체에서 성립 (결과로 인증)",
+    "every admissible policy point meets every constraint incl. DC (certified by consequence)":
+        "허용되는 모든 정책 운전점이 DC 포함 모든 제약을 만족 (결과로 인증)",
+    "state the winding / magnet temperature (or its range) in the requirement: an unstated temperature on a "
+    "temperature-dependent model is judged for every temperature the model declares":
+        "요구에 권선·자석 온도(또는 범위)를 적으세요 — 온도에 의존하는 모델에서 온도가 없는 요구는 모델이 선언한 모든 온도에서 "
+        "판정합니다",
+    "terminal voltage not resolved: a violation at the highest terminal voltage an operating point can see is not "
+    "decisive":
+        "단자 전압이 풀리지 않음 — 운전점이 볼 수 있는 최고 단자 전압에서의 위반은 판정 근거가 아님",
+})
+_PATTERNS += [
+    (r"FEASIBLE at every examined point \((.+)\); the continuous range is not established",
+     r"조사한 모든 점에서 가능 (\1) — 연속 구간은 확립되지 않음"),
+    (r"counterexample\(s\) inside the examined range at (.+): the for-all requirement fails",
+     r"조사 범위 안의 반례: \1 — 모든 값(∀) 요구가 성립하지 않음"),
+    (r"winding temperature not stated: examined for ALL winding temperatures of the declared Rs law \((\S+)\.\.(\S+) "
+     r"degC, (.+?)\): motoring: .* the largest Rs \((\S+) degC\) is the worst case for every constraint - the static "
+     r"claim there holds for the whole law range",
+     r"권선 온도 없음: 선언된 Rs 법칙(\1–\2 °C, \3)의 모든 권선 온도에서 판정 — 모터링은 토크 곡선의 모든 점에서 "
+     r"d|v|²/dRs = (4/3)·P_ac ≥ 0, dP_dc/dRs = 1.5·I² 이므로 가장 큰 Rs(\4 °C)가 모든 제약의 최악 — 거기서의 정적 판정이 "
+     r"법칙 전 범위에서 성립"),
+    (r"winding temperature not stated: examined for ALL winding temperatures of the declared Rs law \((\S+)\.\.(\S+) "
+     r"degC, (.+?)\) at (.+?) degC; no worst-end certificate \((.+)\): the continuous range is sampled - state the "
+     r"winding temperature if the requirement applies at one temperature only",
+     r"권선 온도 없음: 선언된 Rs 법칙(\1–\2 °C, \3)의 모든 권선 온도를 \4 °C에서 판정 — 최악단 인증 조건 불성립(\5): 연속 "
+     r"구간은 표본 — 한 온도에서만 필요하면 요구에 권선 온도를 적으세요"),
+    (r"magnet temperature not stated: examined for ALL magnet temperatures of the declared psi_PM law \((\S+)\.\.(\S+) "
+     r"degC\) at (.+?) degC \(the ends and the reference\); psi_PM changes both the torque per ampere and the back-EMF, "
+     r"so the continuous range is sampled, not certified - state the magnet temperature if the requirement applies at "
+     r"one temperature only",
+     r"자석 온도 없음: 선언된 ψ_PM 법칙(\1–\2 °C)의 모든 자석 온도를 \3 °C(양 끝과 기준)에서 판정 — ψ_PM은 암페어당 토크와 "
+     r"역기전력을 함께 바꾸므로 연속 구간은 표본이며 인증이 아님 — 한 온도에서만 필요하면 요구에 자석 온도를 적으세요"),
+]
+_PATTERNS += [
+    (r"loss-limited margin (\S+) N\*m at (.+?): (\S+) kW of additional loss at the witness reaches the DC limit.*",
+     r"손실로 제한된 여유 \1 N·m (\2): 운전점에서 손실이 \3 kW 더 늘면 DC 한계에 닿음 — 여유를 없애는 파라미터 변화는 '설계 판단 "
+     r"여유' 참고"),
+]
+_FIXED.update({
+    "estimate for a constant inflow at V1: the regenerated power grows with the link voltage":
+        "V1에서의 일정 유입 전력 기준 추정 — 회생 전력은 링크 전압과 함께 커짐",
+    "reaction: active short circuit within the reaction time - its phase-current transient and braking torque are "
+    "separate checks (ASC page)":
+        "반응: 반응 시간 안의 ASC — 상전류 과도와 제동 토크는 별도 점검(ASC 화면)",
+    "a static result, not a thermal one: the operating point itself is not FEASIBLE":
+        "열이 아니라 정적 결과: 운전점 자체가 가능하지 않음",
+    "coupled: the losses follow the node temperatures (declared loss-temperature law)":
+        "결합 계산: 손실이 노드 온도를 따라감 (선언된 손실–온도 법칙)",
+    "fluid properties taken at the inlet temperature for the whole loop (the capacity rate changes by well under 1 % "
+    "over a typical rise); no fluid thermal mass or transit delay: the node reference follows each step's heat "
+    "instantly":
+        "냉각수 물성은 루프 전체에서 입구 온도 값 (일반적인 온도 상승에서 열용량률 변화는 1 % 미만) · 냉각수 열용량·이송 지연 없음: "
+        "노드 기준 온도가 각 스텝의 발열을 즉시 따라감",
+    "glycol fraction or temperature outside the generic property table: the values are held at the table edge - enter "
+    "the supplier's cp and density":
+        "글리콜 비율 또는 온도가 일반 물성표 밖: 표 끝값으로 고정됨 — 공급사의 c_p와 밀도를 입력하세요",
+    "loss-temperature feedback bounded: losses at the hotter of the stated and the node-limit temperatures":
+        "손실–온도 피드백을 상한으로 처리: 명시 온도와 노드 한계 온도 중 손실이 큰 쪽",
+})
+_PATTERNS += [
+    (r"the periodic cycle \(the duty cycle repeated indefinitely\) exceeds the '(.+)' limit by (\S+) K: within the "
+     r"limits for the stated (\d+) cycle\(s\) only",
+     r"주기 정상상태(부하 사이클을 계속 반복)에서는 '\1' 한계를 \2 K 넘음 — 한계 이내는 명시한 \3주기 동안만"),
+    (r"the static point fails at a temperature estimated by an unqualified thermal model: not a proven violation "
+     r"\((.+)\)",
+     r"검증되지 않은 열모델이 추정한 온도에서 정적 운전점이 실패 — 증명된 위반이 아님 (\1)"),
+    (r"(margin|exceedance) (\S+) K is inside the model's declared uncertainty \+/-(\S+) K \((.+)\)",
+     r"여유/초과 \2 K가 모델이 선언한 불확도 ±\3 K 안 (\4) — 판정하지 않음"),
+    (r"the thermal model declares no uncertainty band: a margin of (\S+) K is decided as it is - declare its "
+     r"validation residual \(uncertainty_K\) to decide only outside it",
+     r"열모델에 불확도 대역이 선언되지 않아 여유 \1 K를 그대로 판정 — 검증 잔차(불확도 K)를 선언하면 그 밖에서만 판정"),
+    (r"screening estimate with the loss-temperature feedback: (exceeds|within) limits(.*)",
+     r"손실–온도 피드백을 넣은 스크리닝 추정: 한계 \1\2"),
+    (r"node\(s\) (.+) name no coolant station: their reference is the loop INLET temperature, not the fluid heated by "
+     r"the upstream stations",
+     r"노드 \1에 냉각 위치가 없어 기준이 루프 입구 온도 — 상류 부품에서 데워진 냉각수가 아님"),
+]
+_FIXED.update({
+    "nominal supplier life (no scatter declared); constant conditions at this operating point":
+        "공급사 공칭 수명 (산포 미선언) · 이 운전점의 일정 조건",
+})
+_PATTERNS += [
+    (r"expected life (\S+) h at the hotspot \(supplier table\); no required life stated - nothing to compare it with",
+     r"핫스팟에서 기대 수명 \1 h (공급사 표) — 요구 수명이 없어 비교할 대상 없음"),
+    (r"expected (\S+) h vs required (\S+) h at (\S+) degC", r"기대 \1 h vs 요구 \2 h (\3 °C)"),
+    (r"includes (\S+) W \((\S+) % of the loss\) for the (\S+) % of the inverter AC current-squared outside the ESR "
+     r"table, taken at the table's largest ESR \(an assumption, not data\)",
+     r"ESR 표 밖 성분(인버터 교류 전류 제곱의 \3 %)의 손실 \1 W(손실의 \2 %)를 표의 최대 ESR로 가정해 포함 — 데이터가 아님"),
+    (r"(\S+) W at (\S+) degC \((.*)\); sampling resolution (\S+) W \((\S+) K at the hotspot\) \(value change at "
+     r"twice the samples per carrier\)",
+     r"\1 W @ \2 °C (\3); 샘플링 분해능 \4 W (핫스팟 \5 K) (캐리어당 샘플 2배에서의 값 변화)"),
+    (r"(\S+) W at (\S+) degC \((.*)\); sampling resolution (\S+) W \(value change at twice the samples per carrier\)",
+     r"\1 W @ \2 °C (\3); 샘플링 분해능 \4 W (캐리어당 샘플 2배에서의 값 변화)"),
+    (r"Vdc \+ ripple peak (\S+) V above the life-table voltage (\S+) V",
+     r"Vdc + 리플 피크 \1 V가 수명 표 전압 \2 V보다 높음"),
+    (r"(\d+) harmonics lie outside the ESR table \[(\S+), (\S+)\] Hz \((\S+) % of the inverter AC current-squared, more "
+     r"than (\S+) %\): the ESR where the current is is unknown - not established",
+     r"ESR 표 [\2, \3] Hz 밖 고조파 \1개(인버터 교류 전류 제곱의 \4 %, 문턱 \5 % 초과) — 전류가 있는 곳의 ESR을 몰라 손실 미확정"),
+]
 _PWM_NAMES = {"Tj": "모듈 T_j", "peak-current conservative bound (I_fund,pk + max|di|)": "피크 전류 보수 상한 (I_fund,pk + max|di|)",
               "capacitor RMS current": "커패시터 RMS 전류", "current-loop phase margin": "전류 루프 위상 여유",
               "pulse ratio": "펄스 비"}
@@ -630,7 +761,7 @@ for _en, _ko in _PWM_NAMES.items():
     _FIXED[f"{_en}: no limit declared"] = f"{_ko}: 한계 미선언"
     _FIXED[f"{_en}: not evaluated in every segment"] = f"{_ko}: 모든 구간에서 평가되지 않음"
     _PATTERNS.append((re.escape(_en) + r" (\S+) vs limit (\S+)", _ko.replace("\\", "\\\\") + r" \1 vs 한계 \2"))
-_TAG = re.compile(r"^\[(Vdc=[^\],]+)(?:, magnet ([^\]]+) degC)?\]\s*")
+_TAG = re.compile(r"^\[(Vdc=[^\],]+)(?:, winding ([^\],]+) degC)?(?:, magnet ([^\]]+) degC)?\]\s*")
 
 
 _IDENTS = {"upper_offset": ("상단 오프셋", "upper offset"), "lower_offset": ("하단 오프셋", "lower offset"),
@@ -667,7 +798,8 @@ def _engine_ko(s: str) -> str:
     tag = ""
     m = _TAG.match(s)
     if m:
-        tag = f"[{m.group(1)}" + (f", 자석 {m.group(2)} °C" if m.group(2) else "") + "] "
+        tag = (f"[{m.group(1)}" + (f", 권선 {m.group(2)} °C" if m.group(2) else "")
+               + (f", 자석 {m.group(3)} °C" if m.group(3) else "") + "] ")
         s = s[m.end():]
     if s in _FIXED:
         return tag + _FIXED[s]

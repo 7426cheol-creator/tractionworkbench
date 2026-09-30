@@ -197,9 +197,13 @@ def test_a1_module_physical_capability_keeps_the_accepted_policy_witness():
 def _env(approval=None, conditions=(), status="text is not approval", origin=None):
     from traction_workbench.analysis.rating import RatingEnvelope
     from traction_workbench.models.provenance import DataOrigin, Provenance
+    # the required conditions not stated are declared irrelevant: the rules pinned here are about approval, NaN and
+    # quadrants (an envelope with open required conditions decides nothing - engineering review 2 of 63a2b61, F-15)
+    open_ = tuple(k for k in ("coolant_temp_C", "Vdc_V", "initial_state") if k not in dict(conditions))
     return RatingEnvelope("AUDIT", "A", 10.0, (-16000.0, 16000.0), (200.0, 200.0),
                           Provenance(origin or DataOrigin.SUPPLIER, "rating sheet", "A", status),
-                          min_braking_torque_Nm=(-120.0, -120.0), conditions=conditions, approval=approval)
+                          min_braking_torque_Nm=(-120.0, -120.0), conditions=conditions, approval=approval,
+                          irrelevant_conditions=open_)
 
 
 @pytest.mark.parametrize("state", ["rejected", "not_approved", "unknown", None])
@@ -419,8 +423,12 @@ def test_pt04_current_split_and_heat_are_solved_at_one_temperature():
     src = SourceImpedance(0.005, 1e-9, "synthetic")
     r = ripple_analysis(350.0, 0.8, 0.3, 200.0, 10e3, 600.0, bank, src, T_ref_C=65.0)
     h = r["hotspot"]
-    assert h["converged"] and h["T_hot_C"] == pytest.approx(110.5491, abs=1e-4)       # not the frozen 120.4158
-    w = switching_waveform(350.0, 0.8, 0.3, 200.0, 10e3)
+    # not the frozen 120.4158; the samples per carrier follow this 10 MHz ESR table (engineering review 2 of 63a2b61,
+    # F-10): at the former fixed 128 the spectrum stopped at 640 kHz and left the table's upper band out (110.5491)
+    assert h["converged"] and h["T_hot_C"] == pytest.approx(112.1889, abs=1e-4)
+    spc = r["model_band"]["samples_per_carrier"]
+    assert spc * 10e3 / 2 >= 2 * 1e7                                     # Nyquist beyond twice the table's top
+    w = switching_waveform(350.0, 0.8, 0.3, 200.0, 10e3, "svpwm", spc)
     sp = spectrum(w["i_inv_A"], 200.0)
     f, x = sp["f_Hz"][1:], sp["complex"][1:]
     wt = np.full(f.size, 2.0)
@@ -458,7 +466,9 @@ def test_pt05_capacitor_branch_aliases_agree_and_mappings_are_explicit():
                                requirement={"location": loc, "quantity": qty, "limit": lim, "bandwidth_Hz": bw})
     a = run("capacitor_branch", "current_ac_rms")
     b = run("capacitor_branch", "capacitor_current_rms")
-    assert a["requirement_value"] == pytest.approx(110.7757, abs=1e-4) == b["requirement_value"]
+    # 110.7757 at the former fixed 128 samples per carrier: the pulse-edge time quantisation (review 2 of 63a2b61,
+    # sub-report F8) is smaller at the samples the ESR table band now sets
+    assert a["requirement_value"] == pytest.approx(110.6962, abs=1e-4) == b["requirement_value"]
     assert a["claims"]["ripple_requirement"]["status"] == b["claims"]["ripple_requirement"]["status"] == "FEASIBLE"
     assert a["requirement"]["branch"] == "capacitor_current"
     inv = run("inverter_dc_input", "current_ac_rms")
@@ -498,8 +508,12 @@ def test_pt05_frequency_wise_kcl_nyquist_band_edge_and_sampling_resolution():
     below = ripple_analysis(350.0, 0.8, 0.3, 200.0, 10e3, 600.0, _cap(), src,
                             requirement={**req, "bandwidth_Hz": 1e4 - 1.0})
     assert at["requirement_value"] > below["requirement_value"]            # the harmonic at the band edge counts
+    # the requested samples per carrier no longer set the FFT length (review 2 of 63a2b61, F-10): the resolution is the
+    # change at twice the samples actually used
+    used = at["model_band"]["samples_per_carrier"]
     fine = ripple_analysis(350.0, 0.8, 0.3, 200.0, 10e3, 600.0, _cap(), src, requirement={**req, "bandwidth_Hz": 1e4},
-                           samples_per_carrier=256)
+                           samples_per_carrier=2 * used)
+    assert fine["model_band"]["samples_per_carrier"] == 2 * used
     assert at["requirement"]["resolution_delta"] == pytest.approx(abs(fine["requirement_value"] -
                                                                       at["requirement_value"]), rel=1e-9)
     assert 0.0 < at["requirement"]["resolution_delta"] < 0.05 * at["requirement_value"]

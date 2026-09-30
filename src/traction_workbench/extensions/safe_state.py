@@ -36,6 +36,7 @@ from ..validation import finite as _finite
 from ..physics import DriveKernel
 from ..scenario import DcSourceLimits, Scenario
 from ..status import Claim, Evidence, EvidenceKind, Reason, Status
+from ..units import shown
 from .dclink import back_emf_ll_peak, speed_for_back_emf
 
 SUPPORTED_RULE_KEYS = ("Vdc_below_V", "Vdc_above_V", "speed_above_rpm", "speed_below_rpm", "hv_state")
@@ -138,7 +139,7 @@ def safe_state_screening(drive: DriveModel, speed_rpm: float, Vdc_V: float, hv_s
         fw["dc_overvoltage_risk"] = "none from back-EMF in steady state"
     else:
         fw["back_emf_risk"] = (f"UNCONTROLLED RECTIFICATION: {vll:.4g} V line-line peak > {vdc:g} V "
-                               f"(onset above {onset:.5g} rpm)")
+                               f"(onset above {shown(onset, 'speed')} rpm)")
         fw["braking_torque"] = "UNKNOWN magnitude (needs a rectifier model); uncontrolled regenerative braking"
         fw["dc_overvoltage_risk"] = ("HIGH: link isolated, rectified energy has no sink"
                                      if hv_state == "battery_disconnected" else

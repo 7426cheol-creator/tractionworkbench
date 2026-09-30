@@ -181,9 +181,9 @@ def fig_efficiency_maps(fig, mp: dict, title: str | None = None):
     axs[0, 0].legend(handles=[Patch(fc="none", ec=t["muted"], hatch="xx", label=tr("판정 UNKNOWN (참고값)", "claim UNKNOWN (reference)")),
                               Patch(fc=t["bg"], ec=t["grid"], label=tr("빈칸 = INFEASIBLE / 정의 안 됨", "blank = INFEASIBLE / undefined"))],
                      loc="upper right", fontsize=6, framealpha=0.9)
-    fig.suptitle(tr(f"경계별 효율 지도 · Vdc {mp['Vdc_V']:g} V · 구동: 출력/입력, 회생: |입력|/|출력| (방향별 정의)",
-                    f"efficiency by boundary · Vdc {mp['Vdc_V']:g} V · motoring out/in, regen |in|/|out| (per direction)"),
-                 fontsize=9.5)
+    fig.suptitle(tr(f"경계별 모델 효율 지도 (최소전류 정책점) · Vdc {mp['Vdc_V']:g} V · 구동: 출력/입력, 회생: |입력|/|출력|",
+                    f"model efficiency by boundary (minimum-current policy points) · Vdc {mp['Vdc_V']:g} V · motoring "
+                    f"out/in, regen |in|/|out|"), fontsize=9.5)
     return fig
 
 

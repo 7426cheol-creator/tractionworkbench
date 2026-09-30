@@ -31,6 +31,8 @@ def _cons(op: dict | None, name: str) -> dict | None:
 
 def _cond_name(sc: dict) -> str:
     s = f"{num(sc['speed_rpm_mechanical'], 6)} rpm · Vdc {num(sc['Vdc_V_inverter_dc_terminal'], 5)} V"
+    if sc.get("winding_temp_C") is not None:
+        s += tr(f" · 권선 {num(sc['winding_temp_C'], 4)} °C", f" · winding {num(sc['winding_temp_C'], 4)} °C")
     if sc.get("magnet_temp_C") is not None:
         s += tr(f" · 자석 {num(sc['magnet_temp_C'], 4)} °C", f" · magnet {num(sc['magnet_temp_C'], 4)} °C")
     return s
@@ -175,16 +177,25 @@ def _claims_section(ins: Insight, c: dict, ps: dict, op: dict | None, T: float, 
     if rec is not None:
         rq = rec.get("requirement") or {}
         temps = [x["scenario"].get("magnet_temp_C") for x in rec.get("conditions") or []]
+        wtemps = [x["scenario"].get("winding_temp_C") for x in rec.get("conditions") or []
+                  if "/winding" in str(x["scenario"].get("scenario_id", ""))]
+        law = str(((rec.get("verdict") or {}).get("layers") or {}).get("requirement", {}).get("quantifiers", {})
+                  .get("magnet", "")).find("psi_PM law") >= 0
         notes = []
         if rq.get("operator") == "band":
             notes.append(tr("∃: 대역 안의 토크 하나가 모든 항목을 같은 운전점에서 만족하면 충분 (대역 전체의 추종이 아님)",
                             "∃: one torque inside the band meeting every item at the same point is enough (not tracking "
                             "of the whole band)"))
         if isinstance((rq.get("conditions") or {}).get("Vdc_V_inverter_dc_terminal"), (list, tuple)) \
-                or len({t for t in temps if t is not None}) > 1:
+                or len({t for t in temps if t is not None}) > 1 or wtemps:
             notes.append(tr("∀: 범위의 모든 값에서 성립해야 함 (표본점 또는 인증서로 검토)",
                             "∀: must hold at every value of the range (examined at samples or by a certificate)"))
-        s.add(tr("판정한 질문: ", "the question judged: ") + requirement_reading(rq, temps), "info", " · ".join(notes))
+        if wtemps or law:
+            notes.append(tr("요구에 온도가 없어 모델이 선언한 온도 전 범위로 읽음 — 한 온도에서만 필요하면 요구에 온도를 적으세요",
+                            "the requirement states no temperature, so it is read over every temperature the model "
+                            "declares — state it if it applies at one temperature only"))
+        s.add(tr("판정한 질문: ", "the question judged: ") + requirement_reading(rq, temps, wtemps, law), "info",
+              " · ".join(notes))
     for cl in ps.get("claims") or []:
         name, st = cl["name"], cl["status"]
         text, detail = _claim_reading(cl, op, T)
@@ -206,7 +217,7 @@ def _claims_section(ins: Insight, c: dict, ps: dict, op: dict | None, T: float, 
 
 
 # ---------------------------------------------------------------------- the question judged (quantifiers)
-def requirement_reading(req: dict, magnet_temps=None) -> str:
+def requirement_reading(req: dict, magnet_temps=None, winding_temps=None, magnet_law: bool = False) -> str:
     """The requirement as the question the verdict answers, with its quantifiers written out: a band is existence of
     ONE torque in it (∃), a Vdc range and an unstated magnet temperature on a multi-plane flux map are for every value
     (∀).  ``req``: a record's requirement (``Requirement.describe``); ``magnet_temps``: the magnet temperatures the
@@ -229,14 +240,29 @@ def requirement_reading(req: dict, magnet_temps=None) -> str:
     else:
         vd = f"Vdc {num(v)} V"
     temps = sorted({float(t) for t in magnet_temps or () if t is not None})
-    mt = c.get("magnet_temp_C")
+    wts = sorted({float(t) for t in winding_temps or () if t is not None})
+    mt, wt = c.get("magnet_temp_C"), c.get("winding_temp_C")
+    if wt is not None:
+        wd = tr(f", 권선 {num(wt)} °C", f", winding {num(wt)} °C")
+    elif wts:
+        pts = ", ".join(num(t) for t in wts)
+        wd = tr(f", Rs 법칙의 <b>모든 권선 온도(∀: {'최악단 ' if len(wts) == 1 else ''}{pts} °C)</b>",
+                f", <b>every</b> winding temperature of the Rs law <b>(∀: {'worst end ' if len(wts) == 1 else ''}"
+                f"{pts} °C)</b>")
+    else:
+        wd = ""
     if mt is not None:
         mg = tr(f", 자석 {num(mt)} °C", f", magnet {num(mt)} °C")
+    elif len(temps) > 1 and magnet_law:
+        mg = tr(f", ψ 법칙의 <b>모든 자석 온도(∀, 표본: {', '.join(num(t) for t in temps)} °C)</b>",
+                f", <b>every</b> magnet temperature of the ψ law <b>(∀, sampled: {', '.join(num(t) for t in temps)} "
+                f"°C)</b>")
     elif len(temps) > 1:
         mg = tr(f", flux map의 <b>모든 자석 온도(∀: {', '.join(num(t) for t in temps)} °C)</b>",
                 f", <b>every</b> flux-map magnet temperature <b>(∀: {', '.join(num(t) for t in temps)} °C)</b>")
     else:
         mg = ""
+    mg = wd + mg
     dur = str(req.get("duration") or "")
     if not dur or dur.startswith("not stated"):
         dt = tr("정적으로 (지속시간 없음)", "statically (no duration)")
@@ -385,6 +411,57 @@ def robustness_summary(rob: dict | None) -> tuple[str, str, str]:
     return label, text, level
 
 
+_SENS_LABEL = {"Rs": ("Rs", "Rs"), "a0": ("인버터 손실 a0", "inverter loss a0"),
+               "a2": ("인버터 손실 a2", "inverter loss a2"), "b": ("회전·철손 b", "rotational / iron loss b"),
+               "c": ("회전·철손 c", "rotational / iron loss c"), "r_v": ("전압 예비율", "voltage reserve"),
+               "psi": ("자석 쇄교자속", "PM flux linkage"), "Ld": ("Ld", "Ld"), "Lq": ("Lq", "Lq")}
+
+
+def _sens_text(p: dict) -> str:
+    lab = tr(*_SENS_LABEL.get(p["key"], (p["label"], p["label"])))
+    b = p.get("break_even")
+    if b is None:
+        return tr(f"{lab}: 이 범위에서 여유를 없애지 않음", f"{lab}: does not erase the margin in range")
+    if p["key"] == "r_v":
+        return tr(f"{lab} +{num(b, 2)} ({num(p['value'])}에서)", f"{lab} +{num(b, 2)} (from {num(p['value'])})")
+    if p["key"] == "a0":
+        return f"{lab} +{kw(b * p['value'])}"
+    return f"{lab} {'+' if b > 0 else '−'}{num(100 * abs(b), 3)} %"
+
+
+def _sensitivity_lines(s, rec: dict) -> None:
+    """A loss-limited margin in watts and in the parameter changes that erase it (engineering review 2, F-03)."""
+    ms = rec.get("margin_sensitivity") or {}
+    if not ms:
+        return
+    b = ms.get("loss_budget_W")
+    erased = [p for p in ms.get("parameters") or [] if p.get("break_even") is not None][:3]
+    s.add(tr(f"손실로 제한된 여유 {num(ms['margin_Nm'], 3)} N·m ({esc(ms['condition'])})"
+             + ("" if b is None else f" — 운전점에서 손실이 {kw(b)} 더 늘면 DC 한계에 닿음")
+             + (" · 여유를 없애는 변화(선형 추정): " + ", ".join(_sens_text(p) for p in erased) if erased else ""),
+             f"loss-limited margin {num(ms['margin_Nm'], 3)} N·m ({esc(ms['condition'])})"
+             + ("" if b is None else f" — {kw(b)} of additional loss at the witness reaches the DC limit")
+             + (" · erased by (linear estimate): " + ", ".join(_sens_text(p) for p in erased) if erased else "")),
+          "warn",
+          tr("근거 손실 모델: ", "loss models behind it: ") + "; ".join(_loss_model_words(x)
+                                                                      for x in ms.get("loss_models") or [])
+          + tr(" — 이 값들의 근거 있는 오차를 오차 예산에 선언하면 판정 여유와 비교합니다",
+               " — declare their error with a basis in the error budget to compare it with the margin"))
+
+
+def _loss_model_words(x: str) -> str:
+    if x.startswith("inverter loss:"):
+        if "module" in x:
+            return tr("인버터 손실: 데이터시트 모듈 모델", "inverter loss: datasheet module model")
+        if "not modelled" in x:
+            return tr("인버터 손실: 모델 없음", "inverter loss: not modelled")
+        return tr("인버터 손실: 2차 대체식 a0 + a2·I² (Vdc·fsw·Tj 의존 없음)",
+                  "inverter loss: quadratic surrogate a0 + a2·I² (no Vdc / fsw / Tj dependence)")
+    if "not modelled" in x:
+        return tr("회전·철손: 모델 없음", "rotational / iron loss: not modelled")
+    return tr("회전·철손: 속도만의 함수 (부하·자속 의존 없음)", "rotational / iron loss: speed-only (no load / flux dependence)")
+
+
 def robustness_section(ins: Insight, rec: dict) -> None:
     """'Met in the model' and 'met with enough margin for a design decision' kept apart (review of 63a2b61, 4)."""
     rob = ((rec.get("verdict") or {}).get("layers") or {}).get("robustness") or {}
@@ -397,6 +474,7 @@ def robustness_section(ins: Insight, rec: dict) -> None:
                        "capability, 'not met' at the certified bound), current, DC and voltage with the limit margins "
                        "at the witness (y + Δ ≤ y_max)."))
     s.add(f"<b>{label}</b>: {text}", level)
+    _sensitivity_lines(s, rec)
     budget = rob.get("budget")
     per, names, g = rob.get("conditions") or [], rob.get("names") or [], rob.get("governing")
     checks = rob.get("checks") or []

@@ -334,8 +334,13 @@ def test_one_pulse_pattern_for_losses_ripple_and_sampling():
     assert r["module_modulation"] == {**r["module_modulation"], "declared": "svpwm", "used": "spwm"}
     base = api.pwm_policies({})
     assert r["policies"][0]["E_inv_J"] != base["policies"][0]["E_inv_J"]         # the losses follow the pattern
+    # DPWM1 runs through every model with the same pattern (engineering review 2 of 63a2b61, P3: it used to be
+    # rejected by the edge models only): a leg rests a third of the period, so the switching loss energy drops
+    d1 = api.pwm_policies({"modulation": "dpwm1"})
+    assert d1["module_modulation"]["used"] == "dpwm1"
+    assert d1["policies"][0]["E_inv_J"] < base["policies"][0]["E_inv_J"]
     with pytest.raises(InputValidationError):
-        api.pwm_policies({"modulation": "dpwm1"})                                 # not supported by the edge models
+        api.pwm_policies({"modulation": "dpwm2"})                                 # not a declared family
 
 
 def test_loop_margin_is_checked_on_both_machine_axes():

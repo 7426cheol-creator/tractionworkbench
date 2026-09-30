@@ -49,7 +49,7 @@ import numpy as np
 from .. import progress
 from ..errors import InputValidationError
 from ..identity import content_sha256
-from ..modulation import duties
+from ..modulation import MODULATIONS, duties
 from ..status import Claim, Evidence, EvidenceKind, Reason, Status
 from ..validation import finite as _finite
 
@@ -322,8 +322,8 @@ class SwitchingSource:
             _finite(name, getattr(self, name))
         if _finite("t_dead_s", self.t_dead_s) < 0:
             raise InputValidationError("dead time must be >= 0", field="t_dead_s")
-        if self.modulation not in ("svpwm", "spwm"):
-            raise InputValidationError("modulation must be svpwm or spwm", field="modulation")
+        if self.modulation not in MODULATIONS:          # one list for every consumer (review 2 of 63a2b61, P3)
+            raise InputValidationError(f"modulation must be one of {', '.join(MODULATIONS)}", field="modulation")
         if self.carrier not in CARRIERS:
             raise InputValidationError(f"carrier must be one of {CARRIERS}", field="carrier")
         if self.min_pulse_policy not in MIN_PULSE_POLICIES:

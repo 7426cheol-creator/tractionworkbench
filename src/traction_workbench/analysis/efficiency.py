@@ -326,6 +326,11 @@ def inverter_scope(drive) -> dict:
     return {"model": None, "included": [], "excluded": ["inverter loss model missing"]}
 
 
+MODEL_EFFICIENCY = ("model efficiency: the minimum-current policy point with the declared loss models, not a loss-"
+                    "optimal point - minimum current is minimum loss only while every loss grows with the current "
+                    "alone (I^2 copper and inverter terms, a speed-only rotational / iron loss); a control that trades "
+                    "current for flux (field weakening to cut iron loss) can differ by several efficiency points at "
+                    "high speed, so this is neither a measured nor an optimised efficiency")
 ROTATIONAL_SCOPE = ("speed-only loss-equivalent torque b*omega + c*omega*|omega| (fundamental iron loss included as "
                     "declared): it does not follow load, field weakening or PWM harmonics - a separate iron-loss map "
                     "is never added on top of it (double counting), and an id/iq-dependent iron loss would change "

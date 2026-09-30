@@ -40,7 +40,7 @@ from ..settings import DEFAULT_SETTINGS, NumericalSettings
 from ..solvers.policy import PolicyEvaluator
 from ..status import Claim, Reason, Status
 from ..validation import finite as _finite
-from .thermal import ThermalModel, _losses
+from .thermal import ThermalModel, _losses, _no_band_note, band_status
 
 INITIAL_KINDS = ("equilibrium_at_coolant", "steady_state_at", "node_temperatures")
 
@@ -140,6 +140,7 @@ class _Losses:
                               "law or map planes): the magnet node is not fed back")
         if not fb.enabled:
             self.notes.append("loss-temperature feedback off: losses at the stated scenario temperatures")
+        self.active = self.rs or self.module or self.mag
         self.cache = {}
 
     def at(self, ph: LoadPhase, T_w: float | None, T_j: float | None, T_m: float | None = None) -> dict:
@@ -368,7 +369,7 @@ def repeated_load(drive, scenario: Scenario, model: ThermalModel, phases: list, 
     temps0 = [ref + float(np.sum(xx)) for ref, xx in zip(refs, x)]
 
     # time stepping: one cycle from given Foster states, losses re-evaluated per step
-    bounds, losses_seen = [], []
+    bounds, losses_seen, losses_max = [], [], {}
     tr_t, tr_T = [0.0], [list(temps0)]
 
     def run_cycle(xs, temps, c, t, record):
@@ -382,13 +383,29 @@ def repeated_load(drive, scenario: Scenario, model: ThermalModel, phases: list, 
                 ev = L.at(ph, *fbT(temps))
                 if not ev["ok"]:
                     return xs, temps, peak, fl, {"t_s": t, "cycle": c + 1, "phase": k, "reason": ev["reason"],
-                                                 "status": ev["status"]}, t, refs
+                                                 "status": ev["status"], "T_w": ev["T_w"], "T_j": ev["T_j"],
+                                                 "T_m": ev["T_m"]}, t, refs
                 los = ev["losses"]
+                if L.active:
+                    # predictor-corrector (Heun): the losses at the start of the step lag the heating, so the first
+                    # limit came late (engineering review 2 of 63a2b61, F-11) - predict the end-of-step temperatures
+                    # with the start losses, evaluate the losses there and advance with the mean of both
+                    Pp = [nd.power(los) for nd in model.nodes]
+                    if not any(math.isnan(P) for P in Pp):
+                        rp = refs_for(los)
+                        tp = [ref + float(np.sum(_advance(xs[i], R[i], tau[i], Pp[i], dt))) for i, ref in enumerate(rp)]
+                        ev2 = L.at(ph, *fbT(tp))
+                        if ev2["ok"]:
+                            los = {kk: 0.5 * (vv + ev2["losses"].get(kk, vv)) for kk, vv in los.items()}
+                if record:
+                    for kk, vv in los.items():
+                        if isinstance(vv, (int, float)) and not math.isnan(vv):
+                            losses_max[kk] = max(losses_max.get(kk, 0.0), float(vv))
                 if record and c == 0 and s_ == 0:
                     losses_seen.append({"phase": k, **los})
                 refs = refs_for(los)
                 Ps = [nd.power(los) for nd in model.nodes]
-                bad = [nd.node_id for nd, P in zip(model.nodes, Ps) if math.isnan(P)]
+                bad = [nd.node_id for nd, P, rf in zip(model.nodes, Ps, refs) if math.isnan(P) or math.isnan(rf)]
                 if bad:
                     return xs, temps, peak, fl, {"t_s": t, "cycle": c + 1, "phase": k, "status": "UNKNOWN",
                                                  "reason": f"heat source of node {bad[0]!r} not available"}, t, refs
@@ -411,7 +428,35 @@ def repeated_load(drive, scenario: Scenario, model: ThermalModel, phases: list, 
                     tr_T.append(list(temps))
         return xs, temps, peak, fl, None, t, refs
 
-    per_cycle, first_limit, stop = [], None, None
+    # periodic steady cycle, computed FIRST from the initial state: per Foster term the cycle map is affine,
+    # x_end = A x_start + b with A = exp(-T/tau), so x* = (x_end - A x_start) / (1 - A); iterate with the losses
+    # re-evaluated (feedback) until it holds.  The physical run below then covers the REQUESTED horizon: it may only
+    # stop early once it has reached this state (the remaining cycles repeat the periodic cycle), never on a small
+    # change per cycle - a slow node can still creep many kelvin (engineering review 2 of 63a2b61, F-06)
+    T_cyc = sum(ph.duration_s for ph in phases)
+    A = [np.exp(-T_cyc / tt) for tt in tau]
+    periodic, x_star = None, None
+    xs, ts_ = [xx.copy() for xx in x], list(temps0)
+    for it in range(1, 41):
+        x_end, t_end, peak, _fl, stp, _t, refs_end = run_cycle(xs, ts_, 0, 0.0, False)
+        if stp:
+            periodic = {"reached": False, "stopped": stp, "iterations": it}
+            break
+        res = _state_residual(x_end, xs)
+        if it > 1 and res < PERIODIC_TOL_K:
+            periodic = {"reached": True, "iterations": it, "peak_C": dict(zip(ids, peak)),
+                        "start_C": dict(zip(ids, ts_)), "end_C": dict(zip(ids, t_end)),
+                        "state_residual_K": res,
+                        "tolerance_K": PERIODIC_TOL_K * max(len(tt) for tt in tau)}
+            x_star = xs
+            break
+        xs = [(xe - a * x0) / (1.0 - a) for xe, a, x0 in zip(x_end, A, xs)]
+        ts_ = [ref + float(np.sum(xx)) for ref, xx in zip(refs_end, xs)]
+    else:
+        periodic = {"reached": False, "iterations": 40, "peak_C": dict(zip(ids, peak)),
+                    "note": "the periodic fixed point did not settle in 40 iterations (strong feedback)"}
+
+    per_cycle, first_limit, stop, repeats = [], None, None, 0
     t, temps = 0.0, list(temps0)
     for c in range(cycles):
         start_T = list(temps)
@@ -422,34 +467,10 @@ def repeated_load(drive, scenario: Scenario, model: ThermalModel, phases: list, 
             break
         per_cycle.append({"cycle": c + 1, "peak_C": dict(zip(ids, peak)), "start_C": dict(zip(ids, start_T)),
                           "end_C": dict(zip(ids, temps))})
-        settled = c >= 1 and _state_residual(x_new, x) < PERIODIC_TOL_K
         x = x_new
-        if settled:
-            break                                  # the physical run itself reached the periodic cycle
-
-    # periodic steady cycle: per Foster term the cycle map is affine, x_end = A x_start + b with A = exp(-T/tau),
-    # so x* = (x_end - A x_start) / (1 - A); iterate with the losses re-evaluated (feedback) until it holds
-    periodic = None
-    if stop is None:
-        T_cyc = sum(ph.duration_s for ph in phases)
-        A = [np.exp(-T_cyc / tt) for tt in tau]
-        xs, ts_ = x, temps
-        for it in range(1, 41):
-            x_end, t_end, peak, _fl, stp, _t, refs_end = run_cycle(xs, ts_, 0, 0.0, False)
-            if stp:
-                periodic = {"reached": False, "stopped": stp, "iterations": it}
-                break
-            res = _state_residual(x_end, xs)
-            if it > 1 and res < PERIODIC_TOL_K:
-                periodic = {"reached": True, "iterations": it, "peak_C": dict(zip(ids, peak)),
-                            "start_C": dict(zip(ids, ts_)), "end_C": dict(zip(ids, t_end)),
-                            "state_residual_K": res}
-                break
-            xs = [(xe - a * x0) / (1.0 - a) for xe, a, x0 in zip(x_end, A, xs)]
-            ts_ = [ref + float(np.sum(xx)) for ref, xx in zip(refs_end, xs)]
-        else:
-            periodic = {"reached": False, "iterations": 40, "peak_C": dict(zip(ids, peak)),
-                        "note": "the periodic fixed point did not settle in 40 iterations (strong feedback)"}
+        if x_star is not None and c + 1 < cycles and _state_residual(x, x_star) < PERIODIC_TOL_K:
+            repeats = cycles - (c + 1)      # the rest of the horizon repeats the periodic cycle (within the tolerance)
+            break
     limits = {nd.node_id: nd.limit_C for nd in model.nodes}
     if periodic is not None and periodic.get("peak_C"):
         margins = {n: limits[n] - periodic["peak_C"][n] for n in ids}
@@ -472,40 +493,80 @@ def repeated_load(drive, scenario: Scenario, model: ThermalModel, phases: list, 
         resolution = _resolution_compare(steps_per_phase, cache_K, first_limit, periodic, per_cycle, fine, ids,
                                          allowed_out)
 
+    # qualification per phase (every phase's speed and torque against the validity domain) and with the heat sources
+    # of EVERY phase and step (the largest value of each loss seen) - a source that heats no node in a later phase
+    # is not dropped on the floor (engineering review 2 of 63a2b61, F-08)
     stated = {"coolant_temp_C": scenario.coolant_temp_C, "Vdc_V": scenario.Vdc_V,
               "switching_frequency_Hz": scenario.switching_frequency_Hz, **model.stated_conditions()}
-    problems = model.qualification(stated, "equilibrium_at_coolant", losses_seen[0] if losses_seen else None)
-    problems = [p for p in problems if "initial" not in p]          # the start is modelled here (INITIAL_KINDS)
-    q = f"{len(phases)}-phase duty cycle x {len(per_cycle)} (pulse {phases[0].torque_Nm:g} N*m for " \
+    union = dict(losses_max) if losses_max else (losses_seen[0] if losses_seen else None)
+    problems = []
+    for ph in phases:
+        for p_ in model.qualification({**stated, "speed_rpm": ph.speed_rpm, "torque_Nm": ph.torque_Nm},
+                                      "equilibrium_at_coolant", union):
+            if "initial" not in p_ and p_ not in problems:     # the start is modelled here (INITIAL_KINDS)
+                problems.append(p_)
+    q = f"{len(phases)}-phase duty cycle x {cycles} (pulse {phases[0].torque_Nm:g} N*m for " \
         f"{phases[0].duration_s:g} s at {phases[0].speed_rpm:g} rpm), start {init.kind}"
-    horizon = f"{len(per_cycle)} x {sum(ph.duration_s for ph in phases):g} s duty cycle"
+    horizon = f"{cycles} x {T_cyc:g} s duty cycle"
     exceeded = first_limit is not None
     per_note = "" if not (periodic and periodic.get("margin_K")) else (
         f"; periodic cycle: governing node {periodic['governing_node']!r}, margin "
         f"{periodic['margin_K'][periodic['governing_node']]:.3g} K")
+    ran = (f"{len(per_cycle)} simulated cycle(s)" + (f" + {repeats} repeating the periodic cycle (the state reached it "
+                                                     f"within {PERIODIC_TOL_K:g} K per Foster term)" if repeats else ""))
+    # the requested horizon's smallest margin (limit - highest temperature reached); repeated periodic cycles peak at
+    # the periodic peak
+    hi_T = {n: max(pc["peak_C"][n] for pc in per_cycle) for n in ids} if per_cycle else {}
+    if repeats and periodic and periodic.get("peak_C"):
+        hi_T = {n: max(hi_T[n], periodic["peak_C"][n]) for n in ids}
+    margin_h = min(limits[n] - hi_T[n] for n in ids) if hi_T else None
+    periodic_q = ()
+    if periodic and periodic.get("exceeds") and not exceeded:
+        g = periodic["governing_node"]
+        periodic_q = (f"the periodic cycle (the duty cycle repeated indefinitely) exceeds the {g!r} limit by "
+                      f"{-periodic['margin_K'][g]:.2g} K: within the limits for the stated {cycles} cycle(s) only",)
     if stop is not None:
-        claim = Claim("repeated_load", Status.UNKNOWN if stop["status"] != "INFEASIBLE" else Status.INFEASIBLE, q,
-                      "static policy / loss not established during the cycle", time_horizon=horizon, reasons=(Reason.MISSING_INPUT,)
-                      if stop["status"] != "INFEASIBLE" else (Reason.CONSTRAINT_VIOLATION,),
-                      detail=f"stopped at {stop['t_s']:.4g} s (cycle {stop['cycle']}, phase {stop['phase'] + 1}): "
-                             f"{stop['reason']}")
+        # a stop is a static fact only at t = 0 from a stated start (equilibrium at the coolant, measured node
+        # temperatures) or with a qualified model; later, the temperature that makes the point fail is the
+        # unqualified model's estimate - never a proven violation (engineering review 2 of 63a2b61, F-07)
+        infeasible = stop["status"] == "INFEASIBLE"
+        decisive = infeasible and (not problems or (stop["t_s"] == 0.0 and init.kind != "steady_state_at"))
+        temps_at = ", ".join(f"{k} {v:.4g} degC" for k, v in (("winding", stop.get("T_w")), ("junction", stop.get("T_j")),
+                                                              ("magnet", stop.get("T_m"))) if v is not None)
+        where = f"stopped at {stop['t_s']:.4g} s (cycle {stop['cycle']}, phase {stop['phase'] + 1})" + (
+            f" at the estimated {temps_at}" if temps_at else "")
+        if decisive:
+            claim = Claim("repeated_load", Status.INFEASIBLE, q, "static policy / loss not established during the "
+                          "cycle", time_horizon=horizon, reasons=(Reason.CONSTRAINT_VIOLATION,),
+                          detail=f"{where}: {stop['reason']}")
+        elif infeasible:
+            claim = Claim("repeated_load", Status.UNKNOWN, q, "thermal screening estimate", time_horizon=horizon,
+                          reasons=(Reason.UNVALIDATED_DURATION,),
+                          qualifiers=(f"the static point fails at a temperature estimated by an unqualified thermal "
+                                      f"model: not a proven violation ({'; '.join(problems)})",),
+                          detail=f"{where}: {stop['reason']}")
+        else:
+            claim = Claim("repeated_load", Status.UNKNOWN, q, "static policy / loss not established during the cycle",
+                          time_horizon=horizon, reasons=(Reason.MISSING_INPUT,), detail=f"{where}: {stop['reason']}")
     elif problems:
         claim = Claim("repeated_load", Status.UNKNOWN, q, "thermal screening estimate", time_horizon=horizon,
                       reasons=(Reason.UNVALIDATED_DURATION,),
                       qualifiers=(f"screening estimate: {'a node limit is reached' if exceeded else 'within limits'} "
-                                  f"in the {len(per_cycle)} simulated cycle(s){per_note}",),
+                                  f"in the {cycles} cycle(s){per_note}",) + periodic_q,
                       detail="; ".join(problems) + ": the estimate is not a duty-cycle rating")
     elif resolution is not None and not resolution["stable"]:
         claim = Claim("repeated_load", Status.UNKNOWN, q, "qualified thermal model at matching conditions",
                       time_horizon=horizon, reasons=(Reason.NUMERICAL_UNRESOLVED,),
                       detail=f"the verdict changes with the time step / loss-cache grid: {resolution['note']}")
     else:
-        claim = Claim("repeated_load", Status.INFEASIBLE if exceeded else Status.FEASIBLE, q,
-                      "qualified thermal model at matching conditions", time_horizon=horizon,
-                      reasons=(Reason.CONSTRAINT_VIOLATION,) if exceeded else (),
-                      detail=f"{len(per_cycle)} simulated cycle(s){per_note}")
+        st, why, band_note = band_status(margin_h, model)
+        claim = Claim("repeated_load", st, q, "qualified thermal model at matching conditions", time_horizon=horizon,
+                      reasons=why, qualifiers=periodic_q + ((band_note,) if band_note else ())
+                      + _no_band_note(model, margin_h),
+                      detail=f"{ran}{per_note}")
     step = max(1, len(tr_t) // 1500)
     return {"claim": claim.to_dict(), "cycles_run": len(per_cycle), "cycles_requested": cycles,
+            "cycles_repeating_periodic": repeats, "horizon_margin_K": margin_h,
             "first_limit": first_limit, "stopped": stop,
             "initial": {"kind": init.kind, "temperatures_C": dict(zip(ids, temps0)),
                         "preload": None if init.kind != "steady_state_at" else
@@ -520,7 +581,8 @@ def repeated_load(drive, scenario: Scenario, model: ThermalModel, phases: list, 
                       "phase_bounds": bounds},
             "assumptions": ["exact exponential update of every Foster term per step (constant loss within a step, "
                             f"{steps_per_phase} steps per phase; losses re-evaluated per step at the node "
-                            f"temperatures, cached on a {cache_K:g} K grid); the peak and the first limit crossing "
+                            f"temperatures - with feedback the mean of the start- and end-of-step losses "
+                            f"(predictor-corrector) - cached on a {cache_K:g} K grid); the peak and the first limit crossing "
                             "inside every step and phase are exact at every stationary point (exponential-sum root "
                             "isolation, no sampling grid)",
                             "coolant rise follows each step's losses instantly (loop thermal mass not modelled; "
@@ -784,7 +846,8 @@ def _min_monotone(ok, hi0: float, cap: float = 1e6) -> float:
     if ok(0.0):
         return 0.0
     prev = 0.0
-    for t in np.geomspace(min(hi0, 1.0) * 1e-3, cap, 97):
+    # ratio ~1.05 per sample: a window narrower than ~5 % of its start can still fall between two samples
+    for t in np.geomspace(min(hi0, 1.0) * 1e-3, cap, 421):
         t = float(t)
         if ok(t):
             lo, hi = prev, t
