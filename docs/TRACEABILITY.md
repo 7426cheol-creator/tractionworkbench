@@ -408,7 +408,27 @@ PR #5의 코드는 병합하지 않고 이 문서의 의미를 현재 코드 기
 | P3 EMI | 설계 예비 공란 → 조용히 0 dB, 공백이 많은데 "모든 수신 주파수" | 공란 메모·플래그·해석 지표, FEASIBLE 문구에 판정하지 않은 선언 공백 구간 | `test_emi_p3_blank_reserve_is_stated_and_declared_gaps_are_named` | fixed |
 | P3 EMI | 획득 메타데이터 없는 측정 trace는 INDETERMINATE(FAIL 아님) | 리뷰대로 보수적 — 변경 없음 | 기존 시험 | kept |
 
-## 19. 비목표 (handoff §15, 추가 명세 비목표)
+## 19. 기능안전 설계 작업 (고장 시뮬레이션·FuSa 사용성·심사 근거)
+
+요구(사용자): FTTI·TSR 요구 수치·검출 디바운스를 조정할 수 있을 것, 반응을 단일 상태가 아니라 소프트 ASC 등 과도를 줄이는 대표
+방법들과 "FW 잠깐 → ASC" 같은 단계로 설계할 수 있을 것, 보호 반응 설계 변경을 JSON 직접 입력 없이 할 수 있을 것, FSR·TSR 보강,
+Safety 심사관 관점의 근거. 상세 설명은 `docs/LOGIC_REVIEW.html` §22, 회귀 시험은 `tests/test_fusa_design.py`·`tests/test_fault_page.py`에 있습니다.
+
+| 항목 | 요구 | 구현 | 확인 | 상태 |
+|---|---|---|---|---|
+| FTTI·예산·TSR 수치 편집 | 타입이 있는 칸, JSON 없음 | `desktop/fault_design.py` `DesignEditor`: SG(ASIL·FTTI·위험·안전 상태·운전 상황), FSR(ASIL·FDTI/FRTI 예산·할당·안전 상태 TSR·경고·검증 방법), TSR(유형별 판정 기준 칸·안전 상태 조건 표·할당·검증·근거), id 바꾸면 참조도 바뀜, 편집마다 섹션 검증 | `test_the_design_editor_changes_ftti_tsr_limits_debounce_and_strategies_without_json` | implemented |
+| 디바운스·필터·임계값 편집 | 메커니즘별 | 메커니즘 표(주기·임계값·디바운스/필터·잠재 고장 시험·커버리지) + 종류별 매개변수 칸(`KIND_PARAMS`), 범위·선택지 검증(`_check_params`) | 위 시험, `test_engineer_entered_values_are_checked_where_they_are_entered` | implemented |
+| 설계 변형 | 실행·저장·추적·반영 | `extensions/faultsim/design.py`(`diff_overrides`, `change_rows`: 없는 키·None·빈 컨테이너는 변경 아님), `VariantField`(입력 추적·작업 공간), 시나리오 불러올 때 편집 변경 교체 전 확인, 프로젝트에 반영(`with_section`) | `test_a_design_variant_is_the_difference_and_applies_back`, `test_empty_containers_and_missing_keys_are_not_changes`, `test_removing_and_reordering_items_are_named`, `test_the_edited_design_is_written_into_the_project_and_survives_a_workspace`, `test_scenario_files_round_trip_and_the_page_survives_a_workspace` | implemented |
+| 반응 전략 | 단계열, 소프트 ASC 대표 방법, FW → ASC | `extensions/faultsim/strategy.py`(동작 11종·종료 조건 7종·최대 시간·대체 상태·템플릿 7종), `engine.py`(`_start_strategy`·`_enter_step`·`_advance_strategies`·`_strategy_fallback`·`_rank`, 이미 실행 중이면 재시작 안 함), `control.py`(토크·토크 램프·ASC 점 전류 사전 조정·전압 램프 모드), `asc_steady_point` | `test_soft_asc_by_voltage_ramp_removes_the_asc_transient`, `test_current_preconditioning_ends_by_its_maximum_time_when_the_measurement_is_wrong`, `test_freewheel_first_and_phase_sequential_asc`, `test_a_software_strategy_on_a_hardware_path_falls_back_to_its_bridge_state`, `test_asc_while_fast_then_freewheel_below_the_declared_speed`, `test_torque_ramp_down_then_freewheel_takes_the_declared_rate`, `test_a_running_strategy_is_not_restarted_by_a_second_request`, `test_the_policy_selects_a_strategy_through_a_design_variant`, `test_the_asc_steady_point_solves_the_steady_dq_equations`, `test_strategy_declarations_are_validated` | implemented (개념 모델: 상수 파라미터 ASC 점, 개루프 전압 램프; HW 소프트 ASC는 모델 밖) |
+| 후보 비교 | 전략을 후보로, 과도 지표 | 후보 체크 목록(기본 반응 + 선언 전략), 강제 반응에 전략, 비교 표에 최저 i_d·최대 제동 토크, 단계 기록(해석·툴팁) | `test_reaction_candidates_run_from_the_same_initial_condition` | implemented |
+| FSR·TSR 보강 | 심사 속성 | `safety.py`: SG 안전 상태·운전 상황, FSR ASIL·경고·할당·검증 방법, TSR ASIL·할당·검증 방법·근거, 물리량 i_d·제동 토크, 예제 TSR-08(제동 토크 ≤ 450 N·m)·TSR-09(i_d ≥ −1,000 A), FTTI·예산 > 0, 판정 기준 시간·폭 ≥ 0 | `test_engineer_entered_values_are_checked_where_they_are_entered`, `test_a_representative_scenario_runs_and_reads_on_the_page` | implemented (값은 합성 예제) |
+| 정적 설계 검토 | 시뮬레이션 전 일관성 | `extensions/faultsim/review.py`: 모순·누락·경고·참고, ASIL 상속, 예산 합 ≤ FTTI, 검출 지연 범위(최소 초과 = 모순, 최대만 = 경고), 전략 시간 대 FRTI(경고), 잠재 고장 시험, 실행 가능성, 시간 판정 TSR 없는 예산, 공통 원인 | `test_the_example_design_has_no_contradiction_or_gap_and_names_its_weak_points`, `test_the_review_finds_contradictions_between_declared_values`, `test_the_review_finds_gaps_and_unexecutable_strategies`, `test_a_detection_bound_is_a_contradiction_only_when_its_minimum_exceeds_the_budget` | implemented |
+| 검증 매트릭스·FMEA | 카탈로그 전체 근거 | `extensions/faultsim/verification.py`: 한 설계로 카탈로그 실행(시나리오 자신의 변형 제거, 중복 제외), 요구 × 시나리오, 발동 수, FSR별 최악 시간(한 궤적), 시뮬레이션 기반 고장 모드 표 | `test_the_catalog_runs_on_one_design_without_its_own_design_variants`, `test_the_verification_matrix_counts_coverage_and_worst_times` | implemented (시나리오 커버리지 — 진단 커버리지 SPFM/LFM 아님) |
+| 안전 근거 보고서 | 심사용 한 파일 | `extensions/faultsim/report.py` `safety_case_html`(설계·변형, 요구, 검토, 전략, 매트릭스, 공통 원인, 반례, 한계; 매트릭스는 같은 설계·프로젝트일 때만, 커밋되지 않은 소스 변경을 머리에 경고 — `code_identity`의 `dirty`), `api.fault_report` | `test_the_safety_case_report_is_one_self_contained_page`, `test_the_report_says_when_the_source_had_uncommitted_changes`, `test_the_api_serves_the_editor_schema_review_matrix_and_report`, `test_the_safety_case_tab_reviews_verifies_and_saves_the_report` | implemented |
+| 화면·해석 | 편집 탭, 안전 근거 탭, 두 언어 | `desktop/pages/fault_sim.py`(세 탭), `insight/fault.py` `safety_case_insight`(모순·누락 → 경고 → 검출 지연 → 요구별 실패·미발동 → 최악 시간 → 미검출 고장), self-test 화면 25j–25m | `test_every_page_reading_is_made_and_readable_in_both_languages`, self-test | implemented |
+| 한계 | — | 센서·자원·배터리·역할은 편집기 밖(프로젝트 파일), 커버리지 주장은 선언(계산 아님), 매트릭스는 카탈로그만 | `docs/LOGIC_REVIEW.html` §22.9 | remaining |
+
+## 20. 비목표 (handoff §15, 추가 명세 비목표)
 
 generic motor CAD/FEA 복제, 정적 ASC로 demag/SOA 승인, 일반 IGBT 식으로 SiC 수명 보증, 드라이버 typical delay로 ASIL 승인,
 class 번호로 EMC 합격률, 평균 dq로 NVH/베어링/MHz 임피던스, 생산 anti-jerk 제어기 자동 납품, 보편 안정성 인증서,

@@ -57,6 +57,10 @@ SHOTS = {
     "fault_timeline": "25c_fault_timeline",
     "fault_candidates": "25f_fault_candidates",
     "fault_campaign": "25g_fault_campaign",
+    "fault_strategies": "25j_fault_strategies",
+    "fault_design_editor": "25k_fault_design_editor",
+    "fault_verification_matrix": "25l_fault_verification_matrix",
+    "fault_safety_case": "25m_fault_safety_case",
     "power_module": "26_power_module",
     "power_ripple": "27_power_ripple",
     "power_life": "28_power_life",
@@ -101,7 +105,8 @@ def main() -> int:
             im = im.resize((WIDTH, round(im.height * WIDTH / im.width)), Image.LANCZOS)
         im.save(DEST / f"{name}.jpg", quality=85, optimize=True, progressive=True)
     print(f"{len(SHOTS)} screenshots -> {DEST}")
-    stale = sorted(p.name for p in DEST.glob("*.jpg") if p.stem not in SHOTS)
+    # fusa_*.jpg are the README showcase (docs/make_fusa_showcase.py), not self-test captures
+    stale = sorted(p.name for p in DEST.glob("*.jpg") if p.stem not in SHOTS and not p.stem.startswith("fusa_"))
     if stale and a.prune:
         for n in stale:
             (DEST / n).unlink()

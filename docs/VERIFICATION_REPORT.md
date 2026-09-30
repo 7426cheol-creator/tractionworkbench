@@ -1,6 +1,6 @@
 # Verification Report — Traction Workbench
 
-자동 생성: `python verification/make_report.py` · software 0.5.0 · commit `b3f1583` · 2026-09-30 · Python 3.11.15, NumPy 2.4.6, SciPy 1.17.1
+자동 생성: `python verification/make_report.py` · software 0.5.0 · commit `33252bb` · 2026-09-30 · Python 3.11.15, NumPy 2.4.6, SciPy 1.17.1
 
 > 범위: 합성(synthetic) 참조 fixture에 대한 검증(verification)입니다. 하드웨어·공급사 데이터·외부 시뮬레이터에 대한 validation은 수행하지 않았습니다. 수치 자릿수는 회귀 검산용이며 실제 제품 정확도가 아닙니다.
 
@@ -11,9 +11,9 @@
 | 참조 패키지 무결성 (manifest SHA-256, 10 files) | OK |
 | 독립 fixture 검산 (production 코드 미사용) | 136/136 pass (47 s) |
 | Production vs golden acceptance | 21/21 pass |
-| pytest | 1022 passed, 2 warnings in 1986.08s (0:33:06) (2012 s) |
-| 데스크톱 앱 self-test (headless, `twb selftest`) | 101/101 pass (415 s) |
-| MathWorks 이식 패키지 (`twb mathworks`) | parity PASS — 80 PASS · 0 FAIL · 0 ERROR · 1 NOT_SUPPORTED; GNU Octave 8.4.0 - MATLAB-language proxy; MATLAB / Simulink not run (22 s) |
+| pytest | 1059 passed, 2 warnings in 2604.61s (0:43:24) (2664 s) |
+| 데스크톱 앱 self-test (headless, `twb selftest`) | 107/107 pass (427 s) |
+| MathWorks 이식 패키지 (`twb mathworks`) | parity PASS — 80 PASS · 0 FAIL · 0 ERROR · 1 NOT_SUPPORTED; GNU Octave 8.4.0 - MATLAB-language proxy; MATLAB / Simulink not run (21 s) |
 
 ## 2. 독립 fixture 검산 (`verification/independent_fixture_check.py`)
 
@@ -77,7 +77,7 @@ PASS  inverse:I10_STANDSTILL_TORQUE:golden                             |did|=5.5
 |---|---|---|
 | decision:ts012_600 | PASS | verdict PASS, expected PASS |
 | decision:ts012_450 | PASS | verdict FAIL, expected FAIL |
-| pdf_report | PASS | 159533 bytes |
+| pdf_report | PASS | 159544 bytes |
 | decision:ts012_10s | PASS | verdict UNKNOWN, expected UNKNOWN |
 | decision:regen_80 | PASS | verdict PASS, expected PASS |
 | decision:regen_100 | PASS | verdict FAIL, expected FAIL |
@@ -113,7 +113,7 @@ PASS  inverse:I10_STANDSTILL_TORQUE:golden                             |did|=5.5
 | protection:asc | PASS | screening indicates the requirement(s) ASC-RMS are exceeded - confirm with a qualified nonlinear fault-domain model befo |
 | reading:protection:asc | PASS | 1 reading(s) |
 | fault:protection_success | PASS | {'TSR-01': 'PASS', 'TSR-02': 'PASS', 'TSR-03': 'PASS', 'TSR-04': 'PASS', 'TSR-05': 'NOT_APPLICABLE', 'TSR-06': 'PASS', ' |
-| fault:wrong_reaction | PASS | {'TSR-05': 'NOT_APPLICABLE', 'TSR-06': 'FAIL', 'FSR-02': 'FAIL', 'SG-03': 'FAIL'} ['six_switch_off', 'six_switch_off'] |
+| fault:wrong_reaction | PASS | {'TSR-05': 'NOT_APPLICABLE', 'TSR-06': 'FAIL', 'TSR-08': 'FAIL', 'TSR-09': 'FAIL', 'FSR-01': 'FAIL', 'FSR-02': 'FAIL', ' |
 | reading:fault_sim | PASS | 1 reading(s) |
 | fault:candidates | PASS | {'policy': 'FAIL', 'none': 'FAIL', 'asc_low': 'FAIL', 'asc_high': 'FAIL', 'six_switch_off': 'FAIL', 'torque_zero': 'FAIL |
 | reading:fault:candidates | PASS | 1 reading(s) |
@@ -121,6 +121,12 @@ PASS  inverse:I10_STANDSTILL_TORQUE:golden                             |did|=5.5
 | reading:fault:campaign | PASS | 1 reading(s) |
 | fault:validation | PASS | 14/14 |
 | reading:fault:validation | PASS | 1 reading(s) |
+| fault:design_variant | PASS | 변경 1건 · 8cff8842 |
+| fault:review_finds | PASS | ['FSR-01/SM-TQ'] |
+| fault:review | PASS | {'INCONSISTENT': 0, 'MISSING': 0, 'WARNING': 2, 'NOTE': 10, 'OK': 96} |
+| fault:verification | PASS | ['step_ok', 'cs_offset', 'ov_regen', 'res_lost', 'sw_short'] |
+| reading:fault:safety_case | PASS | 1 reading(s) |
+| fault:report | PASS | 25306 chars |
 | power:module | PASS |  |
 | power:ripple | PASS |  |
 | power:lifetime | PASS |  |
@@ -170,11 +176,11 @@ PASS  inverse:I10_STANDSTILL_TORQUE:golden                             |did|=5.5
 | datasheet:entry_motor | PASS | EXMOT-200 |
 | mathworks:package | PASS | ['no target report yet: every target stage is NOT_RUN'] |
 | guide | PASS |  |
-| acceptance | PASS | <span style='color:#1a7f37; font-weight:600'>21/21 PASS · manifest OK</span> · 2.50 s · verification against synthetic f |
+| acceptance | PASS | <span style='color:#1a7f37; font-weight:600'>21/21 PASS · manifest OK</span> · 2.35 s · verification against synthetic f |
 | exchange:package | PASS |  |
 | decision:flux_map | PASS | PASS |
-| progress:engine_steps | PASS | 87 messages, 81 in the capability scan; e.g. 요구 판정: 1/2 판정 · 토크 능력 80/227 (스캔) |
-| workspace:roundtrip | PASS | 16 pages, 114 KB |
+| progress:engine_steps | PASS | 87 messages, 81 in the capability scan; e.g. 요구 판정: 1/2 판정 · 토크 능력 81/227 (스캔) |
+| workspace:roundtrip | PASS | 16 pages, 125 KB |
 | no_error_dialogs | PASS |  |
 
 ## 6. MathWorks 이식 패키지 (`twb mathworks`)
@@ -183,7 +189,7 @@ Python reference(층 2)의 값과 수용된 원천(층 1: golden·계약 수식�
 
 | 단계 | 결과 |
 |---|---|
-| 패키지 | fingerprint `54ed5f8ad4c9b2ac` · case {'forward': 48, 'flux_lookup': 21, 'requirement_witness': 12} · 층 2 ↔ 층 1 불일치 0 |
+| 패키지 | fingerprint `6d7d662ba22fa90d` · case {'forward': 48, 'flux_lookup': 21, 'requirement_witness': 12} · 층 2 ↔ 층 1 불일치 0 |
 | 패키지 검사 | PASS |
 | 대상 환경 | GNU Octave 8.4.0 - MATLAB-language proxy; MATLAB / Simulink not run |
 | stage `package_check` | PASS |
