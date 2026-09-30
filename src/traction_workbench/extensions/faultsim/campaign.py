@@ -101,17 +101,23 @@ def axis_values(ax: dict) -> list:
 # ------------------------------------------------------------------------------------------ identity
 
 def code_identity() -> dict:
+    """The software a result came from: version, git commit and whether the package source differed from that commit
+    (``dirty``: modified or new files under the package; None without git)."""
     from ... import __version__
-    commit = None
+    commit = dirty = None
     try:
         root = Path(__file__).resolve().parents[4]
         r = subprocess.run(["git", "-C", str(root), "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
                            timeout=5)
         if r.returncode == 0:
             commit = r.stdout.strip() or None
+            s = subprocess.run(["git", "-C", str(root), "status", "--porcelain", "--",
+                                str(Path(__file__).resolve().parents[2])], capture_output=True, text=True, timeout=5)
+            if s.returncode == 0:
+                dirty = bool(s.stdout.strip())
     except (OSError, subprocess.SubprocessError):
-        commit = None
-    return {"version": __version__, "commit": commit}
+        commit = dirty = None
+    return {"version": __version__, "commit": commit, "dirty": dirty}
 
 
 def project_identity(project) -> dict:

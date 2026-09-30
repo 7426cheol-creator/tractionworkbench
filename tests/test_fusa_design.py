@@ -361,6 +361,24 @@ def test_the_safety_case_report_is_one_self_contained_page(product):
     assert all(t and "{" not in t for t in texts)
 
 
+def test_the_report_says_when_the_source_had_uncommitted_changes(monkeypatch):
+    import subprocess
+    from traction_workbench.extensions.faultsim import campaign
+
+    def fake(out):
+        return lambda args, **kw: subprocess.CompletedProcess(args, 0, out[args[3]], "")
+    monkeypatch.setattr(campaign.subprocess, "run", fake({"rev-parse": "abc1234\n", "status": " M engine.py\n"}))
+    ident = campaign.code_identity()
+    assert ident["commit"] == "abc1234" and ident["dirty"] is True
+    data = copy.deepcopy(FAULT_SIM_EXAMPLE)
+    html = safety_case_html(data, project={"label": "P", "digest": "abc"}, code=ident)
+    assert "abc1234 + 커밋되지 않은 변경" in html and "커밋 <b>이후 수정된 소스</b>" in html
+    monkeypatch.setattr(campaign.subprocess, "run", fake({"rev-parse": "abc1234\n", "status": ""}))
+    ident = campaign.code_identity()
+    assert ident["dirty"] is False
+    assert "커밋되지 않은" not in safety_case_html(data, project={"label": "P", "digest": "abc"}, code=ident)
+
+
 def test_the_api_serves_the_editor_schema_review_matrix_and_report():
     d = api.fault_design()
     assert d["from"] == "project" and {"kind_params", "actions", "exits_for", "templates", "asil", "criteria",

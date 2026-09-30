@@ -114,7 +114,11 @@ def safety_case_html(data: dict, *, project: dict, code: dict, changes: list | N
     P.append(f"<h1>안전 근거 보고서 — 인과 고장 시뮬레이션 (인버터 수준)</h1>"
              f'<div class="meta">생성 {_e(now)} · 프로젝트 {_e(project.get("label", ""))} · 프로젝트 digest '
              f'{_e(str(project.get("digest", ""))[:16])} · 소프트웨어 {_e(code.get("version"))} '
-             f'({_e(code.get("commit") or "커밋 정보 없음")})</div>')
+             f'({_e(code.get("commit") or "커밋 정보 없음")}'
+             f'{" + 커밋되지 않은 변경" if code.get("dirty") else ""})</div>')
+    if code.get("dirty"):
+        P.append('<div class="box warn">이 보고서는 커밋 <b>이후 수정된 소스</b>로 만들었습니다(패키지에 커밋되지 않은 변경). '
+                 '근거로 쓰려면 변경을 커밋한 뒤 다시 만드십시오.</div>')
     P.append('<div class="box warn">범위: 선언된 보호 아키텍처와 안전 요구를 인과 시뮬레이션으로 판정한 <b>인버터 수준의 엔지니어링 '
              '근거</b>입니다. 차량 수준 제어 가능성, 아이템의 다른 요소, 하드웨어 지표(SPFM/LFM/PMHF), 개발 프로세스 산출물은 '
              '범위 밖이며, ISO 26262 적합성 판정이 아닙니다. 판정은 시뮬레이션한 궤적에 대해서만 성립합니다(PASS는 해당 궤적의 '
