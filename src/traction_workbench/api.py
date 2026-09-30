@@ -1818,6 +1818,80 @@ def acceptance(body):
     return S.acceptance_summary()
 
 
+# ------------------------------------------------------------------------------------ causal fault simulation
+
+_FAULT_PRODUCTS: dict = {}
+
+
+def fault_product(project=None):
+    """The product a fault simulation runs on: the project and its resolved drive model (cached per project)."""
+    from .extensions.faultsim.configure import ProductData
+    pr = project or PROJECT
+    key = pr.digest()
+    if key not in _FAULT_PRODUCTS:
+        if len(_FAULT_PRODUCTS) > 8:
+            _FAULT_PRODUCTS.clear()
+        _FAULT_PRODUCTS[key] = ProductData(pr, S.resolve_drive(pr.data("drive")))
+    return _FAULT_PRODUCTS[key]
+
+
+def fault_scenarios() -> list:
+    """The representative fault scenarios of the synthetic example (key, category, title, hint, scenario)."""
+    import copy as _copy
+    from .extensions.faultsim.study import SCENARIOS
+    return _copy.deepcopy(SCENARIOS)
+
+
+def fault_sim(body, project=None):
+    """One causal fault simulation judged against the project's SG / FSR / TSR (``body`` = the scenario, or
+    ``{"example": key}``)."""
+    from .extensions.faultsim.study import explain, scenario
+    b = dict(body or {})
+    sc = scenario(b.pop("example")) if b.get("example") else b
+    return explain(fault_product(project), sc)
+
+
+def fault_compare(body, project=None):
+    """Protection on / off and the reaction candidates from the same initial condition and fault."""
+    from .extensions.faultsim.study import CANDIDATES, compare, scenario
+    b = dict(body or {})
+    cands = tuple(b.pop("candidates", None) or CANDIDATES)
+    sc = scenario(b.pop("example")) if b.get("example") else b
+    return compare(fault_product(project), sc, cands)
+
+
+def fault_campaign(body, project=None):
+    """A campaign over declared axes of a base scenario (see ``faultsim.campaign.run_campaign``)."""
+    from .extensions.faultsim.campaign import run_campaign
+    from .extensions.faultsim.study import scenario
+    b = dict(body or {})
+    if b.get("example"):
+        b["base"] = scenario(b.pop("example"))
+    return run_campaign(fault_product(project), b)
+
+
+def fault_rerun(body, project=None):
+    """Re-run a saved counterexample record on the current project and code (stale inputs reported first)."""
+    from .extensions.faultsim.campaign import rerun_record
+    return rerun_record(fault_product(project), dict(body["record"]))
+
+
+def fault_validation(body=None, project=None):
+    """The plant's validation against closed forms, an independent abc formulation and numerical convergence."""
+    from .extensions.faultsim.configure import build_setup
+    from .extensions.faultsim.reference import validation_suite
+    setup, _reqs, _info = build_setup(fault_product(project), {"speed_rpm": 6000.0, "torque_Nm": 100.0})
+    rows = validation_suite(setup.machine, setup.dc, quick=bool((body or {}).get("quick", True)))
+    return {"rows": rows, "passed": sum(r["pass"] for r in rows), "total": len(rows),
+            "machine": setup.machine.basis}
+
+
+def fault_independence(body=None, project=None):
+    """Declared dependencies of the protection architecture: shared resources and sensors per mechanism / FSR."""
+    from .extensions.faultsim.study import independence
+    return independence(project or PROJECT)
+
+
 ROUTES = {
     "info": info, "evaluate": evaluate, "curve": curve, "map": idiq, "sizing": sizing, "dominance": dominance,
     "relaxation": relaxation, "timing": timing, "discharge": discharge, "passive": passive, "overvoltage": overvoltage,
@@ -1830,6 +1904,8 @@ ROUTES = {
     "module_compare": module_compare, "pwm_policies": pwm_policies, "pwm_timing": pwm_timing, "pwm_ripple": pwm_ripple,
     "pwm_transients": pwm_transients,
     "driveline": driveline, "driveline_stability": driveline_stability,
+    "fault_sim": fault_sim, "fault_compare": fault_compare, "fault_campaign": fault_campaign,
+    "fault_rerun": fault_rerun, "fault_validation": fault_validation, "fault_independence": fault_independence,
 }
 
 

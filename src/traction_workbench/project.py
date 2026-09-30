@@ -185,6 +185,11 @@ def _v_safety(d: dict):
                                        field=f"safety.safe_state_rules[{i}]")
 
 
+def _v_fault_sim(d: dict):
+    from .extensions.faultsim.configure import validate_section
+    validate_section(d)
+
+
 def _v_emi(d: dict):
     P.emi_network_from_dict({"C_dc_uF": 1.0, **d})
 
@@ -209,6 +214,9 @@ SECTIONS = {s.name: s for s in (
     SectionSpec("thermal", "cooling system and thermal networks of the thermal page", False, _v_thermal),
     SectionSpec("driveline", "gearbox: reducer efficiency and torsional ROM", False, _v_driveline),
     SectionSpec("safety", "FTTI chains and project safe-state rules", False, _v_safety),
+    SectionSpec("fault_sim", "protection architecture for the causal fault simulation: sensors and resources, "
+                             "mechanisms, reaction paths, safe-state policy, battery management, SG / FSR / TSR",
+                False, _v_fault_sim),
     SectionSpec("emi_setup", "HV network parasitics and the EMI test setup (artificial network)", False, _v_emi),
 )}
 
@@ -234,6 +242,8 @@ ANALYSES = {
     "oew": ("open-end winding dual inverter", ("drive", "dc_source", "module", "controller")),
     "emi": ("conducted EMI", ("drive", "dc_source", "dc_link", "controller", "emi_setup")),
     "hev": ("HEV joint torque, cranking, load rejection", ("drive",)),
+    "fault_sim": ("causal fault simulation and safety verdicts",
+                  ("drive", "dc_source", "dc_link", "controller", "driveline", "fault_sim")),
     "machine_design": ("motor design study", ("drive",)),
 }
 
@@ -900,7 +910,8 @@ TASK_ANALYSIS = {
     "pwm_transients": "pwm", "driveline": "driveline", "driveline_stability": "driveline", "oew": "oew",
     "oew_compare": "oew", "emi_oew": "oew", "hev_joint": "hev", "hev_crank": "hev", "hev_rejection": "hev",
     "hev_planetary": "hev", "emi": "emi", "machine_trade": "machine_design", "winding": "machine_design",
-    "concept_sizing": "machine_design",
+    "concept_sizing": "machine_design", "fault_sim": "fault_sim", "fault_compare": "fault_sim",
+    "fault_campaign": "fault_sim", "fault_rerun": "fault_sim", "fault_validation": "fault_sim",
 }
 
 _ABSENT = object()
