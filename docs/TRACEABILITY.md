@@ -371,7 +371,44 @@ PR #5의 코드는 병합하지 않고 이 문서의 의미를 현재 코드 기
 | 하위 F12, P3 | 거짓 정밀도 | `units.shown`: 물리량 종류별 표시 자릿수; 커패시터 손실·hotspot 샘플링 분해능 | `test_f12_model_limited_quantities_are_shown_at_the_precision_the_model_supports`, `test_f12_the_capacitor_loss_and_hotspot_carry_their_sampling_resolution`, `test_f12_terminal_voltage_text_is_rounded_the_value_is_not` | implemented |
 | P3 | DPWM1 지원 불일치 | 모든 펄스 패턴 소비자가 `MODULATIONS`와 `duties`를 공유, 클램프 레그를 레일에 정확히 | `test_p3_dpwm1_is_accepted_by_every_pulse_pattern_consumer_and_matches_a_brute_force_ripple`, `test_p3_the_clamped_leg_sits_exactly_on_its_rail` | fixed |
 
-## 17. 비목표 (handoff §15, 추가 명세 비목표)
+## 17. 인과 고장 시뮬레이션·기능안전 (FuSa)
+
+요구: 인버터 고장과 기능안전 반응을 고장 → 측정·추정 → 제어·감시 → 보호 → 실제 토크·전류·DC-link → 안전 요구 판정까지
+**하나의 인과 궤적**으로 계산하고, SG/FSR/TSR 추적, FDTI/FRTI/FHTI, 캠페인·반례, provenance·stale, 검증, 화면·저장·내보내기까지
+갖출 것. 상세 설명은 `docs/LOGIC_REVIEW.html` §20, 회귀 시험은 `tests/test_faultsim.py`·`tests/test_fault_page.py`에 있습니다.
+
+| 항목 | 요구 | 구현 | 확인 | 상태 |
+|---|---|---|---|---|
+| 인과 사슬 | 참값·측정·추정·명령·실제를 나누고, 감시·반응은 측정만 봄 | `extensions/faultsim/engine.py` (`_Sim.apply_fault` · `read` · `update_bridge` · `actual_bridge` · `simulate`): 센서 고장은 측정을 바꾸고 폐루프가 실제 전류·토크를 바꿈, 반응 명령과 실제 브리지 상태를 따로 기록, 판정은 참값 | `test_sensor_fault_acts_through_closed_loop_control_and_is_seen_by_measured_channels_only`, `test_fault_free_operation_keeps_the_kernel_operating_point_and_never_reacts` | implemented |
+| 플랜트 | 스위칭 다리, 6SO 정류, ASC, DC-link·배터리·접촉기·BMS·블리더·능동 방전 | `extensions/faultsim/plant.py`: 상보성 다리(떠 있는 다리, 다이오드 도통, 레일 한 걸음 앞 보기), 사건 1 ns 위치, Zeno 구간 고정 스텝, 에너지 수지 매 실행, 평균값 / 스위칭 PWM | `test_plant_against_closed_forms_independent_abc_reference_and_convergence`, `test_a_floating_leg_at_the_rail_conducts_instead_of_floating_beyond_it`, `test_open_circuit_below_the_onset_carries_no_current_and_six_switch_off_above_it_brakes`, `test_asc_is_not_torque_free_at_low_speed_and_six_switch_off_is_not_current_free_at_high_speed` | implemented |
+| 센서·제어기 | 고장 모드, 지연, 제어 격자, MCU 리셋·재시동 | `sensors.py`(오프셋·이득·고착·마지막 값·소실·수송 지연, 자기 진단), `control.py`(정책표 전류 지령의 이산 FOC, 각도 지연 보상, 명령 경로, flying / cold 재시동) | `test_flying_restart_recovers_and_cold_restart_ends_in_the_safe_state`, `test_recovery_attempts_with_a_persistent_fault_trip_again_and_latch` | implemented |
+| 메커니즘·경로·자원 | 검출·반응 경로·공유 자원·우선순위·안전 상태 선택을 데이터로 | `faultsim/protection.py`(`SafeStatePolicy.decide`: 측정 정보만, 속도 히스테리시스, 실행 불가 ASC 교체), `ResourceBook`(자원 상실 → 센서·메커니즘·경로 동시 상실), `configure.py`(`validate_section`) | `test_protection_path_lost_backup_reacts_later_and_delay_violates_the_rating`, `test_shared_current_sensor_supply_blinds_control_and_the_hardware_comparator`, `test_gate_supply_loss_reported_by_uvlo_selects_the_other_side`, `test_shorted_switch_selects_the_asc_of_its_own_side_and_a_speed_only_policy_does_not`, `test_architecture_is_project_data_and_is_validated`, `test_independence_view_names_the_shared_sensors_and_resources` | implemented |
+| 요구·판정 | SG → FSR → TSR, 동적 토크 창, 한계, 안전 상태, 오반응 없음, 시간 | `faultsim/safety.py` `Evaluator`: 판정 다섯 종류, 사건 정의(\(t_F, t_V, t_D, t_R, t_S\)), 관측 위반 FAIL, 창 미관측 UNKNOWN, 안전 상태 마감 규칙, FRTI·FHTI 하한, 분해능·모델 허용 대역, 적용 범위(시나리오 하나), SG는 인버터 근거 + 차량 지표만 | `test_event_definitions_are_explicit`, `test_a_violation_before_leaving_the_model_is_a_fail_and_an_unobserved_window_is_unknown`, `test_a_safe_state_missed_by_its_deadline_is_a_fail_even_if_the_hold_window_is_cut_off`, `test_sg_carries_inverter_evidence_and_a_vehicle_indicator_never_a_vehicle_approval`, `test_tight_monitor_trips_on_a_healthy_torque_step_false_detection`, `test_monitor_without_independent_request_misses_a_stale_command_common_cause` | implemented |
+| 대표 시나리오·후보 비교 | 성공·지연·잘못된 반응·경로 상실·공통 원인·오검출·복귀 실패 | `faultsim/study.py`(`explain`, `compare`): 분류는 결과와 맞아야 함(시험이 확인), 같은 초기 조건에서 보호 적용/미적용·ASC-low·ASC-high·6SO·토크 0 | `test_every_representative_scenario_is_declared_with_its_category`, `test_frozen_position_sensor_makes_the_policy_choose_six_switch_off_at_high_speed_wrong_reaction`, `test_candidate_comparison_finds_no_executable_safe_reaction`, `test_candidate_comparison_on_regeneration_disconnect_prefers_asc`, `test_fault_instant_and_initial_angle_change_the_peaks_and_the_timing` | implemented |
+| 캠페인·반례 | 탐색, 경계, 최악값, 반례 기록·재실행·stale | `faultsim/campaign.py`: 격자·시드 고정 무작위, 판정 경계 이분, 물리량별 최악값과 그 실행, 반례(시나리오·판정·수치·프로젝트/코드 식별) 저장·열기·재실행, 관련 섹션 변경 시 stale | `test_campaign_brackets_the_failure_boundary_and_keeps_worst_cases_per_run`, `test_campaign_axes_and_scenario_paths`, `test_a_counterexample_is_rerun_saved_opened_loaded_and_marked_stale` | implemented |
+| 검증 | 같은 식의 다른 적분만으로는 부족 | `faultsim/reference.py`: 폐형식(대칭 ASC 정상상태, 개방 회로), 독립 abc 정식화(\(L(\theta)\), 컨덕턴스 소자, Radau, 이상화 경향), 행렬 지수, 스텝 수렴, 에너지 수지 — 찾은 부분 단락 결함 수정 | `test_plant_against_closed_forms_independent_abc_reference_and_convergence` | implemented |
+| 화면·저장 | 실행·해석·비교·캠페인·검증 화면, 저장·내보내기, 작업 공간 | `desktop/pages/fault_sim.py`(안전·보호 → 고장 시뮬레이션·FuSa), `insight/fault.py`, `plots/fault_figures.py`, 시나리오 파일·반례 파일, CSV/JSON, 작업 공간 복원, self-test 화면 25b–25i | `test_a_representative_scenario_runs_and_reads_on_the_page`, `test_reaction_candidates_run_from_the_same_initial_condition`, `test_scenario_files_round_trip_and_the_page_survives_a_workspace`, `test_insight_pages`, `test_workspace` | implemented |
+| 한계 | — | 상수 파라미터 모터(자속 지도 드라이브 거절), 이상 소자(SOA·단락 내량 없음, 다리 단락은 모델 밖), 평균값 PWM 기본, 3상 2-level만(다른 토폴로지 선언은 거절), 강체 구동계·일정 속도, 열 비적분 | `docs/LOGIC_REVIEW.html` §20.10 | remaining |
+
+## 18. 공학 리뷰 3 (남은 영역 수치 감사: 새 지적만 — F-10, F-11, F-22, F-23, F-24, 새 P3)
+
+앞선 검토에서 다룬 지적(§16)은 제외하고, 이번 리뷰에서 새로 나온 지적만 130fb33에서 재현한 뒤 판단했습니다. 상세 설명은
+`docs/LOGIC_REVIEW.html` §21, 회귀 시험은 `tests/test_review_r3.py`(리뷰의 적대 사례 A21–A25 포함)에 있습니다.
+
+| 항목 | 의견 | 구현 | 확인 | 상태 |
+|---|---|---|---|---|
+| F-10 (P1) | PROT-04가 사용자 지평으로 결정(지연 2 ms: 지평 0.3 ms FEASIBLE, 0.1 ms INFEASIBLE) | `_prot04`: 지평 안에서 확정되면 반응 시각이 정해지므로 플랜트 정확해로 판정(예정 반응 전 교차는 이분법 교차 시각과 함께 INFEASIBLE, 아니면 작동 후 정확한 상한), 확정이 지평 밖이면 UNKNOWN(결코 INFEASIBLE 아님). PROT-03도 같은 정확해. 해석 지표는 PROT-04를 따름. 리뷰 기대(0.3 ms UNKNOWN)와 달리 INFEASIBLE — 같은 모델의 정확해가 0.375 ms 교차를 증명하고 1·5 ms 지평과 같은 판정·교차 시각 | `test_a21_prot04_is_decided_by_the_reaction_not_by_the_horizon`, `test_a21_an_action_after_the_horizon_is_judged_on_the_exact_solution`, `test_f10_prot03_reads_the_same_exact_solution_beyond_the_horizon`, `test_f10_the_reading_follows_the_prot04_verdict` | fixed |
+| F-11 (P1) | RBW 창의 선합은 추정이 아니라 상한(+8.8 / +11.1 dB), 필요 감쇠 과대 | 추정 = 직사각 IF 포락 최대(`envelope_peak`: FFT 과표본 + 표본 극대마다 뉴턴, 전수 탐색 대비 2.7×10⁻¹⁶), 상한 = 선합·가우시안 IF 가중합(`_gaussian_cells`), 반례 = 네 귀환 모델의 최소 포락; 필요 감쇠는 추정 기준(상한 기준 병기, 화면·해석의 최대값도 판정과 같은 대역 정확값), 창당 선 수. 추가로 선합을 반례의 하한으로 쓰던 것을 고침 | `test_a22_the_estimate_does_not_depend_on_the_fundamental_the_line_sum_does`, `test_f11_the_estimate_equals_an_independent_dense_receiver_sweep`, `test_f11_gaussian_if_cells_bound_every_tuning_inside_them`, `test_f11_a_line_sum_exceedance_alone_is_never_a_witness`, `test_envelope_peak_is_an_attained_maximum_never_above_the_line_sum`, `test_f11_the_largest_required_attenuation_is_the_exact_band_figure_on_the_page_and_the_reading` | fixed |
+| F-23 (P2) | CM 귀환 ½·½ 고정, 에지 부호 주입과 12.6 MHz +7.7 dB | 네 귀환 모델(`RAIL_MODELS`: 중점·에지 부호·HV+·HV−), 한 번 분해 + Woodbury(`port_transfers`), 추정은 물리적 두 모델, 상한·반례는 네 모델. 예제 3.8 MHz에서 에지 부호가 정적 두 극단보다 7.2 dB 높음(감싸지 못함)을 확인 | `test_f23_the_edge_sign_return_is_not_bracketed_by_the_static_rails`, `test_f23_the_bound_covers_every_cm_return_model` | fixed; LPTV 망은 remaining |
+| F-22 (P2) | HEV 캐시가 (이름, T, V) — 같은 이름 두 기계가 한 점 공유(거짓 FEASIBLE) | 캐시 키 = 기계 객체(항목이 객체 보유), 한 버스 기계 이름 유일(결합 집합·비조정 버스) | `test_a23_hev_points_are_cached_per_machine_and_names_are_unique` | fixed |
+| F-24 (P2) | ASC 수치 허용치가 격자 오차의 1/18, 궤적이 선언 영역 2.1배 밖 | 정속 해의 피크·전체 dq 피크·최소 i_d를 표본 사이 정확해로 정밀화(`_refine_max`), 허용치는 정밀화 뒤 하한·두 격자 차·표본 곡률 한계 중 최대, 소자 생존 피크 비교에 곡률 한계; 모델 전류 영역 항목(OUTSIDE_DECLARED_DOMAIN 2.12배)을 결과·claim·해석에 | `test_a24_asc_peak_is_refined_and_the_allowance_bounds_the_grid_error`, `test_f24_the_event_peak_and_minimum_id_are_refined_like_the_requirements` | fixed |
+| P3 OEW | 공통 버스 off/off 임계에 3고조파 역기전력 누락 | 기본파 + 3고조파의 선언 위상 정확 피크와 위상 무관 상한, 영상분 없으면 UNKNOWN(MISSING_INPUT) | `test_a25_common_bus_off_off_threshold_includes_the_triplen_emf` | fixed |
+| P3 드라이브라인 | `a_final` = 마지막 5 % 평균(반 주기 → 1.052) | 창 뒤쪽 정수 개 비틀림 주기 평균, 근거 문구 | `test_driveline_final_level_is_averaged_over_whole_torsional_periods` | fixed |
+| P3 A/B | 오차대 선형합의 성격 미표기 | 근거 문구(선언 한계의 최악)와 독립 오차 RSS를 보고, 순위는 선형합 | `test_ab_error_band_is_the_linear_sum_of_the_declared_bounds_and_states_it` | implemented |
+| P3 EMI | 설계 예비 공란 → 조용히 0 dB, 공백이 많은데 "모든 수신 주파수" | 공란 메모·플래그·해석 지표, FEASIBLE 문구에 판정하지 않은 선언 공백 구간 | `test_emi_p3_blank_reserve_is_stated_and_declared_gaps_are_named` | fixed |
+| P3 EMI | 획득 메타데이터 없는 측정 trace는 INDETERMINATE(FAIL 아님) | 리뷰대로 보수적 — 변경 없음 | 기존 시험 | kept |
+
+## 19. 비목표 (handoff §15, 추가 명세 비목표)
 
 generic motor CAD/FEA 복제, 정적 ASC로 demag/SOA 승인, 일반 IGBT 식으로 SiC 수명 보증, 드라이버 typical delay로 ASIL 승인,
 class 번호로 EMC 합격률, 평균 dq로 NVH/베어링/MHz 임피던스, 생산 anti-jerk 제어기 자동 납품, 보편 안정성 인증서,
