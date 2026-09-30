@@ -484,19 +484,30 @@ def protection_insight(res: dict) -> Insight:
     peak = ps.get("worst_peak")
     failed = [r for r in rows if r.get("status") == "INFEASIBLE"]
     lab = lambda r: tr(*_PROT_ITEM[r["item"]]) if r.get("item") in _PROT_ITEM else r.get("item", "")    # noqa: E731
+    p4 = next((r.get("status") for r in rows if r.get("id") == "PROT-04"), None)
+    p4_level = {"FEASIBLE": "ok", "INFEASIBLE": "bad"}.get(p4, "warn")
     if peak is not None and lim is not None:
-        prot = tr(f"최고 {q(peak, u)} {'<' if ps.get('all_protected') else '≥'} 한계 {q(lim, u)} "
-                  f"({num(ps.get('phases'))}개 샘플 위상 {'모두 보호' if ps.get('all_protected') else '중 보호 실패 있음'})",
-                  f"peak {q(peak, u)} {'<' if ps.get('all_protected') else '≥'} limit {q(lim, u)} "
-                  f"({'protected in all' if ps.get('all_protected') else 'not protected in some of'} {num(ps.get('phases'))} "
-                  f"sampled phases)")
+        if not ps.get("all_protected"):
+            prot = tr(f"최고 {q(peak, u)} ≥ 한계 {q(lim, u)} ({num(ps.get('phases'))}개 샘플 위상 중 보호 실패 있음)",
+                      f"peak {q(peak, u)} ≥ limit {q(lim, u)} (not protected in some of {num(ps.get('phases'))} "
+                      f"sampled phases)")
+        elif p4 == "FEASIBLE":
+            prot = tr(f"최고 {q(peak, u)} < 한계 {q(lim, u)} ({num(ps.get('phases'))}개 샘플 위상 모두 보호)",
+                      f"peak {q(peak, u)} < limit {q(lim, u)} (protected in all {num(ps.get('phases'))} sampled phases)")
+        elif p4 == "INFEASIBLE":
+            prot = tr(f"관측 구간 최고 {q(peak, u)} < 한계 {q(lim, u)}이지만 반응 전·후 정확해가 한계에 도달 (보호 실패)",
+                      f"peak {q(peak, u)} < limit {q(lim, u)} inside the horizon, but the exact solution reaches the "
+                      f"limit before or after the reaction (not protected)")
+        else:
+            prot = tr(f"관측 구간 최고 {q(peak, u)} < 한계 {q(lim, u)} — 검출이 구간 밖이라 미확정",
+                      f"peak {q(peak, u)} < limit {q(lim, u)} inside the horizon — the detection lies beyond it "
+                      f"(undecided)")
     else:
         prot = ""
     tail = (tr(" — 불만족: ", " — not met: ") + ", ".join(f"{r['id']} {lab(r)}" for r in failed)) if failed else ""
     ins = Insight(headline=f"{esc(engine_text(res.get('variable', '')))}: {prot}{tail}", verdict=v)
     if peak is not None and lim is not None:
-        ins.metrics.append((tr("최고 / 한계", "peak / limit"), f"{num(peak)} / {num(lim)} {u}",
-                            "ok" if ps.get("all_protected") else "bad"))
+        ins.metrics.append((tr("최고 / 한계", "peak / limit"), f"{num(peak)} / {num(lim)} {u}", p4_level))
         ins.metrics.append((tr("한계까지 여유", "margin to the limit"), q(lim - peak, u, 3),
                             "ok" if lim - peak > 0 else "bad"))
     w = res.get("window") or {}
@@ -541,7 +552,7 @@ def protection_insight(res: dict) -> Insight:
                  f"최악 최고치 {q(peak, u)} (위상 {_msq(ps.get('worst_phase_s'), 3)})",
                  f"{num(ps.get('phases'))} phases: confirmation {_msq(ps.get('earliest_confirm_s'), 4)} – "
                  f"{_msq(ps.get('latest_confirm_s'), 4)}, worst peak {q(peak, u)} (phase {_msq(ps.get('worst_phase_s'), 3)})"),
-              "ok" if ps.get("all_protected") else "bad",
+              p4_level,
               tr("표본 위상에 대한 결과이며 연속 고장 영역 전체의 증명은 아님", "sampled phases, not a proof over the continuous fault domain"))
     if w:
         t = w.get("terms") or {}
@@ -666,7 +677,8 @@ def asc_insight(res: dict) -> Insight:
         s.add(tr(f"속도 일정 가정 대비 차이 {q(res['fixed_speed_sensitivity_A'], 'A', 3)} (관성 반영)",
                  f"difference to the fixed-speed assumption {q(res['fixed_speed_sensitivity_A'], 'A', 3)} (inertia included)"),
               "info")
-    its = res.get("items") or {}
+    its = dict(res.get("items") or {})
+    dom = its.pop("model_domain", None)
     if its:
         s = ins.section(tr("공급사 envelope가 있어야 판정되는 것", "what needs supplier envelopes"))
         names = {"demagnetisation": tr("감자", "demagnetisation"), "device_survival": tr("소자 생존", "device survival")}
@@ -677,6 +689,24 @@ def asc_insight(res: dict) -> Insight:
                            f" — phase peak {q(it.get('phase_peak_A'), 'A')}, I²t {q(it.get('phase_I2t_A2s'), 'A²s')}")
             s.add(f"<b>{names.get(k, esc(k))}</b>: {state_label(it.get('status', ''))}{extra}", status_level(it.get("status")),
                   esc(engine_text(it.get("detail", ""))))
+    if dom:
+        # the constant-parameter model outside its declared current domain (review 3 F-24)
+        out = dom.get("status") == "OUTSIDE_DECLARED_DOMAIN"
+        (a, b), (c, d) = dom.get("id_range_A") or (None, None), dom.get("iq_range_A") or (None, None)
+        (e, f), (g, h) = dom.get("domain_id_A") or (None, None), dom.get("domain_iq_A") or (None, None)
+        traj = f"i_d {num(a)} … {num(b)} A, i_q {num(c)} … {num(d)} A"
+        decl = f"i_d {num(e)} … {num(f)} A, i_q {num(g)} … {num(h)} A"
+        s = ins.section(tr("모델 적용 범위", "model validity"))
+        if out:
+            s.add(tr(f"궤적 {traj}이 선언된 전류 영역 {decl} 밖 (최대 {num(dom.get('excursion_factor'), 3)}배)",
+                     f"the trajectory {traj} leaves the declared current domain {decl} (up to "
+                     f"{num(dom.get('excursion_factor'), 3)}x)"), "warn",
+                  tr("상수 파라미터 모델을 외삽한 구간 — 포화는 축에 따라 피크를 낮추거나 높이므로 방향을 주장하지 않음",
+                     "the constant-parameter model is extrapolated there — saturation lowers or raises the peak "
+                     "depending on the axis, so no direction is claimed"))
+        else:
+            s.add(tr(f"궤적 {traj}이 선언된 전류 영역 {decl} 안", f"the trajectory {traj} stays inside the declared "
+                     f"current domain {decl}"), "ok")
     s = ins.section(tr("판정", "claim"))
     if claim:
         claim_item(s, claim)

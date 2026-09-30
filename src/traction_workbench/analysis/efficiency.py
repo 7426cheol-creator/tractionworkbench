@@ -644,6 +644,11 @@ def _verdict(La: float, Lb: float, ua: float | None, ub: float | None, value_kin
         return {**base, "verdict": "UNDECIDED", "reason": "no declared loss error budget for both candidates: estimate "
                                                           "shown, ranking reserved"}
     band = ua * La + ub * Lb
+    # the linear sum is the worst case of the declared BOUNDS (no cancellation between the modules); for independent
+    # errors the root-sum-square would be smaller - stated, never used for the ranking (review 3, P3)
+    base.update(band_rss=math.hypot(ua * La, ub * Lb),
+                band_basis="linear sum u_A L_A + u_B L_B of the declared error bounds (worst case, no cancellation "
+                           "between the modules); the root-sum-square of independent errors is shown, not used")
     why = f"|dL| {abs(d):.4g} {unit} vs combined module error budget {band:.4g} {unit}"
     if not same_motor_point:
         why += " (motor points differ: motor-loss errors do not cancel and are not in this budget)"

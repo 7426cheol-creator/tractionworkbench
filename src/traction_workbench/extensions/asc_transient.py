@@ -226,6 +226,13 @@ def _run(k: DriveKernel, id0: float, iq0: float, td: float, t6: float, H: float,
     theta = np.concatenate([w0 * pre_t, w0 * t_asc + th_post])
     out = {"success": True, "t": t, "id": id_all, "iq": iq_all, "omega_e": omega, "theta": theta, "t_asc": t_asc,
            "solver_cross_check_A": cross, "fixed_speed_sensitivity_A": sens}
+    if not J:                                     # constant speed: the exact solution between the samples
+        def exact(tt, _k=k, _a=t_asc, _i0=(id0, iq0)):
+            tt = np.atleast_1d(np.asarray(tt, dtype=float))
+            d_, q_ = transient_constant(_k, _i0[0], _i0[1], np.maximum(tt - _a, 0.0))
+            pre = tt < _a
+            return np.where(pre, _i0[0], d_), np.where(pre, _i0[1], q_)
+        out["exact"] = exact
     if J:
         p = k.p
         rot = getattr(k, "rot", None)
@@ -242,6 +249,51 @@ def _run(k: DriveKernel, id0: float, iq0: float, td: float, t6: float, H: float,
     return out
 
 
+PEAK_TOL_S = 1e-10          # golden-section tolerance of a refined peak instant
+
+
+def _refine_max(fx, tw, vals) -> tuple[float, float, int]:
+    """sup over the window of a smooth scalar signal with an exact evaluator fx(t): every sampled local maximum within
+    reach of the largest sample (a smooth maximum lies within one sample of a sampled local maximum; the second
+    difference, taken generously, decides which ones can matter), refined by golden section on its two neighbouring
+    intervals to PEAK_TOL_S.  The window endpoints are samples themselves.  Returns (value, instant, maxima refined)."""
+    n = vals.size
+    k = int(np.argmax(vals))
+    best_v, best_t = float(vals[k]), float(tw[k])
+    if n < 3:
+        return best_v, best_t, 0
+    d2 = float(np.max(np.abs(np.diff(vals, 2))))
+    reach = best_v - 4.0 * d2 - 1e-9 * max(abs(best_v), 1.0)
+    loc = [j for j in range(1, n - 1) if vals[j] >= vals[j - 1] and vals[j] >= vals[j + 1] and vals[j] >= reach]
+    g = (math.sqrt(5.0) - 1.0) / 2.0
+    for j in loc:
+        a, b = float(tw[j - 1]), float(tw[j + 1])
+        x1, x2 = b - g * (b - a), a + g * (b - a)
+        f1, f2 = fx(x1), fx(x2)
+        while b - a > PEAK_TOL_S:
+            if f1 < f2:
+                a, x1, f1 = x1, x2, f2
+                x2 = a + g * (b - a)
+                f2 = fx(x2)
+            else:
+                b, x2, f2 = x2, x1, f1
+                x1 = b - g * (b - a)
+                f1 = fx(x1)
+        xm = 0.5 * (a + b)
+        vm = fx(xm)
+        if vm > best_v:
+            best_v, best_t = vm, xm
+    return best_v, best_t, len(loc)
+
+
+def _refine_peak(exact, tw, mag) -> tuple[float, float, int]:
+    """sup |i_dq| over the window from the exact solution (see _refine_max)."""
+    def m_at(x):
+        a_, b_ = exact(x)
+        return float(np.hypot(a_[0], b_[0]))
+    return _refine_max(m_at, tw, mag)
+
+
 def _evaluate(req: CurrentTimeRequirement, run: dict, angles: int) -> dict:
     t, idq_d, idq_q, th = run["t"], run["id"], run["iq"], run["theta"]
     off = 0.0 if req.origin == "fault" else run["t_asc"]
@@ -255,9 +307,24 @@ def _evaluate(req: CurrentTimeRequirement, run: dict, angles: int) -> dict:
            req.t_end_s], "origin": req.origin, "worst_phase": None, "worst_initial_angle_deg": None, "at_s": None}
     if req.operator in ("abs_peak", "envelope_after"):
         k = int(np.argmax(mag))
-        out.update(value=float(mag[k]), at_s=float(tw[k]))
+        val, at = float(mag[k]), float(tw[k])
+        exact = run.get("exact")
+        if exact is not None:
+            val, at, n_ref = _refine_peak(exact, tw, mag)
+            out["peak_basis"] = (f"exact solution maximised between the samples around {n_ref} sampled local maxima "
+                                 f"(golden section to {PEAK_TOL_S:.0e} s)")
+            out["sampling_bound_A"] = 0.0
+        else:
+            # integrated trajectory: the sampled maximum is below the true one by at most dt^2/8 max|m''|; the second
+            # difference estimates dt^2 m'' at the samples, taken twice for safety (review 3 F-24)
+            d2 = np.abs(np.diff(mag, 2)) if mag.size > 2 else np.zeros(1)
+            out["sampling_bound_A"] = float(np.max(d2)) / 4.0
+            out["peak_basis"] = "sampled maximum of the integrated trajectory with a curvature bound"
+        out.update(value=val, at_s=at)
         if req.quantity == "phase":
-            ang = (-math.atan2(iqw[k], idw[k]) - thw[k]) % TWO_PI
+            idk, iqk = (exact(at) if exact is not None else (np.array([idw[k]]), np.array([iqw[k]])))
+            thk = float(np.interp(at, tw, thw))
+            ang = (-math.atan2(float(iqk[0]), float(idk[0])) - thk) % TWO_PI
             out.update(worst_phase="a", worst_initial_angle_deg=math.degrees(ang),
                        angle_basis="exact: sup over the initial angle of |i_phase(t)| is |i_dq(t)|")
     elif req.operator == "rms":
@@ -350,7 +417,10 @@ def asc_transient(drive: DriveModel, scenario: Scenario, id0_A: float, iq0_A: fl
             continue
         e1 = _evaluate(r, fine, 2 * angles)
         lim = r.limit_s if r.operator in TIME_OPERATORS else r.limit_A
-        allowance = abs(e1["value"] - e0["value"])
+        # the refinement difference alone is not a bound (two grids can miss a peak alike): the fine run's own
+        # sampling bound is the floor, and a refined peak is exact to the golden-section tolerance (review 3 F-24)
+        allowance = max(abs(e1["value"] - e0["value"]), float(e1.get("sampling_bound_A") or 0.0),
+                        1e-9 * abs(e1["value"]))
         margin = lim - e1["value"]
         off = 0.0 if r.origin == "fault" else t_asc
         if six and r.t_end_s + off > td:
@@ -370,6 +440,22 @@ def asc_transient(drive: DriveModel, scenario: Scenario, id0_A: float, iq0_A: fl
     t, idd, iqq, th = fine["t"], fine["id"], fine["iq"], fine["theta"]
     mag = np.hypot(idd, iqq)
     pk_i = int(np.argmax(mag))
+    # the event's dq peak and minimum i_d between the samples (review 3 F-24): exact solution where it exists, else the
+    # sampled extremum with a curvature bound (a sampled extremum is not a bound)
+    ex_f = fine.get("exact")
+    if ex_f is not None:
+        pk_val, pk_t, _ = _refine_peak(ex_f, t, mag)
+        mn, _, _ = _refine_max(lambda x: -float(ex_f(x)[0][0]), t, -idd)
+        min_id, pk_bound, id_bound = -mn, 0.0, 0.0
+    else:
+        pk_val, pk_t, min_id = float(mag[pk_i]), float(t[pk_i]), float(np.min(idd))
+        pk_bound = float(np.max(np.abs(np.diff(mag, 2)))) / 4.0 if mag.size > 2 else 0.0
+        id_bound = float(np.max(np.abs(np.diff(idd, 2)))) / 4.0 if idd.size > 2 else 0.0
+    if ex_f is not None:
+        _idk, _iqk = ex_f(pk_t)
+        pk_ang = math.degrees((-math.atan2(float(_iqk[0]), float(_idk[0])) - float(np.interp(pk_t, t, th))) % TWO_PI)
+    else:
+        pk_ang = math.degrees((-math.atan2(iqq[pk_i], idd[pk_i]) - th[pk_i]) % TWO_PI)
     i2t, i2t_ang = _sq_integral_all_angles(t, idd, iqq, th)
     t0_, idd0, iqq0, th0 = run["t"], run["id"], run["iq"], run["theta"]
     i2t_coarse = _sq_integral_all_angles(t0_, idd0, iqq0, th0)[0]
@@ -381,9 +467,10 @@ def asc_transient(drive: DriveModel, scenario: Scenario, id0_A: float, iq0_A: fl
         items["demagnetisation"] = {"status": "UNKNOWN", "detail": "the minimum d-axis current depends on the "
                                     "unmodelled 6SO interval"}
     else:
-        m = float(np.min(idd))
-        items["demagnetisation"] = {"status": "SCREENING_PASS" if m >= demag_id_min_A else "SCREENING_FAIL",
-                                    "min_id_A": m, "limit_A": demag_id_min_A, "basis": demag_basis or "not stated",
+        m = min_id
+        items["demagnetisation"] = {"status": "SCREENING_PASS" if m - id_bound >= demag_id_min_A else "SCREENING_FAIL",
+                                    "min_id_A": m, "sampling_bound_A": id_bound, "limit_A": demag_id_min_A,
+                                    "basis": demag_basis or "not stated",
                                     "detail": "dq current against an imported single-threshold envelope (local "
                                               "field, magnet temperature and history not represented)"}
     signal = ("phase-current proxy over every initial angle (exact enclosure, the same basis as the customer phase "
@@ -393,7 +480,7 @@ def asc_transient(drive: DriveModel, scenario: Scenario, id0_A: float, iq0_A: fl
         items["device_survival"] = {"status": "UNKNOWN", "signal": signal,
                                     "detail": "no supplier pulse / SOA / I^2 t envelope for this waveform, voltage, "
                                               "temperature and gate condition (a short-circuit withstand time is not "
-                                              "an ASC permission)", "phase_peak_A": float(mag[pk_i]),
+                                              "an ASC permission)", "phase_peak_A": pk_val,
                                     "phase_I2t_A2s": i2t}
     elif six:
         items["device_survival"] = {"status": "UNKNOWN", "signal": signal,
@@ -401,20 +488,37 @@ def asc_transient(drive: DriveModel, scenario: Scenario, id0_A: float, iq0_A: fl
     else:
         ok, det = True, []
         if device_peak_A is not None:
-            ok &= float(mag[pk_i]) <= device_peak_A
-            det.append(f"phase peak {mag[pk_i]:.6g} A at {t[pk_i] * 1e3:.4g} ms vs {device_peak_A:g} A")
+            ok &= pk_val + pk_bound <= device_peak_A
+            det.append(f"phase peak {pk_val:.6g} A at {pk_t * 1e3:.4g} ms"
+                       + (f" (+ sampling bound {pk_bound:.2g} A)" if pk_bound else "") + f" vs {device_peak_A:g} A")
         if device_i2t_A2s is not None:
             ok &= i2t + abs(i2t - i2t_coarse) <= device_i2t_A2s
             det.append(f"phase I^2t {i2t:.6g} A^2s (+/- {abs(i2t - i2t_coarse):.2g}) vs {device_i2t_A2s:g} A^2s")
         items["device_survival"] = {"status": "SCREENING_PASS" if ok else "SCREENING_FAIL", "signal": signal,
                                     "detail": "; ".join(det), "basis": device_basis or "not stated",
-                                    "phase_peak_A": float(mag[pk_i]), "phase_I2t_A2s": i2t,
-                                    "worst_initial_angle_deg": math.degrees(
-                                        (-math.atan2(iqq[pk_i], idd[pk_i]) - th[pk_i]) % TWO_PI)}
+                                    "phase_peak_A": pk_val, "phase_I2t_A2s": i2t,
+                                    "worst_initial_angle_deg": pk_ang}
     if six:
         items["6so_interval"] = {"status": "UNKNOWN", "detail": f"{t6 * 1e3:g} ms freewheel before the short: the "
                                  "diode-rectifier interval is not modelled natively; the trajectory holds the pre-fault "
                                  "currents there, so every result after the reaction start is UNKNOWN"}
+    dom = drive.domain
+    id_lo, id_hi = dom.id_A
+    iq_lo, iq_hi = dom.iq_A
+    ex_id = [min(float(np.min(idd)), min_id), float(np.max(idd))]     # the refined minimum where it exists
+    ex_iq = [float(np.min(iqq)), float(np.max(iqq))]
+    outside = ex_id[0] < id_lo or ex_id[1] > id_hi or ex_iq[0] < iq_lo or ex_iq[1] > iq_hi
+    factor = max(ex_id[0] / id_lo if id_lo < 0 else 1.0, ex_id[1] / id_hi if id_hi > 0 else 1.0,
+                 ex_iq[0] / iq_lo if iq_lo < 0 else 1.0, ex_iq[1] / iq_hi if iq_hi > 0 else 1.0)
+    items["model_domain"] = {
+        "status": "OUTSIDE_DECLARED_DOMAIN" if outside else "INSIDE", "id_range_A": ex_id, "iq_range_A": ex_iq,
+        "domain_id_A": [id_lo, id_hi], "domain_iq_A": [iq_lo, iq_hi], "domain_kind": dom.kind,
+        "excursion_factor": float(factor),
+        "detail": (f"the trajectory leaves the declared current domain (i_d {ex_id[0]:.4g}..{ex_id[1]:.4g} A vs "
+                   f"{id_lo:g}..{id_hi:g} A, i_q {ex_iq[0]:.4g}..{ex_iq[1]:.4g} A vs {iq_lo:g}..{iq_hi:g} A: up to "
+                   f"{factor:.2f}x): the constant-parameter model is extrapolated there - saturation lowers or raises "
+                   f"the peak depending on the axis, so no direction is claimed" if outside else
+                   "the trajectory stays inside the declared current domain")}
     reqs_done = list(per_req.values())
     incomplete = [v for v in reqs_done if v.get("status") == "REQUIREMENT_INCOMPLETE"]
     fails = [v for v in reqs_done if v.get("screening_verdict") == "FAIL"]
@@ -431,6 +535,8 @@ def asc_transient(drive: DriveModel, scenario: Scenario, id0_A: float, iq0_A: fl
         joint_detail = ("screening meets or does not decide the stated current-time requirements; demagnetisation "
                         "and device survival need imported envelopes and a qualified transient model for a joint PASS")
         reasons = (Reason.OUTSIDE_MODEL_DOMAIN,)
+    if outside:
+        joint_detail += "; " + items["model_domain"]["detail"]
     step = max(1, t.size // 3000)
     show = next((v["worst_initial_angle_deg"] for v in per_req.values() if v.get("worst_initial_angle_deg")
                  is not None), math.degrees((-math.atan2(iqq[pk_i], idd[pk_i]) - th[pk_i]) % TWO_PI))
@@ -440,7 +546,7 @@ def asc_transient(drive: DriveModel, scenario: Scenario, id0_A: float, iq0_A: fl
     return {**base, "evaluable": True, "claim_level": level,
             "pre_fault": {"id_A": id0, "iq_A": iq0, "speed_rpm": k.speed_rpm, "omega_e_rad_s": k.omega_e},
             "steady_asc": {"id_A": float(idd[-1]), "iq_A": float(iqq[-1])},
-            "peak_dq_A": float(mag[pk_i]), "min_id_A": float(np.min(idd)),
+            "peak_dq_A": pk_val, "peak_dq_at_s": pk_t, "min_id_A": min_id,
             "peak_torque_Nm": float(np.min(tem)) if abs(np.min(tem)) > abs(np.max(tem)) else float(np.max(tem)),
             "rk_cross_check_A": cross, "solver_cross_check_A": cross,
             "fixed_speed_sensitivity_A": run["fixed_speed_sensitivity_A"],

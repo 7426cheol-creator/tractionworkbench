@@ -790,7 +790,8 @@ def oew(body):
     out = {"topology": topo.describe(), "request": {"speed_rpm": n, "torque_Nm": T}, "result": r,
            "geometry": {k: v for k, v in geo.items() if k != "rows"}, "state_rows": geo["rows"],
            "b_clamp": b_clamp_vs_floating_star(topo.VA_V), "emf_phase_peak_V": emf,
-           "paired_states": paired_state_table(topo, emf, None if zs is None else zs.L0_H),
+           "paired_states": paired_state_table(topo, emf, None if zs is None else zs.L0_H,
+                                               d.motor.pole_pairs * 2 * math.pi * n / 60),
            "loss_model": "datasheet module per bridge" if b.get("use_module") else "drive's declared loss model"}
     w = r.get("witness")
     if topo.kind == "common_bus" and zs is not None and w is not None:
@@ -980,7 +981,12 @@ def emi(body):
                    "min_pulse_us": src.min_pulse_s * 1e6, "min_pulse_policy": src.min_pulse_policy,
                    "basis": src.basis, "validity": r["source_validity"]}
     r["network"] = {**EXAMPLE_EMI["network"], **(b.get("network") or {})}
+    reserve_blank = {**EXAMPLE_EMI["profile"], **(b.get("profile") or {})}.get("design_reserve_dB") in (None, "")
+    if reserve_blank:
+        r["notes"].append("design reserve not declared: M_d = 0 dB is used in every margin (a design choice to "
+                          "declare, not a default)")
     r["profile"] = {**prof.fields, "design_reserve_dB": prof.design_reserve_dB,
+                    "design_reserve_declared": not reserve_blank,
                     "limit_source": None if prof.limit is None else prof.limit.source,
                     "limit_gaps_Hz": [] if prof.limit is None else [list(g) for g in prof.limit.gaps]}
     ms = b.get("measured")

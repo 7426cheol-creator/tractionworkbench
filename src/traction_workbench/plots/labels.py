@@ -123,6 +123,9 @@ _STATE = {
     "UNKNOWN": ("미확정", "unknown"), "PASS": ("만족", "pass"), "FAIL": ("불만족", "fail"),
     "ACTIVE": ("활성 (한계에 닿음)", "active (at the limit)"), "SATISFIED": ("만족 (여유 있음)", "satisfied (margin)"),
     "VIOLATED": ("위반", "violated"), "CERTIFIED": ("인증됨", "certified"),
+    "SCREENING_PASS": ("스크리닝 통과", "screening pass"), "SCREENING_FAIL": ("스크리닝 불만족", "screening fail"),
+    "OUTSIDE_DECLARED_DOMAIN": ("선언된 영역 밖 (모델 외삽)", "outside the declared domain (model extrapolated)"),
+    "INSIDE": ("선언된 영역 안", "inside the declared domain"),
 }
 _SECTION = {
     "drive": ("구동 모델", "drive model"), "dc_source": ("DC 소스", "DC source"), "module": ("파워 모듈", "power module"),

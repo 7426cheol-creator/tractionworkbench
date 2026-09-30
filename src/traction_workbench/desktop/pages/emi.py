@@ -1,7 +1,8 @@
 """Conducted EMI page (handoff P1-C / section 11; OEW addendum 5.1-5.2).
 
 Screening: requirement profile + entered limit curve, PWM edge source, declared CM/DM network with the artificial
-network, RBW line-sum estimate, margins and the required attenuation per band (CM- or DM-dominated).  Measured trace:
+network under four CM return models, the rectangular-IF envelope estimate with the line-sum / Gaussian-IF bound
+beside it, margins and the required attenuation per band (CM- or DM-dominated).  Measured trace:
 PASS / FAIL / INDETERMINATE against the same profile.  OEW: winding zero sequence versus chassis common mode.
 """
 
@@ -31,29 +32,39 @@ NOTE_EMI = lambda: tr(
     "<b>전도성 EMI (HV 포트)</b>는 <b>소스 → 경로 → 수신기</b>로 계산합니다. 소스는 게이트 명령에 데드타임(턴온 지연)과 전류 부호에 따른 "
     "다이오드 클램프를 적용한 실제 스위칭 순서의 정확한 선스펙트럼입니다(데드타임보다 짧은 게이트 펄스는 사라지고 펄스가 뒤집히지 않음). "
     "과변조, 에지 램프 겹침, 미선언 최소 펄스 처리, 정수가 아닌 비동기 캐리어 비는 소스 유효 범위 밖입니다. 경로는 선언한 DC-link(ESR/ESL), "
-    "Y-cap, 스위치노드·모터·케이블→섀시 C, 하네스, CM 초크, 인공회로망(AN)을 절점해석으로 CM·DM 동시(위상 포함) 풉니다. 수신기는 RBW 안 "
-    "선들의 크기 합(선합 추정; CISPR 판독 아님)이며, 수신 주파수를 연속으로 옮길 때 창 안의 선 집합이 바뀌는 모든 지점과 한계 꼭짓점을 "
+    "Y-cap, 스위치노드·모터·케이블→섀시 C, 하네스, CM 초크, 인공회로망(AN)을 절점해석으로 CM·DM 동시(위상 포함) 풉니다. CM 전류가 "
+    "어느 레일로 돌아가는지는 전류(轉流)에 달려 있어 4개 귀환 모델(중점 ½·½, 에지 부호: 상승→HV+·하강→HV−, 전부 HV+, 전부 HV−)을 "
+    "모두 봅니다. 수신기: 직사각 IF·피크 검출기가 읽는 창 안 선들의 <b>포락 최대가 추정</b>(중점·에지 부호 모델 중 큰 쪽, 필요 감쇠의 "
+    "근거)이고, 선들의 크기 합과 가우시안 IF 가중합(두 포트·4개 모델 중 최대)은 그 <b>상한</b>(판정 쪽)입니다 — 창당 선이 많을수록 "
+    "상한이 추정보다 커집니다(CISPR QP/AV는 미모델). 수신 주파수를 연속으로 옮길 때 창 안의 선 집합이 바뀌는 모든 지점과 한계 꼭짓점을 "
     "<b>정확히 열거</b>해 대역 전체의 최대값·최소 여유를 구합니다(표시 격자는 그림일 뿐 판정이 아님).<br>"
     "<b>판정</b>: 요구 프로파일이 빠지면 REQUIREMENT_INCOMPLETE, 방법·단위가 모델 출력(AN 측정단 dBµV)과 다르면 비교 불가(UNKNOWN). "
     "한계가 없는 구간은 '승인된 공백'으로 선언하지 않는 한 미정의입니다. 보정 기록(근거·holdout·취득·오차 모델·유한한 오차 한계·주파수 구간·"
-    "측정 set-up·경로망 식별자·소스 범위)이 완전하고 <b>이번 계산의 구성과 일치할 때만</b> 주장: 모든 수신 주파수에서 E + U+ ≤ L − M_d이면 "
-    "FEASIBLE, E − U− > L − M_d인 주파수(증인)가 있어야 INFEASIBLE, 그 외는 UNKNOWN(상한 초과만으로는 위반이 아님). 측정 trace는 "
+    "측정 set-up·경로망 식별자·소스 범위)이 완전하고 <b>이번 계산의 구성과 일치할 때만</b> 주장: 모든 수신 주파수에서 상한 + U+ ≤ L − M_d이면 "
+    "FEASIBLE, 4개 모델 중 가장 작은 포락 − U− > L − M_d인 주파수(증인)가 있어야 INFEASIBLE, 그 외는 UNKNOWN(상한 초과만으로는 위반이 "
+    "아님). 측정 trace는 "
     "<b>trace 자체의 취득 조건</b>(표현·검출기·RBW·IF 형상·dwell·set-up)으로 판정하며, 읽음값 사이의 손실까지 포함한 커버리지가 없으면 PASS가 아닙니다.",
     "<b>Conducted EMI (HV port)</b> is computed as <b>source -> path -> receiver</b>. Source: the exact line spectrum of "
     "the switching sequence built from the gate commands with dead time (turn-on delay) and the diode clamp by current "
     "sign (a gate pulse shorter than the dead time vanishes; pulses never reverse). Overmodulation, overlapping edge "
     "ramps, an undeclared minimum-pulse handling and a non-integer asynchronous carrier ratio are outside the source "
     "validity. Path: the declared DC link (ESR / ESL), Y capacitors, switch-node / motor / cable capacitance to chassis, "
-    "harness, CM choke and the artificial network, solved by nodal analysis with CM and DM together. Receiver: the "
-    "magnitude sum of the lines inside the RBW (a line-sum estimate, not a CISPR reading); every point where the window "
-    "content changes and every limit vertex is <b>enumerated exactly</b>, giving the supremum and the minimum margin over "
-    "the continuous band (the display grid is a plot, never the claim).<br><b>Judgement</b>: an incomplete profile is "
+    "harness, CM choke and the artificial network, solved by nodal analysis with CM and DM together; the rail that "
+    "returns the CM current depends on the commutation, so four return models are evaluated (midpoint ½·½, edge sign: "
+    "rising -> HV+ / falling -> HV-, all HV+, all HV-). Receiver: the <b>estimate</b> is the envelope maximum of the "
+    "in-window lines a rectangular IF with a peak detector reads (the larger of the midpoint and edge-sign models; the "
+    "basis of the required attenuation); the magnitude sum and the Gaussian-IF weighted sum (largest over both ports and "
+    "the four models) are its <b>bound</b> (the claim side) - the more lines per window, the larger the gap (CISPR QP / "
+    "AV not modelled). Every point where the window content changes and every limit vertex is <b>enumerated "
+    "exactly</b>, giving the supremum and the minimum margin over the continuous band (the display grid is a plot, "
+    "never the claim).<br><b>Judgement</b>: an incomplete profile is "
     "REQUIREMENT_INCOMPLETE; a method or unit other than the model's output (AN measuring port, dBuV) is not comparable "
     "(UNKNOWN). A band without a limit is undefined unless declared an approved gap. A claim needs a complete calibration "
     "record (evidence, hold-out, acquisition, error model, finite error bounds, frequency intervals, measurement set-up, "
-    "path-network identity, source ranges) that <b>matches this evaluation's configuration</b>: FEASIBLE when E + U+ <= "
-    "L - M_d at every receiver frequency, INFEASIBLE only with a witness frequency where E - U- > L - M_d, otherwise "
-    "UNKNOWN (exceeding the upper bound alone is not a violation). A measured trace is judged with <b>its own "
+    "path-network identity, source ranges) that <b>matches this evaluation's configuration</b>: FEASIBLE when bound + U+ "
+    "<= L - M_d at every receiver frequency, INFEASIBLE only with a witness frequency where the smallest envelope over the "
+    "four models - U- > L - M_d, otherwise UNKNOWN (exceeding the upper bound alone is not a violation). A measured "
+    "trace is judged with <b>its own "
     "acquisition</b> (representation, detector, RBW, IF shape, dwell, set-up); without coverage between the readings "
     "(their loss included) it is not a PASS.")
 
@@ -487,9 +498,11 @@ class EmiPage(QWidget):
         self.e_btn.setEnabled(True)
         self.last = res
         self.p_spec.draw(F.fig_emi_screening, res, name="emi_screening",
-                         csv=lambda res=res: {k: res[k] for k in ("grid_Hz", "E_dBuV", "plus_dBuV", "minus_dBuV",
-                                                                   "from_cm_source_dBuV", "from_dm_source_dBuV",
-                                                                   "limit_dBuV", "margin_dB", "required_attenuation_dB")})
+                         csv=lambda res=res: {k: res[k] for k in ("grid_Hz", "E_dBuV", "E_bound_dBuV", "lines_per_window",
+                                                                   "plus_dBuV", "minus_dBuV", "from_cm_source_dBuV",
+                                                                   "from_dm_source_dBuV", "limit_dBuV", "margin_est_dB",
+                                                                   "margin_dB", "required_attenuation_dB",
+                                                                   "required_attenuation_bound_dB") if k in res})
         self.p_net.draw(SC.fig_emi_network, res["network"], name="emi_network")
         self.p_meas.draw(F.fig_emi_measured, res, name="emi_measured")
         c = res["claim"]
@@ -513,7 +526,12 @@ class EmiPage(QWidget):
         for d in res.get("domain", []):
             txt = d["status"]
             if d.get("min_margin_dB") is not None:
-                txt += f" · E_sup {d['E_sup_dBuV']:.2f} dBµV @ {d['f_E_sup_Hz'] / 1e6:.4g} MHz · min margin {d['min_margin_dB']:.2f} dB"
+                if d.get("E_est_sup_dBuV") is not None:
+                    txt += (f" · {tr('추정', 'estimate')} {d['E_est_sup_dBuV']:.2f} dBµV @ {d['f_E_est_sup_Hz'] / 1e6:.4g} MHz, "
+                            f"{tr('최소 여유', 'min margin')} {d['min_margin_est_dB']:.2f} dB")
+                txt += (f" · {tr('상한', 'bound')} {d['E_sup_dBuV']:.2f} dBµV @ {d['f_E_sup_Hz'] / 1e6:.4g} MHz, "
+                        f"{tr('최소 여유', 'min margin')} {d['min_margin_dB']:.2f} dB · {tr('창당 선', 'lines per window')} "
+                        f"≤ {d.get('lines_per_window_max')}")
             if d["reasons"] or d["claim_reasons"]:
                 txt += " — " + "; ".join(reason_label(r) for r in d["reasons"] + d["claim_reasons"])
             rows.append((f"{d['lo_Hz'] / 1e6:g}–{d['hi_Hz'] / 1e6:g} MHz", txt))
@@ -524,8 +542,10 @@ class EmiPage(QWidget):
                          "; ".join((cal.get("problems") or []) + (cal.get("mismatches") or []))))
         if np.any(np.isfinite(A)):
             j = int(np.nanargmax(A))
-            rows.append((tr("최대 필요 감쇠", "max required attenuation"),
-                         f"{A[j]:.1f} dB at {g[j] / 1e6:.3g} MHz ({res['dominant_source'][j]}-dominated)"))
+            Ab = np.asarray(res.get("required_attenuation_bound_dB", A), dtype=float)
+            rows.append((tr("최대 필요 감쇠 (추정)", "max required attenuation (estimate)"),
+                         f"{A[j]:.1f} dB at {g[j] / 1e6:.3g} MHz ({res['dominant_source'][j]}-dominated); "
+                         + tr("상한 기준", "on the bound") + f" {np.nanmax(Ab):.1f} dB"))
             for lo, hi in ((0.15e6, 0.5e6), (0.5e6, 2e6), (2e6, 10e6), (10e6, 30e6)):
                 m = (g >= lo) & (g <= hi)
                 if m.any() and np.any(np.isfinite(A[m])):

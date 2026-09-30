@@ -395,13 +395,17 @@ def phase_sweep(plant: Plant, sensor: Sensor, threshold: float, limit: float, ho
         ph = sensor.period_s * i / max(1, int(phases))
         r = simulate(plant, replace(sensor, phase_s=ph), threshold, limit, horizon_s, action_delay_s, threshold_error)
         ev = r["events"]
+        ta = ev["t_action_effective_s"]
         rows.append({"phase_s": ph, "t_confirm_s": ev["t_confirm_s"], "peak": ev["peak"],
-                     "t_limit_s": ev["t_limit_s"], "protected": r["protected"]})
+                     "t_limit_s": ev["t_limit_s"], "protected": r["protected"], "t_action_s": ta,
+                     "t_action_scheduled_s": ev["t_action_scheduled_s"],
+                     "x_action": None if ta is None else float(np.interp(ta, r["t_s"], r["x"]))})
     worst = max(rows, key=lambda r: r["peak"])
     late = [r["t_confirm_s"] for r in rows if r["t_confirm_s"] is not None]
+    # all_protected: no limit crossing INSIDE the horizon (an observation, not the PROT-04 verdict)
     return {"rows": rows, "worst_peak": worst["peak"], "worst_phase_s": worst["phase_s"],
             "latest_confirm_s": max(late) if late else None, "earliest_confirm_s": min(late) if late else None,
-            "all_protected": all(r["protected"] for r in rows), "phases": len(rows)}
+            "all_protected": all(r["protected"] for r in rows), "phases": len(rows), "horizon_s": float(horizon_s)}
 
 
 def n_sample_confirmation_bound(period_s: float, n: int) -> float:
@@ -430,6 +434,99 @@ def _containment(plant: Plant, x_act: float, limit: float) -> tuple[float | None
         v = math.sqrt(max(x_act * x_act + 2.0 * P0 * 0.5 * tr / C, 0.0)) if P0 > 0 else x_act
         return v, "exact energy balance: the net power ramps to zero after the action, the voltage then stays constant"
     return x_act, "the ramp plant is frozen after the action"
+
+
+def _free_crossing(plant: Plant, t0: float, t1: float, limit: float) -> float | None:
+    """First instant in [t0, t1] at which the trajectory WITHOUT the action reaches the limit, from the plant's exact
+    solution (located on a grid - 40 points per ripple period for the ramp plant - and refined by bisection on the
+    exact solution); None: it stays below on [t0, t1]."""
+    if not t1 > t0 or math.isinf(limit):
+        return None
+    f = plant.p("ripple_hz", 0.0) if plant.kind == "ramp" else 0.0
+    dt = min((t1 - t0) / 4000.0, 1.0 / (40.0 * f) if f and f > 0 else math.inf)
+    g = np.linspace(t0, t1, int(min(2_000_000, math.ceil((t1 - t0) / dt))) + 1)
+    hit = np.flatnonzero(plant.x(g, math.inf) >= limit)
+    if hit.size == 0:
+        return None
+    k = int(hit[0])
+    if k == 0:
+        return float(g[0])
+    a, b = float(g[k - 1]), float(g[k])
+    for _ in range(60):
+        m = 0.5 * (a + b)
+        if float(plant.x(np.array([m]), math.inf)[0]) >= limit:
+            b = m
+        else:
+            a = m
+    return b
+
+
+def _prot04(plant: Plant, sw: dict, limit: float) -> dict:
+    """PROT-04 from the reaction, never from where the horizon ends (review 3 F-10).
+
+    A confirmation observed inside the horizon fixes the reaction: the action instant follows from it, the trajectory
+    up to the action is the plant's exact solution without the action and after it the exact post-action supremum
+    (_containment) - whether or not the action falls inside the horizon.  INFEASIBLE: the limit is reached inside the
+    horizon in some sampled phase, or before a scheduled action (exact solution beyond the horizon), or the exact
+    post-action supremum reaches it.  UNKNOWN: in some phase the fault is not confirmed inside the horizon and nothing
+    above decides (the detection itself lies beyond the horizon).  FEASIBLE: every sampled phase is contained."""
+    item = "fault protection before the physical limit"
+    H, n = sw["horizon_s"], sw["phases"]
+    crossed = [r for r in sw["rows"] if r["t_limit_s"] is not None]
+    if crossed:
+        w = min(crossed, key=lambda r: r["t_limit_s"])
+        acted = w["t_action_s"] is not None and w["t_action_s"] <= w["t_limit_s"]
+        return _row("PROT-04", item, Status.INFEASIBLE,
+                    f"the variable reaches the limit {limit:.6g} at {w['t_limit_s']:.4g} s in sample phase "
+                    f"{w['phase_s']:.4g} s ({len(crossed)} of {n} phases; worst peak {sw['worst_peak']:.6g}) - "
+                    + ("after the action took effect: the reaction does not contain it" if acted else
+                       "before any action took effect (confirmation alone is not protection)"),
+                    "causal simulation witness")
+    beyond, post, pending = [], [], []
+    for r in sw["rows"]:
+        if r["t_action_s"] is not None:
+            post.append((r, r["x_action"], r["t_action_s"], False))
+        elif r["t_action_scheduled_s"] is not None:
+            ts = r["t_action_scheduled_s"]
+            tl = _free_crossing(plant, H, ts, limit)
+            if tl is not None:
+                beyond.append((r, tl, ts))
+            else:
+                post.append((r, float(plant.x(np.array([ts]), math.inf)[0]), ts, True))
+        else:
+            pending.append(r)
+    if beyond:
+        r, tl, ts = min(beyond, key=lambda z: z[1])
+        return _row("PROT-04", item, Status.INFEASIBLE,
+                    f"the fault is confirmed at {r['t_confirm_s']:.4g} s (sample phase {r['phase_s']:.4g} s) but the "
+                    f"action takes effect only at {ts:.4g} s; without it the exact plant solution reaches the limit "
+                    f"{limit:.6g} at {tl:.6g} s, before the action ({len(beyond)} of {n} phases; after the horizon "
+                    f"{H:.4g} s, which decides nothing)", "exact plant solution up to the scheduled action")
+    sups = [(_containment(plant, xa, limit), r, ta, ext) for r, xa, ta, ext in post]
+    bad = [z for z in sups if z[0][0] >= limit]
+    if bad:
+        (sup, how), r, ta, ext = max(bad, key=lambda z: z[0][0])
+        return _row("PROT-04", item, Status.INFEASIBLE,
+                    f"after the action at {ta:.4g} s (sample phase {r['phase_s']:.4g} s"
+                    + (", after the horizon: exact solution up to it" if ext else "")
+                    + f") the variable is bounded by {sup:.6g} >= limit {limit:.6g} ({how})",
+                    "exact post-action solution")
+    if pending:
+        return _row("PROT-04", item, Status.UNKNOWN,
+                    f"the fault is not confirmed inside the horizon {H:.4g} s in {len(pending)} of {n} sampled phases "
+                    f"and the limit is not reached on the observed part (peak {sw['worst_peak']:.6g} < {limit:.6g}): "
+                    f"the detection lies beyond the horizon - extend it; the horizon alone decides nothing",
+                    "causal simulation, horizon ends before the detection")
+    (sup, how), r, ta, ext = max(sups, key=lambda z: z[0][0])
+    n_ext = sum(1 for z in sups if z[3])
+    return _row("PROT-04", item, Status.FEASIBLE,
+                f"the action takes effect in all {n} sampled phases (latest {max(z[2] for z in sups):.4g} s) before the "
+                f"limit; peak {sw['worst_peak']:.6g} < limit {limit:.6g} and the exact post-action bound {sup:.6g} < "
+                f"limit ({how})"
+                + (f"; in {n_ext} phases the action falls after the horizon {H:.4g} s and the trajectory up to it is "
+                   f"the exact solution" if n_ext else "")
+                + "; sampled phases, not a proof over the continuous fault domain",
+                "causal simulation, sampled phases + exact post-action solution")
 
 
 def protection_review(plant: Plant, sensor: Sensor, fault_threshold: float, limit: float, horizon_s: float,
@@ -479,19 +576,7 @@ def protection_review(plant: Plant, sensor: Sensor, fault_threshold: float, limi
     sw = phase_sweep(plant, under, fault_threshold, limit, horizon_s, action_delay_s, +E_theta, phases)
     base = simulate(plant, replace(under, phase_s=sw["worst_phase_s"]), fault_threshold, limit, horizon_s,
                     action_delay_s, +E_theta, release_threshold=release_threshold)
-    if not all(r["t_confirm_s"] is not None for r in sw["rows"]):
-        rows.append(_row("PROT-04", "fault protection before the physical limit", Status.INFEASIBLE,
-                         "the fault is not confirmed in some sample phase within the horizon (filtered/sampled "
-                         "measurement never satisfies the detector)", "causal simulation witness"))
-    elif sw["all_protected"]:
-        rows.append(_row("PROT-04", "fault protection before the physical limit", Status.FEASIBLE,
-                         f"peak {sw['worst_peak']:.6g} < limit {limit:.6g} in all {sw['phases']} sampled phases "
-                         f"(latest confirmation {sw['latest_confirm_s']:.4g} s); sampled phases, not a proof over the "
-                         f"continuous fault domain", "causal simulation, sampled phases"))
-    else:
-        rows.append(_row("PROT-04", "fault protection before the physical limit", Status.INFEASIBLE,
-                         f"worst phase peak {sw['worst_peak']:.6g} >= limit {limit:.6g} (confirmation alone is not "
-                         f"protection)", "causal simulation witness"))
+    rows.append(_prot04(plant, sw, limit))
     # PROT-02 warning usefulness: on each realisation the warning and the fault detector read the SAME samples of
     # the same trace; the warning does not act on the plant; the minimum lead over realisations is the claim
     if warning_threshold is not None and warning_needed_s is not None:
@@ -542,18 +627,26 @@ def protection_review(plant: Plant, sensor: Sensor, fault_threshold: float, limi
     # PROT-03 derating / reaction effectiveness: the declared objective is containment below the limit (exact
     # supremum after the action for the native plants); an immediate reversal is a separate, optional requirement
     ev = base["events"]
-    if ev["t_action_effective_s"] is None:
+    ta, ts, H = ev["t_action_effective_s"], ev.get("t_action_scheduled_s"), base["horizon_s"]
+    # an action confirmed inside the horizon but effective after it is judged on the exact solution up to it, as in
+    # PROT-04 (review 3 F-10): the horizon decides nothing
+    t_late = _free_crossing(plant, H, ts, limit) if (ta is None and ts is not None) else None
+    if ta is None and ts is None:
         rows.append(_row("PROT-03", "derating / reaction effectiveness", Status.UNKNOWN,
-                         "no action effective within the horizon" + (
-                             f" (scheduled at {ev['t_action_scheduled_s']:.4g} s: not observed)"
-                             if ev.get("t_action_scheduled_s") is not None else "")))
+                         "no action within the horizon: the fault is not confirmed in it (extend the horizon)"))
+    elif t_late is not None:
+        rows.append(_row("PROT-03", "derating / reaction effectiveness", Status.INFEASIBLE,
+                         f"the action takes effect only at {ts:.4g} s; the exact solution reaches the limit {limit:.6g} "
+                         f"at {t_late:.6g} s, before it (after the horizon {H:.4g} s)",
+                         "exact plant solution up to the scheduled action"))
     else:
-        ta = ev["t_action_effective_s"]
-        x_act = float(np.interp(ta, base["t_s"], base["x"]))
+        beyond = ta is None
+        ta = ts if beyond else ta
+        x_act = (float(plant.x(np.array([ta]), math.inf)[0]) if beyond else float(np.interp(ta, base["t_s"], base["x"])))
         sup, how = _containment(plant, x_act, limit)
         contained = sup < limit and base["protected"]
-        det = (f"after the action at {ta:.4g} s the variable is bounded by {sup:.6g} {'<' if sup < limit else '>='} "
-               f"limit {limit:.6g} ({how})")
+        det = (f"after the action at {ta:.4g} s" + (" (after the horizon: exact solution up to it)" if beyond else "")
+               + f" the variable is bounded by {sup:.6g} {'<' if sup < limit else '>='} limit {limit:.6g} ({how})")
         st = Status.FEASIBLE if contained else Status.INFEASIBLE
         if require_immediate_reversal and plant.kind == "thermal_1node":
             T_eq = plant.p("T_coolant_C") + plant.p("R_K_per_W") * plant.p("P_after_W", 0.0)

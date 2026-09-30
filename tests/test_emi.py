@@ -144,9 +144,13 @@ def test_screening_is_never_a_pass_calibration_is_declared():
     assert bad["claim"]["status"] == "INFEASIBLE"
     w = bad["claim"]["evidence"][0]["data"]                                 # the LOWER bound exceeds: a witness
     assert w["E_lower_dBuV"] > w["limit_minus_reserve_dBuV"]
-    # the required attenuation follows A = max(0, E_U + M_d - L)
+    # the required attenuation follows A = max(0, E + U_upper + M_d - L) on the estimate (review 3 F-11), the same
+    # figure on the bound (the claim side) next to it, never below it
     A = np.asarray(bad["required_attenuation_dB"])
-    assert np.allclose(A, np.maximum(0, np.asarray(bad["E_upper_dBuV"]) + 6.0 - 20.0))
+    assert np.allclose(A, np.maximum(0, np.asarray(bad["E_dBuV"]) + 3.0 + 6.0 - 20.0))
+    Ab = np.asarray(bad["required_attenuation_bound_dB"])
+    assert np.allclose(Ab, np.maximum(0, np.asarray(bad["E_upper_dBuV"]) + 6.0 - 20.0))
+    assert np.all(Ab >= A - 1e-9)
 
 
 def meta(**kw):

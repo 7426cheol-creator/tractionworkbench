@@ -443,10 +443,13 @@ def ab_insight(res: dict) -> Insight:
         lvl = {"A_LOWER_LOSS": "ok", "B_LOWER_LOSS": "ok", "UNDECIDED": "open", "NOT_COMPARABLE": "bad"}.get(v, "info")
         if cv.get("loss_A") is not None:
             s.add(tr(f"<b>{tr(*_AB.get(v, (v, v)))}</b>: A {q(cv['loss_A'], 'W')} vs B {q(cv['loss_B'], 'W')} → Δ {q(cv.get('delta'), 'W')} "
-                     f"({pct(cv.get('delta'), cv['loss_A'], 0)})" + (f", 오차 예산 ±{q(cv.get('band'), 'W')}" if cv.get("band") is not None else ""),
+                     f"({pct(cv.get('delta'), cv['loss_A'], 0)})" + (f", 오차 예산 ±{q(cv.get('band'), 'W')} (선언 한계의 선형합 — "
+                                                                      f"독립 오차의 RSS면 ±{q(cv.get('band_rss'), 'W')})"
+                                                                      if cv.get("band") is not None else ""),
                      f"<b>{tr(*_AB.get(v, (v, v)))}</b>: A {q(cv['loss_A'], 'W')} vs B {q(cv['loss_B'], 'W')} → Δ "
                      f"{q(cv.get('delta'), 'W')} ({pct(cv.get('delta'), cv['loss_A'], 0)})"
-                     + (f", error budget ±{q(cv.get('band'), 'W')}" if cv.get("band") is not None else "")), lvl,
+                     + (f", error budget ±{q(cv.get('band'), 'W')} (linear sum of the declared bounds — the RSS of "
+                        f"independent errors would be ±{q(cv.get('band_rss'), 'W')})" if cv.get("band") is not None else "")), lvl,
                   esc(engine_text(cv.get("reason", ""))))
         else:
             s.add(f"<b>{tr(*_AB.get(v, (v, v)))}</b>", lvl, esc(engine_text(cv.get("reason", ""))))

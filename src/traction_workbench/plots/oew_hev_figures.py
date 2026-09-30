@@ -426,17 +426,20 @@ def fig_emi_screening(fig, res: dict, title: str | None = None):
     ax, ax2 = fig.subplots(2, 1, sharex=True, gridspec_kw={"height_ratios": [2.2, 1.0]})
     f = np.asarray(res["grid_Hz"]) / 1e6
     L = np.asarray(res["limit_dBuV"], dtype=float)
-    ax.plot(f, res["plus_dBuV"], color=S.ACCENT, lw=1.3, label=tr("HV+ 측정단 (추정)", "HV+ port (estimate)"))
-    ax.plot(f, res["minus_dBuV"], color="#8250df", lw=1.1, label=tr("HV− 측정단 (추정)", "HV− port (estimate)"))
-    ax.plot(f, res["from_cm_source_dBuV"], color="#bf8700", lw=1.0, ls="--", label=tr("CM 소스 기여 (HV+)", "CM-source share (HV+)"))
-    ax.plot(f, res["from_dm_source_dBuV"], color="#1a7f37", lw=1.0, ls="--", label=tr("DM 소스 기여 (HV+)", "DM-source share (HV+)"))
+    E = np.asarray(res["E_dBuV"], dtype=float)
+    Eb = np.asarray(res.get("E_bound_dBuV", res["E_dBuV"]), dtype=float)
+    ax.plot(f, E, color=S.ACCENT, lw=1.5, label=tr("추정: 직사각 IF 피크 (포락)", "estimate: rectangular-IF peak (envelope)"))
+    ax.plot(f, Eb, color="#8250df", lw=1.0, ls="--",
+            label=tr("상한: 선합 · 가우시안 IF (4개 CM 귀환 모델)", "bound: line sum · Gaussian IF (4 CM return models)"))
+    ax.plot(f, res["from_cm_source_dBuV"], color="#bf8700", lw=0.9, ls=":", label=tr("CM 소스 기여 (HV+, 선합)", "CM-source share (HV+, line sum)"))
+    ax.plot(f, res["from_dm_source_dBuV"], color="#1a7f37", lw=0.9, ls=":", label=tr("DM 소스 기여 (HV+, 선합)", "DM-source share (HV+, line sum)"))
     env = res.get("E_envelope_dBuV")
     if env is not None and np.any(np.isfinite(np.asarray(env, dtype=float))):
         ax.step(f, np.asarray(env, dtype=float), where="mid", color="#cf222e", lw=0.9,
-                label=tr("정확 포락 (구간별 최대, 판정 근거)", "exact envelope (max per bin, the claim's basis)"))
+                label=tr("정확 상한 포락 (구간별 최대, 판정 근거)", "exact bound envelope (max per bin, the claim's basis)"))
     if res.get("calibrated"):
         ax.fill_between(f, np.asarray(res["E_lower_dBuV"], dtype=float), np.asarray(res["E_upper_dBuV"], dtype=float),
-                        color=S.ACCENT, alpha=0.10, label=tr("보정 오차 한계 E−U− … E+U+", "calibrated bounds E−U− … E+U+"))
+                        color=S.ACCENT, alpha=0.10, label=tr("보정 한계: 반례 하한 … 상한 + U+", "calibrated: witness − U− … bound + U+"))
     for d in res.get("domain") or []:
         if d.get("status") in ("undefined", "no requirement (declared gap)"):
             ax.axvspan(d["lo_Hz"] / 1e6, d["hi_Hz"] / 1e6, color="#8c959f",
@@ -445,29 +448,39 @@ def fig_emi_screening(fig, res: dict, title: str | None = None):
         ax.plot(f, L, color=t["fg"], lw=2.0, label=tr("한계 (입력 곡선)", "limit (entered curve)"))
         rs = res["profile"].get("design_reserve_dB") or 0.0
         ax.plot(f, L - rs, color=t["fg"], lw=1.0, ls=":", label=tr(f"한계 − 설계 여유 {rs:g} dB", f"limit − reserve {rs:g} dB"))
-        ex = np.asarray(res["margin_dB"], dtype=float) < 0
-        ax.fill_between(f, L - rs, np.asarray(res["E_upper_dBuV"]), where=ex, color="#cf222e", alpha=0.12,
-                        label=tr("예측 초과 (스크리닝)", "predicted exceedance (screening)"))
+        me = np.asarray(res.get("margin_est_dB", res["margin_dB"]), dtype=float)
+        U = (res.get("calibration") or {}).get("U_upper_dB") or 0.0
+        ax.fill_between(f, L - rs, E + U, where=me < 0, color="#cf222e", alpha=0.12,
+                        label=tr("예측 초과 (추정, 스크리닝)", "predicted exceedance (estimate, screening)"))
     ax.set_xscale("log")
     ax.set_ylabel("dBµV")
-    ax.legend(fontsize=6.8, loc="upper right", ncols=2)
+    ax.legend(fontsize=6.6, loc="upper right", ncols=2)
     c = res["claim"]
-    ax.set_title(tr("HV 전도성 방출: 소스(스위칭 순서) → 경로(CM/DM 망) → 수신기(RBW 선합) — 회색: 미정의/공백",
-                    "HV conducted emission: source (switching sequence) -> path (CM/DM network) -> receiver (RBW line sum) "
-                    "— grey: undefined / gap"), fontsize=9)
-    _note(ax, f"{c['status']}: {c['detail'][:120]}\n" + tr("선합 추정치 ≠ CISPR 수신기 판독 (QP/AV 미모델)",
-                                                           "line-sum estimate != CISPR receiver reading (QP/AV not modelled)"),
+    ax.set_title(tr("HV 전도성 방출: 소스(스위칭 순서) → 경로(CM/DM 망) → 수신기(직사각 IF 추정 · 선합 상한) — 회색: 미정의/공백",
+                    "HV conducted emission: source (switching sequence) -> path (CM/DM network) -> receiver (rectangular-IF "
+                    "estimate · line-sum bound) — grey: undefined / gap"), fontsize=9)
+    lpw = np.asarray(res.get("lines_per_window") if res.get("lines_per_window") is not None else [], dtype=float)
+    lines = (tr(f", 창당 선 {int(np.nanmax(lpw))}개까지", f", up to {int(np.nanmax(lpw))} lines per window")
+             if lpw.size and np.any(np.isfinite(lpw)) else "")
+    _note(ax, f"{c['status']}: {c['detail'][:120]}\n" + tr(f"추정 = 직사각 IF 피크, 상한 = 선합/가우시안 IF{lines}; CISPR QP/AV 미모델",
+                                                           f"estimate = rectangular-IF peak, bound = line sum / Gaussian IF{lines}; "
+                                                           f"CISPR QP/AV not modelled"),
           loc="lower left", fontsize=6.6)
     A = np.asarray(res["required_attenuation_dB"], dtype=float)
     dom = np.asarray(res["dominant_source"])
     cols = np.where(dom == "CM", "#bf8700", "#1a7f37")
     ax2.bar(f, np.nan_to_num(A), width=f * 0.03, color=cols)
+    Ab = res.get("required_attenuation_bound_dB")
+    handles = [Patch(color="#bf8700", label=tr("CM 지배 → Y-cap/CM 초크/본딩", "CM-dominated -> Y-cap / CM choke / bonding")),
+               Patch(color="#1a7f37", label=tr("DM 지배 → X-cap/DM 인덕턴스/DC-link ESL", "DM-dominated -> X-cap / DM L / DC-link ESL"))]
+    if Ab is not None:
+        (ln,) = ax2.step(f, np.nan_to_num(np.asarray(Ab, dtype=float)), where="mid", color="#8250df", lw=0.9, ls="--",
+                         label=tr("상한 기준 (판정 쪽)", "on the bound (claim side)"))
+        handles.append(ln)
     ax2.set_xscale("log")
     ax2.set_ylabel(tr("필요 감쇠 [dB]", "required attenuation [dB]"))
     ax2.set_xlabel(tr("주파수 [MHz]", "frequency [MHz]"))
-    ax2.legend(handles=[Patch(color="#bf8700", label=tr("CM 지배 → Y-cap/CM 초크/본딩", "CM-dominated -> Y-cap / CM choke / bonding")),
-                        Patch(color="#1a7f37", label=tr("DM 지배 → X-cap/DM 인덕턴스/DC-link ESL", "DM-dominated -> X-cap / DM L / DC-link ESL"))],
-               fontsize=6.8, loc="upper right")
+    ax2.legend(handles=handles, fontsize=6.6, loc="upper right")
 
 
 def fig_emi_measured(fig, res: dict, title: str | None = None):

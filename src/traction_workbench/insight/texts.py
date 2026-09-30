@@ -383,8 +383,17 @@ _FIXED = {
     "kinematics, ideal torque ratio and power balance close": "기구학·이상 토크비·전력 수지가 닫힘",
     # EMI
     "screening margin": "스크리닝 여유",
-    "line-sum estimate of the modelled lines: not a CISPR receiver reading (QP / AV weighting, IF filter shape and dwell "
-    "not modelled)": "모델링된 스펙트럼 선의 합 추정 — CISPR 수신기 판독이 아님 (QP·AV 가중, IF 필터 모양, 체류 시간 미모델)",
+    "estimate = rectangular-IF peak reading (envelope) of the modelled lines, the larger of the midpoint and edge-sign CM "
+    "return models; bound = the largest of the line sums (both ports, four CM return models) and the Gaussian-IF weighted "
+    "sum - not a CISPR reading (QP / AV weighting and dwell not modelled; they read at most the peak)":
+        "추정 = 모델링된 선들의 직사각 IF 피크 판독(포락), 중점·에지 부호 CM 귀환 모델 중 큰 쪽; 상한 = 선합(두 포트, 4개 CM 귀환 "
+        "모델)과 가우시안 IF 가중합 중 최대 — CISPR 판독이 아님 (QP·AV 가중과 체류 시간 미모델; 이들은 피크 이하로 읽음)",
+    "the CM return rail depends on the commutation (a time-varying network): the four models bracket the usual "
+    "assumptions, they do not bound every allocation - a calibration's U_upper covers the rest":
+        "CM 전류가 어느 레일로 돌아가는지는 전류(轉流)에 따라 달라짐 (시변 회로망): 4개 모델은 통상의 가정을 포괄할 뿐 모든 배분의 "
+        "한계는 아님 — 나머지는 보정 기록의 U_upper가 덮어야 함",
+    "design reserve not declared: M_d = 0 dB is used in every margin (a design choice to declare, not a default)":
+        "설계 예비 미선언: 모든 여유에 M_d = 0 dB 사용 (기본값이 아니라 선언해야 할 설계 선택)",
     "ideal-switch edges with declared rise / fall and dead time; ringing, reverse recovery and gate-loop effects are "
     "outside this source": "선언된 상승·하강·데드타임의 이상 스위치 에지 — 링잉·역회복·게이트 루프 효과는 이 소스 밖",
     "zero-sequence suppression (u0 = 0) is not chassis common-mode suppression: EMC, bearing and insulation stress need "
@@ -607,8 +616,14 @@ _PATTERNS += [
     (r"met at all (\d+) sampled initial angles \(worst (\S+) s at (\S+) deg\)", r"표본 초기각 \1개 모두 충족 (최악 \2 s @ \3°)"),
     (r"the (\S+) J capacitor margin is used at (\S+) us, before the excess ends at (\S+) us: peak (\S+) V",
      r"커패시터 여유 \1 J이 \2 µs에 소진 — 잉여가 끝나는 \3 µs 전: 최고 \4 V"),
-    (r"SCREENING - predicted exceedance up to (\S+) dB at (\S+) MHz \(exact over the covered band\)",
-     r"스크리닝 — 최대 \1 dB 초과 예측 @ \2 MHz (덮은 대역 전체에서 정확)"),
+    (r"SCREENING - predicted exceedance up to (\S+) dB at (\S+) MHz \(estimate: rectangular-IF envelope, exact over the "
+     r"covered band\)", r"스크리닝 — 추정 기준 최대 \1 dB 초과 예측 @ \2 MHz (직사각 IF 포락, 덮은 대역 전체에서 정확)"),
+    (r"SCREENING - screening margin >= (\S+) dB on the estimate \(exact over the covered band; not a pass\)",
+     r"스크리닝 — 추정 기준 여유 ≥ \1 dB (덮은 대역 전체에서 정확; 합격 아님)"),
+    (r"bound exceedance up to (\S+) dB at (\S+) MHz \(line sums over the ports and CM return models, Gaussian IF\)",
+     r"상한 기준 최대 \1 dB 초과 @ \2 MHz (포트·CM 귀환 모델별 선합, 가우시안 IF)"),
+    (r"bound margin (\S+) dB at (\S+) MHz \(line sums over the ports and CM return models, Gaussian IF\)",
+     r"상한 기준 여유 \1 dB @ \2 MHz (포트·CM 귀환 모델별 선합, 가우시안 IF)"),
     (r"one (\S+) V bridge \(ideal ceiling V/sqrt3\)", r"\1 V 브리지 하나 (이상 한계 V/√3)"),
     (r"two bridges on one (\S+) V bus \(zero-u0 hexagon: V\)", r"\1 V bus 하나에 브리지 둘 (u0 = 0 육각형: V)"),
     (r"(\S+) V \+ (\S+) V isolated sources \(\(VA\+VB\)/sqrt3\)", r"\1 V + \2 V 분리 전원 ((V_A + V_B)/√3)"),

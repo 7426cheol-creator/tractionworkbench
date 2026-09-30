@@ -644,9 +644,22 @@ def response_metrics(sim: dict, man: Maneuver, settle_band: float = 0.05) -> dic
     r = sim["referred"]
     a0 = float(a[0])
     a_target = (man.T1_Nm - sim["TL_motor_Nm"]) / (r["Jm"] + r["Jl"])
-    a_end = float(np.mean(a[-max(3, int(0.05 * t.size)):]))
+    # the final level is the time average over the last WHOLE torsional periods of the evaluated window: a partial
+    # period biases it by up to the oscillation amplitude (an exactly delivered request read as 1.05 of it, review 3)
+    fn = (sim.get("modal") or {}).get("f_n_Hz")
+    after = float(t[-1] - man.t_step_s)
+    if fn and fn > 0 and after * fn >= 1.0:
+        n_per = max(1, int(np.floor(0.5 * after * fn)))          # at most half of the window after the step
+        sel = t >= float(t[-1]) - n_per / fn
+        trap = getattr(np, "trapezoid", None) or np.trapz
+        a_end = (float(trap(a[sel], t[sel]) / (t[sel][-1] - t[sel][0])) if sel.sum() > 1 else float(a[-1]))
+        final_basis = f"time average over the last {n_per} torsional period(s) (f_n {fn:.4g} Hz)"
+    else:
+        a_end = float(np.mean(a[-max(3, int(0.05 * t.size)):]))
+        final_basis = ("mean of the last 5 % of the samples: the window after the step is shorter than one torsional "
+                       "period, the level is not settled")
     span = a_target - a0
-    out = {"a_initial": a0, "a_target": a_target, "a_final": a_end,
+    out = {"a_initial": a0, "a_target": a_target, "a_final": a_end, "a_final_basis": final_basis,
            "peak_jerk_abs": float(np.max(np.abs(j[post]))) if post.any() else None,
            "peak_basis": "maximum on the output grid (sampled, not a certified maximum)",
            "horizon_after_step_s": float(t[-1] - man.t_step_s)}

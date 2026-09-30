@@ -16,21 +16,32 @@ What this module is - and is not:
 * **path**: a declared lumped network (DC link with ESR / ESL, Y capacitors with mounting inductance, switch-node /
   motor-to-chassis capacitance, harness, optional common-mode choke as coupled inductors, the artificial network) is
   solved by nodal analysis at every line, both sources together (coherent, phases kept); CM and DM are not forced
-  to be independent;
-* **receiver**: the lines inside a rectangular RBW window are summed in magnitude (a line-sum estimate, never a CISPR
-  reading: IF shape, QP / AV weighting and dwell are not modelled).  While the receiver is tuned the window content
-  changes only when a line enters or leaves it, so the estimate over a CONTINUOUS band is piecewise constant: its
-  supremum and the minimum margin to a log-linear limit are computed EXACTLY by enumerating every window change and
-  every limit vertex - the display grid is a plot, never the claim;
+  to be independent.  Which rail returns the CM current depends on the commutation - a time-varying network this
+  frequency-domain model cannot represent (review 3 F-23) - so four CM return models are evaluated: the DC midpoint
+  (1/2 - 1/2, the symmetric average), by edge sign (the CM source of every rising edge returns through HV+, of every
+  falling edge through HV-), all through HV+ and all through HV-.  The midpoint model has no CM -> DM conversion
+  in a symmetric network; the others do;
+* **receiver** (review 3 F-11): a rectangular IF of width RBW with a peak detector reads the envelope peak
+  max_t |sum c_n exp(j 2 pi f_n t)| of the lines inside the window - the screening ESTIMATE (the larger of the two
+  physical CM return models, midpoint and edge sign).  The magnitude sum of the same lines is its triangle-inequality
+  UPPER BOUND (8-11 dB above it with 23-91 lines per window), and a Gaussian IF (-6 dB width = RBW) also passes lines
+  outside the window, bounded by the weighted magnitude sum.  The claim side uses the BOUND = the largest of these
+  over both ports and all four CM return models; a violation WITNESS needs the smallest envelope over the four
+  models.  QP / AV weighting and dwell are not modelled (they read at most the peak).  While the receiver is tuned
+  the window content changes only when a line enters or leaves it, so the line sums and the envelopes over a
+  CONTINUOUS band are piecewise constant (the Gaussian sum is bounded over every tuning cell): their suprema and the
+  minimum margins to a log-linear limit are computed EXACTLY by enumerating every window change and every limit
+  vertex (the envelope by branch and bound under its line sum) - the display grid is a plot, never the claim;
 * **claims**: without an applicable calibration record the result is SCREENING (UNKNOWN): margins, the required
-  attenuation A = max(0, E_U + M_d - L) and the dominant CM / DM path, "predicted exceedance" instead of FAIL.  A
+  attenuation A = max(0, E + U_upper + M_d - L) on the estimate (next to the same figure on the bound) and the
+  dominant CM / DM path, "predicted exceedance" instead of FAIL.  A
   calibration record is complete only with its evidence, hold-out, acquisition, error model, finite model-error
   bounds (a zero bound needs its reason), frequency intervals, measurement set-up, path-network identity and source
   ranges, and it applies only when set-up, network and source match THIS evaluation (re-checked on every run).  The
   claim domain is the band intersected with the calibrated intervals, the network validity, the RBW definition and
-  the limit coverage: FEASIBLE when E + U_upper <= L - M_d at every receiver frequency of the band (declared gaps
-  excepted), INFEASIBLE only with a witness frequency where E - U_lower > L - M_d, otherwise UNKNOWN - an exceedance
-  of the upper bound alone is not a violation.  A measured receiver trace is judged against the same profile with
+  the limit coverage: FEASIBLE when bound + U_upper <= L - M_d at every receiver frequency of the band (declared gaps
+  excepted), INFEASIBLE only with a witness frequency where witness - U_lower > L - M_d, otherwise UNKNOWN - an
+  exceedance of the upper bound alone is not a violation.  A measured receiver trace is judged against the same profile with
   its OWN acquisition metadata (representation, detector, RBW, IF shape, dwell, set-up), coverage between the
   readings included.
 
@@ -661,10 +672,21 @@ _N_NODES = 9
 _X = _N_NODES + 3                       # + i_src(cm), i_line+, i_line-
 
 
-def _network_matrix(net: HvNetwork, f: np.ndarray) -> np.ndarray:
+# CM return models (review 3 F-23): (share of the CM source current returning into HV+ for the rising edges, for
+# the falling edges, the rail tap of the network the DM source sees)
+RAIL_MODELS = {"midpoint": (0.5, 0.5, 0.5),        # 1/2 - 1/2: the symmetric average network
+               "edge_sign": (1.0, 0.0, 0.5),       # rising edges through HV+, falling edges through HV-
+               "hv_plus": (1.0, 1.0, 1.0),         # every CM return through HV+
+               "hv_minus": (0.0, 0.0, 0.0)}        # every CM return through HV-
+ESTIMATE_RAIL_MODELS = ("midpoint", "edge_sign")   # the two physical models: the screening estimate
+RAIL_ALPHAS = (0.5, 1.0, 0.0)
+GAUSS_SPAN_RBW = 4.0         # a Gaussian IF weight beyond 4 RBW from the tuning is below 2^-64: not summed
+
+
+def _network_matrix(net: HvNetwork, f: np.ndarray, alpha: float = 0.5) -> np.ndarray:
     """Nodal matrix at every frequency (nodes 1 inv+, 2 inv-, 3 AN+ (EUT side), 4 AN-, 5 meas+, 6 meas-, 7 sup+,
     8 sup-, 9 switch-node CM source; ground = chassis; extra unknowns: the CM source current and the two coupled
-    harness / choke branch currents)."""
+    harness / choke branch currents); ``alpha`` = the share of the CM source current returning into HV+."""
     w = TWO_PI * f
     jw = 1j * w
     nf = f.size
@@ -698,14 +720,16 @@ def _network_matrix(net: HvNetwork, f: np.ndarray) -> np.ndarray:
         adm(sup, 0, jw * net.an_C_sup_F)
     z_bat = net.R_bat_ohm + jw * net.L_bat_H
     adm(7, 8, 1.0 / np.where(np.abs(z_bat) > 0, z_bat, 1e-9))
-    # CM source: current i_s from the DC midpoint (half from each rail) through the source into node 9
+    # CM source: current i_s from the rails (share alpha from HV+, 1 - alpha from HV-) through the source into node
+    # 9; its voltage is referred to the same weighted rail point (a power-consistent tap)
     s = N
-    A[:, 0, s] += 0.5          # leaves node 1
-    A[:, 1, s] += 0.5          # leaves node 2
+    a = float(alpha)
+    A[:, 0, s] += a            # leaves node 1
+    A[:, 1, s] += 1.0 - a      # leaves node 2
     A[:, 8, s] -= 1.0          # enters node 9
     A[:, s, 8] += 1.0
-    A[:, s, 0] -= 0.5
-    A[:, s, 1] -= 0.5
+    A[:, s, 0] -= a
+    A[:, s, 1] -= 1.0 - a
     # harness + choke: coupled branches 1 -> 3 (i1) and 2 -> 4 (i2)
     L1 = net.L_h_H + net.L_ch_H
     M = net.k_ch * net.L_ch_H
@@ -729,15 +753,15 @@ def _unit_sources() -> np.ndarray:
     return B
 
 
-def solve_network(net: HvNetwork, f, v_cm, i_dm) -> dict:
+def solve_network(net: HvNetwork, f, v_cm, i_dm, alpha: float = 0.5) -> dict:
     """Nodal analysis at every frequency with both sources active (coherent).
 
-    The CM source is referenced to the DC midpoint without creating a DM path: V9 - (V1 + V2)/2 = v_cm, its current
-    returns half into each rail (equal split: an assumption about the HF symmetry of the DC link).  Returns the
+    The CM source is referenced to the rail tap alpha: V9 - alpha V1 - (1 - alpha) V2 = v_cm, its current returns the
+    share alpha into HV+ (alpha = 1/2: the DC midpoint, no DM path in a symmetric network).  Returns the
     measurement-port voltages and branch currents.
     """
     f = np.atleast_1d(np.asarray(f, dtype=float))
-    A = _network_matrix(net, f)
+    A = _network_matrix(net, f, alpha)
     B = _unit_sources()
     b = np.asarray(v_cm)[:, None] * B[None, :, 0] + np.asarray(i_dm)[:, None] * B[None, :, 1]
     x = np.linalg.solve(A, b[..., None])[..., 0]
@@ -747,11 +771,12 @@ def solve_network(net: HvNetwork, f, v_cm, i_dm) -> dict:
             "i_line_minus": x[:, N + 2], "i_cm_source": x[:, N], "v_inv_plus": V[:, 0], "v_inv_minus": V[:, 1]}
 
 
-def port_transfer(net: HvNetwork, f) -> tuple:
+def port_transfer(net: HvNetwork, f, alpha: float = 0.5) -> tuple:
     """Measuring-port voltages per unit source: (H_plus, H_minus, residual), H = [per unit v_cm, per unit i_dm]
-    (n x 2), residual = the largest relative residual |A x - b| / (|A| |x| + |b|) of the solve."""
+    (n x 2), residual = the largest relative residual |A x - b| / (|A| |x| + |b|) of the solve; ``alpha`` = the
+    share of the CM source current returning into HV+."""
     f = np.atleast_1d(np.asarray(f, dtype=float))
-    A = _network_matrix(net, f)
+    A = _network_matrix(net, f, alpha)
     B = np.broadcast_to(_unit_sources(), (f.size, _X, 2))
     x = np.linalg.solve(A, B)
     r = np.abs(A @ x - B).max(axis=(1, 2))
@@ -760,6 +785,41 @@ def port_transfer(net: HvNetwork, f) -> tuple:
 
 
 # --------------------------------------------------------------------------------------------- calibration record
+
+def port_transfers(net: HvNetwork, f, alphas=RAIL_ALPHAS) -> tuple:
+    """port_transfer at several rail taps from ONE solve: the tap enters the nodal matrix as the rank-2 update
+    beta (w e_s^T - e_s w^T), beta = alpha - 1/2, w = e_1 - e_2 (Woodbury on the midpoint matrix), the residual
+    checked on the updated matrix.  Returns ({alpha: (H_plus, H_minus)}, the largest relative residual)."""
+    f = np.atleast_1d(np.asarray(f, dtype=float))
+    A0 = _network_matrix(net, f, 0.5)
+    N = _N_NODES
+    R = np.zeros((f.size, _X, 4), dtype=complex)
+    R[:, :, :2] = _unit_sources()
+    R[:, 0, 2], R[:, 1, 2] = 1.0, -1.0
+    R[:, N, 3] = 1.0
+    Y = np.linalg.solve(A0, R)
+    YB, B = Y[:, :, :2], R[:, :, :2]
+    scale_A = np.maximum(np.abs(A0).max(axis=(1, 2)), 1.0)
+    out, res = {}, 0.0
+    for al in alphas:
+        be = float(al) - 0.5
+        X = YB
+        if be != 0.0:
+            YU = be * Y[:, :, 2:4]
+            VtYU = np.stack([YU[:, N, :], YU[:, 1, :] - YU[:, 0, :]], axis=1)
+            VtYB = np.stack([YB[:, N, :], YB[:, 1, :] - YB[:, 0, :]], axis=1)
+            X = YB - YU @ np.linalg.solve(np.eye(2)[None, :, :] + VtYU, VtYB)
+        AX = A0 @ X
+        if be != 0.0:
+            AX[:, 0, :] += be * X[:, N, :]
+            AX[:, 1, :] -= be * X[:, N, :]
+            AX[:, N, :] -= be * (X[:, 0, :] - X[:, 1, :])
+        if f.size:
+            r = np.abs(AX - B).max(axis=(1, 2)) / (scale_A * np.abs(X).max(axis=(1, 2)) + 1.0)
+            res = max(res, float(np.max(r)))
+        out[al] = (X[:, 4, :], X[:, 5, :])
+    return out, res
+
 
 @dataclass(frozen=True)
 class EmiCalibration:
@@ -931,9 +991,171 @@ def _window(fr, h, fe, wide=True):
     return np.maximum(n0, 1), n1
 
 
+def source_split(src: SwitchingSource, f, edges: dict | None = None) -> tuple:
+    """CM lines of the rising edges, CM lines of the falling edges and the DM lines at the frequencies f (complex peak
+    amplitudes; the CM lines add up to source_lines' v_cm)."""
+    e = edges or pwm_edges(src)
+    T = e["period_s"]
+    f = np.atleast_1d(np.asarray(f, dtype=float))
+    z = np.zeros(f.size, dtype=complex)
+    if not e["edges"]:
+        return z, z.copy(), z.copy()
+    k, t0, sgn, tau, cur = (np.asarray(x, dtype=float) for x in zip(*e["edges"]))
+    r = sgn > 0
+    cm_r = edge_lines(t0[r], tau[r], sgn[r] * src.Vdc_V / 3.0, f, T) if r.any() else z.copy()
+    cm_f = edge_lines(t0[~r], tau[~r], sgn[~r] * src.Vdc_V / 3.0, f, T) if (~r).any() else z.copy()
+    return cm_r, cm_f, edge_lines(t0, tau, sgn * cur, f, T)
+
+
+def rail_ports(H: dict, cm_r, cm_f, dm) -> dict:
+    """Port voltages {model: (V+, V-)} of every CM return model from the transfers H[alpha] = (H_plus, H_minus)
+    (n x 2 each, per unit CM voltage / DM current) and the CM lines of the rising and falling edges and the DM
+    lines."""
+    return {name: tuple(H[ar][q][:, 0] * cm_r + H[af][q][:, 0] * cm_f + H[ad][q][:, 1] * dm for q in (0, 1))
+            for name, (ar, af, ad) in RAIL_MODELS.items()}
+
+
+def envelope_peak(c) -> float:
+    """max over t of |sum_k c_k exp(j 2 pi k fe t)| - the rectangular-IF peak-detector reading of the lines c_k (peak
+    amplitudes of consecutive harmonics; the common factor exp(j 2 pi n0 fe t) has unit modulus).  Samples of the
+    trigonometric polynomial (FFT, >= 16x oversampled): the sample nearest the global maximum lies within 1 % below
+    it (Bernstein bound on |p|^2), so only the runs of samples within that of the best are refined - Newton on |p|^2
+    from every sampled local maximum of the run that can still matter (steps clamped to half a sample), a
+    32-point-per-sample zoom of the run where it is not concave.  The result is an attained value, never above the
+    maximum nor above sum |c_k|, and never below the best sample (so at least keep = 99 % of the maximum); it is exact
+    to rounding whenever the maximum lies next to a sampled local maximum (checked against 2^16-point brute force)."""
+    c = np.asarray(c, dtype=complex)
+    d = c.size
+    if d == 0:
+        return 0.0
+    tot = float(np.sum(np.abs(c)))
+    if d == 1:
+        return tot
+    M = 1 << int(math.ceil(math.log2(max(64, 16 * d))))
+    v = np.abs(np.fft.ifft(c, n=M)) * M
+    top = float(v.max())
+    keep = math.sqrt(max(0.0, 1.0 - 0.5 * (math.pi * (d - 1) / M) ** 2))   # the nearest sample >= keep * max
+    high = v >= keep * top
+    if high.all():
+        return min(top, tot)
+    r0 = int(np.argmin(high))                          # a low sample: after rotating to it no run wraps around
+    hv = np.concatenate((high[r0:], high[:r0]))
+    vr = np.concatenate((v[r0:], v[:r0]))
+    idx = np.flatnonzero(hv)
+    cut = np.flatnonzero(np.diff(idx) > 1)
+    starts = np.concatenate(([idx[0]], idx[cut + 1]))
+    ends = np.concatenate((idx[cut], [idx[-1]]))
+    peaks = np.maximum.reduceat(vr, starts)            # the gaps after a run are below every run's maximum
+    kk = 2j * math.pi * np.arange(d)
+    C = np.stack([c, c * kk, c * kk * kk], axis=1)       # p, p', p'' in one product
+    best = top
+    for i in np.argsort(-peaks):
+        if peaks[i] <= keep * best:
+            break
+        st, en = int(starts[i]), int(ends[i])
+        seg = vr[st:en + 1]
+        if seg.size > 2:                               # two maxima may share one run: start from each of them
+            pad = np.concatenate(([-1.0], seg, [-1.0]))
+            loc = np.flatnonzero((seg >= pad[:-2]) & (seg >= pad[2:]))
+            loc = loc[np.argsort(-seg[loc])]
+        else:
+            loc = [int(np.argmax(seg))]
+        all_done = True
+        for j in loc:
+            if seg[j] <= keep * best:
+                break
+            x = (st + int(j) + r0) / M
+            done = False
+            for _ in range(12):
+                p0, p1, p2 = (np.exp(kk * x) @ C).tolist()
+                best = max(best, abs(p0))
+                g1 = 2.0 * (p1.real * p0.real + p1.imag * p0.imag)
+                g2 = 2.0 * (p2.real * p0.real + p2.imag * p0.imag + p1.real * p1.real + p1.imag * p1.imag)
+                if not g2 < 0.0:
+                    break
+                dx = min(max(-g1 / g2, -0.5 / M), 0.5 / M)
+                x += dx
+                if abs(dx) < 1e-15:
+                    done = True
+                    break
+            all_done &= done
+        if not all_done:
+            xs = np.linspace((st + r0 - 1) / M, (en + r0 + 1) / M, 32 * (en - st + 2) + 1)
+            best = max(best, float(np.max(np.abs(np.polyval(c[::-1], np.exp(2j * math.pi * xs))))))
+    return min(best, tot)
+
+
+def _env_max(parts) -> float:
+    """max over the arrays of envelope_peak, the arrays whose magnitude sum cannot beat the running maximum skipped
+    (an envelope never exceeds its line sum)."""
+    sums = [float(np.sum(np.abs(x))) for x in parts]
+    best = 0.0
+    for k in np.argsort(sums)[::-1]:
+        if sums[k] <= best:
+            break
+        best = max(best, envelope_peak(parts[k]))
+    return best
+
+
+def _env_min_max(groups, need: float | None = None):
+    """min over the groups (one per CM return model) of the max over its arrays of envelope_peak; with ``need``: None
+    as soon as one group is <= need (the minimum cannot exceed it)."""
+    ub = [max(float(np.sum(np.abs(x))) for x in g) for g in groups]
+    vals = []
+    for k in np.argsort(ub):
+        v = _env_max(groups[k])
+        if need is not None and v <= need:
+            return None
+        vals.append(v)
+    return min(vals)
+
+
+def _gauss_w(d, rbw):
+    """Gaussian IF amplitude weight with a -6 dB width RBW: 2^-(2 d / RBW)^2."""
+    z = 2.0 * np.asarray(d, dtype=float) / rbw
+    return np.exp(-math.log(2.0) * z * z)
+
+
+def _gaussian_cells(mags: np.ndarray, fe: float, rbw: float) -> np.ndarray:
+    """Upper bound of a Gaussian-IF (-6 dB width = RBW) peak reading over every tuning cell [t_j - h, t_j + h],
+    t_j = f_first + j fe/2, h = fe/4, of consecutive lines with magnitudes ``mags``.  The reading is at most
+    G(x) = sum_n |c_n| w(f_n - x), w(d) = exp(-a d^2), a = 4 ln2 / RBW^2; over the cell (Taylor, |w''| <= 2a)
+    G <= G(t_j) + |G'(t_j)| h + a h^2 sum|c_n|, the lines within 4 RBW exactly (convolutions), the lines beyond
+    bounded by their largest weight exp(-a (4 RBW)^2) = 2^-64 times their total."""
+    N = mags.size
+    if N == 0:
+        return np.zeros(0)
+    u = np.zeros(2 * N - 1)
+    u[::2] = mags
+    a = 4.0 * math.log(2.0) / (rbw * rbw)
+    D = int(math.ceil(GAUSS_SPAN_RBW * rbw / (0.5 * fe)))
+    dd = np.arange(-D, D + 1) * (0.5 * fe)
+    wk = np.exp(-a * dd * dd)
+    h = 0.25 * fe
+
+    def conv(k):
+        return np.convolve(u, k, mode="full")[D:D + u.size]
+    G, Gp, S = conv(wk), conv(2.0 * a * dd * wk), conv(np.ones(dd.size))
+    tail = math.exp(-a * (GAUSS_SPAN_RBW * rbw) ** 2) * float(mags.sum())
+    return (G + np.abs(Gp) * h + a * h * h * S) * (1.0 + 1e-12) + tail
+
+
+def _gauss_at(G: np.ndarray, f_first: float, fe: float, fc: np.ndarray, half: np.ndarray) -> np.ndarray:
+    """The largest cell bound over the tunings [fc - half, fc + half] (cells of width fe/2 from f_first)."""
+    if G.size == 0:
+        return np.zeros(fc.size)
+    # the cells [t_j - fe/4, t_j + fe/4] that meet [fc - half, fc + half] (a rounding sliver more, never less)
+    lo = np.ceil((fc - half - f_first) / (0.5 * fe) - 0.5 - 1e-9).astype(np.int64)
+    hi = np.floor((fc + half - f_first) / (0.5 * fe) + 0.5 + 1e-9).astype(np.int64)
+    width = int(np.max(hi - lo)) + 1 if fc.size else 1
+    idx = np.clip(lo[:, None] + np.arange(width)[None, :], 0, G.size - 1)
+    return np.max(np.where(lo[:, None] + np.arange(width)[None, :] <= hi[:, None], G[idx], 0.0), axis=1)
+
+
 def line_sum_estimate(grid, rbw_Hz, fe_Hz: float, value_fn) -> tuple[np.ndarray, int]:
     """Sum of |line| (peak amplitudes) of every harmonic of fe inside the closed window [fr - RBW/2, fr + RBW/2],
     reported as an RMS-calibrated reading (/sqrt2); 0 when no line falls inside, NaN where the RBW is undefined.
+    The rectangular-IF peak reading's triangle-inequality UPPER BOUND (review 3 F-11), not an estimate of it.
     ``rbw_Hz`` is a scalar or one value per grid frequency; value_fn(freqs) -> complex peak amplitudes."""
     rb = np.broadcast_to(np.asarray(rbw_Hz, dtype=float), (len(grid),))
     out = np.zeros(len(grid))
@@ -952,46 +1174,63 @@ def line_sum_estimate(grid, rbw_Hz, fe_Hz: float, value_fn) -> tuple[np.ndarray,
 
 
 def _display_lines(src, e, net, grid, rbw):
-    """Line sums on the display grid: both ports, CM / DM of the pair and the CM- / DM-source shares at HV+."""
+    """The display grid (a plot, never the claim): line sums of both ports, CM / DM of the pair and the CM- / DM-
+    source shares at HV+ for the midpoint model; the ESTIMATE (rectangular-IF envelope, larger port, the two
+    physical CM return models), the BOUND (line sums over both ports and all CM return models, Gaussian-IF weighted
+    sum), the WITNESS level (smallest envelope over the models) and the lines per window."""
     fe = src.fe_Hz
     ok = np.isfinite(rbw)
-    n0, n1 = _window(grid, 0.5 * np.where(ok, rbw, 0.0), fe)
-    ns = [np.arange(a, b + 1) for a, b, o in zip(n0, n1, ok) if o and b >= a]
+    rb = np.where(ok, rbw, 0.0)
+    n0, n1 = _window(grid, 0.5 * rb, fe)
+    g0, g1 = _window(grid, (0.5 + GAUSS_SPAN_RBW) * rb, fe)
+    ns = [np.arange(a, b + 1) for a, b, o in zip(g0, g1, ok) if o and b >= a]
     allh = np.unique(np.concatenate(ns)) if ns else np.zeros(0, dtype=np.int64)
-    out = {k: np.full(grid.size, np.nan) for k in ("plus", "minus", "cm", "dm", "from_cm_source", "from_dm_source")}
+    share = ("plus", "minus", "cm", "dm", "from_cm_source", "from_dm_source")
+    out = {k: np.full(grid.size, np.nan) for k in share + ("estimate", "bound", "witness", "lines")}
     if allh.size == 0:
         return out, 0.0
     f = allh * fe
-    sl = source_lines(src, f, e)
-    Hp, Hm, res = port_transfer(net, f)
-    vp_cm, vp_dm = Hp[:, 0] * sl["v_cm"], Hp[:, 1] * sl["i_dm"]
-    vp = vp_cm + vp_dm
-    vm = Hm[:, 0] * sl["v_cm"] + Hm[:, 1] * sl["i_dm"]
+    cm_r, cm_f, dm = source_split(src, f, e)
+    H, res = port_transfers(net, f)
+    V = rail_ports(H, cm_r, cm_f, dm)
+    vp, vm = V["midpoint"]
     pair = cm_dm(vp, vm)
     mags = {"plus": np.abs(vp), "minus": np.abs(vm), "cm": np.abs(pair["v_CM"]), "dm": np.abs(pair["v_DM"]),
-            "from_cm_source": np.abs(vp_cm), "from_dm_source": np.abs(vp_dm)}
+            "from_cm_source": np.abs(H[0.5][0][:, 0] * (cm_r + cm_f)), "from_dm_source": np.abs(H[0.5][0][:, 1] * dm)}
+    absV = [np.abs(V[m][q]) for m in RAIL_MODELS for q in (0, 1)]
+    mx = np.max(np.stack(absV), axis=0)
+    sq2 = math.sqrt(2.0)
     for i in range(grid.size):
         if not ok[i]:
             continue
+        a2, b2 = np.searchsorted(allh, [g0[i], g1[i] + 1])
+        G = float(np.sum(mx[a2:b2] * _gauss_w(np.abs(f[a2:b2] - grid[i]), rb[i])))
         if n1[i] < n0[i]:
-            for k in out:
+            for k in share + ("estimate", "witness", "lines"):
                 out[k][i] = 0.0
+            out["bound"][i] = G / sq2
             continue
         a, b = np.searchsorted(allh, [n0[i], n1[i] + 1])
-        for k in out:
-            out[k][i] = float(mags[k][a:b].sum()) / math.sqrt(2.0)
+        for k in mags:
+            out[k][i] = float(mags[k][a:b].sum()) / sq2
+        out["estimate"][i] = _env_max([V[m][q][a:b] for m in ESTIMATE_RAIL_MODELS for q in (0, 1)]) / sq2
+        out["witness"][i] = _env_min_max([(V[m][0][a:b], V[m][1][a:b]) for m in RAIL_MODELS]) / sq2
+        out["bound"][i] = max(max(float(x[a:b].sum()) for x in absV), G) / sq2
+        out["lines"][i] = float(b - a)
     return out, res
 
 
 def _band_lines(src, e, net, n_lo, n_hi, block_elems=4_000_000, net_block=8192):
-    """|V+|, |V-| (peak) of every harmonic n_lo..n_hi at the AN measuring ports: exact edge sums in harmonic blocks
-    (exp(-j 2 pi n x) = exp(-j 2 pi n0 x) exp(-j 2 pi k x), the second factor computed once), then the nodal solve."""
+    """Complex peak amplitudes (V+, V-) at the AN measuring ports of every harmonic n_lo..n_hi for every CM return
+    model: ({model: (V+, V-)}, the largest solve residual).  Exact edge sums in harmonic blocks (exp(-j 2 pi n x) =
+    exp(-j 2 pi n0 x) exp(-j 2 pi k x), the second factor computed once), the rising and falling edges kept apart,
+    then the nodal solves at the three rail taps."""
     T = e["period_s"]
     fe = src.fe_Hz
     N = n_hi - n_lo + 1
-    Ap, Am = np.zeros(N), np.zeros(N)
+    out = {m: (np.zeros(max(N, 0), dtype=complex), np.zeros(max(N, 0), dtype=complex)) for m in RAIL_MODELS}
     if not e["edges"] or N <= 0:
-        return Ap, Am, 0.0
+        return out, 0.0
     k, t0, sgn, tau, cur = (np.asarray(x, dtype=float) for x in zip(*e["edges"]))
     x = (t0 + 0.5 * tau) / T
     rising = sgn > 0
@@ -1001,23 +1240,25 @@ def _band_lines(src, e, net, n_lo, n_hi, block_elems=4_000_000, net_block=8192):
     Mr = np.exp(-2j * np.pi * kk_all * x[rising][None, :])
     Mf = np.exp(-2j * np.pi * kk_all * x[~rising][None, :])
     res_max = 0.0
-    for s in range(0, N, K):
-        n0 = n_lo + s
-        kk = min(K, N - s)
+    for s0 in range(0, N, K):
+        n0 = n_lo + s0
+        kk = min(K, N - s0)
         B = np.exp(-2j * np.pi * np.mod(n0 * x, 1.0))
         Wb = B[:, None] * W
         Sr = Mr[:kk] @ Wb[rising]
         Sf = Mf[:kk] @ Wb[~rising]
         fn = (n0 + np.arange(kk)) * fe
-        c = (np.sinc(fn * src.t_rise_s)[:, None] * Sr + np.sinc(fn * src.t_fall_s)[:, None] * Sf) \
-            * (2.0 / (1j * TWO_PI * fn * T))[:, None]
+        fac = 2.0 / (1j * TWO_PI * fn * T)
+        cr, cf = np.sinc(fn * src.t_rise_s) * fac, np.sinc(fn * src.t_fall_s) * fac
+        cm_r, cm_f, dm = cr * Sr[:, 0], cf * Sf[:, 0], cr * Sr[:, 1] + cf * Sf[:, 1]
         for q in range(0, kk, net_block):
             r = slice(q, min(kk, q + net_block))
-            Hp, Hm, res = port_transfer(net, fn[r])
+            H, res = port_transfers(net, fn[r])
             res_max = max(res_max, res)
-            Ap[s + r.start: s + r.stop] = np.abs(np.sum(Hp * c[r], axis=1))
-            Am[s + r.start: s + r.stop] = np.abs(np.sum(Hm * c[r], axis=1))
-    return Ap, Am, res_max
+            for m, (vp, vm) in rail_ports(H, cm_r[r], cm_f[r], dm[r]).items():
+                out[m][0][s0 + r.start: s0 + r.stop] = vp
+                out[m][1][s0 + r.start: s0 + r.stop] = vm
+    return out, res_max
 
 
 def _domain(f_lo, f_hi, profile: EmiProfile, net: HvNetwork, cal: EmiCalibration | None) -> list:
@@ -1065,10 +1306,21 @@ def _domain(f_lo, f_hi, profile: EmiProfile, net: HvNetwork, cal: EmiCalibration
     return rows
 
 
+ENV_EVALS_MAX = 20000       # envelope window evaluations the band's branch and bound may spend (else: flagged)
+
+
 def _evaluate_rows(src, e, net, profile, rows, U_up, U_lo, grid, budget):
-    """Exact receiver-band evaluation of every row with an estimate (see the module note): sup of E, the minimum
-    margin L - M_d - (E + U_up) and the largest lower-bound exceedance (E - U_lo) - (L - M_d), with the frequencies.
-    Returns (rows updated, summary, envelope on the display grid)."""
+    """Exact receiver-band evaluation of every row with an estimate (see the module note).
+
+    Over every tuning of the continuous band (the rectangular window content is piecewise constant):
+    * BOUND - the largest of the rectangular-window line sums over both ports and all CM return models and the
+      Gaussian-IF weighted sum (bounded over every tuning cell): the claim side, FEASIBLE needs bound + U_upper <=
+      L - M_d everywhere;
+    * ESTIMATE - the rectangular-IF envelope peak (larger port) of the two physical CM return models: the screening
+      level, its minimum margin and the required attenuation (branch and bound under its own line sum);
+    * WITNESS - the smallest envelope peak over all CM return models (larger port) in a narrow window, less its
+      rounding: a violation needs witness - U_lower > L - M_d.
+    Returns (rows updated, summary, bound envelope on the display grid)."""
     fe = src.fe_Hz
     lim = profile.limit
     Md = profile.design_reserve_dB
@@ -1077,9 +1329,9 @@ def _evaluate_rows(src, e, net, profile, rows, U_up, U_lo, grid, budget):
     for r in rows:
         if not r["estimate"]:
             continue
-        h = 0.5 * r["rbw_Hz"]
-        a = max(1, int(math.ceil((r["lo_Hz"] - h) / fe - WINDOW_TOL)))
-        b = int(math.floor((r["hi_Hz"] + h) / fe + WINDOW_TOL))
+        reach = (0.5 + GAUSS_SPAN_RBW) * r["rbw_Hz"]
+        a = max(1, int(math.ceil((r["lo_Hz"] - reach) / fe - WINDOW_TOL)))
+        b = int(math.floor((r["hi_Hz"] + reach) / fe + WINDOW_TOL))
         ranges.append((r, a, b))
     cost = sum(max(0, b - a + 1) for _, a, b in ranges) * ne
     if not ranges:
@@ -1090,20 +1342,22 @@ def _evaluate_rows(src, e, net, profile, rows, U_up, U_lo, grid, budget):
                                 f"{budget:.3g}): narrow the band or raise the budget"}, None
     env = np.full(grid.size, -np.inf)
     edges_g = np.sqrt(grid[1:] * grid[:-1])
-    lines_total, res_max = 0, 0.0
+    lines_total, res_max, n_env, capped = 0, 0.0, 0, False
     verts = lim.vertices()
+    sq2 = math.sqrt(2.0)
     for r, a, b in ranges:
         h = 0.5 * r["rbw_Hz"]
-        Ap, Am, res = _band_lines(src, e, net, a, b)
+        V, res = _band_lines(src, e, net, a, b)
         res_max = max(res_max, res)
-        lines_total += Ap.size
-        Pp = np.concatenate([[0.0], np.cumsum(Ap)])
-        Pm = np.concatenate([[0.0], np.cumsum(Am)])
+        fn_all = np.arange(a, b + 1) * fe
+        absV = {(m, q): np.abs(V[m][q]) for m in RAIL_MODELS for q in (0, 1)}
+        P = {key: np.concatenate([[0.0], np.cumsum(v)]) for key, v in absV.items()}
         # rounding bound of a window sum from two prefix values (recursive summation: n u sum|x|)
-        err = 2.0 * Ap.size * 1.12e-16 * max(Pp[-1], Pm[-1])
+        err = 2.0 * fn_all.size * 1.12e-16 * max(float(Pv[-1]) for Pv in P.values())
         lo_f, hi_f = r["lo_Hz"], r["hi_Hz"]
-        fn = np.arange(a, b + 1) * fe
-        bp = np.concatenate([fn - h, fn + h])
+        inner = (fn_all >= lo_f - h - 1e-9) & (fn_all <= hi_f + h + 1e-9)
+        lines_total += int(inner.sum())
+        bp = np.concatenate([fn_all[inner] - h, fn_all[inner] + h])
         vv = verts[(verts >= lo_f) & (verts <= hi_f)]
         gg = grid[(grid >= lo_f) & (grid <= hi_f)]
         c = np.unique(np.concatenate([[lo_f, hi_f], bp[(bp >= lo_f) & (bp <= hi_f)], vv, gg]))
@@ -1111,34 +1365,116 @@ def _evaluate_rows(src, e, net, profile, rows, U_up, U_lo, grid, budget):
         # inside each piece as well (a narrow window at a breakpoint drops the lines on its edges)
         c = np.unique(np.concatenate([c, 0.5 * (c[1:] + c[:-1])]))
 
-        def wsum(P, n0, n1):
-            i0 = np.clip(n0 - a, 0, P.size - 1)
-            i1 = np.clip(n1 - a + 1, 0, P.size - 1)
-            return np.where(n1 >= n0, P[i1] - P[i0], 0.0)
+        def wsum(Pv, n0, n1):
+            i0 = np.clip(n0 - a, 0, Pv.size - 1)
+            i1 = np.clip(n1 - a + 1, 0, Pv.size - 1)
+            return np.where(n1 >= n0, Pv[i1] - Pv[i0], 0.0)
         n0w, n1w = _window(c, h, fe, True)
         n0n, n1n = _window(c, h, fe, False)
-        Sw = np.maximum(wsum(Pp, n0w, n1w), wsum(Pm, n0w, n1w)) + err
-        Sn = np.maximum(np.maximum(wsum(Pp, n0n, n1n), wsum(Pm, n0n, n1n)) - err, 0.0)
-        Ew = _db_or_nan(Sw / math.sqrt(2.0)) + NUM_ALLOW_DB
-        En = _db_or_nan(Sn / math.sqrt(2.0)) - NUM_ALLOW_DB
+        S_up = np.max(np.stack([wsum(Pv, n0w, n1w) for Pv in P.values()]), axis=0) + err
+        # Gaussian IF over the continuum: every candidate stands for the tunings within half the distance to its
+        # neighbours
+        gaps = np.diff(c) if c.size > 1 else np.zeros(1)
+        half = 0.5 * np.maximum(np.concatenate([[gaps[0]], gaps]), np.concatenate([gaps, [gaps[-1]]]))[:c.size]
+        mags = np.max(np.stack(list(absV.values())), axis=0)
+        G_up = _gauss_at(_gaussian_cells(mags, fe, r["rbw_Hz"]), a * fe, fe, c, half) + err
+        Ew = _db_or_nan(np.maximum(S_up, G_up) / sq2) + NUM_ALLOW_DB
         L = lim.at(c)
         up = L - Md - (np.nan_to_num(Ew, nan=-np.inf) + U_up)
-        exc = (np.nan_to_num(En, nan=-np.inf) - U_lo) - (L - Md)
         i_up = int(np.nanargmin(up)) if np.any(np.isfinite(up)) else None
-        i_ex = int(np.nanargmax(exc)) if np.any(np.isfinite(exc)) else None
         i_sup = int(np.nanargmax(Ew)) if np.any(np.isfinite(Ew)) else None
-        r.update({"lines": int(Ap.size), "candidates": int(c.size),
+        nlines = np.where(n1w >= n0w, n1w - n0w + 1, 0)
+        # ESTIMATE: exact supremum and minimum margin by branch and bound under its own line sum (E_est <= S_est)
+        S_est = np.max(np.stack([wsum(P[(m, q)], n0w, n1w) for m in ESTIMATE_RAIL_MODELS for q in (0, 1)]), axis=0)
+        cache = {}
+
+        def est(i):
+            key = (int(n0w[i]), int(n1w[i]))
+            if key not in cache:
+                i0, i1 = key[0] - a, key[1] - a + 1
+                cache[key] = 0.0 if i1 <= i0 else _env_max([V[m][q][i0:i1] for m in ESTIMATE_RAIL_MODELS
+                                                            for q in (0, 1)])
+            return cache[key]
+        best_sup, best_i = 0.0, None
+        for i in np.argsort(-S_est):
+            if S_est[i] <= best_sup:
+                break
+            if n_env >= ENV_EVALS_MAX:
+                capped = True
+                break
+            n_env += 1
+            v = est(i)
+            if v > best_sup:
+                best_sup, best_i = v, int(i)
+        lower_margin = L - Md - U_up - _db_or_nan(S_est / sq2)
+        best_m, best_mi = math.inf, None
+        for i in np.argsort(np.nan_to_num(lower_margin, nan=np.inf)):
+            lm = lower_margin[i]
+            if not np.isfinite(lm) or lm >= best_m:
+                break
+            if n_env >= ENV_EVALS_MAX:
+                capped = True
+                break
+            n_env += 1
+            v = est(i)
+            if v <= 0:
+                continue
+            m_i = float(L[i] - Md - U_up - _db_or_nan(v / sq2))
+            if m_i < best_m:
+                best_m, best_mi = m_i, int(i)
+        # WITNESS: the smallest envelope over the CM return models (larger port), narrow windows, branch and bound
+        # under the smallest model's line sum; only a positive exceedance is searched for
+        S_w = np.min(np.stack([np.maximum(wsum(P[(m, 0)], n0n, n1n), wsum(P[(m, 1)], n0n, n1n))
+                               for m in RAIL_MODELS]), axis=0) + err
+        ub_exc = (_db_or_nan(S_w / sq2) - U_lo) - (L - Md)
+        best_x, best_xi, best_xv = -math.inf, None, None
+        for i in np.argsort(-np.nan_to_num(ub_exc, nan=-np.inf)):
+            u = ub_exc[i]
+            if not np.isfinite(u) or u <= max(best_x, 0.0):
+                break
+            if n_env >= ENV_EVALS_MAX:
+                capped = True
+                break
+            i0, i1 = int(n0n[i]) - a, int(n1n[i]) - a + 1
+            if i1 <= i0:
+                continue
+            n_env += 1
+            # the value this window needs to beat the best exceedance so far (a positive one)
+            need = sq2 * 10.0 ** ((max(best_x, 0.0) + NUM_ALLOW_DB + U_lo + L[i] - Md) / 20.0) * 1e-6
+            v = _env_min_max([(V[m][0][i0:i1], V[m][1][i0:i1]) for m in RAIL_MODELS], need + 1e-12 * float(S_w[i]))
+            if v is None:
+                continue
+            v -= 1e-12 * float(S_w[i])                        # FFT / matrix-product rounding of the envelope
+            x_i = float(_db_or_nan(v / sq2) - NUM_ALLOW_DB - U_lo - (L[i] - Md)) if v > 0 else -math.inf
+            if x_i > best_x:
+                best_x, best_xi, best_xv = x_i, int(i), v
+        r.update({"lines": int(inner.sum()), "candidates": int(c.size),
+                  "lines_per_window_max": int(np.max(nlines)) if nlines.size else 0,
                   "E_sup_dBuV": None if i_sup is None else float(Ew[i_sup]),
                   "f_E_sup_Hz": None if i_sup is None else float(c[i_sup]),
+                  "lines_at_E_sup": None if i_sup is None else int(nlines[i_sup]),
+                  "E_sup_line_sum_dBuV": float(np.nanmax(_db_or_nan(S_up / sq2))) + NUM_ALLOW_DB
+                  if np.any(S_up > 0) else None,
+                  "E_sup_gaussian_dBuV": float(np.nanmax(_db_or_nan(G_up / sq2))) + NUM_ALLOW_DB
+                  if np.any(G_up > 0) else None,
+                  "E_est_sup_dBuV": None if best_i is None else float(_db_or_nan(best_sup / sq2)),
+                  "f_E_est_sup_Hz": None if best_i is None else float(c[best_i]),
+                  "lines_at_E_est_sup": None if best_i is None else int(nlines[best_i]),
                   "min_margin_dB": None if i_up is None else float(up[i_up]),
                   "f_min_margin_Hz": None if i_up is None else float(c[i_up]),
-                  "max_lower_exceedance_dB": None if i_ex is None else float(exc[i_ex]),
-                  "f_witness_Hz": None if i_ex is None else float(c[i_ex]),
-                  "witness": None if (i_ex is None or not exc[i_ex] > 0) else {
-                      "f_Hz": float(c[i_ex]), "E_dBuV": float(En[i_ex] + NUM_ALLOW_DB),
-                      "E_lower_dBuV": float(En[i_ex] - U_lo), "limit_dBuV": float(L[i_ex]),
-                      "limit_minus_reserve_dBuV": float(L[i_ex] - Md),
-                      "window_Hz": [float(c[i_ex] - h), float(c[i_ex] + h)]}})
+                  "min_margin_est_dB": None if best_mi is None else best_m,
+                  "f_min_margin_est_Hz": None if best_mi is None else float(c[best_mi]),
+                  "required_attenuation_est_dB": None if best_mi is None else max(0.0, -best_m),
+                  "required_attenuation_bound_dB": None if i_up is None else max(0.0, -float(up[i_up])),
+                  "max_lower_exceedance_dB": None if best_xi is None else best_x,
+                  "max_lower_exceedance_bound_dB": float(np.nanmax(ub_exc)) if np.any(np.isfinite(ub_exc)) else None,
+                  "f_witness_Hz": None if best_xi is None else float(c[best_xi]),
+                  "witness": None if (best_xi is None or not best_x > 0) else {
+                      "f_Hz": float(c[best_xi]), "E_dBuV": float(_db_or_nan(best_xv / sq2)),
+                      "E_lower_dBuV": float(_db_or_nan(best_xv / sq2) - NUM_ALLOW_DB - U_lo),
+                      "limit_dBuV": float(L[best_xi]), "limit_minus_reserve_dBuV": float(L[best_xi] - Md),
+                      "window_Hz": [float(c[best_xi] - h), float(c[best_xi] + h)],
+                      "basis": "rectangular-IF envelope peak, the smallest over the CM return models"}})
         if grid.size > 1:
             idx = np.searchsorted(edges_g, c)
             np.maximum.at(env, idx, np.nan_to_num(Ew, nan=-np.inf))
@@ -1146,9 +1482,16 @@ def _evaluate_rows(src, e, net, profile, rows, U_up, U_lo, grid, budget):
     ok = res_max <= RESIDUAL_MAX
     summary = {"certified": ok, "lines": lines_total, "solve_residual": res_max,
                "method": "exact enumeration of every receiver window change and limit vertex (piecewise-constant "
-                         "line sum); wide windows and a summation-rounding bound for the upper side, narrow windows "
-                         "for a witness",
-               "numerical_allowance_dB": NUM_ALLOW_DB}
+                         "window content): bound = the largest of the line sums (both ports, CM return models "
+                         "midpoint / edge sign / HV+ / HV-) and the Gaussian-IF weighted sum over every tuning cell, "
+                         "with wide windows and a rounding bound; estimate = rectangular-IF envelope peak of the "
+                         "midpoint and edge-sign models by branch and bound under its line sum; witness = the "
+                         "smallest envelope over the models in narrow windows",
+               "numerical_allowance_dB": NUM_ALLOW_DB, "envelope_evaluations": n_env, "estimate_capped": capped}
+    if capped:
+        summary["estimate_note"] = (f"the envelope branch and bound stopped at {ENV_EVALS_MAX} window evaluations: "
+                                    f"the estimate figures are lower bounds of their band values, a witness may be "
+                                    f"missed (then UNKNOWN); the bound side is exact")
     if not ok:
         summary["reason"] = f"nodal solve residual {res_max:.2e} above {RESIDUAL_MAX:.0e}: the network is too " \
                             f"ill-conditioned for a certified evaluation"
@@ -1158,9 +1501,9 @@ def _evaluate_rows(src, e, net, profile, rows, U_up, U_lo, grid, budget):
 def conducted_emission_screening(src: SwitchingSource, net: HvNetwork, profile: EmiProfile, f_lo: float = 150e3,
                                  f_hi: float = 30e6, n_grid: int = 160, calibration=None,
                                  budget: float = CERT_BUDGET) -> dict:
-    """Line-sum estimate of the AN measurement-port voltages over a continuous receiver band: exact band evaluation,
-    display grid, margins and the required attenuation; a claim only with an applicable calibration record (see the
-    module note)."""
+    """Receiver estimate (rectangular-IF envelope) and bound (line sums over the CM return models, Gaussian IF) of
+    the AN measurement-port voltages over a continuous receiver band: exact band evaluation, display grid, margins
+    and the required attenuation; a claim only with an applicable calibration record (see the module note)."""
     f_lo, f_hi = _finite("f_lo", f_lo), _finite("f_hi", f_hi)
     if not (0 < f_lo < f_hi):
         raise InputValidationError("the band needs 0 < f_lo < f_hi", field="band")
@@ -1193,11 +1536,14 @@ def conducted_emission_screening(src: SwitchingSource, net: HvNetwork, profile: 
     grid = receiver_grid(f_lo, f_hi, int(n_grid))
     rbw_g = profile.rbw_at(grid)
     vals, _ = _display_lines(src, e, net, grid, rbw_g)
-    E = _db_or_nan(np.fmax(vals["plus"], vals["minus"]))
-    EU, EL = E + U_up, E - U_lo
+    E = _db_or_nan(vals["estimate"])                     # the screening estimate (rectangular-IF envelope peak)
+    E_b = _db_or_nan(vals["bound"])                      # the claim side (line sums over the models, Gaussian IF)
+    EU, EL = E_b + U_up, _db_or_nan(vals["witness"]) - U_lo
     L = lim.at(grid) if (lim is not None and comparable) else np.full(grid.size, np.nan)
     margin = L - Md - EU
-    A_req = np.where(np.isfinite(L) & np.isfinite(EU), np.maximum(0.0, EU + Md - L), np.nan)
+    margin_est = L - Md - (E + U_up)
+    A_req = np.where(np.isfinite(L) & np.isfinite(E), np.maximum(0.0, E + U_up + Md - L), np.nan)
+    A_req_b = np.where(np.isfinite(L) & np.isfinite(EU), np.maximum(0.0, EU + Md - L), np.nan)
     dom = np.where(np.nan_to_num(vals["from_cm_source"]) >= np.nan_to_num(vals["from_dm_source"]), "CM", "DM")
 
     rows = _domain(f_lo, f_hi, profile, net, cal if applicable else None)
@@ -1214,15 +1560,21 @@ def conducted_emission_screening(src: SwitchingSource, net: HvNetwork, profile: 
         else:
             r["status"] = "screened"
 
-    notes = ["line-sum estimate of the modelled lines: not a CISPR receiver reading (QP / AV weighting, IF filter "
-             "shape and dwell not modelled)", "ideal-switch edges with declared rise / fall and dead time; ringing, "
-             "reverse recovery and gate-loop effects are outside this source"]
+    notes = ["estimate = rectangular-IF peak reading (envelope) of the modelled lines, the larger of the midpoint and "
+             "edge-sign CM return models; bound = the largest of the line sums (both ports, four CM return models) "
+             "and the Gaussian-IF weighted sum - not a CISPR reading (QP / AV weighting and dwell not modelled; they "
+             "read at most the peak)",
+             "the CM return rail depends on the commutation (a time-varying network): the four models bracket the "
+             "usual assumptions, they do not bound every allocation - a calibration's U_upper covers the rest",
+             "ideal-switch edges with declared rise / fall and dead time; ringing, reverse recovery and gate-loop "
+             "effects are outside this source"]
     notes += validity["notes"]
     rbw_txt = ", ".join(f"{r / 1e3:g} kHz" + ("" if math.isinf(hi) and lo == 0 else f" ({lo / 1e6:g}-{hi / 1e6:g} MHz)")
                         for lo, hi, r in profile.rbw_segments()) or "undefined"
     q = ("conducted emission at the declared HV port within the approved limit and design reserve at every receiver "
          "frequency of the band")
-    scope = (f"source-path-receiver line sum {f_lo / 1e6:g}-{f_hi / 1e6:g} MHz, RBW {rbw_txt}; "
+    scope = (f"source-path-receiver {f_lo / 1e6:g}-{f_hi / 1e6:g} MHz, RBW {rbw_txt} (estimate: rectangular-IF "
+             f"envelope; claims on the line-sum / Gaussian-IF bound over four CM return models); "
              f"{'calibrated (applicable record)' if applicable else 'unvalidated lumped network'}")
     certified = bool(band and band.get("certified"))
     estimate_rows = [r for r in rows if r["estimate"] and r.get("min_margin_dB") is not None]
@@ -1230,24 +1582,34 @@ def conducted_emission_screening(src: SwitchingSource, net: HvNetwork, profile: 
     def screening_detail():
         if certified and estimate_rows:
             worst = min(estimate_rows, key=lambda r: r["min_margin_dB"])
-            m, fm = worst["min_margin_dB"], worst["f_min_margin_Hz"]
-            txt = (f"predicted exceedance up to {-m:.1f} dB at {fm / 1e6:.4g} MHz (exact over the covered band)"
-                   if m < 0 else f"screening margin >= {m:.1f} dB (exact over the covered band; not a pass)")
+            mb, fb = worst["min_margin_dB"], worst["f_min_margin_Hz"]
+            er = [r for r in estimate_rows if r.get("min_margin_est_dB") is not None]
+            if er:
+                we = min(er, key=lambda r: r["min_margin_est_dB"])
+                m, fm = we["min_margin_est_dB"], we["f_min_margin_est_Hz"]
+                txt = (f"predicted exceedance up to {-m:.1f} dB at {fm / 1e6:.4g} MHz (estimate: rectangular-IF "
+                       f"envelope, exact over the covered band)" if m < 0 else
+                       f"screening margin >= {m:.1f} dB on the estimate (exact over the covered band; not a pass)")
+            else:
+                txt = "no estimate evaluated"
+            txt += (f"; bound {'exceedance up to ' + format(-mb, '.1f') if mb < 0 else 'margin ' + format(mb, '.1f')} "
+                    f"dB at {fb / 1e6:.4g} MHz (line sums over the ports and CM return models, Gaussian IF)")
         else:
-            ex = np.isfinite(margin) & (margin < 0)
-            worst = float(np.nanmin(margin)) if np.any(np.isfinite(margin)) else None
-            txt = (f"predicted exceedance up to {float(np.nanmax(A_req)):.1f} dB in {int(ex.sum())} of {grid.size} "
-                   f"sampled grid points" if ex.any() else
-                   (f"sampled screening margin >= {worst:.1f} dB (grid only, not a pass)" if worst is not None
-                    else "no margin evaluated"))
+            ex = np.isfinite(margin_est) & (margin_est < 0)
+            worst = float(np.nanmin(margin_est)) if np.any(np.isfinite(margin_est)) else None
+            txt = (f"predicted exceedance up to {float(np.nanmax(A_req)):.1f} dB (estimate) in {int(ex.sum())} of "
+                   f"{grid.size} sampled grid points" if ex.any() else
+                   (f"sampled screening margin >= {worst:.1f} dB on the estimate (grid only, not a pass)"
+                    if worst is not None else "no margin evaluated"))
         und = [r for r in rows if r["status"] == "undefined"]
         if und:
             txt += "; undefined: " + ", ".join(f"{r['lo_Hz'] / 1e6:g}-{r['hi_Hz'] / 1e6:g} MHz ({'; '.join(r['reasons'])})"
                                                for r in und)
         return txt
 
-    ev_screen = (Evidence.make(EvidenceKind.EXACT_ENUMERATION, "exact receiver-band line-sum screening")
-                 if certified else Evidence.make(EvidenceKind.SAMPLED, "line-sum screening on a log grid"))
+    ev_screen = (Evidence.make(EvidenceKind.EXACT_ENUMERATION, "exact receiver-band screening (envelope estimate, "
+                                                                "line-sum / Gaussian-IF bound)")
+                 if certified else Evidence.make(EvidenceKind.SAMPLED, "receiver screening on a log grid"))
     if missing:
         claim = Claim("conducted_emission", Status.UNKNOWN, q, scope, reasons=(Reason.REQUIREMENT_INCOMPLETE,),
                       detail="requirement profile incomplete: " + ", ".join(missing) + " (no PASS / FAIL)")
@@ -1302,17 +1664,22 @@ def conducted_emission_screening(src: SwitchingSource, net: HvNetwork, profile: 
                                     Evidence.make(EvidenceKind.VALIDATED_DOMAIN, cal.evidence)),
                           qualifiers=("within the declared model, calibration domain and set-up; not a certification "
                                       "pass",),
-                          detail=f"certified minimum margin {worst['min_margin_dB']:.2f} dB (E + {U_up:g} dB model "
-                                 f"bound) at {worst['f_min_margin_Hz'] / 1e6:.6g} MHz over every receiver frequency")
+                          detail=f"certified minimum margin {worst['min_margin_dB']:.2f} dB (bound + {U_up:g} dB "
+                                 f"model error) at {worst['f_min_margin_Hz'] / 1e6:.6g} MHz over every receiver "
+                                 f"frequency of the band with a requirement" + (
+                                     "; declared gaps (no requirement, not judged): " + ", ".join(
+                                         f"{r['lo_Hz'] / 1e6:g}-{r['hi_Hz'] / 1e6:g} MHz" for r in rows
+                                         if r["requirement"] == "gap") if any(r["requirement"] == "gap" for r in rows)
+                                     else ""))
         else:
             reasons, parts = [], []
             over = [r for r in claim_rows if (r["min_margin_dB"] or 0) < 0]
             if over:
                 reasons.append(Reason.UNCERTAINTY_OVERLAP)
                 w = min(over, key=lambda r: r["min_margin_dB"])
-                parts.append(f"E + U_upper exceeds L - M_d by up to {-w['min_margin_dB']:.2f} dB at "
-                             f"{w['f_min_margin_Hz'] / 1e6:.6g} MHz while E - U_lower stays below (no violation "
-                             f"witness)")
+                parts.append(f"bound + U_upper exceeds L - M_d by up to {-w['min_margin_dB']:.2f} dB at "
+                             f"{w['f_min_margin_Hz'] / 1e6:.6g} MHz while witness - U_lower stays below (no "
+                             f"violation witness)")
             outside = [r for r in req_rows if r["status"] != "evaluated"]
             if outside:
                 reasons.append(Reason.OUTSIDE_MODEL_DOMAIN)
@@ -1322,7 +1689,14 @@ def conducted_emission_screening(src: SwitchingSource, net: HvNetwork, profile: 
             claim = Claim("conducted_emission", Status.UNKNOWN, q, scope, reasons=tuple(reasons),
                           evidence=(Evidence.make(EvidenceKind.EXACT_ENUMERATION, band["method"]),),
                           detail="; ".join(parts))
-    return {"grid_Hz": grid, "E_dBuV": E, "E_upper_dBuV": EU, "E_lower_dBuV": EL,
+    return {"grid_Hz": grid, "E_dBuV": E, "E_bound_dBuV": E_b, "E_upper_dBuV": EU, "E_lower_dBuV": EL,
+            "margin_est_dB": margin_est, "required_attenuation_bound_dB": A_req_b,
+            "lines_per_window": vals["lines"], "receiver_model": {
+                "estimate": "rectangular IF (width RBW), peak detector: envelope peak of the in-window lines, the "
+                            "larger of the midpoint and edge-sign CM return models",
+                "bound": "the largest of the line sums (both ports, CM return models midpoint / edge sign / HV+ / "
+                         "HV-) and the Gaussian-IF weighted sum: the claim side",
+                "witness": "the smallest rectangular-IF envelope over the four CM return models (narrow windows)"},
             "E_envelope_dBuV": env, "plus_dBuV": _db_or_nan(vals["plus"]), "minus_dBuV": _db_or_nan(vals["minus"]),
             "cm_dBuV": _db_or_nan(vals["cm"]), "dm_dBuV": _db_or_nan(vals["dm"]),
             "from_cm_source_dBuV": _db_or_nan(vals["from_cm_source"]),
