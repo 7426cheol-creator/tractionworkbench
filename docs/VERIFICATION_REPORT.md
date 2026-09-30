@@ -1,6 +1,6 @@
 # Verification Report — Traction Workbench
 
-자동 생성: `python verification/make_report.py` · software 0.5.0 · commit `8e74a15` · 2026-09-29 · Python 3.11.15, NumPy 2.4.6, SciPy 1.17.1
+자동 생성: `python verification/make_report.py` · software 0.5.0 · commit `707db3c` · 2026-09-30 · Python 3.11.15, NumPy 2.4.6, SciPy 1.17.1
 
 > 범위: 합성(synthetic) 참조 fixture에 대한 검증(verification)입니다. 하드웨어·공급사 데이터·외부 시뮬레이터에 대한 validation은 수행하지 않았습니다. 수치 자릿수는 회귀 검산용이며 실제 제품 정확도가 아닙니다.
 
@@ -9,11 +9,11 @@
 | 항목 | 결과 |
 |---|---|
 | 참조 패키지 무결성 (manifest SHA-256, 10 files) | OK |
-| 독립 fixture 검산 (production 코드 미사용) | 136/136 pass (27 s) |
+| 독립 fixture 검산 (production 코드 미사용) | 136/136 pass (44 s) |
 | Production vs golden acceptance | 21/21 pass |
-| pytest | 909 passed, 2 warnings in 604.68s (0:10:04) (618 s) |
-| 데스크톱 앱 self-test (headless, `twb selftest`) | 92/92 pass (160 s) |
-| MathWorks 이식 패키지 (`twb mathworks`) | parity PASS — 80 PASS · 0 FAIL · 0 ERROR · 1 NOT_SUPPORTED; GNU Octave 8.4.0 - MATLAB-language proxy; MATLAB / Simulink not run (4 s) |
+| pytest | 972 passed, 2 warnings in 1487.44s (0:24:47) (1507 s) |
+| 데스크톱 앱 self-test (headless, `twb selftest`) | 92/92 pass (306 s) |
+| MathWorks 이식 패키지 (`twb mathworks`) | parity PASS — 80 PASS · 0 FAIL · 0 ERROR · 1 NOT_SUPPORTED; GNU Octave 8.4.0 - MATLAB-language proxy; MATLAB / Simulink not run (19 s) |
 
 ## 2. 독립 fixture 검산 (`verification/independent_fixture_check.py`)
 
@@ -77,7 +77,7 @@ PASS  inverse:I10_STANDSTILL_TORQUE:golden                             |did|=5.5
 |---|---|---|
 | decision:ts012_600 | PASS | verdict PASS, expected PASS |
 | decision:ts012_450 | PASS | verdict FAIL, expected FAIL |
-| pdf_report | PASS | 159429 bytes |
+| pdf_report | PASS | 159541 bytes |
 | decision:ts012_10s | PASS | verdict UNKNOWN, expected UNKNOWN |
 | decision:regen_80 | PASS | verdict PASS, expected PASS |
 | decision:regen_100 | PASS | verdict FAIL, expected FAIL |
@@ -161,10 +161,10 @@ PASS  inverse:I10_STANDSTILL_TORQUE:golden                             |did|=5.5
 | datasheet:entry_motor | PASS | EXMOT-200 |
 | mathworks:package | PASS | ['no target report yet: every target stage is NOT_RUN'] |
 | guide | PASS |  |
-| acceptance | PASS | <span style='color:#1a7f37; font-weight:600'>21/21 PASS · manifest OK</span> · 1.34 s · verification against synthetic f |
+| acceptance | PASS | <span style='color:#1a7f37; font-weight:600'>21/21 PASS · manifest OK</span> · 2.39 s · verification against synthetic f |
 | exchange:package | PASS |  |
-| decision:flux_map | PASS | UNKNOWN |
-| progress:engine_steps | PASS | 80 messages, 75 in the capability scan; e.g. 요구 판정: 1/2 판정 · 토크 능력 130/227 (스캔) |
+| decision:flux_map | PASS | PASS |
+| progress:engine_steps | PASS | 88 messages, 82 in the capability scan; e.g. 요구 판정: 1/2 판정 · 토크 능력 82/227 (스캔) |
 | workspace:roundtrip | PASS | 15 pages, 97 KB |
 | no_error_dialogs | PASS |  |
 

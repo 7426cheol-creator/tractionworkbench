@@ -269,7 +269,7 @@ docs/            RELEASE_NOTES.md (모델 계약·한계), TRACEABILITY.md (리�
 
 ## 검증 상태
 
-- 참조 패키지 10개 파일 SHA-256 일치, 독립 검산 136/136, production vs golden 21/21, pytest 807 통과, 데스크톱 self-test 65/65.
+- 참조 패키지 10개 파일 SHA-256 일치, 독립 검산 136/136, production vs golden 21/21, pytest 972 통과, 데스크톱 self-test 92/92.
   CI 세 job(Linux 테스트 · MathWorks/Octave · Windows 동결 exe의 acceptance·self-test) 통과 — 상세: [`docs/VERIFICATION_REPORT.md`](docs/VERIFICATION_REPORT.md)
   (보고서 머리에 생성 commit 표기)
 - MathWorks 이식 패키지: 패키지의 MATLAB 코드를 **GNU Octave 8.4**(MATLAB 언어 호환 proxy)로 실행해 80 PASS · 0 FAIL · 0 ERROR ·
