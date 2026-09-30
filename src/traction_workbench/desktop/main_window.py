@@ -20,6 +20,7 @@ from .pages.design import DesignPage
 from .pages.efficiency import EfficiencyPage
 from .pages.emi import EmiPage
 from .pages.explorer import ExplorerPage
+from .pages.fault_sim import FaultSimPage
 from .pages.machine import MachinePage
 from .pages.model import ModelPage, examples_dir
 from .pages.oew_hev import OewHevPage
@@ -46,6 +47,7 @@ PAGES = (
     ("design", lambda: tr("설계·병목", "Design & bottleneck"), DesignPage),
     ("safety", lambda: tr("안전 스크리닝", "Safety screening"), SafetyPage),
     ("protection", lambda: tr("보호·고장", "Protection & fault"), ProtectionPage),
+    ("fault_sim", lambda: tr("고장 시뮬레이션·FuSa", "Fault simulation & FuSa"), FaultSimPage),
     ("thermal", lambda: tr("열·지속시간", "Thermal & duration"), ThermalPage),
     ("power", lambda: tr("전력변환·수명", "Power stage & life"), PowerPage),
     ("efficiency", lambda: tr("효율·모듈 비교", "Efficiency & modules"), EfficiencyPage),
@@ -66,7 +68,7 @@ NAV_GROUPS = (
                                                                    "performance", "design")),
     (lambda: tr("전력·열·효율", "Power, heat & efficiency"), ("thermal", "power", "efficiency")),
     (lambda: tr("제어·EMC", "Control & EMC"), ("pwm_driveline", "emi")),
-    (lambda: tr("안전·보호", "Safety & protection"), ("safety", "protection")),
+    (lambda: tr("안전·보호", "Safety & protection"), ("safety", "protection", "fault_sim")),
     (lambda: tr("시스템·설계", "Systems & design"), ("oew_hev", "machine")),
     (lambda: tr("검증", "Verification"), ("verification",)),
 )
@@ -105,6 +107,11 @@ PAGE_INFO = {
                          "FTTI chain, DC-link discharge / overvoltage, safe state (ASC / freewheel) screening"),
     "protection": lambda: tr("임계값·디레이팅·고장 반응 검토와 ASC 과도",
                              "thresholds, derating and fault reaction review; ASC transient"),
+    "fault_sim": lambda: tr("고장 → 측정·추정 → 제어·감시 → 보호 반응 → 실제 브리지·토크·전류·DC-link → SG/FSR/TSR 판정의 인과 "
+                            "시뮬레이션, 반응 후보 비교, 캠페인·반례, 검증 근거",
+                            "causal simulation fault → measurement → control and monitoring → reaction → actual "
+                            "bridge, torque, current, DC link → SG / FSR / TSR verdicts; reaction candidates, "
+                            "campaigns and counterexamples, validation evidence"),
     "oew_hev": lambda: tr("OEW 듀얼 인버터와 HEV 두 기기 공통 bus", "open-end winding dual inverter and HEV two-machine bus"),
     "machine": lambda: tr("모터 스케일링 트레이드, 권선 계산, 개념 사이징",
                           "machine scaling trade study, winding calculator, concept sizing"),
@@ -127,7 +134,8 @@ TASK_PAGE = {"decision": "decision", "decision-env": "decision", "requirement_se
              "hev_planetary": "oew_hev", "emi": "emi", "emi_oew": "emi", "machine_trade": "machine",
              "winding": "machine", "concept_sizing": "machine", "ftti": "safety", "passive": "safety",
              "discharge": "safety", "overvoltage": "safety", "safe_state": "safety", "pdf": "decision",
-             "acceptance": "verification"}
+             "acceptance": "verification", "fault_sim": "fault_sim", "fault_compare": "fault_sim",
+             "fault_campaign": "fault_sim", "fault_rerun": "fault_sim", "fault_validation": "fault_sim"}
 # what a task is called on screen (a running task uses the label it was started with)
 TASK_LABELS = {
     "decision": lambda: tr("요구 판정", "decision"), "decision-env": lambda: tr("T–n 곡선", "T–n envelope"),
@@ -152,6 +160,11 @@ TASK_LABELS = {
     "passive": lambda: tr("패시브 방전", "passive discharge"), "discharge": lambda: tr("능동 방전", "active discharge"),
     "overvoltage": lambda: tr("회생 과전압", "regen overvoltage"), "safe_state": lambda: tr("안전 상태", "safe state"),
     "acceptance": lambda: tr("acceptance", "acceptance"),
+    "fault_sim": lambda: tr("고장 시뮬레이션", "fault simulation"),
+    "fault_compare": lambda: tr("반응 후보 비교", "reaction candidates"),
+    "fault_campaign": lambda: tr("고장 캠페인", "fault campaign"),
+    "fault_rerun": lambda: tr("반례 재실행", "counterexample re-run"),
+    "fault_validation": lambda: tr("플랜트 검증", "plant validation"),
 }
 # tasks whose argument is not a request body: they run on the state's drive and limits
 STATE_TASKS = ("decision-env", "requirement_set", "explorer", "trajectory", "performance", "design-sweep",

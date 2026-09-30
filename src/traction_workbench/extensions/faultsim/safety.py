@@ -47,11 +47,12 @@ numerical / model allowance is UNKNOWN - never a PASS.  Inverter-level evidence 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 
 from ...errors import InputValidationError
+from .labels import fault_text, quantity_label
 
 _trapezoid = getattr(np, "trapezoid", None) or np.trapz      # numpy < 2.0 compatibility
 CRITERIA = ("torque_window", "bound", "safe_state", "no_false_reaction", "timing")
@@ -317,7 +318,7 @@ class Evaluator:
 
     def _scope(self):
         s = self.s
-        faults = "; ".join(f"{f['kind']} at {f['t_s'] * 1e3:.4g} ms {f.get('params') or ''}"
+        faults = "; ".join(f"{fault_text(f['kind'], f.get('params'))} at {f['t_s'] * 1e3:.4g} ms"
                            for f in self.r.setup_echo.get("faults", [])) or "no fault"
         return {"kind": "scenario",
                 "text": f"this trajectory only: {s.speed_rpm:g} rpm, request {s.request.to_dict()['kind']} "
@@ -441,13 +442,15 @@ class Evaluator:
                 iv = bad[0]
                 return {"verdict": FAIL, "t_violation_s": iv[0], "evidence": ev,
                         "counter": {"start_s": iv[0], "end_s": iv[1], "peak": peak},
-                        "detail": f"{q} {'above' if lim_key == 'max' else 'below'} {lim:g} {unit} from "
+                        "detail": f"{quantity_label(q)} {'above' if lim_key == 'max' else 'below'} "
+                                  f"{lim:g} {unit} from "
                                   f"{iv[0] * 1e3:.4g} ms (extreme {peak['value']:.4g} {unit} at "
                                   f"{peak['t_s'] * 1e3:.4g} ms)"}
         for lim_key, lim, g, ivs, bad, peak in res:
             if float(np.max(g)) > -allowance:
                 return {"verdict": UNKNOWN, "evidence": ev, "reason": "WITHIN_NUMERICAL_ALLOWANCE",
-                        "detail": f"{q} extreme {peak['value']:.5g} {unit} is within the sample / model allowance "
+                        "detail": f"{quantity_label(q)} extreme {peak['value']:.5g} {unit} is within the "
+                                  f"sample / model allowance "
                                   f"{allowance:.3g} {unit} of the limit {lim:g} {unit}"}
         end = self._end_note(b)
         if end:
@@ -517,12 +520,16 @@ class Evaluator:
                     "detail": f"safe condition reached at {tS * 1e3:.4g} ms but the trace ends before the "
                               f"{hold * 1e3:g} ms hold is observed" + (f" ({self.r.stop_reason})"
                                                                       if not self.completed else "")}
-        if observed_to + 1e-12 >= deadline + hold:
+        # no start inside [origin, deadline] can still hold: every run of the condition that began there was seen to
+        # break before its hold (``t_S`` skips those), and none is still running at the end of the trace - decided
+        # as soon as the deadline is observed, whatever the hold time
+        if observed_to + 1e-12 >= deadline:
             first = tS if tS is not None else None
             return {"verdict": FAIL, "evidence": ev, "t_violation_s": deadline,
                     "counter": {"deadline_s": deadline, "first_safe_s": first},
                     "detail": f"the safe condition is not reached and held within {within * 1e3:g} ms of the origin "
-                              f"at {o * 1e3:.4g} ms" + (f" (first reached {first * 1e3:.4g} ms)" if first else "")}
+                              f"at {o * 1e3:.4g} ms" + (f" (first reached {first * 1e3:.4g} ms)" if first else
+                                                        f" (not reached by {observed_to * 1e3:.4g} ms)")}
         return {"verdict": UNKNOWN, "evidence": ev, "reason": "WINDOW_NOT_OBSERVED",
                 "detail": f"not reached on the observed part; {self._end_note(deadline + hold) or 'window open'}"}
 
@@ -547,6 +554,12 @@ class Evaluator:
             if budget is None:
                 continue
             if v is None:
+                lo = tl.get(f"{key}_min")
+                if lo is not None and lo > budget + 2 * self.h:
+                    verdicts.append(FAIL)                # the lower bound already exceeds the budget
+                    out.append(f"{key} >= {lo * 1e3:.4g} ms > budget {budget * 1e3:g} ms (safe condition not reached "
+                               f"and held by the end of the observed trace)")
+                    continue
                 verdicts.append(UNKNOWN if tl["need"] else NA)
                 out.append(f"{key} not measured ({tl['why']})")
             else:
@@ -562,9 +575,14 @@ class Evaluator:
             F = min(ftti)
             v = tl.get("FHTI")
             if v is None:
+                lo = tl.get("FHTI_min")
                 if tl["need"] and tl.get("undetected"):
                     verdicts.append(FAIL)
                     out.append(f"not handled: {tl['why']}")
+                elif lo is not None and lo > F + 2 * self.h:
+                    verdicts.append(FAIL)
+                    out.append(f"FHTI >= {lo * 1e3:.4g} ms > FTTI {F * 1e3:g} ms (safe condition not reached and "
+                               f"held by the end of the observed trace)")
                 else:
                     verdicts.append(UNKNOWN if tl["need"] else NA)
                     out.append(f"FHTI not measured ({tl['why']})")
@@ -613,8 +631,14 @@ class Evaluator:
             tl["FHTI"] = max(0.0, tS - self.t_F)
             tl["why"] = "measured"
         else:
+            # not measured, but bounded below: t_S is at least the start of a run still holding at the end of the
+            # observed trace, or the end itself when the condition is false there
+            lo = tS if tS is not None else self.valid_end
+            tl["FRTI_min"] = max(0.0, lo - tD)
+            tl["FHTI_min"] = max(0.0, lo - self.t_F)
             tl["why"] = ("safe condition not reached and held in the trace" + (f" ({self.r.stop_reason})"
-                                                                              if not self.completed else ""))
+                                                                              if not self.completed else "")
+                         + f"; FRTI >= {tl['FRTI_min'] * 1e3:.4g} ms")
         return tl
 
     # -- the whole set -----------------------------------------------------------------------------------------
@@ -629,7 +653,7 @@ class Evaluator:
             tl = self.fsr_timeline(f)
             v = _worst(*[r["verdict"] for r in items]) if items else NA
             fsr.append({"id": f.fsr_id, "sg": list(f.sg), "text": f.text, "mechanisms": list(f.mechanisms),
-                        "verdict": v, "timeline": tl, "tsr": [r["id"] for r in items],
+                        "verdict": v, "timeline": tl, "tsr": [r["id"] for r in items], "safe_state": f.safe_state,
                         "budgets": {"FDTI_s": f.fdti_budget_s, "FRTI_s": f.frti_budget_s}})
         sg = []
         for g in self.q.goals:
@@ -641,7 +665,12 @@ class Evaluator:
                        "statement": "inverter-level evidence on this trajectory - not a vehicle safety approval "
                                     "(vehicle dynamics, driver controllability and the item's other elements are "
                                     "outside this simulation)"})
-        return {"tsr": tsr, "fsr": fsr, "sg": sg, "scope": self._scope(),
+        windows = {}
+        for t in self.q.tsrs:
+            if t.criterion["type"] == "torque_window":
+                lo, hi = self.window(t.criterion)
+                windows[t.tsr_id] = {"lo": lo, "hi": hi, "side": t.criterion.get("side", "both")}
+        return {"tsr": tsr, "fsr": fsr, "sg": sg, "scope": self._scope(), "windows": windows,
                 "event_definitions": {
                     "t_F": "injection of the first primary fault",
                     "t_V": "first violation onset of a hazard-related TSR of the FSR",

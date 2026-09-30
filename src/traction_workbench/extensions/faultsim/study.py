@@ -75,9 +75,19 @@ SCENARIOS = [
      "scenario": {"speed_rpm": 12000, "torque_Nm": 150, "horizon_ms": 60,
                   "faults": [{"kind": "sensor", "t_ms": 10, "params": {"target": "RES", "mode": "lost"}}]}},
     {"key": "sw_short", "category": "protection success",
+     "title": {"ko": "상단 스위치 단락 · 12,000 rpm", "en": "upper switch short · 12,000 rpm"},
+     "hint": {"ko": "하단 스위치 desat → 단락된 쪽의 ASC(ASC-high): 전류·토크 모두 허용 안",
+              "en": "the lower switch desaturates → the ASC of the shorted side (ASC-high): current and torque inside "
+                    "their limits"},
+     "scenario": {"speed_rpm": 12000, "torque_Nm": 100, "horizon_ms": 80,
+                  "faults": [{"kind": "switch_short", "t_ms": 10, "params": {"leg": "a", "device": "upper"}}]}},
+    {"key": "sw_short_ls", "category": "component protected, hazard not contained",
      "title": {"ko": "상단 스위치 단락 · 3,000 rpm", "en": "upper switch short · 3,000 rpm"},
-     "hint": {"ko": "하단 스위치 desat → 단락된 쪽의 ASC(ASC-high) 선택", "en": "the lower switch desaturates → the ASC "
-                                                                    "of the shorted side (ASC-high)"},
+     "hint": {"ko": "올바른 ASC-high가 소자 전류는 한계 안에 두지만(TSR-07 통과) 3,000 rpm의 ASC 제동 토크가 느리게 감쇠 → "
+                    "30 ms 안에 |T| ≤ 60 N·m 미도달(TSR-03 실패): 부품 보호 ≠ 차량 위험 억제",
+              "en": "the right ASC (ASC-high) keeps the device current inside its limit (TSR-07 passes), but the ASC "
+                    "braking torque at 3,000 rpm decays slowly → |T| <= 60 N·m not reached within 30 ms (TSR-03 "
+                    "fails): component protection is not hazard containment"},
      "scenario": {"speed_rpm": 3000, "torque_Nm": 100, "horizon_ms": 80,
                   "faults": [{"kind": "switch_short", "t_ms": 10, "params": {"leg": "a", "device": "upper"}}]}},
     {"key": "sw_short_wrong", "category": "wrong reaction",
@@ -104,26 +114,28 @@ SCENARIOS = [
      "title": {"ko": "토크 명령 고착 · 감시기 독립 메시지", "en": "stale torque command · independent monitor message"},
      "hint": {"ko": "요청 150→0인데 구동은 150 유지 → 독립 메시지로 감시기 검출 → 안전 상태",
               "en": "request 150→0 while the drive keeps 150 → the monitor's own message detects it"},
-     "scenario": {"speed_rpm": 6000, "request": {"kind": "step", "T0_Nm": 150, "T1_Nm": 0, "t0_ms": 20},
+     "scenario": {"speed_rpm": 12000, "request": {"kind": "step", "T0_Nm": 150, "T1_Nm": 0, "t0_ms": 20},
                   "horizon_ms": 80, "faults": [{"kind": "torque_command", "t_ms": 15, "params": {"mode": "stale"}}]}},
     {"key": "stale_common", "category": "common cause",
      "title": {"ko": "토크 명령 고착 · 감시기가 같은 메시지 사용", "en": "stale torque command · monitor on the same message"},
      "hint": {"ko": "공통 원인: 감시기도 같은 오래된 값을 봄 → 미검출, 의도치 않은 가속 토크 (FAIL)",
               "en": "common cause: the monitor sees the same stale value → undetected unintended acceleration (FAIL)"},
-     "scenario": {"speed_rpm": 6000, "request": {"kind": "step", "T0_Nm": 150, "T1_Nm": 0, "t0_ms": 20},
+     "scenario": {"speed_rpm": 12000, "request": {"kind": "step", "T0_Nm": 150, "T1_Nm": 0, "t0_ms": 20},
                   "horizon_ms": 100, "faults": [{"kind": "torque_command", "t_ms": 15,
                                                  "params": {"mode": "stale", "paths": "both"}}]}},
     {"key": "restart_flying", "category": "recovery / restart",
      "title": {"ko": "MCU 리셋 2 ms → flying 재시동", "en": "MCU reset 2 ms → flying restart"},
      "hint": {"ko": "속도를 다시 잡고 램프로 복귀: 반응 없이 토크 회복", "en": "speed re-established, torque ramps back"},
-     "scenario": {"speed_rpm": 7000, "torque_Nm": 150, "horizon_ms": 60,
+     "scenario": {"speed_rpm": 7000, "torque_Nm": 150, "horizon_ms": 120,
                   "faults": [{"kind": "mcu_reset", "t_ms": 10, "params": {"duration_ms": 2}}],
                   "overrides": {"policy.restart": "flying", "control.boot_ms": 2.0}}},
     {"key": "restart_cold", "category": "recovery failure",
      "title": {"ko": "MCU 리셋 2 ms → cold 재시동 실패", "en": "MCU reset 2 ms → cold restart fails"},
-     "hint": {"ko": "속도 추정이 0에서 시작 → 큰 과도 → 감시기·과전류 → 안전 상태로 끝남",
-              "en": "the speed estimate starts from 0 → large transient → monitor / over-current → safe state"},
-     "scenario": {"speed_rpm": 7000, "torque_Nm": 150, "horizon_ms": 60,
+     "hint": {"ko": "속도 추정이 0에서 시작 → 큰 과도 → 감시기·과전류 → ASC, 7,000 rpm ASC 제동 토크가 30 ms 안에 "
+                    "가라앉지 않음 (FAIL)",
+              "en": "the speed estimate starts from 0 → large transient → monitor / over-current → ASC, whose braking "
+                    "torque at 7,000 rpm does not settle within 30 ms (FAIL)"},
+     "scenario": {"speed_rpm": 7000, "torque_Nm": 150, "horizon_ms": 120,
                   "faults": [{"kind": "mcu_reset", "t_ms": 10, "params": {"duration_ms": 2}}],
                   "overrides": {"policy.restart": "cold", "control.boot_ms": 2.0}}},
     {"key": "recovery_fail", "category": "recovery failure",
@@ -145,6 +157,79 @@ SCENARIOS = [
                              {"kind": "battery_disconnect", "t_ms": 10},
                              {"kind": "gate_supply_loss", "t_ms": 10, "params": {"side": "lower"}}]}},
 ]
+
+
+# a campaign each representative scenario suggests (its base is the scenario): the axes and what they explore
+CAMPAIGNS = {
+    "normal_hs": ([{"path": "theta0_deg", "values": [0, 90, 180, 270]}],
+                  {"ko": "초기 전기각이 달라도 오검출·반응 없음 (정상 결과 보존)",
+                   "en": "no false detection or reaction whatever the initial angle (normal results preserved)"}),
+    "step_ok": ([{"path": "request.T1_Nm", "values": [100, 200, 300, 400]}],
+                {"ko": "요청이 운전 능력을 넘으면 감시기가 받은 명령과 실제 토크 차이로 오검출 (가용성 경계)",
+                 "en": "a request beyond the capability makes the monitor trip on the gap between the received "
+                       "command and the torque (availability boundary)"}),
+    "false_trip": ([{"path": "overrides.mechanisms.SM-TQ.params.debounce_ms", "values": [1, 2, 5, 10]}],
+                   {"ko": "감시기 디바운스가 정상 과도를 덮는 경계", "en": "the debounce that covers the healthy transient"}),
+    "cs_offset": ([{"path": "faults.0.params.value", "values": [30, 60, 100, 150, 300]}],
+                  {"ko": "고장 크기에 대해 판정이 단조롭지 않음: 임계값 근처는 늦게 검출, 큰 오프셋은 반응 전 상태가 나빠 FRTI 초과",
+                   "en": "the verdict is not monotone in the fault size: near the threshold the detection is late, a "
+                         "large offset worsens the state before the reaction (FRTI exceeded)"}),
+    "ov_regen": ([{"path": "overrides.mechanisms.SM-OV.params.threshold_V", "values": [780, 820, 860]},
+                  {"path": "speed_rpm", "values": [9000, 12000]}],
+                 {"ko": "HW 비교기 임계값을 올려도 SW 감시(760 V)가 덮는지", "en": "whether the software monitor (760 V) "
+                                                                           "covers a higher HW threshold"}),
+    "ov_path_lost": ([{"path": "overrides.mechanisms.SM-OVSW.params.debounce_ms", "values": [0.2, 0.5, 1.0, 2.0]}],
+                     {"ko": "HW 경로를 잃었을 때 SW 백업이 허용하는 최대 디바운스", "en": "the largest debounce the "
+                                                                              "software backup allows once the HW "
+                                                                              "path is lost"}),
+    "ov_slow": ([{"path": "overrides.mechanisms.SM-OVSW.params.debounce_ms", "values": [0.2, 0.5, 1.0, 2.0]},
+                 {"path": "speed_rpm", "values": [9000, 12000]}],
+                {"ko": "디바운스와 속도(회생 에너지)에 따른 과전압 실패 경계", "en": "the over-voltage failure boundary in "
+                                                                          "debounce and speed (regen energy)"}),
+    "res_lost": ([{"path": "speed_rpm", "values": [3000, 6000, 9000, 12000]}],
+                 {"ko": "잘못 고른 6SO가 해가 되는 속도: 정류 개시(≈8,270 rpm) 위", "en": "where the wrongly chosen 6SO "
+                                                                                  "hurts: above the rectification "
+                                                                                  "onset (≈8,270 rpm)"}),
+    "sw_short": ([{"path": "speed_rpm", "values": [1000, 3000, 6000, 12000]}],
+                 {"ko": "ASC-high의 유효 영역: 저속에서는 제동 토크가 FRTI 안에 가라앉지 않음", "en": "the effective region "
+                                                                                      "of ASC-high: at low speed its "
+                                                                                      "braking torque does not settle "
+                                                                                      "within the FRTI"}),
+    "sw_short_ls": ([{"path": "speed_rpm", "values": [1000, 3000, 6000, 12000]}],
+                    {"ko": "같은 반응이 어느 속도부터 토크 위험까지 억제하는지", "en": "from which speed the same reaction "
+                                                                          "also contains the torque hazard"}),
+    "sw_short_wrong": ([{"path": "speed_rpm", "values": [1000, 3000, 6000, 12000]}],
+                       {"ko": "속도 규칙만 보는 정책은 모든 속도에서 실패", "en": "the speed-only policy fails at every "
+                                                                        "speed"}),
+    "gate_supply": ([{"path": "speed_rpm", "values": [3000, 6000, 12000]}],
+                    {"ko": "UVLO 규칙(ASC-high)의 유효 영역: 저속에서는 6SO가 나을 수 있음", "en": "the effective region of "
+                                                                                     "the UVLO rule (ASC-high): at "
+                                                                                     "low speed 6SO may be better"}),
+    "sens_supply": ([{"path": "speed_rpm", "values": [3000, 6000, 12000]}],
+                    {"ko": "공통 원인 결과가 운전점에 따라 달라짐", "en": "the common-cause outcome depends on the "
+                                                                "operating point"}),
+    "stale_indep": ([{"path": "overrides.mechanisms.SM-TQ.params.debounce_ms", "values": [5, 10, 20, 40]}],
+                    {"ko": "감시기 디바운스와 FDTI 예산(20 ms)", "en": "the monitor's debounce against the FDTI budget "
+                                                                   "(20 ms)"}),
+    "stale_common": ([{"path": "faults.0.params.paths", "values": ["control", "monitor", "both"]}],
+                     {"ko": "고장이 제어 메시지·감시 사본·둘 다(공통 원인)에 있을 때", "en": "the fault on the control "
+                                                                          "message, the monitor's copy, or both "
+                                                                          "(common cause)"}),
+    "restart_flying": ([{"path": "faults.0.params.duration_ms", "values": [1, 2, 5, 10]}],
+                       {"ko": "리셋 길이에 따른 flying 재시동 결과", "en": "the flying restart against the reset "
+                                                                     "length"}),
+    "restart_cold": ([{"path": "speed_rpm", "values": [1000, 3000, 7000]}],
+                     {"ko": "cold 재시동이 견디는 속도", "en": "the speed a cold restart survives"}),
+    "recovery_fail": ([{"path": "overrides.policy.recovery_max_attempts", "values": [0, 1, 2, 3]}],
+                      {"ko": "복귀 시도 횟수: 많을수록 마지막 재시도가 늦어 안전 조건 유지가 깨짐", "en": "recovery attempts: "
+                                                                                      "more attempts end later and "
+                                                                                      "break the held safe condition"}),
+    "no_safe_reaction": ([{"path": "speed_rpm", "values": [3000, 6000, 12000]}],
+                         {"ko": "실행 가능한 안전 반응이 없는 영역", "en": "where no executable safe reaction exists"}),
+}
+for _s in SCENARIOS:
+    if _s["key"] in CAMPAIGNS:
+        _s["campaign"] = {"axes": CAMPAIGNS[_s["key"]][0], "why": CAMPAIGNS[_s["key"]][1]}
 
 
 def scenario(key: str) -> dict:

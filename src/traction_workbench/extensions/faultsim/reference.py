@@ -28,7 +28,7 @@ import numpy as np
 from scipy.integrate import solve_ivp
 
 from .plant import (DcParams, LegCommand, MachineParams, Plant, integrate, phase_currents, E_BAT, E_BLEED, E_CU,
-                    E_INV, E_MECH, IBAT, ID, IQ, TH, VDC, WM)
+                    E_INV, E_MECH, ID, IQ, TH, VDC)
 
 TWO_PI = 2.0 * math.pi
 PHI = (0.0, TWO_PI / 3.0, -TWO_PI / 3.0)        # phase axes a, b, c
@@ -127,9 +127,9 @@ class AbcReference:
                 i_bat = ibat
             else:
                 i_bat = (dc.V_oc - vdc) / dc.R_bat
-                dibat = 0.0
-        else:
-            i_bat, dibat = 0.0, 0.0
+                dibat = -ibat                    # unused state, kept at its exact value 0 (a nonzero Jacobian
+        else:                                    # column keeps the solver's finite-difference step bounded)
+            i_bat, dibat = 0.0, -ibat
         i_bl = vdc / dc.R_bleed if dc.R_bleed else 0.0
         dv = (i_bat - i_plus - i_bl) / dc.C
         return [di[0], di[1], dv, dibat]

@@ -136,6 +136,7 @@ def test_sensor_fault_acts_through_closed_loop_control_and_is_seen_by_measured_c
 def test_monitor_without_independent_request_misses_a_stale_command_common_cause():
     ok, bad = run("stale_indep"), run("stale_common")
     assert events(ok, "detection", "SM-TQ") and ok["verdicts"]["TSR-01"] == "PASS"
+    assert all(v in ("PASS", "NOT_APPLICABLE") for k, v in ok["verdicts"].items() if k.startswith("TSR"))
     assert not events(bad, "detection") and bad["verdicts"]["TSR-01"] == "FAIL"
     tl = next(f["timeline"] for f in bad["evaluation"]["fsr"] if f["id"] == "FSR-01")
     assert tl["undetected"] and bad["verdicts"]["FSR-01"] == "FAIL" and bad["verdicts"]["SG-01"] == "FAIL"
@@ -160,22 +161,27 @@ def test_frozen_position_sensor_makes_the_policy_choose_six_switch_off_at_high_s
     the BMS opens the contactor and the DC link over-charges."""
     r = run("res_lost")
     act = events(r, "actuation")[0]
-    assert "six_switch_off" in act["text"] and r["summary"]["final_bridge"] == "six_switch_off"
+    assert act["reaction"] == "six_switch_off" and r["summary"]["final_bridge"] == "six_switch_off"
     assert r["verdicts"]["TSR-06"] == "FAIL"
     assert any(e["source"] == "contactor" for e in r["events"])
 
 
 def test_shorted_switch_selects_the_asc_of_its_own_side_and_a_speed_only_policy_does_not():
-    good, bad = run("sw_short"), run("sw_short_wrong")
-    assert "asc_high" in events(good, "actuation")[0]["text"] and good["verdicts"]["TSR-07"] == "PASS"
-    assert "asc_low" in events(bad, "actuation")[0]["text"] and bad["verdicts"]["TSR-07"] == "FAIL"
+    good, bad = run("sw_short_ls"), run("sw_short_wrong")          # same 3000 rpm, same fault
+    assert events(good, "actuation")[0]["reaction"] == "asc_high" and good["verdicts"]["TSR-07"] == "PASS"
+    assert events(bad, "actuation")[0]["reaction"] == "asc_low" and bad["verdicts"]["TSR-07"] == "FAIL"
+    # the right reaction protects the devices, but at 3000 rpm its braking torque does not settle within the FRTI:
+    # component protection and hazard containment are separate verdicts
+    assert good["verdicts"]["TSR-03"] == "FAIL" and good["verdicts"]["FSR-02"] == "PASS"
+    hs = run("sw_short")                                            # 12000 rpm: the same reaction contains both
+    assert all(v in ("PASS", "NOT_APPLICABLE") for k, v in hs["verdicts"].items() if k.startswith("TSR"))
 
 
 def test_gate_supply_loss_reported_by_uvlo_selects_the_other_side():
     r = run("gate_supply")
     d = events(r, "detection", "SM-UVLO")[0]
     assert d["t"] - 0.010 == pytest.approx(2e-6, abs=1e-9)
-    assert "asc_high" in events(r, "actuation")[0]["text"]
+    assert events(r, "actuation")[0]["reaction"] == "asc_high"
 
 
 def test_shared_current_sensor_supply_blinds_control_and_the_hardware_comparator():
@@ -246,6 +252,26 @@ def test_a_violation_before_leaving_the_model_is_a_fail_and_an_unobserved_window
     assert r["verdicts"]["TSR-01"] == "UNKNOWN"
     reasons = {x["id"]: x.get("reason") for x in r["evaluation"]["tsr"]}
     assert reasons["TSR-01"] == "WINDOW_NOT_OBSERVED"
+
+
+def test_a_safe_state_missed_by_its_deadline_is_a_fail_even_if_the_hold_window_is_cut_off():
+    """Resolver loss at 12000 rpm with ASC-low forced: |T| <= 60 N*m is not reached by detection + 30 ms, and the
+    trace ends before detection + 30 ms + the 20 ms hold.  No start inside the window can still hold, so the verdict
+    is decided (FAIL) - an UNKNOWN here would hide a valid counterexample.  FRTI / FHTI are bounded below by the end
+    of the observed trace and fail against their budgets on that bound."""
+    sc = scenario("res_lost")
+    sc["reaction_override"] = "asc_low"
+    r = run(sc)
+    tsr3 = next(x for x in r["evaluation"]["tsr"] if x["id"] == "TSR-03")
+    o, end = tsr3["evidence"]["origin_s"], r["trace"]["t"][-1]
+    assert o + 0.030 < end < o + 0.030 + 0.020                     # deadline observed, hold window cut off
+    first = tsr3["counter"]["first_safe_s"]                          # reached only after the deadline (or never)
+    assert tsr3["verdict"] == "FAIL" and (first is None or first > o + 0.030)
+    tl = next(f["timeline"] for f in r["evaluation"]["fsr"] if f["id"] == "FSR-01")
+    lo = (first if first is not None else end) - tl["t_D"]           # t_S cannot come earlier than that
+    assert tl["FRTI"] is None and tl["FRTI_min"] == pytest.approx(lo, abs=1e-9) and tl["FRTI_min"] > 0.030
+    tsr4 = next(x for x in r["evaluation"]["tsr"] if x["id"] == "TSR-04")
+    assert tsr4["verdict"] == "FAIL" and "FRTI >=" in tsr4["detail"]
 
 
 def test_sg_carries_inverter_evidence_and_a_vehicle_indicator_never_a_vehicle_approval():

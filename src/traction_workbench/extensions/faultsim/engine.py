@@ -34,11 +34,12 @@ import numpy as np
 from ...errors import InputValidationError
 from ...modulation import duties as _duties
 from .control import CommandPath, ControlConfig, Controller, ReferenceTable
-from .plant import (E_BAT, E_BLEED, E_CU, E_INV, E_MECH, IBAT, ID, IQ, PHASES, TH, VDC, WM, DcParams, ExternalEvent,
+from .plant import (E_BAT, E_BLEED, E_CU, E_INV, E_MECH, ID, IQ, PHASES, TH, VDC, WM, DcParams, ExternalEvent,
                     LegCommand, MachineParams, OutOfModel, Plant, ShootThrough, integrate, phase_currents)
-from .protection import (BRIDGE_REACTIONS, Detection, MechanismSpec, MechanismState, PathSpec, ResourceBook,
+from .labels import fault_text, reaction_label
+from .protection import (BRIDGE_REACTIONS, Detection, MechanismState, PathSpec, ResourceBook,
                          SafeStatePolicy, torque_window)
-from .sensors import SensorSpec, make_sensor, unwrap_delta
+from .sensors import make_sensor, unwrap_delta
 
 TWO_PI = 2.0 * math.pi
 PWM_MODELS = ("averaged", "switched")
@@ -96,10 +97,7 @@ class FaultSpec:
             raise InputValidationError("a fault time must be finite and >= 0", field="faults.t_s")
 
     def text(self) -> str:
-        if self.label:
-            return self.label
-        p = ", ".join(f"{k}={v}" for k, v in self.params.items())
-        return f"{self.kind}" + (f" ({p})" if p else "")
+        return self.label or fault_text(self.kind, self.params)
 
     def to_dict(self) -> dict:
         return {"kind": self.kind, "t_s": self.t_s, "params": dict(self.params), "label": self.label}
@@ -401,6 +399,7 @@ class _Sim:
     def apply_fault(self, t, x, f: FaultSpec):
         p, pl, k = f.params, self.plant, f.kind
         x = list(x)
+        self.ev(t, "fault", f.kind, f.text(), fault=f.to_dict())      # the cause first, its consequences after
         if k == "sensor":
             name = p.get("target") or p.get("sensor")
             if name not in self.sens:
@@ -462,7 +461,6 @@ class _Sim:
             self.paths_lost[p.get("path")] = t
         elif k == "resource_loss":
             self._lose_resource(t, x, str(p.get("resource")))
-        self.ev(t, "fault", f.kind, f.text())
         dur = p.get("duration_s")
         if dur is not None and k not in ("mcu_reset", "switch_short", "switch_open", "diode_open", "phase_open"):
             self.schedule(t + float(dur), 0, "fault_clear", f)
@@ -552,8 +550,10 @@ class _Sim:
         self.sw_reaction, self.torque_override = None, None          # RAM cleared: the software reaction is gone
         if math.isfinite(duration):
             self.schedule(t + max(duration, self.s.control.boot_s), 1, "mcu_boot", None)
+        out = {"off": "all gates off", "lower_on": "lower switches on", "upper_on": "upper switches on"}
         self.ev(t, "controller", "MCU", f"MCU reset: PWM outputs take their reset state "
-                                        f"({self.s.control.reset_output})")
+                                        f"({out.get(self.s.control.reset_output, self.s.control.reset_output)})",
+                reset_output=self.s.control.reset_output)
         self.update_bridge(t, "MCU reset state of the PWM outputs")
 
     def _open_contactor(self, t, x, why, forced=False):
@@ -585,7 +585,7 @@ class _Sim:
         self.bridge_cmd = cmd
         self.apply_leg_commands()
         if changed:
-            self.ev(t, "bridge", "bridge", f"bridge commanded {cmd} ({why})", command=cmd,
+            self.ev(t, "bridge", "bridge", f"bridge commanded {reaction_label(cmd)} ({why})", command=cmd,
                     actual=self.actual_bridge())
         return changed
 
@@ -677,7 +677,8 @@ class _Sim:
         hw = "MCU" not in path.resources
         if reaction == "torque_zero":
             if hw:
-                self.ev(t, "reaction_blocked", spec.mech_id, "torque_zero needs the software (MCU) path")
+                self.ev(t, "reaction_blocked", spec.mech_id, "zero torque needs the software (MCU) path",
+                        reaction=reaction)
                 return
             if self.sw_reaction is None and self.hw_reaction is None and self.torque_override is None:
                 self.torque_override = 0.0
@@ -689,26 +690,32 @@ class _Sim:
         side_lost = {"asc_low": "lower", "asc_high": "upper"}.get(cur) in self.uvlo_sides
         if cur is not None and self.s.policy.rank(reaction) >= self.s.policy.rank(cur):
             if not (side_lost and self.s.policy.replace_unexecutable and reaction != cur):
-                self.ev(t, "reaction_kept", spec.mech_id, f"{reaction} requested ({rule}), {cur} kept (priority)")
+                self.ev(t, "reaction_kept", spec.mech_id, f"{reaction_label(reaction)} requested ({rule}), "
+                                                          f"{reaction_label(cur)} kept (priority)",
+                        reaction=reaction, kept=cur)
                 return
-            self.ev(t, "reaction_conflict", spec.mech_id, f"{cur} is not executable (the drivers report the "
-                                                          f"{'lower' if cur == 'asc_low' else 'upper'} gate supply "
-                                                          f"lost): replaced by {reaction}")
+            self.ev(t, "reaction_conflict", spec.mech_id, f"{reaction_label(cur)} is not executable (the drivers "
+                                                          f"report the {'lower' if cur == 'asc_low' else 'upper'} "
+                                                          f"gate supply lost): replaced by {reaction_label(reaction)}",
+                    reaction=reaction, replaced=cur)
         if hw:
             self.hw_reaction = reaction
             if self.sw_reaction is not None and self.sw_reaction != reaction:
-                self.ev(t, "reaction_conflict", spec.mech_id, f"hardware path forces {reaction} over the software "
-                                                              f"reaction {self.sw_reaction}")
+                self.ev(t, "reaction_conflict", spec.mech_id, f"hardware path forces {reaction_label(reaction)} "
+                                                              f"over the software reaction "
+                                                              f"{reaction_label(self.sw_reaction)}",
+                        reaction=reaction, over=self.sw_reaction)
         else:
             self.sw_reaction = reaction
             if self.hw_reaction is not None and self.hw_reaction != reaction:
-                self.ev(t, "reaction_conflict", spec.mech_id, f"software requests {reaction}, hardware keeps "
-                                                              f"{self.hw_reaction}")
+                self.ev(t, "reaction_conflict", spec.mech_id, f"software requests {reaction_label(reaction)}, "
+                                                              f"hardware keeps {reaction_label(self.hw_reaction)}",
+                        reaction=reaction, kept=self.hw_reaction)
         self.reaction_by.append(spec.mech_id)
-        self.ev(t, "actuation", spec.mech_id, f"{reaction} via {path.path_id} ({rule}; requested "
+        self.ev(t, "actuation", spec.mech_id, f"{reaction_label(reaction)} via {path.path_id} ({rule}; requested "
                                               f"{t_req * 1e3:.4g} ms)", reaction=reaction, requested_at=t_req,
                 path=path.path_id, rule=rule)
-        self.update_bridge(t, f"{spec.mech_id} -> {reaction}")
+        self.update_bridge(t, f"{spec.mech_id} -> {reaction_label(reaction)}")
 
     # -- measurements ----------------------------------------------------------------------------------------
     def convert_all(self, t, x):
@@ -1236,7 +1243,6 @@ class _Sim:
 
     # -- summary -----------------------------------------------------------------------------------------------
     def _summary(self, tr: dict, x, init: dict, status: str) -> dict:
-        s = self.s
         t = tr["t"]
         ia = np.vstack([tr["i_a"], tr["i_b"], tr["i_c"]])
         iabs = np.max(np.abs(ia), axis=0) if ia.size else np.zeros(0)

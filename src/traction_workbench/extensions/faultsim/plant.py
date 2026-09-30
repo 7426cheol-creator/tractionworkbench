@@ -93,7 +93,10 @@ class LegCommand:
     duty: float = 0.5                 # upper-switch duty for pwm
 
     def label(self) -> str:
-        return f"pwm {self.duty:.3f}" if self.kind == "pwm" else self.kind
+        """The command as people read it."""
+        return (f"PWM (upper duty {self.duty:.3f})" if self.kind == "pwm" else
+                {"upper_on": "upper switch on", "lower_on": "lower switch on", "off": "both switches off"}.get(
+                    self.kind, self.kind))
 
 
 def gate_fractions(cmd: LegCommand) -> tuple[float, float]:
