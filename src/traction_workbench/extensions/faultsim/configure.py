@@ -24,9 +24,10 @@ from ...errors import InputValidationError
 from .control import ControlConfig, ReferenceTable
 from .engine import FAULT_KINDS, FaultSpec, RequestProfile, SimSetup
 from .plant import DcParams, MachineParams
-from .protection import MechanismSpec, PathSpec, SafeStatePolicy
+from .protection import KIND_PARAMS, REACTIONS, MechanismSpec, PathSpec, SafeStatePolicy
 from .safety import requirements_from_dict
 from .sensors import SensorSpec
+from .strategy import strategies_from
 
 TOPOLOGIES = ("two_level_vsi_star",)
 
@@ -95,9 +96,27 @@ def tolerance_limits(data: dict) -> dict:
     return out
 
 
+def _check_params(m: dict) -> None:
+    """The declared parameters of a mechanism kind: numbers finite and not negative (blank = not set), choices
+    among their values; other keys pass through."""
+    spec = {p[0]: p for p in KIND_PARAMS.get(str(m.get("kind")), ())}
+    for k, v in (m.get("params") or {}).items():
+        ps = spec.get(k)
+        if ps is None:
+            continue
+        where = f"mechanisms.{m.get('id')}.params.{k}"
+        if isinstance(ps[1], tuple):
+            if v not in ps[1]:
+                raise InputValidationError(f"{k} must be one of {ps[1]}", field=where)
+        elif v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)
+                                or v < 0):
+            raise InputValidationError(f"{k} must be a finite number >= 0 [{ps[1]}] (got {v!r})", field=where)
+
+
 def mechanisms_from(data: dict) -> tuple:
     out = []
     for m in data.get("mechanisms") or []:
+        _check_params(m)
         params = {}
         for k, v in (m.get("params") or {}).items():
             if k.endswith("_per_ms"):
@@ -128,9 +147,11 @@ def policy_from(data: dict) -> SafeStatePolicy:
     return SafeStatePolicy(tuple(p.get("rules") or ()), tuple(p.get("priority") or
                                                              ("asc_low", "asc_high", "six_switch_off", "torque_zero")),
                            bool(p.get("latch", True)), _f(p, "recovery_after_ms", 1e-3, 50.0),
-                           int(p.get("recovery_max_attempts") or 1), str(p.get("restart", "flying")),
+                           int(p.get("recovery_max_attempts") if p.get("recovery_max_attempts") is not None else 1),
+                           str(p.get("restart", "flying")),
                            str(p.get("after_reset", "restart")), str(p.get("basis", "")),
-                           float(p.get("speed_hysteresis_rpm") or 0.0), bool(p.get("replace_unexecutable", True)))
+                           float(p.get("speed_hysteresis_rpm") or 0.0), bool(p.get("replace_unexecutable", True)),
+                           tuple(str(x.get("id")) for x in data.get("strategies") or () if x.get("id")))
 
 
 def validate_section(data: dict) -> None:
@@ -144,11 +165,27 @@ def validate_section(data: dict) -> None:
         if n not in names:
             raise InputValidationError(f"role {r} names an undeclared sensor {n}", field=f"fault_sim.roles.{r}")
     paths = paths_from(data, {})
+    strategies = strategies_from(data)
+    known = REACTIONS + tuple(strategies)
+    ids = [str(m.get("id")) for m in data.get("mechanisms") or []]
+    if len(set(ids)) != len(ids):
+        raise InputValidationError("mechanism ids must be unique", field="fault_sim.mechanisms")
     for m in mechanisms_from(data):
         if m.path not in paths:
             raise InputValidationError(f"mechanism {m.mech_id} uses an undeclared path {m.path}",
                                        field=f"fault_sim.mechanisms.{m.mech_id}")
-    policy_from(data)
+        if m.reaction not in known:
+            raise InputValidationError(f"mechanism {m.mech_id}: reaction {m.reaction!r} is neither a reaction "
+                                       f"{REACTIONS} nor a declared strategy", field=f"fault_sim.mechanisms.{m.mech_id}")
+    for pid, p in paths.items():
+        if p.fixed_reaction is not None and p.fixed_reaction not in known:
+            raise InputValidationError(f"path {pid}: fixed reaction {p.fixed_reaction!r} is not declared",
+                                       field=f"fault_sim.paths.{pid}")
+    pol = policy_from(data)
+    for r in pol.priority:
+        if r not in known:
+            raise InputValidationError(f"priority names {r!r}: neither a reaction nor a declared strategy",
+                                       field="fault_sim.policy.priority")
     if data.get("requirements"):
         reqs = requirements_from_dict(data["requirements"])
         mids = {m.mech_id for m in mechanisms_from(data)}
@@ -335,7 +372,8 @@ def build_setup(product: ProductData, scenario: dict) -> tuple:
         protection_enabled=bool(sc_in.get("protection", True)), reaction_override=sc_in.get("reaction_override"),
         bms=bms_d, active_discharge_delay_s=_f(dl, "active_discharge_delay_ms", 1e-3),
         identity={"project": project.label, "project_digest": project.digest(),
-                  "fault_sim_from": "project" if project.has("fault_sim") else "built-in synthetic example"})
+                  "fault_sim_from": "project" if project.has("fault_sim") else "built-in synthetic example"},
+        strategies=strategies_from(data))
     setup.vehicle = vehicle_equivalent(project)
     reqs = requirements_from_dict(data.get("requirements") or {})
     info = {"architecture_basis": data.get("basis", ""), "policy_basis": setup.policy.basis,

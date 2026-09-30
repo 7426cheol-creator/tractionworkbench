@@ -16,7 +16,12 @@ and DC-voltage conversions, computes
     duty = shared modulation law at theta_meas + w_est (t_pos + angle_comp_periods T_s)   (delay compensation:
            the position sensor's nominal delay t_pos and the transport + modulator delay)
 
-and the duties are applied at the next reload (one update period later).  A stopped control task leaves the last
+and the duties are applied at the next reload (one update period later).  A reaction strategy may put the
+controller in a mode for one of its steps: ``torque`` (the command replaced by a value), ``torque_ramp`` (the
+command ramped to zero at a rate), ``current_to_asc`` (the d/q references ramped from the last references to the
+three-phase-short steady state of the ESTIMATED speed with the design parameters) and ``voltage_ramp`` (the last
+voltage vector ramped to zero in the rotor frame, open loop); ``mode_done`` reports the mode's completion as the
+software sees it (measured currents, its own references).  A stopped control task leaves the last
 compare values in the PWM unit; an MCU in reset drives the declared reset state of the PWM outputs; after the boot
 the software is halted until the reaction manager restarts it (flying start: the speed estimate is re-established
 from two position readings before the first voltage is applied; cold start: the speed filter starts from zero).
@@ -193,6 +198,13 @@ class Controller:
         self.timed_out = False
         self.ramping = False
         self.last: dict = {}
+        self.mode: dict | None = None  # a reaction step's control mode (see the module note)
+        self.mode_done = False
+
+    def set_mode(self, mode: dict | None):
+        """Enter (or leave, None) a reaction step's control mode; ``t0`` is the step's start."""
+        self.mode = dict(mode) if mode else None
+        self.mode_done = False
 
     def init_steady(self, i_d: float, i_q: float, w_e: float, theta_meas: float, T_ref: float):
         c = self.cfg
@@ -274,21 +286,49 @@ class Controller:
         if c.derating and temp_meas is not None:
             frac = float(np.interp(temp_meas, [a for a, _ in c.derating], [b for _, b in c.derating]))
             T_req = max(min(T_req, frac * float(self.table.T[-1])), frac * float(self.table.T[0]))
+        md = self.mode
+        kind = md.get("kind") if md else None
+        if kind == "torque":
+            T_req = float(md.get("value", 0.0))
+            self.mode_done = True
+        elif kind == "torque_ramp":
+            step = float(md["rate_Nm_per_s"]) * Ts
+            T_req = max(0.0, self.T_used - step) if self.T_used > 0 else min(0.0, self.T_used + step)
         id_ref, iq_ref, T_used = self.table.at(T_req)
+        if kind == "torque_ramp":
+            self.mode_done = abs(T_req) <= 1e-9
+        w_e = self.w_est
+        if kind == "current_to_asc":
+            # the references move from the last ones to the short-circuit steady state of the estimated speed
+            if "i0" not in md:
+                md["i0"] = (self.last.get("id_ref", i_d), self.last.get("iq_ref", i_q))
+                from .strategy import asc_steady_point
+                md["target"] = asc_steady_point(w_e, c.Ld, c.Lq, c.psi, c.Rs)
+            s = min(1.0, max(0.0, (t - float(md["t0"])) / max(float(md["ramp_s"]), 1e-12)))
+            (d0, q0), (dt_, qt_) = md["i0"], md["target"]
+            id_ref, iq_ref = d0 + s * (dt_ - d0), q0 + s * (qt_ - q0)
+            T_used = self.torque_estimate(id_ref, iq_ref)
+            self.mode_done = s >= 1.0 and math.hypot(i_d - dt_, i_q - qt_) <= float(md.get("tol_A", 40.0))
         self.T_used = T_used
         # PI + decoupling
-        w_e = self.w_est
         ed, eq = id_ref - i_d, iq_ref - i_q
         ff_d = -w_e * c.Lq * i_q
         ff_q = w_e * (c.Ld * i_d + c.psi)
         vd = c.Kp_d * ed + self.int_d + ff_d
         vq = c.Kp_q * eq + self.int_q + ff_q
         vmax = c.v_limit_frac * max(vdc_meas, 1e-9) / SQ3
+        if kind == "voltage_ramp":
+            # open loop: the last applied voltage vector scaled down to the zero vector (the integrators hold)
+            if "v0" not in md:
+                md["v0"] = (self.last.get("vd", vd), self.last.get("vq", vq))
+            s = min(1.0, max(0.0, (t - float(md["t0"])) / max(float(md["ramp_s"]), 1e-12)))
+            vd, vq = (1.0 - s) * md["v0"][0], (1.0 - s) * md["v0"][1]
+            self.mode_done = s >= 1.0
         mag = math.hypot(vd, vq)
         sat = mag > vmax
         if sat:
             vd, vq = vd * vmax / mag, vq * vmax / mag
-        else:
+        elif kind != "voltage_ramp":
             self.int_d += c.Ki_d * Ts * ed
             self.int_q += c.Ki_q * Ts * eq
         # to the stator frame with delay compensation, then the shared modulation law

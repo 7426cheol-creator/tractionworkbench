@@ -912,6 +912,7 @@ TASK_ANALYSIS = {
     "hev_planetary": "hev", "emi": "emi", "machine_trade": "machine_design", "winding": "machine_design",
     "concept_sizing": "machine_design", "fault_sim": "fault_sim", "fault_compare": "fault_sim",
     "fault_campaign": "fault_sim", "fault_rerun": "fault_sim", "fault_validation": "fault_sim",
+    "fault_review": "fault_sim", "fault_verification": "fault_sim",
 }
 
 _ABSENT = object()

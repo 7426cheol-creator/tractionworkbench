@@ -36,10 +36,11 @@ from ...modulation import duties as _duties
 from .control import CommandPath, ControlConfig, Controller, ReferenceTable
 from .plant import (E_BAT, E_BLEED, E_CU, E_INV, E_MECH, ID, IQ, PHASES, TH, VDC, WM, DcParams, ExternalEvent,
                     LegCommand, MachineParams, OutOfModel, Plant, ShootThrough, integrate, phase_currents)
-from .labels import fault_text, reaction_label
-from .protection import (BRIDGE_REACTIONS, Detection, MechanismState, PathSpec, ResourceBook,
+from .labels import exit_label, fault_text, reaction_label
+from .protection import (BRIDGE_REACTIONS, REACTIONS, Detection, MechanismState, PathSpec, ResourceBook,
                          SafeStatePolicy, torque_window)
 from .sensors import make_sensor, unwrap_delta
+from .strategy import MEASURED_EXITS, StrategySpec, action_kind
 
 TWO_PI = 2.0 * math.pi
 PWM_MODELS = ("averaged", "switched")
@@ -47,7 +48,8 @@ ROLE_DEFAULTS = {"current_hw_a": "current_a", "current_hw_b": "current_b", "curr
                  "current_mon_a": "current_a", "current_mon_b": "current_b", "current_mon_c": "current_c",
                  "position_monitor": "position_control", "vdc_monitor": "vdc_control", "vdc_hw": "vdc_control"}
 REQUIRED_ROLES = ("current_a", "current_b", "current_c", "position_control", "vdc_control")
-BRIDGE_CODES = {"pwm": 0, "asc_low": 1, "asc_high": 2, "six_switch_off": 3, "off": 4}
+BRIDGE_CODES = {"pwm": 0, "asc_low": 1, "asc_high": 2, "six_switch_off": 3, "off": 4, "seq_asc_low": 5,
+                "seq_asc_high": 6}
 
 # fault kinds: description and parameters (name, kind, choices / default) - the UI builds its editors from this
 FAULT_KINDS = {
@@ -177,6 +179,7 @@ class SimSetup:
     bms: dict | None = None            # {"charge_current_max_A", "delay_s"}: the battery opens its contactor
     active_discharge_delay_s: float | None = None   # contactor opened -> active discharge on after this delay
     identity: dict = field(default_factory=dict)
+    strategies: dict = field(default_factory=dict)   # strategy id -> StrategySpec (reactions as step sequences)
 
     def __post_init__(self):
         if self.pwm_model not in PWM_MODELS:
@@ -192,13 +195,21 @@ class SimSetup:
         for r, n in self.roles.items():
             if n not in names:
                 raise InputValidationError(f"role {r} names an undeclared sensor {n}", field=f"roles.{r}")
+        known = REACTIONS + tuple(self.strategies)
         for m in self.mechanisms:
             if m.path not in self.paths:
                 raise InputValidationError(f"mechanism {m.mech_id} uses the undeclared path {m.path}",
                                            field=f"mechanisms.{m.mech_id}.path")
-        if self.reaction_override is not None and self.reaction_override not in BRIDGE_REACTIONS + ("torque_zero",):
-            raise InputValidationError(f"reaction override must be one of {BRIDGE_REACTIONS + ('torque_zero',)}",
-                                       field="reaction_override")
+            if m.reaction not in known:
+                raise InputValidationError(f"mechanism {m.mech_id}: reaction {m.reaction!r} is neither a reaction "
+                                           f"{REACTIONS} nor a declared strategy", field=f"mechanisms.{m.mech_id}")
+        for pid, p in self.paths.items():
+            if p.fixed_reaction is not None and p.fixed_reaction not in known:
+                raise InputValidationError(f"path {pid}: fixed reaction {p.fixed_reaction!r} is neither a reaction "
+                                           f"nor a declared strategy", field=f"paths.{pid}.fixed_reaction")
+        over = BRIDGE_REACTIONS + ("torque_zero",) + tuple(self.strategies)
+        if self.reaction_override is not None and self.reaction_override not in over:
+            raise InputValidationError(f"reaction override must be one of {over}", field="reaction_override")
         if self.control.updates_per_period not in (1, 2):
             raise InputValidationError("updates per PWM period must be 1 or 2", field="control.updates_per_period")
 
@@ -380,6 +391,9 @@ class _Sim:
         self.stop_reason = None
         self.bridge_cmd = "pwm"
         self.last_rule = None                         # the safe-state rule of the previous decision (hysteresis)
+        self.strat = {"hw": None, "sw": None}          # the running strategy of each channel (see strategy.py)
+        self.strat_log: list = []                      # every step entered: (t, channel, strategy, step, action)
+        self.strat_token = 0
 
     # -- helpers ---------------------------------------------------------------------------------------------
     def sensor(self, role: str):
@@ -548,6 +562,8 @@ class _Sim:
         self.ctrl.reset_until = t + max(duration, self.s.control.boot_s)
         self.res.lose("MCU", t)
         self.sw_reaction, self.torque_override = None, None          # RAM cleared: the software reaction is gone
+        self.strat["sw"] = None
+        self.ctrl.set_mode(None)
         if math.isfinite(duration):
             self.schedule(t + max(duration, self.s.control.boot_s), 1, "mcu_boot", None)
         out = {"off": "all gates off", "lower_on": "lower switches on", "upper_on": "upper switches on"}
@@ -572,11 +588,11 @@ class _Sim:
     def update_bridge(self, t, why):
         """Resolve who commands the bridge and apply it to the legs."""
         if self.hw_reaction is not None:
-            cmd = self.hw_reaction
+            cmd = self._bridge_of("hw")
         elif self.mcu_state == "reset":
             cmd = {"off": "six_switch_off", "lower_on": "asc_low", "upper_on": "asc_high"}[self.s.control.reset_output]
         elif self.sw_reaction is not None:
-            cmd = self.sw_reaction
+            cmd = self._bridge_of("sw")
         elif self.mcu_state == "halted" or self.ctrl.state in ("halted", "starting"):
             cmd = "six_switch_off"
         else:
@@ -603,6 +619,10 @@ class _Sim:
                 c = LegCommand("lower_on")
             elif self.bridge_cmd == "asc_high":
                 c = LegCommand("upper_on")
+            elif self.bridge_cmd in ("seq_asc_low", "seq_asc_high"):
+                st = self.strat["sw"] or self.strat["hw"] or {}
+                on = "lower_on" if self.bridge_cmd == "seq_asc_low" else "upper_on"
+                c = LegCommand(on if k in st.get("closed", ()) else "off")
             else:
                 c = LegCommand("off")
             pl.cmd[k] = c
@@ -672,7 +692,7 @@ class _Sim:
             sp = known.get("speed_rpm")
             rule += f" (measured {sp:.0f} rpm)" if sp is not None else " (no speed information)"
         if self.s.reaction_override:
-            if reaction in BRIDGE_REACTIONS or reaction == "torque_zero":
+            if reaction in BRIDGE_REACTIONS or reaction == "torque_zero" or reaction in self.s.strategies:
                 reaction, rule = self.s.reaction_override, "override (candidate comparison)"
         hw = "MCU" not in path.resources
         if reaction == "torque_zero":
@@ -686,9 +706,18 @@ class _Sim:
                 self.ev(t, "actuation", spec.mech_id, f"torque command forced to zero (PWM continues) - {rule}",
                         reaction="torque_zero", requested_at=t_req)
             return
+        ch = "hw" if hw else "sw"
         cur = self.hw_reaction if hw else self.sw_reaction
-        side_lost = {"asc_low": "lower", "asc_high": "upper"}.get(cur) in self.uvlo_sides
-        if cur is not None and self.s.policy.rank(reaction) >= self.s.policy.rank(cur):
+        running = [c for c, st in self.strat.items() if st is not None and st["spec"].strategy_id == reaction]
+        if running:
+            # one reaction episode runs a strategy once: a second request does not restart its sequence
+            self.ev(t, "reaction_kept", spec.mech_id, f"{reaction_label(reaction)} requested ({rule}): already "
+                                                      f"running on the {running[0]} channel (not restarted)",
+                    reaction=reaction, kept=reaction)
+            return
+        side_lost = {"asc_low": "lower", "asc_high": "upper", "seq_asc_low": "lower", "seq_asc_high": "upper"}.get(
+            self._bridge_of(ch) if cur is not None else None) in self.uvlo_sides
+        if cur is not None and self._rank(reaction) >= self._rank(cur):
             if not (side_lost and self.s.policy.replace_unexecutable and reaction != cur):
                 self.ev(t, "reaction_kept", spec.mech_id, f"{reaction_label(reaction)} requested ({rule}), "
                                                           f"{reaction_label(cur)} kept (priority)",
@@ -698,6 +727,12 @@ class _Sim:
                                                           f"report the {'lower' if cur == 'asc_low' else 'upper'} "
                                                           f"gate supply lost): replaced by {reaction_label(reaction)}",
                     reaction=reaction, replaced=cur)
+        if cur is not None and cur in self.s.strategies and self.strat[ch] is not None:
+            self.ev(t, "strategy", cur, f"strategy {cur} ended: replaced by {reaction_label(reaction)}",
+                    channel=ch)
+            if ch == "sw":
+                self.ctrl.set_mode(None)
+            self.strat[ch] = None
         if hw:
             self.hw_reaction = reaction
             if self.sw_reaction is not None and self.sw_reaction != reaction:
@@ -715,7 +750,183 @@ class _Sim:
         self.ev(t, "actuation", spec.mech_id, f"{reaction_label(reaction)} via {path.path_id} ({rule}; requested "
                                               f"{t_req * 1e3:.4g} ms)", reaction=reaction, requested_at=t_req,
                 path=path.path_id, rule=rule)
+        if reaction in self.s.strategies:
+            self._start_strategy(t, ch, self.s.strategies[reaction], spec.mech_id)
         self.update_bridge(t, f"{spec.mech_id} -> {reaction_label(reaction)}")
+
+    # -- reaction strategies (strategy.py) ------------------------------------------------------------------
+    def _rank(self, reaction) -> int:
+        """Priority rank: the reaction's (or strategy's) place in the policy's list; an unlisted strategy ranks as
+        its fallback state."""
+        pol = self.s.policy
+        if reaction in pol.priority:
+            return pol.rank(reaction)
+        spec = self.s.strategies.get(reaction)
+        return pol.rank(spec.fallback_state) if spec is not None else pol.rank(reaction)
+
+    def _bridge_of(self, ch: str) -> str:
+        r = self.hw_reaction if ch == "hw" else self.sw_reaction
+        st = self.strat.get(ch)
+        if r in self.s.strategies and st is not None:
+            return st["bridge"]
+        if r in self.s.strategies:
+            return self.s.strategies[r].fallback_state
+        return r
+
+    def _software_ready(self) -> str | None:
+        """Why the software cannot execute a control / measured-signal step now (None: it can)."""
+        if self.mcu_state != "run":
+            return "the MCU is not running"
+        if self.task_stopped or self.ctrl.state != "run":
+            return f"the current control is not running ({self.ctrl.state})"
+        for r in ("current_a", "current_b", "current_c", "position_control", "vdc_control"):
+            if not self.res.ok(self.sensor(r).spec.resources):
+                return f"the {r} measurement is lost"
+        return None
+
+    def _start_strategy(self, t, ch: str, spec: StrategySpec, by: str):
+        self.strat_token += 1
+        self.strat[ch] = {"spec": spec, "k": -1, "t_step": t, "token": self.strat_token, "by": by,
+                          "bridge": spec.fallback_state, "closed": set(), "fallback": None}
+        self._enter_step(t, ch, 0)
+
+    def _enter_step(self, t, ch: str, k: int):
+        st = self.strat[ch]
+        spec = st["spec"]
+        step = spec.steps[k]
+        st["k"], st["t_step"] = k, t
+        kind = action_kind(step.action)
+        label = f"{spec.strategy_id} step {k + 1}/{len(spec.steps)}: {reaction_label(step.action)}"
+        if kind != "bridge":
+            why = ("a hardware path cannot execute it (software action)" if ch == "hw" else self._software_ready())
+            if why:
+                return self._strategy_fallback(t, ch, f"{label} not executable - {why}")
+        if ch == "sw":
+            self.ctrl.set_mode(None)
+        if kind == "control":
+            mode = {"t0": t}
+            if step.action == "torque_zero":
+                mode.update(kind="torque", value=0.0)
+            elif step.action == "torque_ramp":
+                mode.update(kind="torque_ramp", rate_Nm_per_s=float(step.param("rate_Nm_per_ms")) * 1e3)
+            elif step.action == "current_to_asc":
+                mode.update(kind="current_to_asc", ramp_s=float(step.param("ramp_ms")) * 1e-3,
+                            tol_A=float(step.param("tol_A")))
+            else:
+                mode.update(kind="voltage_ramp", ramp_s=float(step.param("ramp_ms")) * 1e-3)
+            self.ctrl.set_mode(mode)
+            st["bridge"] = "pwm"
+        elif kind == "legs":
+            st["closed"] = set()
+            st["bridge"] = "seq_asc_low" if step.action.endswith("low") else "seq_asc_high"
+        elif kind == "hysteresis":
+            st["bridge"] = "six_switch_off"
+        else:
+            st["bridge"] = step.action
+        note = ""
+        if ch == "hw" and step.exit in MEASURED_EXITS:
+            note = (" - the hardware path cannot evaluate a measured exit: "
+                    + ("only its maximum time ends it" if step.max_s else "the step holds"))
+        if step.exit == "time":
+            self.schedule(t + float(step.value) * 1e-3, 2, "strategy_timer", (ch, st["token"], k, "time"))
+        elif step.exit != "none" and step.max_s is not None:
+            self.schedule(t + step.max_s, 2, "strategy_timer", (ch, st["token"], k, "max"))
+        v = step.value
+        ex = {"none": "holds", "done": "until done"}.get(step.exit) or {
+            "time": "for {:g} ms", "i_below": "until |i| < {:g} A", "speed_below": "until speed < {:g} rpm",
+            "vdc_below": "until Vdc < {:g} V", "vdc_above": "until Vdc > {:g} V"}[step.exit].format(v)
+        if step.exit not in ("none", "time") and step.max_s is not None:
+            ex += f" (max {step.max_s * 1e3:g} ms)"
+        self.strat_log.append({"t": t, "channel": ch, "strategy": spec.strategy_id, "step": k + 1,
+                               "action": step.action, "exit": step.exit, "fallback": None})
+        self.ev(t, "strategy", spec.strategy_id, f"{label} {ex}{note}", channel=ch, step=k + 1,
+                action=step.action)
+
+    def _strategy_fallback(self, t, ch: str, why: str):
+        st = self.strat[ch]
+        spec = st["spec"]
+        st["bridge"], st["fallback"], st["k"] = spec.fallback_state, why, len(spec.steps)
+        if ch == "sw":
+            self.ctrl.set_mode(None)
+        self.strat_log.append({"t": t, "channel": ch, "strategy": spec.strategy_id, "step": None,
+                               "action": spec.fallback_state, "exit": "none", "fallback": why})
+        self.ev(t, "strategy", spec.strategy_id, f"{why}: fallback {reaction_label(spec.fallback_state)}",
+                channel=ch, action=spec.fallback_state, fallback=True)
+        self.update_bridge(t, f"{spec.strategy_id} fallback")
+
+    def _next_step(self, t, ch: str, why: str):
+        st = self.strat[ch]
+        k = st["k"] + 1
+        if k >= len(st["spec"].steps):
+            return
+        self.ev(t, "strategy", st["spec"].strategy_id, f"step {st['k'] + 1} ended ({why})", channel=ch)
+        self._enter_step(t, ch, k)
+        self.update_bridge(t, f"{st['spec'].strategy_id} step {k + 1}")
+
+    def _strategy_timer(self, t, payload):
+        ch, token, k, what = payload
+        st = self.strat.get(ch)
+        if st is None or st["token"] != token or st["k"] != k:
+            return
+        if what == "max":
+            step = st["spec"].steps[k]
+            self.ev(t, "strategy", st["spec"].strategy_id, f"step {k + 1}: exit '{exit_label(step.exit)}' not "
+                                                           f"reached within {step.max_s * 1e3:g} ms - next step "
+                                                           f"(timeout)",
+                    channel=ch, timeout=True)
+            return self._next_step(t, ch, "maximum time")
+        self._next_step(t, ch, "time elapsed")
+
+    def _advance_strategies(self, t):
+        """At a control step: the software strategy's measured-signal actions and exits (measurements only)."""
+        st = self.strat.get("sw")
+        if st is None or st["fallback"] is not None or st["k"] >= len(st["spec"].steps):
+            return
+        spec = st["spec"]
+        step = spec.steps[st["k"]]
+        kind = action_kind(step.action)
+        if kind != "bridge":
+            why = self._software_ready()
+            if why:
+                return self._strategy_fallback(t, "sw", f"{spec.strategy_id} step {st['k'] + 1}: {why}")
+        i_meas = [self.read(t, f"current_{ph}") for ph in PHASES]
+        vdc = self.read(t, "vdc_control")
+        done = False
+        if kind == "control":
+            done = self.ctrl.mode_done
+        elif kind == "legs":
+            thr = float(step.param("i_zero_A"))
+            low = step.action.endswith("low")
+            new = [k for k in range(3) if k not in st["closed"] and i_meas[k] is not None
+                   and (i_meas[k] >= -thr if low else i_meas[k] <= thr)]
+            if new:
+                st["closed"].update(new)
+                self.apply_leg_commands()
+                self.ev(t, "strategy", spec.strategy_id, f"leg(s) {', '.join(PHASES[k] for k in new)} closed "
+                                                         f"({'lower' if low else 'upper'} switch; measured current "
+                                                         f"{', '.join(f'{i_meas[k]:.0f} A' for k in new)})",
+                        channel="sw", legs=[PHASES[k] for k in new])
+            done = len(st["closed"]) == 3
+        elif kind == "hysteresis" and vdc is not None:
+            on = "asc_low" if step.action.endswith("low") else "asc_high"
+            if st["bridge"] == "six_switch_off" and vdc >= float(step.param("v_on_V")):
+                st["bridge"] = on
+                self.update_bridge(t, f"{spec.strategy_id}: measured Vdc {vdc:.0f} V >= {step.param('v_on_V'):g} V")
+            elif st["bridge"] == on and vdc <= float(step.param("v_off_V")):
+                st["bridge"] = "six_switch_off"
+                self.update_bridge(t, f"{spec.strategy_id}: measured Vdc {vdc:.0f} V <= {step.param('v_off_V'):g} V")
+        ex = step.exit
+        if ex == "done" and done:
+            return self._next_step(t, "sw", "done")
+        speed = self.last_meas.get("speed_rpm")
+        if ex == "i_below" and all(v is not None for v in i_meas) and max(abs(v) for v in i_meas) < float(step.value):
+            return self._next_step(t, "sw", f"measured |i| < {step.value:g} A")
+        if ex == "speed_below" and speed is not None and abs(speed) < float(step.value):
+            return self._next_step(t, "sw", f"measured speed {abs(speed):.0f} rpm < {step.value:g} rpm")
+        if ex == "vdc_below" and vdc is not None and vdc < float(step.value):
+            return self._next_step(t, "sw", f"measured Vdc {vdc:.0f} V < {step.value:g} V")
+        if ex == "vdc_above" and vdc is not None and vdc > float(step.value):
+            return self._next_step(t, "sw", f"measured Vdc {vdc:.0f} V > {step.value:g} V")
 
     # -- measurements ----------------------------------------------------------------------------------------
     def convert_all(self, t, x):
@@ -956,6 +1167,8 @@ class _Sim:
         self.reaction_by = []
         self.sw_reaction = self.hw_reaction = None
         self.torque_override = None
+        self.strat = {"hw": None, "sw": None}
+        self.ctrl.set_mode(None)
         self.ctrl.restart(pol.restart_mode)
         self.ev(t, "recovery", "reaction manager", f"recovery attempt {self.recovery_attempts}: condition cleared "
                                                    f"for {pol.recovery_after_s * 1e3:g} ms, {pol.restart_mode} restart")
@@ -1001,6 +1214,8 @@ class _Sim:
             self.update_bridge(t, "flying restart: speed re-established")
         if out.duties is not None:
             self.schedule(t + s.control.Ts, 3, "reload", out.duties)
+        if self.strat["sw"] is not None:
+            self._advance_strategies(t)
         self._check_recovery(t, x)
 
     # -- the run ---------------------------------------------------------------------------------------------
@@ -1153,6 +1368,8 @@ class _Sim:
         elif kind == "actuate":
             mech, path, t_req, info = payload
             self.actuate(t, mech, path, t_req, info)
+        elif kind == "strategy_timer":
+            self._strategy_timer(t, payload)
         elif kind == "desat_off":
             leg, device, mst = payload
             setattr(pl.health[leg], f"{device}_gate", False)
@@ -1256,11 +1473,18 @@ class _Sim:
         scale = max(abs(x[E_BAT]), abs(x[E_INV]), abs(x[E_CU]), abs(x[E_MECH]), abs(E1_cap - E0_cap), 1e-9)
         det = [e for e in self.events if e["kind"] == "detection"]
         act = [e for e in self.events if e["kind"] == "actuation"]
+        sgn = 1.0 if self.s.speed_rpm >= 0 else -1.0
+        brake = -sgn * np.asarray(tr["T_shaft"])                # torque opposing the rotation
         return {
             "status": status, "stop_reason": self.stop_reason, "t_end_s": float(t[-1]) if len(t) else 0.0,
             "initial": init,
             "i_phase_peak_A": float(iabs[k_i]) if iabs.size else 0.0,
             "t_i_phase_peak_s": float(t[k_i]) if iabs.size else 0.0,
+            "i_d_min_A": float(np.min(tr["i_d"])) if len(t) else 0.0,
+            "t_i_d_min_s": float(t[int(np.argmin(tr["i_d"]))]) if len(t) else 0.0,
+            "T_brake_max_Nm": float(np.max(brake)) if len(t) else 0.0,
+            "t_T_brake_max_s": float(t[int(np.argmax(brake))]) if len(t) else 0.0,
+            "strategy_log": list(self.strat_log),
             "v_dc_max_V": float(np.max(tr["v_dc"])), "t_v_dc_max_s": float(t[int(np.argmax(tr["v_dc"]))]),
             "v_dc_min_V": float(np.min(tr["v_dc"])),
             "i_bat_charge_max_A": float(max(0.0, -np.min(tr["i_bat"]))),
@@ -1283,7 +1507,7 @@ class _Recorder:
     KEYS = ("t", "i_a", "i_b", "i_c", "i_a_meas", "i_b_meas", "i_c_meas", "i_d", "i_q", "T_em", "T_shaft", "T_request",
             "T_cmd",
             "T_used", "T_est_mon", "mon_lo", "mon_hi", "v_dc", "v_dc_meas", "i_bat", "i_dc", "speed_rpm",
-            "speed_est_rpm", "theta_err_deg", "d_a", "d_b", "d_c", "bridge", "mcu")
+            "speed_est_rpm", "theta_err_deg", "d_a", "d_b", "d_c", "bridge", "mcu", "strategy_step")
 
     def __init__(self, sim: _Sim):
         self.sim = sim
@@ -1332,6 +1556,13 @@ class _Recorder:
         d["theta_err_deg"].append(math.degrees(unwrap_delta(th_m, x[TH] % TWO_PI)))
         d["bridge"].append(BRIDGE_CODES.get(sim.bridge_cmd, 4))
         d["mcu"].append({"run": 0, "reset": 1, "halted": 2}.get(sim.mcu_state, 2))
+        # the step of the strategy that commands the bridge (hardware first): 0 none, -1 fallback
+        st = None
+        if sim.hw_reaction in sim.s.strategies:
+            st = sim.strat.get("hw")
+        elif sim.sw_reaction in sim.s.strategies and sim.mcu_state != "reset":
+            st = sim.strat.get("sw")
+        d["strategy_step"].append(0 if st is None else -1 if st["fallback"] else st["k"] + 1)
         self.modes.append(tuple(modes))
         self.legs.append(tuple(c.kind for c in pl.cmd))
 

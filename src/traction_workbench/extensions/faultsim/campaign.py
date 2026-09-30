@@ -40,7 +40,7 @@ from .safety import FAIL, NA, PASS, UNKNOWN, evaluate
 SCHEMA = "twb-fault-counterexamples/1"
 RELEVANT_SECTIONS = ("drive", "dc_source", "dc_link", "controller", "driveline", "fault_sim")
 METRICS = ("i_phase_peak_A", "v_dc_max_V", "v_dc_min_V", "i_bat_charge_max_A", "T_shaft_max_Nm", "T_shaft_min_Nm",
-           "first_detection_ms", "FDTI_ms", "FRTI_ms", "FHTI_ms")
+           "i_d_min_A", "T_brake_peak_Nm", "first_detection_ms", "FDTI_ms", "FRTI_ms", "FHTI_ms")
 
 
 # ------------------------------------------------------------------------------------------ scenario paths
@@ -151,7 +151,8 @@ def run_one(product, scenario: dict, keep_trace: bool = False) -> dict:
     first = s.get("first_detection")
     metrics = {"i_phase_peak_A": s["i_phase_peak_A"], "v_dc_max_V": s["v_dc_max_V"], "v_dc_min_V": s["v_dc_min_V"],
                "i_bat_charge_max_A": s["i_bat_charge_max_A"], "T_shaft_max_Nm": s["T_shaft_max_Nm"],
-               "T_shaft_min_Nm": s["T_shaft_min_Nm"], "first_detection_ms": ms(first["t"]) if first else None,
+               "T_shaft_min_Nm": s["T_shaft_min_Nm"], "i_d_min_A": s["i_d_min_A"],
+               "T_brake_peak_Nm": s["T_brake_max_Nm"], "first_detection_ms": ms(first["t"]) if first else None,
                "FDTI_ms": ms(fsr_t.get("FDTI")) if fsr_t else None, "FRTI_ms": ms(fsr_t.get("FRTI")) if fsr_t else None,
                "FHTI_ms": ms(fsr_t.get("FHTI")) if fsr_t else None}
     verdicts = {r["id"]: r["verdict"] for r in ev["tsr"]}

@@ -232,7 +232,7 @@ def run_self_test(app, out_dir) -> int:
         app.processEvents()
         v = (fs.last or {}).get("verdicts") or {}
         acts = [e.get("reaction") for e in (fs.last or {}).get("events", []) if e["kind"] == "actuation"]
-        check("fault:wrong_reaction", v.get("TSR-06") == "FAIL" and fs.t_req.rowCount() == 12
+        check("fault:wrong_reaction", v.get("TSR-06") == "FAIL" and fs.t_req.rowCount() == 14
               and acts[:1] == ["six_switch_off"], f"{ {k: x for k, x in v.items() if x != 'PASS'} } {acts[:2]}")
         reading("fault_sim", fs.insight, "fault_sim")
         for tab, name in ((fs.p_wave, "25b_fault_waveforms"), (fs.tab_timeline, "25c_fault_timeline"),
@@ -241,10 +241,16 @@ def run_self_test(app, out_dir) -> int:
             if tab is fs.tab_req:
                 fs.t_req.selectRow(next(r for r in range(fs.t_req.rowCount()) if fs.t_req.item(r, 0).text() == "TSR-06"))
             shot(win, name)
+        from PySide6.QtCore import Qt
+        keep = ("policy", "none", "asc_low", "asc_high", "six_switch_off", "torque_zero", "FW2_ASC_LOW", "SOFT_ASC_V")
+        for i in range(fs.cand_list.count()):            # the primitive reactions and two declared strategies
+            it = fs.cand_list.item(i)
+            it.setCheckState(Qt.Checked if it.data(Qt.UserRole) in keep else Qt.Unchecked)
         fs.run_compare()
         rows = {r["candidate"]: r for r in (fs.last_cmp or {}).get("rows", [])}
-        check("fault:candidates", len(rows) == 6 and rows["policy"]["overall"] == "FAIL"
-              and "TSR-06" not in rows["asc_low"]["failing"], str({k: r["overall"] for k, r in rows.items()}))
+        check("fault:candidates", len(rows) == 8 and rows["policy"]["overall"] == "FAIL"
+              and "TSR-06" not in rows["asc_low"]["failing"] and "TSR-06" not in rows["FW2_ASC_LOW"]["failing"],
+              str({k: r["overall"] for k, r in rows.items()}))
         reading("fault:candidates", fs.i_cmp, "fault_compare")
         shot(win, "25f_fault_candidates")
         fs.set_axes([{"path": "speed_rpm", "values": [9000, 12000]}])
@@ -272,6 +278,52 @@ def run_self_test(app, out_dir) -> int:
         fs.tabs.setCurrentWidget(fs.tab_dep)
         fs.show_dependencies()
         shot(win, "25i_fault_dependencies")
+        # the design editor (typed fields, no JSON): a strategy, a debounce time; the variant is what runs
+        ed = fs.editor
+        fs.top.setCurrentWidget(ed)
+        ed.tabs.setCurrentIndex(4)
+        ed.l_strat.setCurrentRow(next((i for i in range(ed.l_strat.count()) if ed.l_strat.item(i).text() == "SOFT_ASC_V"), 0))
+        shot(win, "25j_fault_strategies")
+        ed.tabs.setCurrentIndex(3)
+        r_tq = next(i for i, m in enumerate(ed.work["mechanisms"]) if m["id"] == "SM-TQ")
+        ed.t_mech.selectRow(r_tq)
+        ed.t_mech.item(r_tq, next(j for j, c in enumerate(ed.t_mech.cols) if c.key == "p_time")).setText("25")
+        shot(win, "25k_fault_design_editor")
+        check("fault:design_variant", fs.scenario().get("overrides") == {"mechanisms.SM-TQ.params.debounce_ms": 25.0},
+              fs.design_variant.sig.text())
+        # the safety case of the design under study: static review, verification matrix, reading, report
+        fs.top.setCurrentWidget(fs.case_tab)
+        fs.run_review()
+        bad = [f for f in (fs.last_review or {}).get("findings", []) if f["status"] == "INCONSISTENT"]
+        check("fault:review_finds", any("SM-TQ" in f["element"] for f in bad), [f["element"] for f in bad])
+        ed.revert()
+        fs.run_review()
+        cnt = (fs.last_review or {}).get("counts") or {}
+        check("fault:review", cnt.get("INCONSISTENT") == 0 and cnt.get("MISSING") == 0 and cnt.get("WARNING", 0) >= 1,
+              cnt)
+        subset = ("step_ok", "false_trip", "cs_offset", "ov_regen", "res_lost", "sw_short")
+        for i in range(fs.verif_list.count()):
+            it = fs.verif_list.item(i)
+            it.setCheckState(Qt.Checked if it.data(Qt.UserRole) in subset else Qt.Unchecked)
+        fs.run_verification()
+        mx = fs.last_verif or {}
+        check("fault:verification", [r["key"] for r in mx.get("rows", [])] == ["step_ok", "cs_offset", "ov_regen",
+                                                                              "res_lost", "sw_short"]
+              and [x["key"] for x in mx.get("skipped", [])] == ["false_trip"]
+              and fs.t_matrix.columnCount() == 3 + 5, [r["key"] for r in mx.get("rows", [])])
+        reading("fault:safety_case", fs.i_case, "fault_case")
+        fs.case_tabs.setCurrentIndex(fs.case_tabs.indexOf(fs.t_matrix.parentWidget()))
+        shot(win, "25l_fault_verification_matrix")
+        fs.case_tabs.setCurrentWidget(fs.i_case)
+        shot(win, "25m_fault_safety_case")
+        html = api.fault_report({"overrides": fs.variant(), "matrix": fs._current_matrix(),
+                                 "counterexamples": fs.counterexamples}, win.state.project)
+        (out / "fault_safety_case.html").write_text(html, encoding="utf-8")
+        check("fault:report", "5. 검증 매트릭스" in html and "3. 정적 설계 검토" in html and len(html) > 20_000,
+              f"{len(html)} chars")
+        for i in range(fs.verif_list.count()):
+            fs.verif_list.item(i).setCheckState(Qt.Checked)
+        fs.top.setCurrentIndex(0)
         pw = visit("power", 0, ["run_module"], [(lambda pg: pg.mod_tabs.setCurrentIndex(1), "26_power_module"),
                                                 (lambda pg: pg.mod_tabs.setCurrentWidget(pg.i_mod), "26a_power_module_reading")])
         check("power:module", pw.last_module is not None and pw.last_module["losses"]["established"]

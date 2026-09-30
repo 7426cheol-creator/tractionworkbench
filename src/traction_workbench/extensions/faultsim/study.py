@@ -280,8 +280,13 @@ def precision_notes(setup) -> list:
 def independence(project) -> dict:
     """Static dependency analysis of the architecture: per resource, which sensors, mechanisms and paths need it
     (a common cause), and per FSR whether a single resource removes every allocated mechanism or every path."""
-    from .configure import FAULT_SIM_EXAMPLE, mechanisms_from, paths_from, sensors_from
-    data = project.data("fault_sim") if project.has("fault_sim") else FAULT_SIM_EXAMPLE
+    from .configure import FAULT_SIM_EXAMPLE
+    return independence_data(project.data("fault_sim") if project.has("fault_sim") else FAULT_SIM_EXAMPLE)
+
+
+def independence_data(data: dict) -> dict:
+    """``independence`` of one fault_sim section (a design variant included)."""
+    from .configure import mechanisms_from, paths_from, sensors_from
     sens = sensors_from(data, {})
     mechs = mechanisms_from(data)
     paths = paths_from(data, {})
@@ -349,6 +354,7 @@ def compare(product, sc: dict, candidates=CANDIDATES) -> dict:
                          "metrics": r["metrics"], "final_bridge": res.summary["final_bridge"],
                          "final_actual": res.summary["final_actual"], "first_actuation": acts[0] if acts else None,
                          "status": res.status, "stop_reason": res.stop_reason,
+                         "strategy_log": list(res.summary.get("strategy_log") or []),
                          "trace": {k: res.trace[k] for k in ("t", "T_shaft", "T_request", "i_a", "i_b", "i_c",
                                                             "v_dc", "i_bat")}})
             sp.step(c)

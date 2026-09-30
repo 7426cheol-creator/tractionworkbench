@@ -1893,9 +1893,86 @@ def fault_validation(body=None, project=None):
 
 
 def fault_independence(body=None, project=None):
-    """Declared dependencies of the protection architecture: shared resources and sensors per mechanism / FSR."""
-    from .extensions.faultsim.study import independence
-    return independence(project or PROJECT)
+    """Declared dependencies of the protection architecture: shared resources and sensors per mechanism / FSR
+    (``body["overrides"]``: of a design variant)."""
+    from .extensions.faultsim.study import independence_data
+    return independence_data(fault_section(project, (body or {}).get("overrides")))
+
+
+def fault_section(project=None, overrides=None) -> dict:
+    """The project's fault_sim section (or the built-in example) with a design variant applied, validated."""
+    import copy as _copy
+    from .extensions.faultsim.configure import FAULT_SIM_EXAMPLE, apply_overrides, validate_section
+    pr = project or PROJECT
+    data = _copy.deepcopy(pr.data("fault_sim") if pr.has("fault_sim") else FAULT_SIM_EXAMPLE)
+    data = apply_overrides(data, overrides)
+    validate_section(data)
+    return data
+
+
+def fault_design(body=None, project=None) -> dict:
+    """What the design editor needs: the project's section (the base of every variant) and the schemas of what can
+    be edited (mechanism kinds and their parameters, strategy actions / exits / templates, requirement fields)."""
+    import copy as _copy
+    from .extensions.faultsim.configure import FAULT_SIM_EXAMPLE
+    from .extensions.faultsim.protection import HW_KINDS, KIND_PARAMS, REACTIONS, RULE_KEYS, SW_KINDS
+    from .extensions.faultsim.safety import ASIL_LEVELS, CRITERIA, QUANTITIES, VERIFICATION_METHODS
+    from .extensions.faultsim.strategy import ACTION_PARAMS, ACTIONS, EXITS, EXITS_FOR, TEMPLATES
+    pr = project or PROJECT
+    return {"base": _copy.deepcopy(pr.data("fault_sim") if pr.has("fault_sim") else FAULT_SIM_EXAMPLE),
+            "from": "project" if pr.has("fault_sim") else "built-in synthetic example",
+            "schema": {"sw_kinds": list(SW_KINDS), "hw_kinds": list(HW_KINDS),
+                       "kind_params": {k: [list(x) for x in v] for k, v in KIND_PARAMS.items()},
+                       "reactions": list(REACTIONS), "rule_keys": list(RULE_KEYS),
+                       "actions": list(ACTIONS), "exits": list(EXITS), "exits_for": {k: list(v) for k, v in
+                                                                                        EXITS_FOR.items()},
+                       "action_params": {k: [list(x) for x in v] for k, v in ACTION_PARAMS.items()},
+                       "templates": _copy.deepcopy(TEMPLATES), "asil": list(ASIL_LEVELS),
+                       "criteria": list(CRITERIA), "quantities": dict(QUANTITIES),
+                       "verification": list(VERIFICATION_METHODS)}}
+
+
+def fault_review(body=None, project=None) -> dict:
+    """Static review of the protection architecture and requirements (with a design variant, ``overrides``)."""
+    from .extensions.faultsim.review import review_section
+    from .extensions.faultsim.study import independence_data
+    data = fault_section(project, (body or {}).get("overrides"))
+    return review_section(data, independence_data(data))
+
+
+def fault_verification(body=None, project=None) -> dict:
+    """The scenario catalog run on one design (the project with ``overrides``): the requirement x scenario matrix,
+    coverage, worst timings and the failure-mode table (``body["keys"]``: a subset of the catalog)."""
+    from .extensions.faultsim.study import SCENARIOS
+    from .extensions.faultsim.verification import verification_matrix
+    b = dict(body or {})
+    fault_section(project, b.get("overrides"))                    # validate the variant first
+    keys = b.get("keys")
+    scs = [s for s in SCENARIOS if not keys or s["key"] in keys]
+    return verification_matrix(fault_product(project), scs, b.get("overrides"))
+
+
+def fault_report(body=None, project=None) -> str:
+    """The safety-case evidence as one self-contained HTML page (``body``: overrides, and optionally the latest
+    verification matrix and counterexamples of the study)."""
+    from .extensions.faultsim.campaign import code_identity
+    from .extensions.faultsim.design import change_rows
+    from .extensions.faultsim.report import safety_case_html
+    from .extensions.faultsim.review import review_section
+    from .extensions.faultsim.study import independence_data, precision_notes
+    from .extensions.faultsim.configure import build_setup
+    b = dict(body or {})
+    pr = project or PROJECT
+    ov = b.get("overrides")
+    data = fault_section(pr, ov)
+    base = fault_design(None, pr)["base"]
+    ind = independence_data(data)
+    setup, _r, _i = build_setup(fault_product(pr), {"speed_rpm": 6000.0, "torque_Nm": 100.0, "overrides": ov,
+                                                    "pwm_model": b.get("pwm_model", "averaged")})
+    return safety_case_html(data, project={"label": pr.label, "digest": pr.digest()}, code=code_identity(),
+                            changes=change_rows(base, ov), review=review_section(data, ind),
+                            matrix=b.get("matrix"), independence=ind, precision_notes=precision_notes(setup),
+                            counterexamples=b.get("counterexamples"))
 
 
 ROUTES = {
@@ -1912,6 +1989,7 @@ ROUTES = {
     "driveline": driveline, "driveline_stability": driveline_stability,
     "fault_sim": fault_sim, "fault_compare": fault_compare, "fault_campaign": fault_campaign,
     "fault_rerun": fault_rerun, "fault_validation": fault_validation, "fault_independence": fault_independence,
+    "fault_design": fault_design, "fault_review": fault_review, "fault_verification": fault_verification,
 }
 
 

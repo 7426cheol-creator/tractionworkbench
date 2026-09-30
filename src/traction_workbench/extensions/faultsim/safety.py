@@ -6,12 +6,14 @@ physical quantity stayed where the requirement allows it.
 
 Requirement structure (project data):
 
-* safety goal (SG): text, ASIL, FTTI, the hazard it addresses (``accel`` / ``decel`` torque, ``overvoltage``, ...)
-  and optionally a vehicle-level criterion;
-* functional safety requirement (FSR): the SG(s) it serves, the mechanisms allocated to it, the declared FDTI and
-  FRTI budgets, and which TSR defines its physical safe condition;
+* safety goal (SG): text, ASIL, FTTI, the hazard it addresses (``accel`` / ``decel`` torque, ``component``, ...),
+  its safe state and operating situation (declared text) and optionally a vehicle-level criterion;
+* functional safety requirement (FSR): the SG(s) it serves, its ASIL, the mechanisms allocated to it, the declared
+  FDTI and FRTI budgets, which TSR defines its physical safe condition, the driver warning / degradation and the
+  verification methods (declared);
 * technical safety requirement (TSR): one criterion on one physical quantity with its allowed range, time origin,
-  time window and hold / tolerance condition:
+  time window and hold / tolerance condition, its ASIL, the element it is allocated to (HW / SW part), the
+  verification methods and the rationale of its value (declared):
 
   ``torque_window``      the true shaft torque inside a dynamic window around the vehicle's request: the union
                          of [T - w, T + w] around every request value of the last ``delay_s`` (message period and
@@ -20,8 +22,9 @@ Requirement structure (project data):
                          is acceptable (loss of propulsion is an availability matter); side ``accel`` / ``decel`` /
                          ``both`` relative to the direction of motion; a violation is an excursion longer than
                          ``tolerance_s`` or an excess impulse above ``impulse_Nms``;
-  ``bound``              a quantity (v_dc, |i_phase|, battery charging current, torque, speed) within [min, max],
-                         optionally tolerated for ``tolerance_s``;
+  ``bound``              a quantity (v_dc, |i_phase|, battery charging current, torque, |torque|, speed, the
+                         d-axis current i_d - demagnetisation -, the braking torque opposing the rotation) within
+                         [min, max], optionally tolerated for ``tolerance_s``;
   ``safe_state``         after the origin (detection or fault) the conditions (|T| <= x, |i| <= y, v_dc <= z,
                          bridge state in a set) are reached within ``within_s`` and then hold for ``hold_s``;
   ``no_false_reaction``  without a fault, no mechanism detects and nothing reacts (availability / nuisance);
@@ -57,7 +60,10 @@ from .labels import fault_text, quantity_label
 _trapezoid = getattr(np, "trapezoid", None) or np.trapz      # numpy < 2.0 compatibility
 CRITERIA = ("torque_window", "bound", "safe_state", "no_false_reaction", "timing")
 QUANTITIES = {"v_dc": "V", "i_phase_abs": "A", "i_bat_charge": "A", "torque": "N*m", "torque_abs": "N*m",
-              "speed": "rpm"}                     # torque = shaft torque (air gap minus rotational loss)
+              "speed": "rpm", "i_d": "A", "torque_brake": "N*m"}
+# torque = shaft torque (air gap minus rotational loss); torque_brake = the shaft torque opposing the rotation
+ASIL_LEVELS = ("QM", "A", "B", "C", "D")
+VERIFICATION_METHODS = ("simulation", "analysis", "review", "HIL", "bench test", "vehicle test", "fault injection")
 LATENT_KINDS = ("mechanism_disabled", "path_lost", "contactor_stuck")
 PASS, FAIL, UNKNOWN, NA = "PASS", "FAIL", "UNKNOWN", "NOT_APPLICABLE"
 ORDER = {FAIL: 3, UNKNOWN: 2, PASS: 1, NA: 0}
@@ -71,6 +77,16 @@ class SafetyGoal:
     ftti_s: float | None = None
     hazard: str = ""
     vehicle: dict | None = None       # {"max_delta_v_mps": ..} judged on the rigid-driveline indicator
+    safe_state: str = ""              # the safe state of the goal (declared text)
+    situation: str = ""               # the operating situation of the hazard (declared text)
+
+    def __post_init__(self):
+        _positive_time(self.ftti_s, f"safety_goals.{self.sg_id}.ftti_ms", "the FTTI")
+
+
+def _positive_time(v, field: str, what: str) -> None:
+    if v is not None and not (math.isfinite(v) and v > 0):
+        raise InputValidationError(f"{what} must be a finite time > 0 ms (got {v * 1e3:g} ms)", field=field)
 
 
 @dataclass(frozen=True)
@@ -82,6 +98,14 @@ class FSR:
     fdti_budget_s: float | None = None
     frti_budget_s: float | None = None
     safe_state: str | None = None     # the TSR that defines the physical safe condition
+    asil: str = ""
+    warning: str = ""                 # driver warning / degradation concept (declared text)
+    allocation: tuple = ()            # architectural elements it is allocated to
+    verification: tuple = ()          # declared verification methods
+
+    def __post_init__(self):
+        _positive_time(self.fdti_budget_s, f"fsr.{self.fsr_id}.fdti_budget_ms", "the FDTI budget")
+        _positive_time(self.frti_budget_s, f"fsr.{self.fsr_id}.frti_budget_ms", "the FRTI budget")
 
 
 @dataclass(frozen=True)
@@ -91,11 +115,22 @@ class TSR:
     text: str
     criterion: dict
     level: str = "inverter"           # inverter | component
+    asil: str = ""
+    allocation: str = ""              # the HW / SW element that implements it
+    verification: tuple = ()
+    rationale: str = ""               # where its value comes from
 
     def __post_init__(self):
         c = self.criterion or {}
         if c.get("type") not in CRITERIA:
             raise InputValidationError(f"criterion type must be one of {CRITERIA}", field=f"tsr.{self.tsr_id}.type")
+        for k, v in c.items():                    # times (s inside), window widths: finite and not negative
+            if (k.endswith("_s") or k in ("abs_Nm", "rel", "impulse_Nms")) and v is not None:
+                if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0:
+                    shown = f"{v * 1e3:g} ms" if k.endswith("_s") and isinstance(v, (int, float)) else repr(v)
+                    key = k[:-2] + "_ms" if k.endswith("_s") else k        # the name in the data
+                    raise InputValidationError(f"{key} must be a finite number >= 0 (got {shown})",
+                                               field=f"tsr.{self.tsr_id}.criterion.{key}")
         if c["type"] == "bound" and c.get("quantity") not in QUANTITIES:
             raise InputValidationError(f"bound quantity must be one of {list(QUANTITIES)}",
                                        field=f"tsr.{self.tsr_id}.quantity")
@@ -149,12 +184,23 @@ class RequirementSet:
         return next(x for x in self.tsrs if x.tsr_id == i)
 
 
+def _tuple(v) -> tuple:
+    if v is None or v == "":
+        return ()
+    if isinstance(v, str):
+        return tuple(x.strip() for x in v.split(",") if x.strip())
+    return tuple(str(x) for x in v)
+
+
 def requirements_from_dict(d: dict) -> RequirementSet:
     ms = lambda v: None if v in (None, "") else float(v) * 1e-3          # noqa: E731
     goals = tuple(SafetyGoal(str(g["id"]), str(g.get("text", "")), str(g.get("asil", "")), ms(g.get("ftti_ms")),
-                             str(g.get("hazard", "")), g.get("vehicle")) for g in d.get("safety_goals") or [])
-    fsrs = tuple(FSR(str(f["id"]), tuple(f.get("sg") or ()), str(f.get("text", "")), tuple(f.get("mechanisms") or ()),
-                     ms(f.get("fdti_budget_ms")), ms(f.get("frti_budget_ms")), f.get("safe_state"))
+                             str(g.get("hazard", "")), g.get("vehicle"), str(g.get("safe_state", "")),
+                             str(g.get("situation", ""))) for g in d.get("safety_goals") or [])
+    fsrs = tuple(FSR(str(f["id"]), _tuple(f.get("sg")), str(f.get("text", "")), _tuple(f.get("mechanisms")),
+                     ms(f.get("fdti_budget_ms")), ms(f.get("frti_budget_ms")), f.get("safe_state") or None,
+                     str(f.get("asil", "")), str(f.get("warning", "")), _tuple(f.get("allocation")),
+                     _tuple(f.get("verification")))
                  for f in d.get("fsr") or [])
     tsrs = []
     for t in d.get("tsr") or []:
@@ -163,7 +209,18 @@ def requirements_from_dict(d: dict) -> RequirementSet:
             if k.endswith("_ms"):                     # criterion times in ms in the data, s inside
                 c[k[:-3] + "_s"] = None if c[k] is None else float(c[k]) * 1e-3
                 del c[k]
-        tsrs.append(TSR(str(t["id"]), str(t["fsr"]), str(t.get("text", "")), c, str(t.get("level", "inverter"))))
+        tsrs.append(TSR(str(t["id"]), str(t["fsr"]), str(t.get("text", "")), c, str(t.get("level", "inverter")),
+                        str(t.get("asil", "")), str(t.get("allocation", "")), _tuple(t.get("verification")),
+                        str(t.get("rationale", ""))))
+    for i, x in enumerate(list(goals) + list(fsrs) + tsrs):
+        a = getattr(x, "asil", "")
+        if a and a not in ASIL_LEVELS:
+            raise InputValidationError(f"ASIL must be one of {ASIL_LEVELS} (or blank)", field="requirements.asil")
+    ids = [x.sg_id for x in goals] + [x.fsr_id for x in fsrs] + [x.tsr_id for x in tsrs]
+    dup = sorted({i for i in ids if ids.count(i) > 1})
+    if dup:
+        raise InputValidationError(f"requirement ids must be unique ({', '.join(dup)} repeated)",
+                                   field="requirements")
     return RequirementSet(goals, fsrs, tuple(tsrs), str(d.get("basis", "")))
 
 
@@ -255,6 +312,10 @@ class Evaluator:
             return np.abs(np.asarray(tr["T_shaft"]))
         if name == "speed":
             return np.asarray(tr["speed_rpm"])
+        if name == "i_d":
+            return np.asarray(tr["i_d"])
+        if name == "torque_brake":
+            return -self.speed_sign * np.asarray(tr["T_shaft"])
         raise InputValidationError(f"unknown quantity {name}", field="criterion.quantity")
 
     def window(self, c):
@@ -338,7 +399,8 @@ class Evaluator:
         fsr = self.q.fsr(tsr.fsr)
         typ = c["type"]
         base = {"id": tsr.tsr_id, "fsr": tsr.fsr, "sg": list(fsr.sg), "text": tsr.text, "level": tsr.level,
-                "type": typ, "criterion": c, "scope": self._scope()}
+                "type": typ, "criterion": c, "scope": self._scope(), "asil": tsr.asil, "allocation": tsr.allocation,
+                "verification": list(tsr.verification), "rationale": tsr.rationale}
         if typ == "torque_window":
             return {**base, **self._torque_window(c)}
         if typ == "bound":
@@ -654,13 +716,16 @@ class Evaluator:
             v = _worst(*[r["verdict"] for r in items]) if items else NA
             fsr.append({"id": f.fsr_id, "sg": list(f.sg), "text": f.text, "mechanisms": list(f.mechanisms),
                         "verdict": v, "timeline": tl, "tsr": [r["id"] for r in items], "safe_state": f.safe_state,
-                        "budgets": {"FDTI_s": f.fdti_budget_s, "FRTI_s": f.frti_budget_s}})
+                        "budgets": {"FDTI_s": f.fdti_budget_s, "FRTI_s": f.frti_budget_s}, "asil": f.asil,
+                        "warning": f.warning, "allocation": list(f.allocation),
+                        "verification": list(f.verification)})
         sg = []
         for g in self.q.goals:
             fs = [x for x in fsr if g.sg_id in x["sg"]]
             v = _worst(*[x["verdict"] for x in fs]) if fs else NA
             ind = self.vehicle_indicator(g)
             sg.append({"id": g.sg_id, "text": g.text, "asil": g.asil, "ftti_s": g.ftti_s, "hazard": g.hazard,
+                       "safe_state": g.safe_state, "situation": g.situation,
                        "inverter_evidence": v, "fsr": [x["id"] for x in fs], "vehicle": ind,
                        "statement": "inverter-level evidence on this trajectory - not a vehicle safety approval "
                                     "(vehicle dynamics, driver controllability and the item's other elements are "

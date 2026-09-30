@@ -135,7 +135,8 @@ TASK_PAGE = {"decision": "decision", "decision-env": "decision", "requirement_se
              "winding": "machine", "concept_sizing": "machine", "ftti": "safety", "passive": "safety",
              "discharge": "safety", "overvoltage": "safety", "safe_state": "safety", "pdf": "decision",
              "acceptance": "verification", "fault_sim": "fault_sim", "fault_compare": "fault_sim",
-             "fault_campaign": "fault_sim", "fault_rerun": "fault_sim", "fault_validation": "fault_sim"}
+             "fault_campaign": "fault_sim", "fault_rerun": "fault_sim", "fault_validation": "fault_sim",
+             "fault_review": "fault_sim", "fault_verification": "fault_sim"}
 # what a task is called on screen (a running task uses the label it was started with)
 TASK_LABELS = {
     "decision": lambda: tr("요구 판정", "decision"), "decision-env": lambda: tr("T–n 곡선", "T–n envelope"),
@@ -165,6 +166,8 @@ TASK_LABELS = {
     "fault_campaign": lambda: tr("고장 캠페인", "fault campaign"),
     "fault_rerun": lambda: tr("반례 재실행", "counterexample re-run"),
     "fault_validation": lambda: tr("플랜트 검증", "plant validation"),
+    "fault_review": lambda: tr("정적 설계 검토", "static design review"),
+    "fault_verification": lambda: tr("검증 매트릭스", "verification matrix"),
 }
 # tasks whose argument is not a request body: they run on the state's drive and limits
 STATE_TASKS = ("decision-env", "requirement_set", "explorer", "trajectory", "performance", "design-sweep",
