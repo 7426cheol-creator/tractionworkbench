@@ -115,3 +115,48 @@ def test_an_entered_value_is_used_as_user(win):
     page._clear_values()
     assert page.values == {}
     page.search.setText("")
+
+
+def test_a_first_time_user_is_guided(win, monkeypatch):
+    """The steps on the left (package, scope, values), the overview before and after a run, every line a link."""
+    from PySide6.QtCore import QUrl
+    from PySide6.QtWidgets import QInputDialog
+    page = win.pages["reference"]
+    page.load_builtin("customer_inverter")
+    goals = [page.goal.itemData(k) for k in range(1, page.goal.count())]
+    assert goals and set(goals) <= {it["id"] for it in page.package["items"] if it.get("level") == "SG"}
+    html = page.overview.toHtml()
+    assert "item:" + goals[0] in html                                   # the goals, each a link, before any run
+    n_all = page.matrix.rowCount()
+    page.goal.setCurrentIndex(1)
+    sub = page._subtree(goals[0])
+    assert page._rows_shown and set(page._rows_shown) <= sub and page.matrix.rowCount() <= n_all
+    assert str(page.matrix.rowCount()) in page.run_btn.text() and str(page.matrix.rowCount()) in page.scope_label.text()
+    page.goal.setCurrentIndex(0)
+    # the columns that matter first; the others on request
+    hidden = [j for j in range(page.matrix.columnCount()) if page.matrix.isColumnHidden(j)]
+    assert hidden and 0 not in hidden and 1 not in hidden and 9 not in hidden
+    page.all_cols.setChecked(True)
+    assert not any(page.matrix.isColumnHidden(j) for j in range(page.matrix.columnCount()))
+    page.all_cols.setChecked(False)
+    # a run of one level: the overview lists the verdicts and the values that would resolve UNKNOWN
+    page.load_builtin("example")
+    page.profile.setCurrentIndex(page.profile.findData("customer"))
+    page.search.setText("EX-PROP-01")
+    page.run(selected=False)
+    assert page.tabs.currentWidget() is page.overview
+    html = page.overview.toHtml()
+    assert "PASS" in html and "UNKNOWN" in html
+    page._link(QUrl("item:EX-PROP-01"))                                  # an item link selects it in the matrix
+    assert page.tabs.currentWidget() is page.tab_matrix and "EX-PROP-01" in page.item_text.toHtml()
+    monkeypatch.setattr(QInputDialog, "getDouble", lambda *a, **k: (123.0, True))
+    page._link(QUrl("param:X_UPP"))                                      # a value link asks for the value itself
+    assert page.values == {"X_UPP": 123.0} and "1" in page.open_label.text()
+    page._clear_values()
+    r = next(k for k in range(page.params.rowCount()) if page.params.item(k, 0).text() == "X_UPP")
+    page.params.selectRow(r)
+    page._use_illustrative()                                             # the illustrative value, one click
+    ill = next(p["illustrative"] for p in page.package["parameters"] if p["id"] == "X_UPP")
+    assert page.values == {"X_UPP": ill}
+    page._clear_values()
+    page.search.setText("")

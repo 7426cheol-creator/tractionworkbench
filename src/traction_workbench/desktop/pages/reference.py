@@ -9,9 +9,10 @@ import json
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont
-from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
-                               QHeaderView, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QSplitter, QTableWidget,
-                               QTableWidgetItem, QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
+                               QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPlainTextEdit,
+                               QPushButton, QScrollArea, QSplitter, QTableWidget, QTableWidgetItem, QTabWidget,
+                               QTextBrowser, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from ... import api
 from ...extensions.faultsim.refhier import (DEFAULT_SOURCE_TAGS, LEVELS, REQ_LEVELS, hierarchy, level_name,
@@ -84,12 +85,9 @@ class ReferencePage(QWidget):
         form = QWidget()
         v = QVBoxLayout(form)
         v.setContentsMargins(0, 0, 6, 0)
-        g = QGroupBox(tr("패키지", "package"))
+        # ① what is verified: a package (the built-in ones or a file)
+        g = QGroupBox(tr("① 패키지 — 무엇을 검증하나", "① package — what is verified"))
         f = QVBoxLayout(g)
-        self.pkg_label = QLabel("")
-        self.pkg_label.setWordWrap(True)
-        f.addWidget(self.pkg_label)
-        row = QHBoxLayout()
         self.builtin = QComboBox()
         for key, ko, en in api.reference_builtin():
             self.builtin.addItem(tr(ko, en), key)
@@ -97,29 +95,31 @@ class ReferencePage(QWidget):
                                    "packages shipped with the application: the neutral example and the inverter "
                                    "FuSa reference (classified, traced, with proposals)"))
         f.addWidget(self.builtin)
-        self.example_btn = QPushButton(tr("내장 패키지 불러오기", "load the built-in package"))
+        row = QHBoxLayout()
+        self.example_btn = QPushButton(tr("불러오기", "load"))
         self.example_btn.clicked.connect(lambda: self.load_builtin(self.builtin.currentData()))
-        self.open_btn = QPushButton(tr("파일 불러오기…", "open file…"))
+        self.open_btn = QPushButton(tr("파일…", "file…"))
+        self.open_btn.setToolTip(tr("참고 패키지 JSON 파일 열기", "open a reference package JSON file"))
         self.open_btn.clicked.connect(self.open_package)
-        self.save_pkg_btn = QPushButton(tr("패키지 저장…", "save package…"))
+        self.save_pkg_btn = QPushButton(tr("저장…", "save…"))
         self.save_pkg_btn.setToolTip(tr("지금 패키지를 JSON으로 저장 (새 패키지의 틀로 쓰기)",
                                         "save the current package as JSON (a template for a new package)"))
         self.save_pkg_btn.clicked.connect(self.save_package)
         for b in (self.example_btn, self.open_btn, self.save_pkg_btn):
             row.addWidget(b)
         f.addLayout(row)
+        self.pkg_label = QLabel("")
+        self.pkg_label.setWordWrap(True)
+        f.addWidget(self.pkg_label)
         v.addWidget(g)
-        g = QGroupBox(tr("판정 프로파일", "profile"))
+        # ② which items: one safety goal and what traces to it, a level, a group, a search
+        g = QGroupBox(tr("② 범위 — 어떤 항목을", "② scope — which items"))
         fl = QFormLayout(g)
-        self.profile = combo([(tr("원문 값 (OPEN은 UNKNOWN)", "as given (OPEN stays UNKNOWN)"), "customer"),
-                              (tr("예시 (illustrative, 결과에 ILL 표시)", "illustrative (results marked ILL)"),
-                               "illustrative")])
-        fl.addRow(self.profile)
-        fl.addRow(hint(tr("파라미터 값은 '파라미터 레지스트리' 탭에서 입력합니다 (입력 값은 USER 근거로 표시).",
-                          "Enter parameter values in the 'parameter registry' tab (entered values show as USER).")))
-        v.addWidget(g)
-        g = QGroupBox(tr("항목 선택", "items"))
-        fl = QFormLayout(g)
+        self.goal = QComboBox()
+        self.goal.setToolTip(tr("안전 목표 하나를 고르면 그 목표와 그 아래로 추적된 요구만 남습니다 (처음이라면 여기서 시작)",
+                                "one safety goal keeps the goal and every requirement traced below it (a good first "
+                                "run)"))
+        self.goal.currentIndexChanged.connect(self._fill_matrix)
         self.group = QComboBox()
         self.group.currentIndexChanged.connect(self._fill_matrix)
         self.search = QLineEdit()
@@ -135,16 +135,35 @@ class ReferencePage(QWidget):
         for lv in LEVELS:
             self.level.addItem(level_name(lv), lv)
         self.level.currentIndexChanged.connect(self._fill_matrix)
-        fl.addRow(tr("그룹", "group"), self.group)
+        fl.addRow(tr("안전 목표", "safety goal"), self.goal)
         fl.addRow(tr("레벨", "level"), self.level)
+        fl.addRow(tr("그룹", "group"), self.group)
         fl.addRow(tr("검색", "search"), self.search)
         fl.addRow(tr("근거", "provenance"), self.only_customer)
+        self.scope_label = QLabel("")
+        self.scope_label.setWordWrap(True)
+        fl.addRow(self.scope_label)
+        v.addWidget(g)
+        # ③ the values the source leaves OPEN: never guessed - as given (UNKNOWN), entered (USER) or illustrative
+        g = QGroupBox(tr("③ 값 — 원문에 없는 (OPEN) 값", "③ values — the ones the source leaves OPEN"))
+        fl = QFormLayout(g)
+        self.profile = combo([(tr("원문 값 (OPEN은 UNKNOWN)", "as given (OPEN stays UNKNOWN)"), "customer"),
+                              (tr("예시 (illustrative, 결과에 ILL 표시)", "illustrative (results marked ILL)"),
+                               "illustrative")])
+        fl.addRow(self.profile)
+        self.open_label = QLabel("")
+        self.open_label.setWordWrap(True)
+        self.open_go = QPushButton(tr("OPEN 값 입력 →", "enter OPEN values →"))
+        self.open_go.clicked.connect(lambda: self.tabs.setCurrentWidget(self.tab_params))
+        fl.addRow(self.open_label)
+        fl.addRow(self.open_go)
         v.addWidget(g)
         self.product_label = hint("")
         v.addWidget(self.product_label)
         self.run_btn = primary_button(tr("표시된 항목 검증 실행", "verify the listed items"))
+        self.run_btn.setMinimumHeight(38)
         self.run_btn.clicked.connect(lambda: self.run(selected=False))
-        self.run_sel_btn = QPushButton(tr("선택한 항목만 실행", "verify the selected items"))
+        self.run_sel_btn = QPushButton(tr("매트릭스에서 선택한 항목만 실행", "verify the items selected in the matrix"))
         self.run_sel_btn.clicked.connect(lambda: self.run(selected=True))
         v.addWidget(self.run_btn)
         v.addWidget(self.run_sel_btn)
@@ -160,17 +179,34 @@ class ReferencePage(QWidget):
         self.state = hint("")
         self.state.setWordWrap(True)
         v.addWidget(self.state)
+        v.addWidget(ConceptNote(NOTE()))
         v.addStretch(1)
-        split.addWidget(form)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(form)
+        scroll.setMinimumWidth(330)
+        split.addWidget(scroll)
         # ---- results
         right = QWidget()
         rv = QVBoxLayout(right)
         rv.setContentsMargins(0, 0, 0, 0)
-        rv.addWidget(ConceptNote(NOTE()))
         self.tabs = QTabWidget()
+        # overview: what the package holds before a run, what to look at first after it (every line a link)
+        self.overview = QTextBrowser()
+        self.overview.setOpenLinks(False)
+        self.overview.anchorClicked.connect(self._link)
+        self.tabs.addTab(self.overview, tr("개요 · 먼저 볼 것", "overview · look here first"))
         # matrix
         mw = QWidget()
         ml = QVBoxLayout(mw)
+        top = QHBoxLayout()
+        top.addWidget(hint(tr("항목을 고르면 아래에 판정 이유·검사·원문이 나옵니다.",
+                              "Select an item to read its verdict, checks and source text below.")), 1)
+        self.all_cols = QCheckBox(tr("모든 열 보기", "all columns"))
+        self.all_cols.setProperty("twb_not_input", True)
+        self.all_cols.toggled.connect(self._columns)
+        top.addWidget(self.all_cols)
+        ml.addLayout(top)
         msplit = QSplitter(Qt.Vertical)
         self.matrix = QTableWidget()
         heads = [tr("ID", "ID"), tr("판정", "verdict"), tr("레벨", "level"), tr("근거", "provenance"), tr("원문", "source"),
@@ -193,12 +229,15 @@ class ReferencePage(QWidget):
                                              tr("기대", "expected"), tr("근거·측정", "reasons · measured")])
         self.checks.itemSelectionChanged.connect(self._check_selected)
         msplit.addWidget(self.checks)
-        self.item_text = QPlainTextEdit()
-        self.item_text.setReadOnly(True)
-        msplit.addWidget(self.item_text)
-        msplit.setSizes([420, 220, 120])
+        self.item_text = QTextBrowser()             # the selected item, readable: verdict, why, text, OPEN values
+        self.item_text.setOpenLinks(False)
+        self.item_text.anchorClicked.connect(self._link)
+        msplit.insertWidget(1, self.item_text)
+        msplit.setSizes([380, 190, 200])
         ml.addWidget(msplit)
+        self.tab_matrix = mw
         self.tabs.addTab(mw, tr("요구-증거 매트릭스", "requirement-to-evidence matrix"))
+        self._columns(False)
         # hierarchy: SG -> TLSR -> FSR -> TSR -> SM -> verification, the gaps and the proposals
         hw = QWidget()
         hl = QVBoxLayout(hw)
@@ -263,14 +302,28 @@ class ReferencePage(QWidget):
         self.t_man = KeyValueTable(headers=[tr("항목", "item"), tr("기록할 근거", "evidence to record")])
         ul.addWidget(QLabel(tr("MANUAL (조직·문서 근거를 기록할 항목)", "MANUAL (organisational evidence to record)")))
         ul.addWidget(self.t_man, 1)
+        self.tab_report = uw
         self.tabs.addTab(uw, tr("UNKNOWN·CONFLICT 보고", "unknown · conflict report"))
         # parameters
         pw = QWidget()
         pl = QVBoxLayout(pw)
-        pl.addWidget(hint(tr("값 칸에 입력하면 이번 실행에 USER 근거로 쓰입니다 (비우면 패키지 값 / OPEN). 목록·맵은 JSON "
-                             "(예: [[0, 5], [6000, 7.5]]).", "A value entered here is used for this run as USER "
-                                                             "(empty: the package value / OPEN). Lists and maps as "
-                                                             "JSON (e.g. [[0, 5], [6000, 7.5]]).")))
+        pl.addWidget(hint(tr("노란 칸(입력 값)에 숫자를 넣으면 다음 실행에 USER 근거로 쓰입니다. 비우면 패키지 값 또는 OPEN "
+                             "(UNKNOWN). 목록 값(예: 속도별 허용 오차)은 '목록 편집…'으로 표에서 넣습니다.",
+                             "A number typed in the yellow cell (entered value) is used by the next run as USER; empty "
+                             "means the package value or OPEN (UNKNOWN). List values (e.g. a tolerance per speed) are "
+                             "entered as a table with 'edit list…'.")))
+        row = QHBoxLayout()
+        self.use_ill_btn = QPushButton(tr("선택한 행에 예시 값 넣기", "use the illustrative value (selected rows)"))
+        self.use_ill_btn.clicked.connect(self._use_illustrative)
+        self.list_btn = QPushButton(tr("목록 편집…", "edit list…"))
+        self.list_btn.clicked.connect(self._edit_list)
+        self.only_open = QCheckBox(tr("OPEN 값만", "OPEN values only"))
+        self.only_open.setProperty("twb_not_input", True)
+        self.only_open.toggled.connect(lambda _c: self._fill_params())
+        for w in (self.use_ill_btn, self.list_btn, self.only_open):
+            row.addWidget(w)
+        row.addStretch(1)
+        pl.addLayout(row)
         self.params = QTableWidget()
         pheads = ["ID", tr("단위", "unit"), tr("근거", "provenance"), tr("패키지 값", "package value"),
                   tr("입력 값 (USER)", "entered value (USER)"), tr("예시 값", "illustrative"), tr("설명", "note")]
@@ -283,7 +336,8 @@ class ReferencePage(QWidget):
         self.clear_btn = QPushButton(tr("입력 값 모두 지우기", "clear the entered values"))
         self.clear_btn.clicked.connect(self._clear_values)
         pl.addWidget(self.clear_btn)
-        self.tabs.addTab(pw, tr("파라미터 레지스트리", "parameter registry"))
+        self.tab_params = pw
+        self.tabs.addTab(pw, tr("OPEN 값 입력 (파라미터)", "OPEN values (parameters)"))
         self.p_map = PlotPanel(hint=tr("타당성 지도 검사가 있는 항목을 실행하면 여기에 그려집니다.",
                                        "Run an item with a feasibility check to see the map."))
         self.tabs.addTab(self.p_map, tr("안전상태 타당성 지도", "safe-state feasibility map"))
@@ -292,7 +346,8 @@ class ReferencePage(QWidget):
         self.tabs.addTab(self.problems, tr("패키지 정보·경고", "package notes"))
         rv.addWidget(self.tabs, 1)
         split.addWidget(right)
-        split.setSizes([330, 1000])
+        split.setStretchFactor(1, 1)
+        split.setSizes([360, 1000])
         lay = QVBoxLayout(self)
         lay.addWidget(split)
         self._package_changed()
@@ -320,9 +375,20 @@ class ReferencePage(QWidget):
         self.group.blockSignals(False)
         self.values = {}
         self.last = None
+        self.hier = hierarchy(self.package, [])
+        self.goal.blockSignals(True)
+        self.goal.clear()
+        self.goal.addItem(tr("모든 안전 목표", "every safety goal"), None)
+        for it in items:
+            if level_of(it)[0] == "SG":
+                t = it.get("title", "")
+                self.goal.addItem(f"{it['id']} — {t if len(t) <= 60 else t[:57] + '…'}", it["id"])
+                self.goal.setItemData(self.goal.count() - 1, t, Qt.ToolTipRole)
+        self.goal.blockSignals(False)
         self._fill_params()
         self._fill_matrix()
         self._fill_hierarchy()
+        self._fill_overview()
         for b in (self.html_btn, self.csv_btn):
             b.setEnabled(False)
         self.problems.setPlainText("\n".join([json.dumps(meta, ensure_ascii=False, indent=1)] +
@@ -373,8 +439,11 @@ class ReferencePage(QWidget):
     # ------------------------------------------------------------------ parameters
     def _fill_params(self):
         ps = self.package.get("parameters") or []
+        if getattr(self, "only_open", None) is not None and self.only_open.isChecked():
+            ps = [p for p in ps if p.get("provenance") in ("OPEN", "CONFLICT") or p["id"] in self.values]
         self.params.blockSignals(True)
         self.params.setRowCount(len(ps))
+        entry = QColor("#fff8c5")
         for i, p in enumerate(ps):
             cells = (p["id"], p.get("unit", ""), p.get("provenance", ""), value_text(p.get("value")),
                      value_text(self.values.get(p["id"])), value_text(p.get("illustrative")), p.get("note", ""))
@@ -382,11 +451,83 @@ class ReferencePage(QWidget):
                 it = QTableWidgetItem(text)
                 if j != 4:
                     it.setFlags(it.flags() & ~Qt.ItemIsEditable)
+                else:
+                    it.setBackground(entry)                  # the one cell to type in
+                    it.setForeground(QColor("#1f2328"))
+                    it.setToolTip(tr("숫자를 입력 (목록 값은 '목록 편집…')", "type a number (a list value: 'edit list…')"))
                 if j == 2 and text in ("OPEN", "CONFLICT"):
                     it.setForeground(Qt.darkYellow)
                 self.params.setItem(i, j, it)
         self.params.resizeColumnsToContents()
         self.params.blockSignals(False)
+        self._open_summary()
+
+    def _open_summary(self):
+        ps = self.package.get("parameters") or []
+        n_open = sum(1 for p in ps if p.get("provenance") in ("OPEN", "CONFLICT"))
+        n_in = len(self.values)
+        self.open_label.setText(tr(f"원문이 값을 주지 않은 파라미터 {n_open}개 · 입력한 값 {n_in}개. 원문 값 프로파일에서 OPEN 값이 "
+                                   f"필요한 판정은 UNKNOWN이고, 그 값을 넣으면 판정됩니다.",
+                                   f"{n_open} parameter(s) the source leaves open · {n_in} entered. With 'as given', a "
+                                   f"verdict that needs an OPEN value is UNKNOWN; entering the value decides it."))
+
+    def _selected_params(self) -> list:
+        rows = sorted({i.row() for i in self.params.selectedIndexes()} or
+                      ({self.params.currentRow()} if self.params.currentRow() >= 0 else set()))
+        return [self.params.item(r, 0).text() for r in rows if self.params.item(r, 0)]
+
+    def _use_illustrative(self):
+        by = {p["id"]: p for p in self.package.get("parameters") or []}
+        done = []
+        for pid in self._selected_params():
+            ill = by.get(pid, {}).get("illustrative")
+            if ill is not None:
+                self.values[pid] = ill
+                done.append(pid)
+        self._fill_params()
+        self.state.setText(tr(f"예시 값을 입력 값으로: {', '.join(done) or '없음 (예시 값이 없는 행)'}",
+                              f"illustrative values entered: {', '.join(done) or 'none (rows without one)'}"))
+
+    def _edit_list(self, pid: str | None = None):
+        """A list value (e.g. a tolerance per speed) as a small table: one column per element of a row."""
+        from ..widgets import NumTable, table_with_buttons
+        pid = pid or next(iter(self._selected_params()), None)
+        if pid is None:
+            error_box(self, tr("입력 오류", "input error"), tr("파라미터 표에서 행을 고르세요.", "Select a parameter row."))
+            return
+        p = next((x for x in self.package.get("parameters") or [] if x["id"] == pid), {})
+        cur = self.values.get(pid, p.get("value") if p.get("value") is not None else p.get("illustrative"))
+        rows = cur if isinstance(cur, list) else ([] if cur is None else [cur])
+        rows = [r if isinstance(r, list) else [r] for r in rows]
+        ncol = max([len(r) for r in rows] + [2 if isinstance(p.get("illustrative"), list) and
+                                             p["illustrative"] and isinstance(p["illustrative"][0], list) else 1])
+        dlg = QDialog(self)
+        dlg.setWindowTitle(tr(f"{pid} 목록 값", f"{pid} list value"))
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel(f"<b>{pid}</b> [{p.get('unit', '')}] — {p.get('note', '')}"))
+        heads = [tr(f"열 {j + 1}", f"column {j + 1}") for j in range(ncol)]
+        tab = NumTable(heads, rows, min_height=180)
+        lay.addWidget(table_with_buttons(tab, tr("행마다 한 점 (예: 속도, 허용 오차). Ctrl+V로 스프레드시트에서 붙여넣기.",
+                                                 "one point per row (e.g. speed, tolerance); Ctrl+V pastes from a "
+                                                 "spreadsheet.")))
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        lay.addWidget(bb)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        try:
+            vals = tab.values()
+        except ValueError as exc:
+            error_box(self, tr("입력 오류", "input error"), str(exc))
+            return
+        if vals:
+            self.values[pid] = [r if ncol > 1 else r[0] for r in vals]
+        else:
+            self.values.pop(pid, None)
+        self._fill_params()
+        self.state.setText(tr(f"{pid}: 목록 값 {len(vals)}점 입력 (USER)", f"{pid}: list value with {len(vals)} point(s) "
+                                                                        f"entered (USER)"))
 
     def _param_edited(self, item):
         if item.column() != 4:
@@ -399,6 +540,7 @@ class ReferencePage(QWidget):
             self.values[pid] = v
         self.state.setText(tr(f"입력 값 {len(self.values)}개 (USER) - 다음 실행에 쓰입니다.",
                               f"{len(self.values)} entered value(s) (USER) - used by the next run."))
+        self._open_summary()
 
     def _clear_values(self):
         self.values = {}
@@ -413,7 +555,10 @@ class ReferencePage(QWidget):
         cust = set(self.package.get("customer_tags") or DEFAULT_SOURCE_TAGS)
         out = []
         lvf = self.level.currentData()
+        sub = self._subtree(self.goal.currentData()) if self.goal.currentData() else None
         for it in self.package.get("items") or []:
+            if sub is not None and it["id"] not in sub:
+                continue
             if g is not None and it.get("group", "") != g:
                 continue
             lv = level_of(it)[0]
@@ -427,9 +572,39 @@ class ReferencePage(QWidget):
             out.append(it)
         return out
 
+    def _subtree(self, goal: str) -> set:
+        """A safety goal and every item traced below it (cited and inferred traces)."""
+        kids = (getattr(self, "hier", None) or {}).get("children") or {}
+        out, todo = set(), [goal]
+        while todo:
+            i = todo.pop()
+            if i in out:
+                continue
+            out.add(i)
+            todo += [c for c, _b in kids.get(i) or []]
+        return out
+
+    @staticmethod
+    def _scenarios_of(items) -> set:
+        return {c.get("scenario") for it in items for c in it.get("checks") or [] if c.get("scenario")}
+
+    def _scope_text(self, items) -> None:
+        n_sc = len(self._scenarios_of(items))
+        minutes = max(1, round(n_sc * 5.5 / 60.0)) if n_sc else 0     # ~5.5 s per scenario on the example package
+        est = (tr("시뮬레이션 없음 (수 초)", "no simulation (seconds)") if not n_sc else
+               tr(f"시나리오 {n_sc}개 시뮬레이션 · 약 {minutes}분", f"{n_sc} scenario simulation(s) · about {minutes} min"))
+        self.scope_label.setText(tr(f"<b>검증할 항목 {len(items)}개</b> · {est}", f"<b>{len(items)} item(s) to verify</b> · "
+                                                                             f"{est}"))
+        self.run_btn.setText(tr(f"항목 {len(items)}개 검증 실행", f"verify {len(items)} item(s)"))
+        self.run_btn.setEnabled(bool(items) and not getattr(self, "_running", False))
+        refresh = getattr(self.win, "_refresh_run_action", None)      # the page bar shows the same words
+        if refresh is not None and getattr(self.win, "run_actions", None) is not None:
+            refresh("reference")
+
     def _fill_matrix(self):
         rows = {r["id"]: r for r in (self.last or {}).get("rows", [])}
         items = self._visible_items()
+        self._scope_text(items)
         self.matrix.clearSelection()                  # the rows change: a kept selection would point elsewhere
         self._rows_shown = [it["id"] for it in items]
         cust = set(self.package.get("customer_tags") or DEFAULT_SOURCE_TAGS)
@@ -473,13 +648,7 @@ class ReferencePage(QWidget):
         iid = self._rows_shown[rows[0]]
         it = next((x for x in self.package.get("items") or [] if x["id"] == iid), {})
         r = next((x for x in (self.last or {}).get("rows", []) if x["id"] == iid), None)
-        lines = [f"{iid} · {it.get('title', '')}", f"{it.get('group', '')} · {it.get('kind', '')} · "
-                 f"{it.get('provenance', '')}" + (f" · ASIL {it['asil_literal']}" if it.get("asil_literal") else "")
-                 + (f" · {it['agreement']}" if it.get("agreement") else "")]
-        for k in ("source", "text", "status_note", "sim_note", "done_when", "inputs_needed", "note", "manual"):
-            if it.get(k):
-                lines.append(f"{k}: {it[k]}")
-        self.item_text.setPlainText("\n".join(lines))
+        self.item_text.setHtml(self._item_card(it, r))
         self._checks_shown = [] if r is None else self._flat_checks(r)
         rows_ = []
         cols = {}
@@ -500,6 +669,197 @@ class ReferencePage(QWidget):
         if fm:
             self.p_map.draw(RF.fig_feasibility_map, fm, title=tr("안전상태 타당성 지도", "safe-state feasibility map"),
                             name="feasibility_map")
+
+    def _item_card(self, it: dict, r: dict | None) -> str:
+        """The selected item as people read it: verdict and why, the requirement text, what it waits for."""
+        import html as _h
+        e = _h.escape
+        v = (r or {}).get("verdict")
+        col = VCOLOR.get(v, "#57606a")
+        out = [f"<p style='margin:2px 0'><b>{e(it.get('id', ''))}</b> · {e(it.get('title', ''))}</p>",
+               f"<p style='margin:2px 0'><span style='color:{col}; font-weight:700'>"
+               f"{VKO.get(v, v) if v else tr('아직 실행 안 함', 'not run yet')}</span>"
+               + (" <span style='color:#9a6700'>ILL</span>" if (r or {}).get("illustrative") else "")
+               + f" · {e(level_name(level_of(it)[0]))} · {e(it.get('group', ''))} · {e(it.get('provenance', ''))}"
+               + (f" · ASIL {e(it['asil_literal'])}" if it.get("asil_literal") else "") + "</p>"]
+        if r is not None:
+            why = []
+            for c in self._flat_checks(r):
+                reasons = "; ".join(x for x in c.get("reasons") or [] if x)
+                if c.get("verdict") in ("FAIL", "UNKNOWN", "CONFLICT") and reasons:
+                    why.append(f"<li><span style='color:{VCOLOR.get(c.get('verdict'), '#57606a')}'>"
+                               f"{VKO.get(c.get('verdict'), c.get('verdict'))}</span> "
+                               f"{e(c.get('label') or c.get('check', ''))}: {e(reasons)}</li>")
+            if why:
+                out.append("<p style='margin:6px 0 0 0'><b>" + tr("왜", "why") + "</b></p><ul style='margin:0'>"
+                           + "".join(why[:6]) + "</ul>")
+            if r.get("open"):
+                links = ", ".join(f"<a href='param:{e(x)}'>{e(x)}</a>" for x in r["open"])
+                out.append("<p style='margin:6px 0 0 0'>" + tr("기다리는 OPEN 값 (눌러서 입력): ",
+                                                               "waiting for OPEN values (click to enter): ")
+                           + links + "</p>")
+        for k, lab in (("text", tr("요구", "requirement")), ("source", tr("출처", "source")),
+                       ("done_when", tr("완료 조건", "done when")), ("status_note", tr("상태", "status")),
+                       ("sim_note", tr("시뮬레이션 메모", "simulation note")),
+                       ("inputs_needed", tr("필요한 입력", "inputs needed")), ("note", tr("메모", "note")),
+                       ("manual", tr("기록할 근거", "evidence to record")), ("rationale", tr("근거", "rationale"))):
+            if it.get(k):
+                out.append(f"<p style='margin:4px 0 0 0'><b>{lab}</b>: {e(str(it[k]))}</p>")
+        tr_ = list(it.get("traces_to") or [])
+        inf = list(it.get("traces_to_inferred") or [])
+        if tr_ or inf:
+            out.append("<p style='margin:4px 0 0 0'><b>" + tr("추적", "traces to") + "</b>: "
+                       + ", ".join(f"<a href='item:{e(x)}'>{e(x)}</a>" for x in tr_)
+                       + ("" if not inf else ((", " if tr_ else "") + ", ".join(
+                           f"<a href='item:{e(x)}'>{e(x)}</a>" + tr(" (추론)", " (inferred)") for x in inf)))
+                       + "</p>")
+        return "".join(out)
+
+    def _columns(self, all_: bool):
+        """The columns that matter first (ID, verdict, level, title, OPEN values); the others on request."""
+        for j in (3, 4, 5, 6, 7, 8, 11):
+            self.matrix.setColumnHidden(j, not all_)
+
+    # ------------------------------------------------------------------ overview and links
+    def _link(self, url):
+        kind, _, val = url.toString().partition(":")
+        if kind == "item":
+            self.tabs.setCurrentWidget(self.tab_matrix)
+            self.select_item(val)
+        elif kind == "param":
+            self.enter_value(val)
+        elif kind == "tab":
+            w = {"report": self.tab_report, "params": self.tab_params, "matrix": self.tab_matrix,
+                 "hier": self.tab_hier}.get(val)
+            if w is not None:
+                self.tabs.setCurrentWidget(w)
+
+    def enter_value(self, pid: str):
+        """One OPEN value entered where it is asked for: a number with its unit (the illustrative value offered), a
+        list as a small table."""
+        from PySide6.QtWidgets import QInputDialog
+        p = next((x for x in self.package.get("parameters") or [] if x["id"] == pid), None)
+        if p is None:
+            return
+        cur = self.values.get(pid, p.get("value") if p.get("value") is not None else p.get("illustrative"))
+        if isinstance(cur, (list, dict)) or isinstance(p.get("illustrative"), (list, dict)):
+            self._edit_list(pid)
+            return
+        start = float(cur) if isinstance(cur, (int, float)) else 0.0
+        v, ok = QInputDialog.getDouble(
+            self, tr("OPEN 값 입력", "enter an OPEN value"),
+            f"{pid} [{p.get('unit', '')}]\n{p.get('note', '')}\n"
+            + (tr(f"예시 값: {value_text(p.get('illustrative'))}", f"illustrative: {value_text(p.get('illustrative'))}")
+               if p.get("illustrative") is not None else ""), start, -1e12, 1e12, 6)
+        if not ok:
+            return
+        self.values[pid] = v
+        self._fill_params()
+        self.state.setText(tr(f"{pid} = {v:g} {p.get('unit', '')} (USER) — 다음 실행에 쓰입니다. 같은 범위로 다시 실행하세요.",
+                              f"{pid} = {v:g} {p.get('unit', '')} (USER) — used by the next run; run the same scope "
+                              f"again."))
+
+    def _fill_overview(self):
+        import html as _h
+        e = _h.escape
+        pk = self.package
+        items = pk.get("items") or []
+        meta = pk.get("meta") or {}
+        if self.last is None:
+            by = {}
+            for it in items:
+                lv = level_of(it)[0]
+                by[lv] = by.get(lv, 0) + 1
+            n_open = sum(1 for p in pk.get("parameters") or [] if p.get("provenance") in ("OPEN", "CONFLICT"))
+            levels = " · ".join(f"{e(level_name(lv))} {by[lv]}" for lv in LEVELS if by.get(lv))
+            sgs = [it for it in items if level_of(it)[0] == "SG"]
+            out = [f"<h3 style='margin:4px 0'>{e(meta.get('title', '-'))}</h3>",
+                   "<p>" + tr(f"항목 {len(items)}개 ({levels}) · 시나리오 {len(pk.get('scenarios') or {})}개 · "
+                              f"원문이 값을 주지 않은 파라미터 {n_open}개",
+                              f"{len(items)} items ({levels}) · {len(pk.get('scenarios') or {})} scenarios · {n_open} "
+                              f"parameter(s) the source leaves open") + "</p>",
+                   "<p><b>" + tr("시작하는 법", "how to start") + "</b></p><ol>",
+                   "<li>" + tr("왼쪽 ② 범위에서 <b>안전 목표 하나</b>를 고릅니다 — 그 목표와 그 아래로 추적된 요구만 남아 빨리 "
+                               "끝납니다. 전부 보려면 그대로 두세요.",
+                               "In ② scope on the left, pick <b>one safety goal</b> - only the goal and what traces "
+                               "below it remain, so the run is quick. Leave it to verify everything.") + "</li>",
+                   "<li>" + tr("③ 값: 원문 값 그대로(OPEN은 UNKNOWN) 또는 예시 값. 아는 값은 'OPEN 값 입력'에서 넣습니다.",
+                               "③ values: as given (OPEN stays UNKNOWN) or illustrative; values you know go in "
+                               "'OPEN values'.") + "</li>",
+                   "<li>" + tr("<b>▶ 검증 실행</b>. 끝나면 이 탭에 FAIL·CONFLICT와 UNKNOWN을 푸는 값이 먼저 나옵니다.",
+                               "<b>▶ verify</b>. When it ends, this tab lists FAIL, CONFLICT and the values that would "
+                               "resolve UNKNOWN first.") + "</li></ol>"]
+            if sgs:
+                out.append("<p><b>" + tr("안전 목표", "safety goals") + "</b></p><ul>" + "".join(
+                    f"<li><a href='item:{e(it['id'])}'>{e(it['id'])}</a> {e(it.get('title', ''))}</li>" for it in sgs)
+                    + "</ul>")
+            self.overview.setHtml("".join(out))
+            return
+        res = self.last
+        rows = res.get("rows") or []
+        cnt = {}
+        for r in rows:
+            cnt[r["verdict"]] = cnt.get(r["verdict"], 0) + 1
+        tiles = "".join(f"<td style='padding:6px 12px; border:1px solid #d0d7de'><span style='font-size:16pt; "
+                        f"font-weight:700; color:{VCOLOR.get(v, '#57606a')}'>{cnt.get(v, 0)}</span><br>"
+                        f"{VKO.get(v, v)}</td>" for v in ("PASS", "FAIL", "UNKNOWN", "CONFLICT", "MANUAL",
+                                                           "NOT_APPLICABLE"))
+        items_by = {it["id"]: it for it in items}
+        out = ["<p>" + tr(f"<b>{len(rows)}개 항목 판정</b> ({'예시 값' if res.get('profile') == 'illustrative' else '원문 값'}"
+                          f" 프로파일, 입력 값 {len(res.get('values') or {})}개)",
+                          f"<b>{len(rows)} item(s) judged</b> ({res.get('profile')} profile, "
+                          f"{len(res.get('values') or {})} entered value(s))") + "</p>",
+               f"<table cellspacing='0'><tr>{tiles}</tr></table>"]
+
+        def first_reason(r):
+            for c in self._flat_checks(r):
+                if c.get("verdict") == r["verdict"]:
+                    x = "; ".join(y for y in c.get("reasons") or [] if y)
+                    if x:
+                        return x if len(x) <= 160 else x[:157] + "…"
+            return ""
+        for v, head in (("FAIL", tr("FAIL — 먼저 볼 것", "FAIL — look here first")),
+                        ("CONFLICT", tr("CONFLICT — 기록끼리 판정이 다름", "CONFLICT — the records disagree"))):
+            bad = [r for r in rows if r["verdict"] == v]
+            if bad:
+                out.append(f"<p style='margin:10px 0 2px 0'><b style='color:{VCOLOR[v]}'>{head}</b></p><ul>")
+                for r in bad[:15]:
+                    out.append(f"<li><a href='item:{e(r['id'])}'>{e(r['id'])}</a> "
+                               f"{e(items_by.get(r['id'], {}).get('title', ''))}<br><span style='color:#57606a'>"
+                               f"{e(first_reason(r))}</span></li>")
+                out.append("</ul>" + (tr(f"<p>… 외 {len(bad) - 15}개 (매트릭스에서)</p>", f"<p>… {len(bad) - 15} more "
+                                                                                   f"(in the matrix)</p>")
+                                      if len(bad) > 15 else ""))
+        orep = res.get("open_report") or {}
+        if orep:
+            pmap = {p["id"]: p for p in pk.get("parameters") or []}
+            out.append("<p style='margin:10px 0 2px 0'><b style='color:#9a6700'>"
+                       + tr("UNKNOWN을 푸는 값 — 기다리는 항목이 많은 순", "values that resolve UNKNOWN — most items "
+                                                                      "waiting first") + "</b></p><ul>")
+            for pid, o in sorted(orep.items(), key=lambda kv: -len(kv[1]["items"]))[:12]:
+                ill = pmap.get(pid, {}).get("illustrative")
+                out.append(f"<li><a href='param:{e(pid)}'>{e(pid)}</a> [{e(o.get('unit', ''))}] — "
+                           + tr(f"{len(o['items'])}개 항목이 기다림", f"{len(o['items'])} item(s) waiting")
+                           + (tr(f" · 예시 값 {e(value_text(ill))}", f" · illustrative {e(value_text(ill))}")
+                              if ill is not None else "")
+                           + f"<br><span style='color:#57606a'>{e(o.get('note', ''))}</span></li>")
+            out.append("</ul><p style='color:#57606a'>" + tr(
+                "값 이름을 누르면 바로 입력합니다(USER). 예시 값으로 한꺼번에 보려면 ③에서 '예시' 프로파일을 고르고 다시 "
+                "실행하세요 — 그 결과는 ILL로 따로 표시됩니다.",
+                "Click a value's name to enter it (USER). To see all of them with the illustrative values, choose the "
+                "'illustrative' profile in ③ and run again - those results are marked ILL.") + "</p>")
+        man = res.get("manual") or []
+        if man:
+            out.append("<p style='margin:10px 0 2px 0'><b style='color:#0969da'>MANUAL</b> — "
+                       + tr(f"조직·문서 근거를 기록할 항목 {len(man)}개 (<a href='tab:report'>목록</a>)",
+                            f"{len(man)} item(s) need organisational evidence recorded (<a href='tab:report'>list"
+                            f"</a>)") + "</p>")
+        out.append("<p style='margin:10px 0 2px 0'>" + tr("계층·추적은 <a href='tab:hier'>계층 탭</a>, 전체 판정은 <a "
+                                                          "href='tab:matrix'>매트릭스</a>에서.",
+                                                          "Levels and traces in the <a href='tab:hier'>hierarchy</a>, "
+                                                          "every verdict in the <a href='tab:matrix'>matrix</a>.")
+                   + "</p>")
+        self.overview.setHtml("".join(out))
 
     def _check_selected(self):
         rows = sorted({i.row() for i in self.checks.selectedIndexes()})
@@ -603,7 +963,7 @@ class ReferencePage(QWidget):
     def select_item(self, iid: str):
         """Show an item in the matrix (widening the filters when they hide it) and select it."""
         if iid not in self._rows_shown:
-            for w, v in ((self.group, None), (self.level, None)):
+            for w, v in ((self.group, None), (self.level, None), (self.goal, None)):
                 w.blockSignals(True)
                 w.setCurrentIndex(max(0, w.findData(v)))
                 w.blockSignals(False)
@@ -630,11 +990,13 @@ class ReferencePage(QWidget):
                 "ids": ids}
         for b in (self.run_btn, self.run_sel_btn):
             b.setEnabled(False)
+        self._running = True
         self.state.setText(tr(f"항목 {len(ids)}개 검증 중…", f"verifying {len(ids)} item(s)…"))
         self.win.runner.run("reference", tr("기능안전 요구 검증", "reference verification"), _task, self._show, body,
                             self.win.state.project, on_error=self._err)
 
     def _err(self, msg, tb):
+        self._running = False
         for b in (self.run_btn, self.run_sel_btn):
             b.setEnabled(True)
         if msg == "CANCELLED":
@@ -643,11 +1005,14 @@ class ReferencePage(QWidget):
         error_box(self, tr("검증 실패", "verification failed"), msg, tb)
 
     def _show(self, res):
+        self._running = False
         for b in (self.run_btn, self.run_sel_btn, self.html_btn, self.csv_btn):
             b.setEnabled(True)
         self.last = res
         self._fill_matrix()
         self._fill_hierarchy()
+        self._fill_overview()
+        self.tabs.setCurrentWidget(self.overview)
         cnt = res.get("counts") or {}
         rows, cols = [], {}
         for i, (k, c) in enumerate(cnt.items()):
