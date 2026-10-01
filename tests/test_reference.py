@@ -232,6 +232,22 @@ def test_gde_sequences_kept_as_variants(runner):
     assert {p["variant"]: p["verdict"] for p in c["variants"]} == {"SEQ_A": "PASS", "SEQ_B": "FAIL"}
 
 
+def test_the_packages_assume_no_battery_system_protection():
+    """Drive-system scope in the reference packages too: no scenario re-creates a BMS through an override, and the
+    GDE case below X_Low is an HV system that is disconnected - the relay opens with the GDE and the link holds
+    50 V.  A connected 50 V source used to take the rectified current until a BMS opened it (the earlier PASS
+    rested on that); with nothing assumed of the battery system the case reads the same physics as a discharged
+    link."""
+    for key in ("example", "customer_inverter"):
+        sc = api.reference_builtin_package(key)["scenarios"]
+        assert "bms" not in json.dumps(sc).lower(), key
+        for v in ("SEQ_A_low_hv", "SEQ_B_low_hv"):
+            var = sc["S-GDE"]["variants"][v]
+            assert {(f["kind"], f["t_ms"]) for f in var["faults"]} == {("battery_disconnect", 10),
+                                                                     ("gde_disable", 10)}, (key, v)
+            assert var["Voc_V"] == 50.0 and var["speed_rpm"] == 3000
+
+
 def test_interface_regeneration_and_vehicle(runner):
     for iid in ("EX-ITF-01", "EX-ITF-02", "EX-REG-01", "EX-VEH-01", "EX-VEH-02"):
         assert runner.item_result(iid)["verdict"] == "PASS", (iid, checks(runner.item_result(iid)))

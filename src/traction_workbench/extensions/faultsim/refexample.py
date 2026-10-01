@@ -186,9 +186,17 @@ SCENARIOS = {
                            "faults": [{"kind": "gde_disable", "t_ms": 10}]},
               "variants": {"SEQ_A": {"additions": gde_additions("SEQ_A")},
                            "SEQ_B": {"additions": gde_additions("SEQ_B")},
+                           # a DC link below X_Low (60 V) is an HV system that is disconnected: the relay opens
+                           # with the GDE (an event at the drive's interface) and the link holds 50 V - the battery
+                           # system's own protection is not assumed (a connected 50 V source took the rectified
+                           # current until a BMS opened it)
                            "SEQ_A_low_hv": {"speed_rpm": 3000, "torque_Nm": 5, "Voc_V": 50.0,
+                                            "faults": [{"kind": "battery_disconnect", "t_ms": 10},
+                                                       {"kind": "gde_disable", "t_ms": 10}],
                                             "additions": gde_additions("SEQ_A")},
                            "SEQ_B_low_hv": {"speed_rpm": 3000, "torque_Nm": 5, "Voc_V": 50.0,
+                                            "faults": [{"kind": "battery_disconnect", "t_ms": 10},
+                                                       {"kind": "gde_disable", "t_ms": 10}],
                                             "additions": gde_additions("SEQ_B")}}},
     "S-FOV": {"title": "battery disconnected in regeneration (fast over-voltage comparator)",
               "scenario": {"speed_rpm": 12000, "torque_Nm": -80, "horizon_ms": 60,
@@ -494,9 +502,8 @@ SCENARIOS["S-HWVDC"] = {
                             {"kind": "gde_disable", "t_ms": 10}, {"kind": "battery_disconnect", "t_ms": 10}],
                  "additions": hw_vdc_additions()},
     "variants": {"cycling": {}, "latched": {"additions": hw_vdc_additions(v_low=0.0)}}}
-SCENARIOS["S-REACT"]["variants"]["fw_low_hv_3000"] = {
-    "speed_rpm": 3000, "Voc_V": 50.0, "faults": [_cmd("six_switch_off")],
-    "overrides": {"battery.bms.delay_ms": 1000.0}}          # the battery keeps accepting the charge
+SCENARIOS["S-REACT"]["variants"]["fw_low_hv_3000"] = {        # a connected 50 V source accepts the charge (no
+    "speed_rpm": 3000, "Voc_V": 50.0, "faults": [_cmd("six_switch_off")]}     # battery-system protection assumed)
 SCENARIOS["S-OPSTATE"]["variants"] = {
     "nominal": {},
     "kl15_off": {"system": {"inputs": [_inp(150, "kl15_sw", 0), _inp(200, "trq_gen_rq", 1),

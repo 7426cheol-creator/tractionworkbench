@@ -1251,10 +1251,7 @@
         "reaction": "six_switch_off"
        }
       }
-     ],
-     "overrides": {
-      "battery.bms.delay_ms": 1000.0
-     }
+     ]
     }
    }
   },
@@ -1393,6 +1390,16 @@
      "speed_rpm": 3000,
      "torque_Nm": 5,
      "Voc_V": 50.0,
+     "faults": [
+      {
+       "kind": "battery_disconnect",
+       "t_ms": 10
+      },
+      {
+       "kind": "gde_disable",
+       "t_ms": 10
+      }
+     ],
      "additions": {
       "mechanisms": [
        {
@@ -1447,6 +1454,16 @@
      "speed_rpm": 3000,
      "torque_Nm": 5,
      "Voc_V": 50.0,
+     "faults": [
+      {
+       "kind": "battery_disconnect",
+       "t_ms": 10
+      },
+      {
+       "kind": "gde_disable",
+       "t_ms": 10
+      }
+     ],
      "additions": {
       "mechanisms": [
        {
@@ -6574,7 +6591,7 @@
       "SEQ_A_low_hv",
       "SEQ_B_low_hv"
      ],
-     "label": "GDE withdrawn at 50 V / 3000 rpm (X_Low / X_Upp boundary)"
+     "label": "GDE withdrawn at 50 V / 3000 rpm, the HV system disconnected (X_Low / X_Upp boundary)"
     }
    ],
    "customer_requirement": true,
@@ -8000,7 +8017,7 @@
       "SEQ_A_low_hv",
       "SEQ_B_low_hv"
      ],
-     "label": "GDE withdrawn at 50 V / 3000 rpm (X_Low / X_Upp boundary)"
+     "label": "GDE withdrawn at 50 V / 3000 rpm, the HV system disconnected (X_Low / X_Upp boundary)"
     }
    ],
    "customer_requirement": true,
@@ -9526,7 +9543,7 @@
       "SEQ_A_low_hv",
       "SEQ_B_low_hv"
      ],
-     "label": "GDE withdrawn at 50 V / 3000 rpm (X_Low / X_Upp boundary)"
+     "label": "GDE withdrawn at 50 V / 3000 rpm, the HV system disconnected (X_Low / X_Upp boundary)"
     },
     {
      "check": "state_time",
@@ -18248,7 +18265,7 @@
       "SEQ_A_low_hv",
       "SEQ_B_low_hv"
      ],
-     "label": "GDE withdrawn at 50 V / 3000 rpm (X_Low / X_Upp boundary)"
+     "label": "GDE withdrawn at 50 V / 3000 rpm, the HV system disconnected (X_Low / X_Upp boundary)"
     }
    ],
    "source": "Appendix A 검증 16",
@@ -19818,7 +19835,7 @@
       "SEQ_A_low_hv",
       "SEQ_B_low_hv"
      ],
-     "label": "GDE withdrawn at 50 V / 3000 rpm (X_Low / X_Upp boundary)"
+     "label": "GDE withdrawn at 50 V / 3000 rpm, the HV system disconnected (X_Low / X_Upp boundary)"
     }
    ],
    "source": "Appendix B",

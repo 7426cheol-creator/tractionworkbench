@@ -82,7 +82,8 @@ FAULT_KINDS = {
     "phase_open": ("a motor phase connection opens", (("phase", ("a", "b", "c"), "a"),)),
     "gate_supply_loss": ("the gate-driver supply of one side is lost (resource GATE_UPPER / GATE_LOWER)",
                          (("side", ("upper", "lower", "both"), "lower"),)),
-    "battery_disconnect": ("the main contactor opens", ()),
+    "battery_disconnect": ("the battery relay (main contactor) opens - an event at the drive's interface, alone or "
+                           "with other faults", ()),
     "contactor_stuck": ("the main contactor does not open when commanded (welded)", ()),
     "charge_acceptance_loss": ("the battery stops accepting charge: the BMS charge-current limit drops",
                                (("limit_A", "float", 0.0),)),
@@ -512,7 +513,7 @@ class _Sim:
             for sd in (("upper", "lower") if side == "both" else (side,)):
                 self._lose_resource(t, x, f"GATE_{sd.upper()}")
         elif k == "battery_disconnect":
-            x = self._open_contactor(t, x, "fault: the contactor opened", forced=True)
+            x = self._open_contactor(t, x, "scenario event: the battery relay opened", forced=True)
         elif k == "contactor_stuck":
             self.contactor_welded = True
         elif k == "charge_acceptance_loss":

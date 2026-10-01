@@ -268,8 +268,8 @@ def fig_fault_waveforms(fig, res: dict, title: str | None = None):
     ax.set_ylabel("V_dc [V]")
     _fit_y(ax, [tr_["v_dc"], tr_["v_dc_meas"]], lim, pad=0.25)
     ax2 = ax.twinx()
-    ax2.plot(tt, tr_["i_bat"], color=t["muted"], lw=0.8, label=tr("배터리 전류", "battery current"))
-    ax2.set_ylabel(tr("배터리 전류 [A]", "battery current [A]"), fontsize=8)
+    ax2.plot(tt, tr_["i_bat"], color=t["muted"], lw=0.8, label=tr("HV 입력 전류", "HV input current"))
+    ax2.set_ylabel(tr("HV 입력 전류 [A]", "HV input current [A]"), fontsize=8)
     _fit_y(ax2, [tr_["i_bat"]], pad=0.25)
     h1, l1 = ax.get_legend_handles_labels()
     h2, l2 = ax2.get_legend_handles_labels()
@@ -329,7 +329,7 @@ def _event_labels(ax, res, a_ms: float, b_ms: float):
 
 def fig_fault_transient(fig, res: dict, title: str | None = None, window_ms=None):
     """The reaction transient zoomed (``transient.transient_window`` unless ``window_ms``): torque, phase currents,
-    DC-link voltage with the battery current and the bridge, every simulated sample marked (the resolution the
+    DC-link voltage with the HV input current (the inverter's DC terminals) and the bridge, every simulated sample marked (the resolution the
     values were computed with), the extremes after the fault with value and instant, the instants named."""
     from ..extensions.faultsim.transient import transient_metrics
     _reset(fig, title)
@@ -381,8 +381,8 @@ def fig_fault_transient(fig, res: dict, title: str | None = None, window_ms=None
     ax.set_ylabel("V_dc [V]")
     _fit_y(ax, [arr("v_dc")], lim, pad=0.3)
     ax2 = ax.twinx()
-    ax2.plot(x, arr("i_bat"), color=t["muted"], lw=0.9, label=tr("배터리 전류", "battery current"), **mk)
-    ax2.set_ylabel(tr("배터리 전류 [A]", "battery current [A]"), fontsize=8)
+    ax2.plot(x, arr("i_bat"), color=t["muted"], lw=0.9, label=tr("HV 입력 전류", "HV input current"), **mk)
+    ax2.set_ylabel(tr("HV 입력 전류 [A]", "HV input current [A]"), fontsize=8)
     _fit_y(ax2, [arr("i_bat")], pad=0.3)
     h1, l1 = ax.get_legend_handles_labels()
     h2, l2 = ax2.get_legend_handles_labels()
@@ -439,7 +439,7 @@ def _mark_extremes_in(axes: dict, rows: dict, tf):
                 for k, v in (("t_max_s", "max"), ("t_min_s", "min")) if ok(r, k)]
     r = rows.get("i_bat")
     if r and "ib" in axes:
-        ent += [(axes["ib"], r[k] * 1e3, r[v], _peak_text(r[v], r["unit"], r[k], tf, f"I_bat {v} "),
+        ent += [(axes["ib"], r[k] * 1e3, r[v], _peak_text(r[v], r["unit"], r[k], tf, f"I_HV {v} "),
                  S.theme()["muted"]) for k, v in (("t_max_s", "max"), ("t_min_s", "min")) if ok(r, k)]
     if ent and "v" in axes:
         _callouts(axes["v"], ent)
@@ -634,7 +634,7 @@ def fig_fault_campaign(fig, camp: dict, title: str | None = None):
     keys = [k for k in ("i_phase_peak_A", "v_dc_max_V", "i_bat_charge_max_A", "FHTI_ms") if k in w]
     labels = {"i_phase_peak_A": tr("최대 상전류 [A]", "peak phase current [A]"),
               "v_dc_max_V": tr("최대 V_dc [V]", "max V_dc [V]"),
-              "i_bat_charge_max_A": tr("최대 충전 전류 [A]", "max charging current [A]"), "FHTI_ms": "FHTI [ms]"}
+              "i_bat_charge_max_A": tr("최대 HV 역방향 전류 [A]", "max reverse HV current [A]"), "FHTI_ms": "FHTI [ms]"}
     ax2.axis("off")
     lines = [tr("최악값 (각각 한 실행에서):", "worst values (each from ONE run):")]
     for k in keys:

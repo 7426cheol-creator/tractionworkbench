@@ -290,7 +290,7 @@ CK = {
                    origin="event:fault:gde_disable", max_us="$GDE_to_3PS",
                    label="the hardware sequence works while the MCU is in reset"),
     "gde_lowhv": C("safe_state", "S-GDE", variants=("SEQ_A_low_hv", "SEQ_B_low_hv"), origin="fault", **SS,
-                   label="GDE withdrawn at 50 V / 3000 rpm (X_Low / X_Upp boundary)"),
+                   label="GDE withdrawn at 50 V / 3000 rpm, the HV system disconnected (X_Low / X_Upp boundary)"),
     "fov": C("hw_timing", "S-FOV", mech="SM-OV", quantity="v_dc", threshold=780.0, detect_max_us="$FOV_REACTION",
              react_max_us="$FOV_REACTION", label="fast over-voltage: detection and reaction"),
     "fov_bound": C("bound", "S-FOV", quantity="v_dc", max="$VDC_SAFETY_LIMIT",

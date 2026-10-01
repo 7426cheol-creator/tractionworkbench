@@ -1186,7 +1186,7 @@ class FaultSimPage(QWidget):
         self.p_zoom.draw(FF.fig_fault_transient, res, title=title, name="fault_transient", csv=csv)
         names = {"T_shaft": tr("축 토크 [N·m]", "shaft torque [N·m]"), "T_em": tr("전자기 토크 [N·m]", "EM torque [N·m]"),
                  "i_phase": tr("상전류 |i| [A]", "phase current |i| [A]"), "v_dc": "V_dc [V]",
-                 "i_bat": tr("배터리 전류 [A]", "battery current [A]")}
+                 "i_bat": tr("HV 입력 전류 [A]", "HV input current [A]")}     # at the inverter's DC terminals
 
         def f(v, d=4):
             return "—" if v is None else f"{v:.{d}g}"

@@ -299,7 +299,8 @@ def precision_notes(setup) -> list:
              "the horizon): currents far above the rating need a dynamically qualified flux model",
              "ideal switches and diodes (no forward drop, switching loss, ringing or device survival): device SOA and "
              "short-circuit withstand need supplier data",
-             "battery as Thevenin source with series inductance; the contactor arc is booked, not modelled"]
+             "the HV source at the drive's DC terminals (battery and harness) as a Thevenin source with series "
+             "inductance; the relay arc is booked, not modelled"]
     if setup.pwm_model == "averaged":
         notes.insert(0, "averaged PWM: currents without switching ripple; comparator trips and peaks near a limit need "
                         "the switched model")

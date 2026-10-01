@@ -139,7 +139,7 @@ def reason_word(r: str) -> str:
 
 METRIC_WORDS = {"i_phase_peak_A": ("최대 |상전류| [A]", "peak |phase current| [A]"),
                 "v_dc_max_V": ("최대 V_dc [V]", "max V_dc [V]"), "v_dc_min_V": ("최소 V_dc [V]", "min V_dc [V]"),
-                "i_bat_charge_max_A": ("최대 배터리 충전 전류 [A]", "max battery charging current [A]"),
+                "i_bat_charge_max_A": ("최대 HV 역방향 전류 [A]", "max reverse HV current [A]"),
                 "T_shaft_max_Nm": ("최대 축 토크 [N·m]", "max shaft torque [N·m]"),
                 "T_shaft_min_Nm": ("최소 축 토크 [N·m]", "min shaft torque [N·m]"),
                 "first_detection_ms": ("첫 검출 시각 [ms]", "first detection [ms]"),

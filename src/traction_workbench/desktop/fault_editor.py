@@ -56,7 +56,7 @@ FAULT_DESC_KO = {
     "switch_open": "전력 스위치 개방 고장", "switch_short": "전력 스위치 단락 고장",
     "diode_open": "환류 다이오드 개방 고장", "phase_open": "모터 상 연결 개방",
     "gate_supply_loss": "한쪽 게이트 드라이버 전원 상실 (자원 GATE_UPPER / GATE_LOWER)",
-    "battery_disconnect": "주 접촉기가 열림", "contactor_stuck": "명령해도 주 접촉기가 열리지 않음 (융착)",
+    "battery_disconnect": "배터리 릴레이(주 접촉기)가 열림 — 구동 시스템 경계의 사건, 다른 고장과 함께 넣어 결합을 모사", "contactor_stuck": "명령해도 주 접촉기가 열리지 않음 (융착)",
     "charge_acceptance_loss": "배터리가 충전을 받지 않음: BMS 충전 전류 한계가 떨어짐",
     "mechanism_disabled": "안전 메커니즘이 조용히 동작하지 않음 (잠재 고장)",
     "path_lost": "반응 경로가 구동하지 못함 (잠재 고장)",

@@ -178,7 +178,7 @@ def test_frozen_position_sensor_makes_the_policy_choose_six_switch_off_at_high_s
     assert r["summary"]["v_dc_max_V"] < 700.0                       # the battery holds the DC link
     relay = run("res_lost_relay")                                    # the relay opens at 22 ms, during the 6SO
     assert relay["verdicts"]["TSR-06"] == "FAIL" and relay["summary"]["v_dc_max_V"] > 850.0
-    assert any(e["source"] == "contactor" and "fault" in e["text"] for e in relay["events"])
+    assert any(e["source"] == "contactor" and "scenario event" in e["text"] for e in relay["events"])
 
 
 def test_the_example_is_scoped_to_the_drive_system():
