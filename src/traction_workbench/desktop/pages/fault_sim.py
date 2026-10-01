@@ -8,19 +8,18 @@ from __future__ import annotations
 import json
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
-                               QHeaderView, QLabel, QListWidget, QListWidgetItem, QPushButton, QScrollArea, QSplitter,
-                               QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QListWidget,
+                               QListWidgetItem, QPushButton, QScrollArea, QSplitter, QTabWidget, QVBoxLayout, QWidget)
 
 from ... import api
 from ...errors import InputValidationError
-from ...extensions.faultsim.engine import FAULT_KINDS
 from ...i18n import tr
 from ...insight.fault import (axis_word, campaign_insight, check_word, compare_insight, fault_insight, fault_word,
                               finding_word, react, safety_case_insight, strategy_log_text, validation_insight,
                               verdict_ko)
 from ...plots import fault_figures as FF
 from ..fault_design import KIND_KO, DesignEditor, VariantField, strategy_summary
+from ..fault_editor import AxisEditor, FaultEditor, axis_catalog
 from ..widgets import (Cell, ConceptNote, KeyValueTable, PlotPanel, check, combo, confirm, error_box, hint, integer,
                        number, primary_button, reading_tab, with_reading)
 
@@ -45,41 +44,6 @@ NOTE = lambda: tr(  # noqa: E731
     "detection by an allocated mechanism, t_S safe condition reached and held).<br>The scope is <b>this one "
     "scenario</b>: a campaign covers an explored set; a continuous region is never claimed from samples. Inverter-level "
     "evidence, not a vehicle safety or ISO 26262 approval.")
-
-
-def _num(s: str):
-    s = s.strip()
-    if s.lower() in ("true", "false"):
-        return s.lower() == "true"
-    try:
-        v = float(s)
-        return int(v) if v.is_integer() and "." not in s and "e" not in s.lower() else v
-    except ValueError:
-        return s
-
-
-def parse_params(text: str) -> dict:
-    """``key=value, key=value`` (numbers where they parse)."""
-    out = {}
-    for part in (p for p in text.split(",") if p.strip()):
-        if "=" not in part:
-            raise ValueError(tr(f"매개변수는 key=value 형식: '{part.strip()}'", f"parameters are key=value: '{part.strip()}'"))
-        k, v = part.split("=", 1)
-        out[k.strip()] = _num(v)
-    return out
-
-
-def params_text(p: dict) -> str:
-    return ", ".join(f"{k}={v}" for k, v in (p or {}).items())
-
-
-def _values(text: str) -> dict:
-    """An axis: ``a, b, c`` (values) or ``lo:hi:n`` (range)."""
-    t = text.strip()
-    if ":" in t and "," not in t:
-        lo, hi, n = (x.strip() for x in t.split(":"))
-        return {"range": [float(lo), float(hi)], "n": int(float(n))}
-    return {"values": [_num(x) for x in t.split(",") if x.strip()]}
 
 
 def _sim_task(progress, body, project):
@@ -115,71 +79,6 @@ def _review_task(progress, body, project):
 def _verif_task(progress, body, project):
     progress(0.01, tr("검증 매트릭스", "verification matrix"))
     return api.fault_verification(body, project)
-
-
-class FaultTable(QTableWidget):
-    """Faults of the scenario: kind (choice), time [ms], parameters (key=value, ...)."""
-
-    def __init__(self, parent=None):
-        super().__init__(0, 3, parent)
-        self.setHorizontalHeaderLabels([tr("고장 종류", "fault kind"), tr("시각 [ms]", "time [ms]"),
-                                        tr("매개변수 (key=value, …)", "parameters (key=value, …)")])
-        self.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        self.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.horizontalHeader().setStretchLastSection(True)
-        self.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.setMinimumHeight(120)
-
-    def add(self, f: dict | None = None):
-        f = f or {"kind": "sensor", "t_ms": 10.0, "params": {"target": "CS_A", "mode": "offset", "value": 100}}
-        r = self.rowCount()
-        self.insertRow(r)
-        c = QComboBox()
-        for k, (desc, _p) in FAULT_KINDS.items():
-            c.addItem(k, k)
-            c.setItemData(c.count() - 1, desc, Qt.ToolTipRole)
-        c.setCurrentIndex(max(0, c.findData(f["kind"])))
-        self.setCellWidget(r, 0, c)
-        self.setItem(r, 1, QTableWidgetItem(f"{float(f.get('t_ms', 0.0)):g}"))
-        self.setItem(r, 2, QTableWidgetItem(params_text(f.get("params") or {})))
-
-    def remove_selected(self):
-        for row in sorted({i.row() for i in self.selectedIndexes()}, reverse=True):
-            self.removeRow(row)
-
-    def set_faults(self, faults: list):
-        self.setRowCount(0)
-        for f in faults or []:
-            self.add(f)
-
-    # workspace: the rows as typed (a parameter text that does not parse yet is kept as it is)
-    def workspace_state(self) -> list:
-        return [{"kind": self.cellWidget(r, 0).currentData(),
-                 "t_ms": self.item(r, 1).text() if self.item(r, 1) else "",
-                 "params": self.item(r, 2).text() if self.item(r, 2) else ""} for r in range(self.rowCount())]
-
-    def restore_workspace(self, rows) -> list[str]:
-        problems = []
-        self.setRowCount(0)
-        for i, row in enumerate(rows or []):
-            if row.get("kind") not in FAULT_KINDS:
-                problems.append(tr(f"{i + 1}행: 고장 종류 '{row.get('kind')}'가 이 앱에 없음 — 뺌",
-                                   f"row {i + 1}: fault kind '{row.get('kind')}' does not exist in this app - dropped"))
-                continue
-            self.add({"kind": row["kind"], "t_ms": 0.0, "params": {}})
-            r = self.rowCount() - 1
-            self.item(r, 1).setText(str(row.get("t_ms", "")))
-            self.item(r, 2).setText(str(row.get("params", "")))
-        return problems
-
-    def faults(self) -> list:
-        out = []
-        for r in range(self.rowCount()):
-            kind = self.cellWidget(r, 0).currentData()
-            t = float((self.item(r, 1).text() if self.item(r, 1) else "0") or 0.0)
-            out.append({"kind": kind, "t_ms": t, "params": parse_params(self.item(r, 2).text() if self.item(r, 2)
-                                                                        else "")})
-        return out
 
 
 class FaultSimPage(QWidget):
@@ -240,24 +139,8 @@ class FaultSimPage(QWidget):
         v.addWidget(g)
         g = QGroupBox(tr("고장 (주 고장 + 잠재 고장 조합)", "faults (primary + latent combinations)"))
         gl = QVBoxLayout(g)
-        self.faults = FaultTable()
+        self.faults = FaultEditor()          # a list and the form of the selected fault (no typed parameter text)
         gl.addWidget(self.faults)
-        row = QHBoxLayout()
-        self.add_fault = QPushButton(tr("고장 추가", "add fault"))
-        self.del_fault = QPushButton(tr("선택 삭제", "remove selected"))
-        self.add_fault.clicked.connect(lambda: self.faults.add())
-        self.del_fault.clicked.connect(self.faults.remove_selected)
-        row.addWidget(self.add_fault)
-        row.addWidget(self.del_fault)
-        gl.addLayout(row)
-        gl.addWidget(hint(tr("매개변수 예: sensor → target=CS_A, mode=offset|gain|stuck|stuck_last|lost|delay, value=… · "
-                             "torque_command → mode=stale|value|offset|sign_flip|loss, paths=control|monitor|both · "
-                             "switch_short → leg=a, device=upper · gate_supply_loss → side=lower · resource_loss → "
-                             "resource=SENS_5V · duration_ms=… (간헐 고장)",
-                             "parameters: sensor → target=CS_A, mode=offset|gain|stuck|stuck_last|lost|delay, value=… · "
-                             "torque_command → mode=stale|value|offset|sign_flip|loss, paths=control|monitor|both · "
-                             "switch_short → leg=a, device=upper · gate_supply_loss → side=lower · resource_loss → "
-                             "resource=SENS_5V · duration_ms=… (intermittent)")))
         v.addWidget(g)
         g = QGroupBox(tr("보호·반응·설계 변형", "protection · reaction · design variants"))
         f = QFormLayout(g)
@@ -425,38 +308,19 @@ class FaultSimPage(QWidget):
 
     # ------------------------------------------------------------------ campaign / validation / dependency tabs
     def _campaign_tab(self):
-        w = QWidget()
-        lay = QHBoxLayout(w)
+        w = QSplitter(Qt.Horizontal)              # the axes panel can be widened (long quantity names)
         left = QWidget()
         lv = QVBoxLayout(left)
         lv.setContentsMargins(0, 0, 0, 0)
         g = QGroupBox(tr("축 (현재 시나리오가 기준)", "axes (the current scenario is the base)"))
         gl = QVBoxLayout(g)
-        self.axes = QTableWidget(0, 2)
-        self.axes.setHorizontalHeaderLabels([tr("경로", "path"), tr("값 (a, b, c) 또는 범위 lo:hi:n", "values (a, b, c) or "
-                                                                                                 "range lo:hi:n")])
-        self.axes.horizontalHeader().setStretchLastSection(True)
-        self.axes.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.axes_why = hint("")
         self.axes_why.setWordWrap(True)
         gl.addWidget(self.axes_why)
+        # the axes are chosen from what this scenario and design can vary (no typed paths)
+        self.axes = AxisEditor(lambda: axis_catalog(self.scenario(), self.editor.work,
+                                                    self.design["schema"].get("kind_params")))
         gl.addWidget(self.axes)
-        row = QHBoxLayout()
-        self.ax_add = QPushButton(tr("축 추가", "add axis"))
-        self.ax_del = QPushButton(tr("선택 삭제", "remove selected"))
-        self.ax_add.clicked.connect(lambda: (self.axes.insertRow(self.axes.rowCount())))
-        self.ax_del.clicked.connect(lambda: [self.axes.removeRow(r) for r in sorted({i.row() for i in
-                                                                                    self.axes.selectedIndexes()},
-                                                                                   reverse=True)])
-        row.addWidget(self.ax_add)
-        row.addWidget(self.ax_del)
-        gl.addLayout(row)
-        gl.addWidget(hint(tr("경로 예: speed_rpm · torque_Nm · theta0_deg · faults.0.t_ms · faults.0.params.value · "
-                             "tolerances.CS_A.gain_err · tolerances.machine.psi_scale · overrides.mechanisms.SM-TQ.params."
-                             "debounce_ms · overrides.paths.HW.delay_us",
-                             "paths: speed_rpm · torque_Nm · theta0_deg · faults.0.t_ms · faults.0.params.value · "
-                             "tolerances.CS_A.gain_err · tolerances.machine.psi_scale · overrides.mechanisms.SM-TQ.params."
-                             "debounce_ms · overrides.paths.HW.delay_us")))
         lv.addWidget(g)
         g = QGroupBox(tr("방식", "mode"))
         f = QFormLayout(g)
@@ -500,8 +364,8 @@ class FaultSimPage(QWidget):
         sc = QScrollArea()
         sc.setWidgetResizable(True)
         sc.setWidget(left)
-        sc.setMinimumWidth(420)
-        lay.addWidget(sc)
+        sc.setMinimumWidth(360)
+        w.addWidget(sc)
         right = QWidget()
         rv = QVBoxLayout(right)
         rv.setContentsMargins(0, 0, 0, 0)
@@ -515,7 +379,9 @@ class FaultSimPage(QWidget):
         view, self.i_camp = with_reading(right, tr("캠페인을 실행하면 경계·최악값·민감도·반례 해석이 표시됩니다.",
                                                    "Run a campaign to read boundaries, worst values, sensitivity and "
                                                    "counterexamples."))
-        lay.addWidget(view, 1)
+        w.addWidget(view)
+        w.setStretchFactor(1, 1)
+        w.setSizes([460, 700])
         self.win.track_inputs("fault_campaign", left)
         return w
 
@@ -677,14 +543,7 @@ class FaultSimPage(QWidget):
 
     def set_axes(self, axes: list, why: dict | None = None):
         """The campaign axes (a scenario's suggestion or a counterexample's): path and values or range."""
-        self.axes.setRowCount(0)
-        for a in axes:
-            r = self.axes.rowCount()
-            self.axes.insertRow(r)
-            self.axes.setItem(r, 0, QTableWidgetItem(a["path"]))
-            txt = (f"{a['range'][0]:g}:{a['range'][1]:g}:{int(a.get('n', 5))}" if a.get("range") else
-                   ", ".join(str(v) for v in a.get("values") or []))
-            self.axes.setItem(r, 1, QTableWidgetItem(txt))
+        self.axes.set_axes(axes)
         self.axes_why.setText(tr("이 시나리오의 추천 캠페인: ", "suggested for this scenario: ") + why[tr("ko", "en")]
                               if why else "")
 
@@ -766,6 +625,7 @@ class FaultSimPage(QWidget):
         except InputValidationError:
             ov = {}
         self.design_variant.set_variant(ov, ed.change_count(), ed.error, note)
+        self.faults.set_choices(ed.work)    # sensors, mechanisms, paths, resources, strategies of the edited design
         self._refresh_candidates()
         self._refresh_override_combo()
 
@@ -1025,12 +885,7 @@ class FaultSimPage(QWidget):
                             self.win.state.project, on_error=self._err)
 
     def campaign_body(self) -> dict:
-        axes = []
-        for r in range(self.axes.rowCount()):
-            p = self.axes.item(r, 0).text().strip() if self.axes.item(r, 0) else ""
-            vals = self.axes.item(r, 1).text().strip() if self.axes.item(r, 1) else ""
-            if p and vals:
-                axes.append({"path": p, **_values(vals)})
+        axes = self.axes.axes()
         return {"base": self.scenario(), "axes": axes, "mode": self.cmode.currentData(), "n_random": self.cn.value(),
                 "seed": self.cseed.value(), "boundary_refinements": self.cref.value()}
 
