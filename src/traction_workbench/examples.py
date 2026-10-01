@@ -160,6 +160,22 @@ CHARGING_PATH = {
     "basis": "synthetic integrated-charging path (neutral brought out through a contactor; ratings are examples)",
 }
 
+TORQUE_ERRORS = {
+    "current_gain_pct": 1.0, "current_offset_A": 2.0, "resolver_offset_deg_e": 0.5, "magnet_temp_dev_K": 15.0,
+    "magnet_coeff_per_K": -0.0011, "psi_tol_pct": 1.0, "Ld_tol_pct": 2.0, "Lq_tol_pct": 2.0, "estimator_pct": 1.0,
+    "monitor_mismatch_pct": 3.0,
+    "magnet_coeff_basis": "typical NdFeB remanence coefficient (-0.11 %/K) - replace with the magnet grade's data",
+    "basis": {"current_gain": "sensor total gain error over temperature (= the fault simulation's CS_A/B gain_tol)",
+              "current_offset": "residual offset after the power-up calibration (= CS_A/B offset_tol_A)",
+              "resolver_offset": "residual angle offset after the end-of-line calibration (= RES offset_tol_deg)",
+              "magnet_temperature": "magnet-temperature estimator error (synthetic)",
+              "model_tolerance": "unit-to-unit spread of magnets and laminations around the calibrated design "
+                                 "(synthetic)",
+              "estimator": "torque-table interpolation (synthetic)",
+              "monitor_mismatch": "the monitor's independent torque estimate vs the control path (synthetic)"},
+    "source": "synthetic error sources of the torque chain",
+}
+
 # -- fault simulation: protection architecture and safety requirements (synthetic) --------------------------------
 from .extensions.faultsim.example import FAULT_SIM  # noqa: E402  (engine-side data, used by the project below)
 
@@ -251,6 +267,10 @@ SYNTHETIC_PROJECT = {
             "provenance": {"origin": "synthetic", "source": "synthetic integrated-charging path", "revision": "1",
                            "qualified": False, "evidence": ""},
             "data": CHARGING_PATH},
+        "torque_errors": {
+            "provenance": {"origin": "synthetic", "source": "synthetic torque-chain error sources", "revision": "1",
+                           "qualified": False, "evidence": ""},
+            "data": TORQUE_ERRORS},
         "safety": {
             "provenance": {"origin": "synthetic", "source": "example FTTI chain and project rule", "revision": "1",
                            "qualified": False, "evidence": ""},

@@ -182,7 +182,7 @@ def test_every_page_input_has_a_place_in_the_workspace(app):
     w = _window()
     try:
         pages = WS.pages_with_inputs(w)
-        assert len(pages) == 16
+        assert len(pages) == 19
         for key in pages:
             missing = WS.uncaptured(w.pages[key], WS.input_roots(w, key))
             assert not missing, (key, [type(x).__name__ for x in missing])

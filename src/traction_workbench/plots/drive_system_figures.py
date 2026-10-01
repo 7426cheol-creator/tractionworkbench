@@ -320,3 +320,220 @@ def fig_charging_capability(fig, cap: dict, title: str | None = None):
     ax.set_title(tr("통합 충전 능력 — 점의 색 = 그 점을 막는 한계", "integrated charging capability — dot colour = the "
                                                        "limit that binds there"), fontsize=9)
     ax.set_ylim(bottom=0)
+
+
+# ---------------------------------------------------------------------------------------------- system budgets
+
+# contributor identity in a fixed order (validated categorical slots; green and red stay reserved for the verdicts)
+_BUD_CAT = {"light": ("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#4a3aa7"),
+            "dark": ("#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#9085e9")}
+BUDGET_ITEM = {"current_gain": lambda: tr("전류 센서 이득", "current-sensor gain"),
+               "current_offset": lambda: tr("전류 센서 오프셋", "current-sensor offset"),
+               "resolver_offset": lambda: tr("레졸버 오프셋", "resolver offset"),
+               "magnet_temperature": lambda: tr("자석 온도 추정", "magnet temperature estimate"),
+               "model_tolerance": lambda: tr("모델 공차 (ψ, L_d, L_q)", "model tolerance (ψ, L_d, L_q)"),
+               "estimator": lambda: tr("토크 추정기", "torque estimator"),
+               "monitor_mismatch": lambda: tr("모니터 불일치", "monitor mismatch")}
+COMB_NAME = {"worst_case": lambda: tr("최악 (선형 합)", "worst case (linear)"),
+             "rss": lambda: tr("RSS (제곱합 근)", "RSS (root sum of squares)"),
+             "mixed": lambda: tr("혼합 (계통 선형 + 랜덤 RSS)", "mixed (systematic linear + random RSS)")}
+
+
+def _bud_colors(ids):
+    pal = _BUD_CAT["dark" if S.theme_name() == "dark" else "light"]
+    return {k: pal[i % len(pal)] for i, k in enumerate(ids)}
+
+
+def _item_name(k):
+    return BUDGET_ITEM.get(k, lambda: k.replace("_", " "))()
+
+
+def fig_budget_torque(fig, res: dict, title: str | None = None):
+    """Shaft-torque error per operating point: the contributions stacked linearly (= the worst-case stack), the
+    declared stack as a marker coloured by its verdict, the requirement as a tick per point."""
+    _reset(fig, title)
+    t_ = S.theme()
+    ax = fig.subplots()
+    pts = res.get("points") or []
+    if not pts:
+        ax.set_axis_off()
+        _note(ax, tr("운전점이 없습니다", "no operating points"))
+        return
+    items = [k for k in ("current_gain", "current_offset", "resolver_offset", "magnet_temperature", "model_tolerance",
+                         "estimator") if any((p.get("contributions_Nm") or {}).get(k) is not None for p in pts)]
+    col = _bud_colors(items)
+    x = np.arange(len(pts))
+    bottom = np.zeros(len(pts))
+    for k in items:
+        v = np.array([((p.get("contributions_Nm") or {}).get(k) or 0.0) for p in pts])
+        ax.bar(x, v, bottom=bottom, width=0.72, color=col[k], edgecolor=t_["bg"], lw=0.8, label=_item_name(k))
+        bottom += v
+    comb = res.get("combination", "mixed")
+    used = set()
+    for i, p in enumerate(pts):
+        if "total_Nm" not in p:
+            ax.annotate(tr("미평가", "not evaluated"), (i, 0), xytext=(0, 3), textcoords="offset points",
+                        rotation=90, fontsize=6.5, color=t_["muted"], ha="center", va="bottom")
+            continue
+        lim = p.get("limit_Nm")
+        if lim is not None:
+            ax.plot([i - 0.42, i + 0.42], [lim, lim], color=t_["fg"], lw=1.6, solid_capstyle="butt")
+        st = p.get("status", "UNKNOWN")
+        used.add(st)
+        ax.scatter([i], [p["total_Nm"]], marker="D", s=34, color=S.VERDICT.get(st, t_["muted"]), zorder=4,
+                   edgecolor=t_["bg"], lw=0.8)
+    # speed groups under the axis
+    labels = [f"{p['torque_Nm']:.0f}" for p in pts]
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=90, fontsize=6.5)
+    speeds = [p["speed_rpm"] for p in pts]
+    start = 0
+    for i in range(1, len(pts) + 1):
+        if i == len(pts) or speeds[i] != speeds[start]:
+            if start > 0:
+                ax.axvline(start - 0.5, color=t_["grid"], lw=0.8)
+            ax.annotate(f"{speeds[start]:.0f} rpm", ((start + i - 1) / 2, 1.0), xycoords=("data", "axes fraction"),
+                        xytext=(0, -4), textcoords="offset points", ha="center", va="top", fontsize=7.5,
+                        color=t_["muted"])
+            start = i
+    ax.set_xlim(-0.6, len(pts) - 0.4)
+    ax.set_xlabel(tr("운전점 토크 요구 [N·m] (속도별 묶음)", "operating-point torque [N·m] (grouped by speed)"))
+    ax.set_ylabel(tr("축 토크 오차 [N·m]", "shaft-torque error [N·m]"))
+    h, lab = ax.get_legend_handles_labels()
+    h = h[::-1]
+    lab = lab[::-1]
+    h.append(Line2D([], [], color=t_["fg"], lw=1.6))
+    lab.append(tr("요구 max(abs, rel·|T|)", "requirement max(abs, rel·|T|)"))
+    for st in ("PASS", "FAIL", "UNKNOWN"):
+        if st in used:
+            h.append(Line2D([], [], ls="", marker="D", ms=5.5, color=S.VERDICT[st]))
+            lab.append(tr(f"선언 스택 ({comb}) — {st}", f"declared stack ({comb}) — {st}"))
+    fig.legend(h, lab, fontsize=7, loc="outside lower center", ncol=4)
+    ax.set_ylim(0, max(1e-9, max(max(bottom), max((p.get("limit_Nm") or 0) for p in pts))) * 1.12)
+    ax.set_title(tr("토크 정확도 버짓 — 막대 = 기여 선형 합(최악), ◆ = 선언 스택, ─ = 요구",
+                    "torque-accuracy budget — bars = contributions stacked linearly (worst case), ◆ = declared "
+                    "stack, ─ = requirement"), fontsize=9)
+
+
+def fig_budget_fusa(fig, res: dict, title: str | None = None):
+    """The functional-safety link against |T|: safety window and monitor threshold as lines, per point the largest
+    deviation the monitor lets through (threshold + mismatch + unseen errors) and the normal-operation error."""
+    _reset(fig, title)
+    t_ = S.theme()
+    ax = fig.subplots()
+    f = res.get("fusa")
+    ev = [p for p in res.get("points") or [] if p.get("fusa_window_Nm") is not None]
+    if not f or not ev:
+        ax.set_axis_off()
+        _note(ax, tr("프로젝트에 토크 창(TSR)·토크 모니터(SM)가 없습니다 — 기능안전 연결 없음",
+                     "the project declares no torque window (TSR) or torque monitor (SM) — no functional-safety link"))
+        return
+    Tm = max(abs(p["torque_Nm"]) for p in ev) * 1.08
+    tt = np.linspace(0.0, Tm, 200)
+
+    def line(spec):
+        return np.maximum(float(spec.get("abs_Nm") or 0.0), float(spec.get("rel") or 0.0) * tt)
+    if f.get("torque_window"):
+        ax.plot(tt, line(f["torque_window"]), color=t_["fg"], lw=1.6,
+                label=tr("안전 창 (TSR) max(abs, rel·|T|)", "safety window (TSR) max(abs, rel·|T|)"))
+    if f.get("monitor"):
+        ax.plot(tt, line(f["monitor"]), color=t_["muted"], lw=1.2, ls="--",
+                label=tr("모니터 문턱 (SM)", "monitor threshold (SM)"))
+    used = set()
+    for p in ev:
+        st = p.get("undetected_status", "UNKNOWN")
+        used.add(st)
+        if p.get("undetected_Nm") is not None:
+            ax.scatter([abs(p["torque_Nm"])], [p["undetected_Nm"]], marker="o", s=30, zorder=4,
+                       color=S.VERDICT.get(st, t_["muted"]), edgecolor=t_["bg"], lw=0.8)
+        ax.scatter([abs(p["torque_Nm"])], [p["fusa_error_Nm"]], marker="s", s=22, zorder=3, facecolor="none",
+                   edgecolor=S.ACCENT, lw=1.0)
+    h, lab = ax.get_legend_handles_labels()
+    for st in ("PASS", "FAIL", "UNKNOWN"):
+        if st in used:
+            h.append(Line2D([], [], ls="", marker="o", ms=5.5, color=S.VERDICT[st]))
+            lab.append(tr(f"미검출 최대 편차 = 문턱 + 불일치 + 모니터가 못 보는 오차 — {st}",
+                          f"largest undetected deviation = threshold + mismatch + errors the monitor cannot see — {st}"))
+    h.append(Line2D([], [], ls="", marker="s", ms=5, mfc="none", mec=S.ACCENT))
+    lab.append(tr("정상 운전 오차 (최악 합)", "normal-operation error (worst-case sum)"))
+    ax.legend(h, lab, fontsize=7, loc="upper left")
+    ax.set_xlim(0, Tm)
+    ax.set_ylim(bottom=0)
+    ax.set_xlabel(tr("|토크 요구| [N·m]", "|torque request| [N·m]"))
+    ax.set_ylabel(tr("토크 편차 [N·m]", "torque deviation [N·m]"))
+    w = f.get("worst_undetected_point")
+    ax.set_title(tr("기능안전 연결 — 창 위의 점: 모니터가 놓치는 고장이 창을 넘을 수 있음",
+                    "functional-safety link — a dot above the window: a fault the monitor misses can leave the "
+                    "window"), fontsize=9)
+    if w is not None and w.get("undetected_margin_Nm") is not None:
+        _note(ax, tr(f"최악: {w['speed_rpm']:.0f} rpm, {w['torque_Nm']:.0f} N·m — 문턱 {w['monitor_threshold_Nm']:.1f} + "
+                     f"불일치 {w['monitor_mismatch_Nm'] or 0:.1f} + 못 보는 오차 {w['monitor_unseen_Nm']:.1f} = "
+                     f"{w['undetected_Nm']:.1f} N·m vs 창 {w['fusa_window_Nm']:.1f} N·m",
+                     f"worst: {w['speed_rpm']:.0f} rpm, {w['torque_Nm']:.0f} N·m — threshold "
+                     f"{w['monitor_threshold_Nm']:.1f} + mismatch {w['monitor_mismatch_Nm'] or 0:.1f} + unseen "
+                     f"{w['monitor_unseen_Nm']:.1f} = {w['undetected_Nm']:.1f} N·m vs window "
+                     f"{w['fusa_window_Nm']:.1f} N·m"), "lower right")
+
+
+def fig_budget_bars(fig, b: dict, title: str | None = None):
+    """One budget: each contributor's value with its allocation, and the three stacks against the limit."""
+    _reset(fig, title)
+    t_ = S.theme()
+    rows = b.get("contributors") or []
+    ax, ax2 = fig.subplots(2, 1, gridspec_kw={"height_ratios": [max(2, len(rows)), 3]})
+    unit = str(b.get("unit", "")).replace("*", "·")
+    ids = [r["id"] for r in rows]
+    # the torque items keep their identity colours (same as the per-point chart); other budgets name each bar on
+    # the axis, so one colour serves them all (no colour is ever reused for a second contributor)
+    col = _bud_colors([k for k in BUDGET_ITEM if k in ids]) if all(k in BUDGET_ITEM for k in ids) else \
+        {k: S.ACCENT for k in ids}
+    y = np.arange(len(rows))[::-1]
+    vmax = 0.0
+    for yi, r in zip(y, rows):
+        v = r.get("value")
+        if v is None:
+            ax.annotate(tr("미확정", "not established"), (0, yi), xytext=(3, 0), textcoords="offset points",
+                        va="center", fontsize=7.5, color=t_["muted"])
+            continue
+        ax.barh([yi], [v], height=0.62, color=col[r["id"]], edgecolor=t_["bg"], lw=0.8)
+        vmax = max(vmax, v)
+        a = r.get("allocation")
+        txt = f"{v:.3g} {unit}"
+        if r.get("share") is not None:
+            txt += f"  ({100 * r['share']:.0f} %)"
+        if a is not None:
+            ax.plot([a, a], [yi - 0.38, yi + 0.38], color=t_["fg"], lw=1.6)
+            vmax = max(vmax, a)
+            st = r.get("allocation_status")
+            txt += tr(f"  · 배분 {a:.3g} {st}", f"  · allocation {a:.3g} {st}")
+        ax.annotate(txt, (max(v, a or 0.0), yi), xytext=(5, 0), textcoords="offset points", va="center",
+                    fontsize=7.5, color=t_["fg"])
+    ax.set_yticks(y)
+    ax.set_yticklabels([_item_name(r["id"]) if r["id"] in BUDGET_ITEM else
+                        (LOSS_LAB[r["id"]]() if r["id"] in LOSS_LAB else r["title"]) for r in rows], fontsize=7.5)
+    ax.set_xlim(0, max(vmax, 1e-12) * 1.9)
+    ax.set_xlabel(unit)
+    am = b.get("allocation_method")
+    ax.set_title(tr("기여 (막대) · 배분 (│" + (f", {am}" if am else "") + ")",
+                    "contributors (bars) · allocation (│" + (f", {am}" if am else "") + ")"), fontsize=9)
+    st = b.get("stacks") or {}
+    comb = b.get("combination", "mixed")
+    keys = [k for k in ("worst_case", "rss", "mixed") if k in st]
+    yy = np.arange(len(keys))[::-1]
+    for yi, k in zip(yy, keys):
+        dec = k == comb
+        ax2.barh([yi], [st[k]], height=0.6, color=S.VERDICT.get(b.get("status"), t_["muted"]) if dec else t_["grid"],
+                 edgecolor=t_["bg"], lw=0.8)
+        ax2.annotate(f"{st[k]:.4g} {unit}" + (tr("  ← 판정", "  ← decides") if dec else ""), (st[k], yi),
+                     xytext=(4, 0), textcoords="offset points", va="center", fontsize=7.5, color=t_["fg"])
+    lim = b.get("limit")
+    if lim is not None:
+        ax2.axvline(lim, color=t_["fg"], lw=1.6)
+    ax2.set_yticks(yy)
+    ax2.set_yticklabels([COMB_NAME[k]() for k in keys], fontsize=7.5)
+    ax2.set_xlim(0, max([st.get(k, 0) for k in keys] + [lim or 0, 1e-12]) * 1.45)
+    ax2.set_xlabel(unit)
+    ax2.set_title(tr(f"스택 — {b.get('status')}", f"stacks — {b.get('status')}")
+                  + ("" if lim is None else tr(f", 한계 (│) {lim:.4g} {unit}", f", limit (│) {lim:.4g} {unit}"))
+                  + ("" if b.get("margin") is None else tr(f", 여유 {b['margin']:.3g} {unit}",
+                                                           f", margin {b['margin']:.3g} {unit}")), fontsize=9)

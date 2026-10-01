@@ -493,10 +493,12 @@ class NumTable(QTableWidget):
     """Editable numeric table: add/remove rows, Ctrl+V pastes a block from a spreadsheet at the current cell."""
 
     def __init__(self, headers: list[str], rows=None, parent=None, min_height: int = 120, text_cols=(),
-                 optional_cols=()):
+                 optional_cols=(), choice_cols=None):
         super().__init__(parent)
         self.text_cols = frozenset(text_cols)            # returned as stripped text (names, kinds)
         self.optional_cols = frozenset(optional_cols)    # a blank numeric cell here is None (not declared), not 0
+        # column -> [(label, value), ...]: a drop-down in every row instead of typed text (returned as the value)
+        self.choice_cols = dict(choice_cols or {})
         self.fit_columns = True                          # False: the page sizes the columns itself
         self.setColumnCount(len(headers))
         self.setHorizontalHeaderLabels(headers)
@@ -547,7 +549,27 @@ class NumTable(QTableWidget):
         self.insertRow(i)
         for j in range(self.columnCount()):
             v = None if values is None or j >= len(values) else values[j]
+            if j in self.choice_cols:
+                self._set_choice(i, j, v)
+                continue
             self.setItem(i, j, QTableWidgetItem("" if v is None else (v if isinstance(v, str) else fmt(v))))
+
+    def _set_choice(self, i: int, j: int, v) -> None:
+        cb = QComboBox()
+        for label, data in self.choice_cols[j]:
+            cb.addItem(label, data)
+        k = cb.findData(v)
+        if k < 0 and v is not None:
+            k = cb.findText(str(v))
+        cb.setCurrentIndex(max(k, 0))
+        self.setItem(i, j, QTableWidgetItem(""))
+        self.setCellWidget(i, j, cb)
+
+    def _cell_text(self, i: int, j: int) -> str:
+        if j in self.choice_cols:
+            cb = self.cellWidget(i, j)
+            return "" if cb is None else str(cb.currentData())
+        return self.item(i, j).text().strip() if self.item(i, j) else ""
 
     def remove_selected(self) -> None:
         rows = sorted({i.row() for i in self.selectedIndexes()} or ({self.currentRow()} if self.currentRow() >= 0 else set()),
@@ -561,12 +583,12 @@ class NumTable(QTableWidget):
         Text columns come back as text; a blank optional column comes back as None (not declared)."""
         out = []
         for i in range(self.rowCount()):
-            cells = [(self.item(i, j).text().strip() if self.item(i, j) else "") for j in range(self.columnCount())]
-            if not any(cells):
+            cells = [self._cell_text(i, j) for j in range(self.columnCount())]
+            if not any(c for j, c in enumerate(cells) if j not in self.choice_cols):
                 continue
             row = []
             for j, c in enumerate(cells):
-                if j in self.text_cols:
+                if j in self.text_cols or j in self.choice_cols:
                     row.append(c)
                     continue
                 if c == "" and j in self.optional_cols:
@@ -597,7 +619,10 @@ class NumTable(QTableWidget):
         for di, row in enumerate(grid):
             for dj, cell in enumerate(row):
                 if c0 + dj < self.columnCount():
-                    self.setItem(r0 + di, c0 + dj, QTableWidgetItem(cell))
+                    if c0 + dj in self.choice_cols:
+                        self._set_choice(r0 + di, c0 + dj, cell.strip())
+                    else:
+                        self.setItem(r0 + di, c0 + dj, QTableWidgetItem(cell))
         self._fit()
 
     def keyPressEvent(self, ev):

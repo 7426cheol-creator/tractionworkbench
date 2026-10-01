@@ -220,6 +220,9 @@ def _apply_table(t: QTableWidget, e: dict, path: str) -> list[str]:
         for j, cell in enumerate(row[:cols]):
             if isinstance(cell, dict) and "w" in cell:
                 cw = t.cellWidget(i, j)
+                if cw is None and j in getattr(t, "choice_cols", {}):     # a drop-down column builds its cell
+                    t._set_choice(i, j, None)
+                    cw = t.cellWidget(i, j)
                 if cw is None:
                     problems.append(tr(f"{path}: {i + 1}행 {j + 1}열의 선택 칸이 없음", f"{path}: row {i + 1}, column "
                                                                                f"{j + 1} has no choice cell"))
@@ -321,6 +324,9 @@ def uncaptured(obj, within) -> list:
         reach.add(id(w))
         if hasattr(w, "workspace_state"):
             reach.update(id(x) for x in input_widgets(w))
+        if isinstance(w, QTableWidget):                 # the table's entry carries its cell widgets
+            reach.update(id(w.cellWidget(i, j)) for i in range(w.rowCount()) for j in range(w.columnCount())
+                         if w.cellWidget(i, j) is not None)
     return [w for r in within for w in input_widgets(r) if id(w) not in reach and not w.property("twb_not_input")]
 
 

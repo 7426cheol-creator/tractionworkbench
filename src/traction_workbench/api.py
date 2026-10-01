@@ -27,6 +27,7 @@ from .extensions.coolant import eg_water_properties
 from .extensions.dclink import active_discharge, passive_discharge, regen_disconnect_overvoltage
 from .extensions.safe_state import safe_state_screening
 from .extensions.thermal import ThermalModel, thermal_duration, torque_availability
+from .extensions.system_budget import TQ_DEFAULT_KIND
 from .extensions.timing import analyze_timing
 from .modulation import MODULATIONS
 from .scenario import DcSourceLimits, Scenario
@@ -1307,6 +1308,79 @@ def charging_capability(body):
     return _jsonable(res)
 
 
+# -- system budgets (system view, item 11) -------------------------------------------------------------------------
+
+EXAMPLE_BUDGET = {
+    "torque": {"errors": PROJECT.data("torque_errors"),
+               "requirement": {"abs_Nm": 5.0, "rel": 0.05,
+                               "basis": "example torque-accuracy requirement: +-5 N m or +-5 % (the larger)"},
+               "combination": "mixed", "kinds": dict(TQ_DEFAULT_KIND), "points": None,
+               "speeds_rpm": [1000.0, 3000.0, 6000.0, 9000.0, 12000.0],
+               "fractions": [-1.0, -0.5, -0.2, 0.2, 0.5, 1.0], "Vdc_V": 600.0},
+    "fault_sim": PROJECT.data("fault_sim"),
+    "cycle": {"allocations_Wh_per_km": {"battery": 0.5, "inverter": 6.0, "motor_copper": 3.0, "motor_rotational": 9.0,
+                                        "reducer": 8.0, "axle": 0.5},
+              "limit_Wh_per_km": 25.0,
+              "basis": "example loss allocation of the drive on WLTC (component targets)"},
+    "custom": {"title": "example: DC-link voltage measurement chain", "unit": "V", "limit": 6.0,
+               "combination": "mixed", "allocation": "equal",
+               "contributors": [{"id": "divider", "title": "resistor divider tolerance", "value": 2.4,
+                                 "kind": "random", "basis": "0.4 % at 600 V (synthetic)"},
+                                {"id": "adc", "title": "ADC gain + offset", "value": 1.8, "kind": "random",
+                                 "basis": "synthetic"},
+                                {"id": "isolation", "title": "isolation amplifier drift", "value": 1.5,
+                                 "kind": "systematic", "basis": "over temperature (synthetic)"}]},
+}
+
+
+def budget_torque(body):
+    """Torque-accuracy budget at operating points over the envelope; the functional-safety window and monitor."""
+    from .extensions.system_budget import default_points, fusa_torque_limits, torque_accuracy
+    b = {**EXAMPLE_BUDGET, **(body or {})}
+    tq = {**EXAMPLE_BUDGET["torque"], **(b.get("torque") or {})}
+    d = _drive(b)
+    vdc = float(tq.get("Vdc_V") or 600.0)
+    temps = {k: _opt(tq, k) for k in ("winding_temp_C", "magnet_temp_C")}
+    pts = tq.get("points")
+    if not pts:
+        pts = default_points(d, vdc, _limits(b), {k: v for k, v in temps.items() if v is not None},
+                             tuple(float(x) for x in tq["speeds_rpm"]), tuple(float(x) for x in tq["fractions"]))
+    res = torque_accuracy(d, Vdc=vdc, limits=_limits(b), points=[(float(n), float(T)) for n, T in pts],
+                          errors=tq["errors"], requirement=tq.get("requirement"), combination=tq.get("combination",
+                                                                                                     "mixed"),
+                          kinds=tq.get("kinds") or {}, temps=temps, fusa=fusa_torque_limits(b.get("fault_sim")))
+    return _jsonable(res)
+
+
+def budget_ftti(body):
+    """The project's FTTI chain as a budget (worst path, proportional allocation)."""
+    from .extensions.system_budget import ftti_budget
+    b = body or {}
+    chain = b.get("chain") or example("TIMING", PROJECT)
+    return _jsonable(ftti_budget(timing(chain), b.get("combination", "worst_case")))
+
+
+def budget_cycle(body):
+    """Loss energy per component of a drive cycle (Wh/km) against declared allocations."""
+    from .extensions.system_budget import cycle_loss_budget
+    b = {**EXAMPLE_BUDGET, **(body or {})}
+    cy = {**EXAMPLE_BUDGET["cycle"], **(b.get("cycle") or {})}
+    res = b.get("cycle_result") or drive_cycle({**(b.get("cycle_body") or {}), "keep_trace": False})
+    out = cycle_loss_budget(res, cy.get("allocations_Wh_per_km") or {}, cy.get("limit_Wh_per_km"))
+    out["cycle"] = res.get("cycle", {}).get("name")
+    return _jsonable(out)
+
+
+def budget_custom(body):
+    """A budget the engineer declares: contributors, limit, combination and allocation."""
+    from .extensions.system_budget import contributor_from_dict, evaluate_budget
+    c = {**EXAMPLE_BUDGET["custom"], **((body or {}).get("custom") or {})}
+    return _jsonable(evaluate_budget(str(c.get("title", "budget")), str(c.get("unit", "")),
+                                     None if c.get("limit") is None else float(c["limit"]),
+                                     [contributor_from_dict(x) for x in c.get("contributors") or []],
+                                     str(c.get("combination", "mixed")), c.get("allocation")))
+
+
 def _cand(c: dict, fsw_kHz=None):
     from dataclasses import replace as _rep
     from .analysis.efficiency import ModuleCandidate
@@ -1875,7 +1949,7 @@ def concept_sizing(body):
 
 EXAMPLE_NAMES = ("TIMING", "THERMAL", "PROTECTION", "PROTECTION_OT", "MODULE", "MODULE_SIC", "RIPPLE", "ASC",
                  "MISSION", "OEW", "HEV", "EMI", "REDUCER", "EFFICIENCY", "PWM", "DRIVELINE", "MACHINE", "WINDING",
-                 "SIZING", "DRIVE_CYCLE", "CHARGING")
+                 "SIZING", "DRIVE_CYCLE", "CHARGING", "BUDGET")
 
 
 def _product(name: str, prj, ex: dict) -> dict:
@@ -1924,6 +1998,9 @@ def _product(name: str, prj, ex: dict) -> dict:
         ex["transition"].update(from_kHz=c["fsw_kHz"], deadtime_us=c["deadtime_us"])
     elif name == "DRIVELINE":
         ex["driveline"], ex["controller"] = prj.driveline_rom(), prj.torque_path()
+    elif name == "BUDGET":
+        ex["torque"]["errors"] = prj.data("torque_errors")
+        ex["fault_sim"] = prj.data("fault_sim") if prj.has("fault_sim") else None
     elif name == "CHARGING":
         ex.update(charging=prj.data("charging"), module={**prj.module_spec(), "vdc_scaling": ex["module"]["vdc_scaling"]},
                   capacitor=prj.capacitor(), source=prj.source_impedance())

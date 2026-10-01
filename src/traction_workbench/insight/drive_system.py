@@ -179,3 +179,179 @@ def charging_map_insight(cap: dict) -> Insight:
             s.add(f"{num(r['V_charger_V'], 4)} V / {num(r['V_battery_V'], 4)} V: {r.get('status')} — {r.get('reason', '')}",
                   "warn")
     return ins.nonempty()
+
+
+ITEM_NAMES = {"current_gain": lambda: tr("전류 센서 이득", "current-sensor gain"),
+              "current_offset": lambda: tr("전류 센서 오프셋", "current-sensor offset"),
+              "resolver_offset": lambda: tr("레졸버 오프셋", "resolver offset"),
+              "magnet_temperature": lambda: tr("자석 온도 추정", "magnet temperature estimate"),
+              "model_tolerance": lambda: tr("모델 공차 (ψ, L_d, L_q)", "model tolerance (ψ, L_d, L_q)"),
+              "estimator": lambda: tr("토크 추정기", "torque estimator"),
+              "monitor_mismatch": lambda: tr("모니터 불일치", "monitor mismatch")}
+
+
+def _iname(k):
+    return ITEM_NAMES.get(k, lambda: k.replace("_", " "))()
+
+
+def _cname(r: dict) -> str:
+    """Display name of a budget contributor: the torque items and the cycle's loss components by name."""
+    k = r.get("id")
+    if k in ITEM_NAMES:
+        return ITEM_NAMES[k]()
+    if k in LOSS_NAMES:
+        return LOSS_NAMES[k]()
+    return r.get("title") or str(k)
+
+
+COMB_SHORT = {"worst_case": lambda: tr("최악 (선형)", "worst case (linear)"), "rss": lambda: "RSS",
+              "mixed": lambda: tr("혼합", "mixed")}
+
+
+def _win(spec) -> str:
+    if not spec:
+        return "—"
+    return f"max({num(spec.get('abs_Nm') or 0, 4)} N·m, {num(100 * (spec.get('rel') or 0), 3)} % |T|)"
+
+
+def _break_even(r: dict, unit: str) -> str:
+    if r.get("alone_insufficient"):
+        return tr("이 기여를 0으로 줄여도 혼자서는 한계 안에 들지 못함", "even at zero this item alone cannot bring the "
+                                                          "stack inside the limit")
+    be = r.get("break_even_growth")
+    return "" if be is None else tr(f"손익분기 증가 {num(be, 3)} {unit}", f"break-even growth {num(be, 3)} {unit}")
+
+
+def budget_torque_insight(res: dict) -> Insight:
+    """The torque-accuracy budget over the envelope and its functional-safety link."""
+    pts = res.get("points") or []
+    ev = [p for p in pts if "total_Nm" in p]
+    st = res.get("status")
+    cnt = res.get("counts") or {}
+    w = res.get("worst_point")
+    if not ev:
+        return Insight(headline=tr("토크 정확도: 평가한 운전점이 없습니다", "torque accuracy: no operating point evaluated"),
+                       verdict="UNKNOWN")
+    dom = max(((k, v) for k, v in (w.get("contributions_Nm") or {}).items()
+               if v is not None and k != "monitor_mismatch"), key=lambda kv: kv[1], default=(None, None))
+    head = tr(f"토크 정확도 {st}: {len(ev)}점 중 FAIL {cnt.get('FAIL', 0)} — 최악 {num(w['speed_rpm'], 5)} rpm, "
+              f"{num(w['torque_Nm'], 4)} N·m에서 {num(w['total_Nm'], 3)} / {num(w['limit_Nm'], 3)} N·m"
+              + (f", 가장 큰 기여 {_iname(dom[0])}" if dom[0] else ""),
+              f"torque accuracy {st}: FAIL at {cnt.get('FAIL', 0)} of {len(ev)} points — worst "
+              f"{num(w['speed_rpm'], 5)} rpm, {num(w['torque_Nm'], 4)} N·m: {num(w['total_Nm'], 3)} / "
+              f"{num(w['limit_Nm'], 3)} N·m" + (f", largest contributor {_iname(dom[0])}" if dom[0] else ""))
+    ins = Insight(headline=head, verdict=st)
+    f = res.get("fusa") or {}
+    ins.metrics += [(tr("PASS / FAIL / 미평가", "PASS / FAIL / not evaluated"),
+                     f"{cnt.get('PASS', 0)} / {cnt.get('FAIL', 0)} / {res.get('not_evaluated', 0)}", _lvl(st)),
+                    (tr("최악 여유", "worst margin"), q(w.get("margin_Nm"), "N·m", 3), _lvl(w.get("status"))),
+                    (tr("스택", "stack"), res.get("combination", ""), "info")]
+    if f:
+        ins.metrics += [(tr("안전 창 (정상 운전)", "safety window (normal operation)"), f.get("window_status", "—"),
+                         _lvl(f.get("window_status"))),
+                        (tr("모니터 오트립", "monitor false trip"), f.get("false_trip_status", "—"),
+                         _lvl(f.get("false_trip_status"))),
+                        (tr("미검출 편차", "undetected deviation"), f.get("undetected_status", "—"),
+                         _lvl(f.get("undetected_status")))]
+    fails = sorted([p for p in ev if p["status"] == "FAIL"], key=lambda p: p["margin_Nm"])
+    if fails:
+        s = ins.section(tr("요구를 넘는 운전점", "operating points over the requirement"),
+                        tr("여유가 작은 순서. 각 점에서 가장 큰 기여를 함께 적습니다.",
+                           "smallest margin first, with the largest contributor at each point."))
+        for p in fails[:10]:
+            c = {k: v for k, v in (p.get("contributions_Nm") or {}).items() if v is not None and k != "monitor_mismatch"}
+            k0 = max(c, key=c.get) if c else None
+            s.add(tr(f"{num(p['speed_rpm'], 5)} rpm, {num(p['torque_Nm'], 4)} N·m: {num(p['total_Nm'], 3)} / "
+                     f"{num(p['limit_Nm'], 3)} N·m (여유 {num(p['margin_Nm'], 3)})",
+                     f"{num(p['speed_rpm'], 5)} rpm, {num(p['torque_Nm'], 4)} N·m: {num(p['total_Nm'], 3)} / "
+                     f"{num(p['limit_Nm'], 3)} N·m (margin {num(p['margin_Nm'], 3)})"), "bad",
+                  "" if k0 is None else tr(f"가장 큰 기여: {_iname(k0)} {num(c[k0], 3)} N·m",
+                                           f"largest: {_iname(k0)} {num(c[k0], 3)} N·m"))
+    wb = res.get("worst_point_budget")
+    if wb:
+        s = ins.section(tr("최악점의 배분 — 통과하려면", "allocation at the worst point — to pass"),
+                        tr("현재 값에 비례해 한계를 나눈 배분(같은 스택에서 정확히 한계가 됨)과 다른 기여가 그대로일 때 "
+                           "이 기여가 더 커질 수 있는 양(손익분기). 음수면 그 기여만으로는 통과할 수 없습니다.",
+                           "the limit shared in proportion to the present values (stacking exactly to the limit) and "
+                           "how much each item may grow with the others unchanged (break-even); negative: that item "
+                           "alone cannot bring the point inside."))
+        for r in sorted(wb["contributors"], key=lambda r: -(r.get("share") or 0)):
+            if r.get("value") is None:
+                s.add(tr(f"{_iname(r['id'])}: 미확정", f"{_iname(r['id'])}: not established"), "warn")
+                continue
+            s.add(tr(f"{_iname(r['id'])} ({r['kind']}): {num(r['value'], 3)} → 배분 {num(r.get('allocation'), 3)} N·m, "
+                     f"몫 {num(100 * (r.get('share') or 0), 3)} %",
+                     f"{_iname(r['id'])} ({r['kind']}): {num(r['value'], 3)} → allocation {num(r.get('allocation'), 3)} "
+                     f"N·m, share {num(100 * (r.get('share') or 0), 3)} %"), _lvl(r.get("allocation_status")),
+                  _break_even(r, "N·m"))
+    mx = {k: v for k, v in (res.get("max_contribution_Nm") or {}).items() if k != "monitor_mismatch"}
+    if mx:
+        s = ins.section(tr("포락선 전체에서 각 오차원의 최대 기여", "largest contribution of each source over the envelope"))
+        for k, v in sorted(mx.items(), key=lambda kv: -(kv[1] or 0)):
+            if v:
+                s.add(f"{_iname(k)}: {num(v, 3)} N·m", "info", (res.get("errors") or {}).get("basis", {}).get(k, ""))
+        if res.get("not_declared"):
+            s.add(tr("선언되지 않은 오차원 (버짓에 없음): ", "error sources not declared (not in the budget): ")
+                  + ", ".join(_iname(k) for k in res["not_declared"]), "warn")
+    if f:
+        s = ins.section(tr("기능안전 연결", "functional-safety link"), f.get("meaning", ""))
+        s.add(tr(f"안전 창 {_win(f.get('torque_window'))}, 모니터 문턱 {_win(f.get('monitor'))}",
+                 f"safety window {_win(f.get('torque_window'))}, monitor threshold {_win(f.get('monitor'))}"), "info",
+              f.get("source", ""))
+        s.add(tr("모니터가 보는 오차: ", "errors the monitor sees: ")
+              + (", ".join(_iname(k) for k in f.get("monitor_sees") or []) or tr("없음", "none")),
+              "info", f.get("monitor_sees_basis", ""))
+        u = f.get("worst_undetected_point")
+        if u is not None and u.get("undetected_Nm") is not None:
+            s.add(tr(f"미검출 최대 편차 (최악점 {num(u['speed_rpm'], 5)} rpm, {num(u['torque_Nm'], 4)} N·m): 문턱 "
+                     f"{num(u['monitor_threshold_Nm'], 3)} + 불일치 {num(u['monitor_mismatch_Nm'], 3)} + 모니터가 못 보는 "
+                     f"오차 {num(u['monitor_unseen_Nm'], 3)} = {num(u['undetected_Nm'], 4)} N·m vs 창 "
+                     f"{num(u['fusa_window_Nm'], 4)} N·m",
+                     f"largest undetected deviation (worst point {num(u['speed_rpm'], 5)} rpm, "
+                     f"{num(u['torque_Nm'], 4)} N·m): threshold {num(u['monitor_threshold_Nm'], 3)} + mismatch "
+                     f"{num(u['monitor_mismatch_Nm'], 3)} + errors the monitor cannot see "
+                     f"{num(u['monitor_unseen_Nm'], 3)} = {num(u['undetected_Nm'], 4)} N·m vs window "
+                     f"{num(u['fusa_window_Nm'], 4)} N·m"), _lvl(u.get("undetected_status")))
+            if u.get("undetected_status") == "FAIL":
+                s.add(tr("창을 지키는 방법: 모니터 문턱을 낮추거나(오트립 여유와 맞바꿈), 모니터 불일치를 줄이거나, "
+                         "모니터에 별도 센서를 주어 제어 경로 오차를 보게 하거나, 못 보는 오차 자체를 줄입니다.",
+                         "ways to keep the window: a lower monitor threshold (traded against false-trip margin), a "
+                         "smaller monitor mismatch, own sensors for the monitor so that it sees the control path's "
+                         "errors, or smaller unseen errors."), "info")
+    notes_section(ins, res.get("notes") or [])
+    return ins.nonempty()
+
+
+def budget_insight(b: dict) -> Insight:
+    """One budget (FTTI, cycle losses, custom): stacks, contributors by share, allocations, what is missing."""
+    unit = str(b.get("unit", "")).replace("*", "·")
+    st = b.get("status")
+    head = tr(f"{b.get('title', '')}: {st} — {num(b.get('total'), 4)} {unit}"
+              + (f" / 한계 {num(b['limit'], 4)} {unit}" if b.get("limit") is not None else " (한계 미선언)"),
+              f"{b.get('title', '')}: {st} — {num(b.get('total'), 4)} {unit}"
+              + (f" of limit {num(b['limit'], 4)} {unit}" if b.get("limit") is not None else " (no limit declared)"))
+    ins = Insight(headline=head, verdict=st)
+    stacks = b.get("stacks") or {}
+    for k in ("worst_case", "rss", "mixed"):
+        if k in stacks:
+            ins.metrics.append((COMB_SHORT[k]() + (tr(" (판정)", " (decides)") if k == b.get("combination") else ""),
+                                q(stacks[k], unit, 4), _lvl(st) if k == b.get("combination") else "info"))
+    if b.get("margin") is not None:
+        ins.metrics.append((tr("여유", "margin"), q(b["margin"], unit, 3), _lvl(st)))
+    s = ins.section(tr("기여 (몫이 큰 순서)", "contributors (largest share first)"), b.get("meaning", ""))
+    for r in sorted(b.get("contributors") or [], key=lambda r: -(r.get("share") or 0)):
+        if r.get("value") is None:
+            s.add(tr(f"{_cname(r)}: 미확정 — 버짓을 판정하지 않습니다", f"{_cname(r)}: not established — no verdict"),
+                  "warn")
+            continue
+        alloc = r.get("allocation")
+        s.add(f"{_cname(r)}: {num(r['value'], 4)} {unit}"
+              + tr(f" (몫 {num(100 * (r.get('share') or 0), 3)} %)", f" (share {num(100 * (r.get('share') or 0), 3)} %)")
+              + ("" if alloc is None else tr(f", 배분 {num(alloc, 4)} {unit}", f", allocation {num(alloc, 4)} {unit}")),
+              _lvl(r.get("allocation_status")) if alloc is not None else "info",
+              " · ".join(x for x in (r.get("basis", ""), r.get("owner", ""), _break_even(r, unit)) if x))
+    if b.get("timing_worst_ms") is not None:
+        s = ins.section(tr("타이밍 해석과 같은 합", "same sum as the timing analysis"))
+        s.add(tr(f"타이밍 해석의 최악 경로 {num(b['timing_worst_ms'], 4)} ms = 이 버짓의 선형 합",
+                 f"the timing analysis' worst path {num(b['timing_worst_ms'], 4)} ms = this budget's linear sum"), "info")
+    return ins.nonempty()

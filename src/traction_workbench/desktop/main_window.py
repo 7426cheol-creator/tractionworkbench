@@ -18,6 +18,7 @@ from . import theme
 from .pages.charging import ChargingPage
 from .pages.decision import DecisionPage
 from .pages.design import DesignPage
+from .pages.budget import BudgetPage
 from .pages.drive_cycle import DriveCyclePage
 from .pages.efficiency import EfficiencyPage
 from .pages.emi import EmiPage
@@ -61,6 +62,7 @@ PAGES = (
     ("machine", lambda: tr("모터 설계", "Machine design"), MachinePage),
     ("drive_cycle", lambda: tr("주행 사이클", "Drive cycle"), DriveCyclePage),
     ("charging", lambda: tr("통합 충전", "Integrated charging"), ChargingPage),
+    ("budget", lambda: tr("시스템 버짓", "System budgets"), BudgetPage),
     ("project", lambda: tr("프로젝트", "Project"), ProjectPage),
     ("model", lambda: tr("모델·데이터", "Model & data"), ModelPage),
     ("verification", lambda: tr("검증 (V&V)", "Verification"), VerificationPage),
@@ -76,7 +78,7 @@ NAV_GROUPS = (
     (lambda: tr("제어·EMC", "Control & EMC"), ("pwm_driveline", "emi")),
     (lambda: tr("안전·보호", "Safety & protection"), ("safety", "protection", "fault_sim", "reference")),
     (lambda: tr("시스템·설계", "Systems & design"), ("oew_hev", "machine")),
-    (lambda: tr("구동 시스템", "Drive system"), ("drive_cycle", "charging")),
+    (lambda: tr("구동 시스템", "Drive system"), ("drive_cycle", "charging", "budget")),
     (lambda: tr("검증", "Verification"), ("verification",)),
 )
 PAGE_INFO = {
@@ -141,6 +143,12 @@ PAGE_INFO = {
                            "low-voltage DC charging through the inverter and the motor windings as a boost: one "
                            "switching period, device and winding losses and Tj, the declared limits, the maximum "
                            "charging power over charger and battery voltages and the limit that binds"),
+    "budget": lambda: tr("한계를 기여 항목에 나누고 아래에서 위로 확인: 운전점별 토크 정확도(센서·레졸버·자석 온도·모델 공차를 "
+                         "기기 모델로 계산)와 기능안전 창·모니터 문턱, FTTI 체인, 주행 사이클 손실, 직접 선언하는 버짓",
+                         "a limit split over its contributors and checked bottom-up: torque accuracy per operating "
+                         "point (sensors, resolver, magnet temperature and model tolerance computed with the machine "
+                         "model) with the safety window and monitor threshold, the FTTI chain, drive-cycle losses, "
+                         "a budget you declare"),
 }
 
 
@@ -160,7 +168,9 @@ TASK_PAGE = {"decision": "decision", "decision-env": "decision", "requirement_se
              "discharge": "safety", "overvoltage": "safety", "safe_state": "safety", "pdf": "decision",
              "acceptance": "verification", "fault_sim": "fault_sim", "fault_compare": "fault_sim",
              "fault_campaign": "fault_sim", "fault_rerun": "fault_sim", "fault_validation": "fault_sim",
-             "fault_review": "fault_sim", "fault_verification": "fault_sim"}
+             "fault_review": "fault_sim", "fault_verification": "fault_sim", "drive_cycle": "drive_cycle",
+             "charging_point": "charging", "charging_capability": "charging", "budget_torque": "budget",
+             "budget_ftti": "budget", "budget_cycle": "budget", "budget_custom": "budget"}
 # what a task is called on screen (a running task uses the label it was started with)
 TASK_LABELS = {
     "decision": lambda: tr("요구 판정", "decision"), "decision-env": lambda: tr("T–n 곡선", "T–n envelope"),
@@ -193,6 +203,12 @@ TASK_LABELS = {
     "fault_review": lambda: tr("정적 설계 검토", "static design review"),
     "fault_verification": lambda: tr("검증 매트릭스", "verification matrix"),
     "reference": lambda: tr("기능안전 요구 검증", "reference verification"),
+    "drive_cycle": lambda: tr("주행 사이클", "drive cycle"),
+    "charging_point": lambda: tr("통합 충전 운전점", "integrated charging point"),
+    "charging_capability": lambda: tr("충전 능력 지도", "charging capability"),
+    "budget_torque": lambda: tr("토크 정확도 버짓", "torque-accuracy budget"),
+    "budget_ftti": lambda: tr("FTTI 버짓", "FTTI budget"), "budget_cycle": lambda: tr("사이클 손실 버짓", "cycle-loss budget"),
+    "budget_custom": lambda: tr("선언 버짓", "declared budget"),
 }
 # tasks whose argument is not a request body: they run on the state's drive and limits
 STATE_TASKS = ("decision-env", "requirement_set", "explorer", "trajectory", "performance", "design-sweep",
