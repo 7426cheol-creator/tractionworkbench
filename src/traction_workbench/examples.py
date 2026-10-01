@@ -151,6 +151,15 @@ VEHICLE = {
              "comes from the driveline ROM)",
 }
 
+CHARGING_PATH = {
+    "neutral_access": True, "L0_uH": 30.0,
+    "L0_basis": "synthetic estimate (zero-sequence = mostly leakage inductance, ~15 % of L_d) - measure it: the three "
+                "phase terminals joined, against the neutral, L0 = 3 x the measured inductance",
+    "neutral_current_max_A": 400.0, "phase_current_peak_max_A": 450.0, "Tj_max_C": 150.0, "winding_loss_max_W": 1500.0,
+    "interleave": "120deg",
+    "basis": "synthetic integrated-charging path (neutral brought out through a contactor; ratings are examples)",
+}
+
 # -- fault simulation: protection architecture and safety requirements (synthetic) --------------------------------
 from .extensions.faultsim.example import FAULT_SIM  # noqa: E402  (engine-side data, used by the project below)
 
@@ -238,6 +247,10 @@ SYNTHETIC_PROJECT = {
                                                           "auxiliaries)", "revision": "1", "qualified": False,
                            "evidence": ""},
             "data": VEHICLE},
+        "charging": {
+            "provenance": {"origin": "synthetic", "source": "synthetic integrated-charging path", "revision": "1",
+                           "qualified": False, "evidence": ""},
+            "data": CHARGING_PATH},
         "safety": {
             "provenance": {"origin": "synthetic", "source": "example FTTI chain and project rule", "revision": "1",
                            "qualified": False, "evidence": ""},

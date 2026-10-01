@@ -3,6 +3,7 @@ charging and system budgets.  Each figure draws the result dictionary of its ``a
 
 from __future__ import annotations
 
+import matplotlib as mpl
 import numpy as np
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
@@ -178,3 +179,144 @@ def fig_cycle_points(fig, res: dict, title: str | None = None):
     ax.set_ylabel(tr("모터 축 토크 [N·m]", "motor shaft torque [N·m]"))
     ax.set_title(tr("주행 사이클의 모터 운전점 (1 s 구간마다 한 점)", "motor operating points of the trace (one per 1 s "
                                                          "interval)"), fontsize=9)
+
+
+# ---------------------------------------------------------------------------------------------- integrated charging
+
+_CHG_CMAP = mpl.colormaps["cividis"]
+LIMIT_COL = {"neutral_rms": "#8250df", "phase_peak": "#cf222e", "junction": "#bf8700", "winding": "#0969da",
+             "battery_power": "#1a7f37", "battery_current": "#4ac26b", "charger_current": "#57606a",
+             "charger_power": "#8c959f", "search bound": "#d0d7de"}
+LIMIT_NAME = {"neutral_rms": lambda: tr("중성선 RMS", "neutral RMS"), "phase_peak": lambda: tr("상 피크 전류", "phase peak"),
+              "junction": lambda: tr("접합 온도", "junction temperature"),
+              "winding": lambda: tr("고정자 동손", "stator copper loss"),
+              "battery_power": lambda: tr("배터리 충전 전력", "battery charge power"),
+              "battery_current": lambda: tr("배터리 충전 전류", "battery charge current"),
+              "charger_current": lambda: tr("충전기 전류", "charger current"),
+              "charger_power": lambda: tr("충전기 전력", "charger power"),
+              "search bound": lambda: tr("탐색 상한", "search bound")}
+
+
+def fig_charging_waveforms(fig, res: dict, title: str | None = None):
+    _reset(fig, title)
+    t_ = S.theme()
+    w = res.get("waveform")
+    if not w:
+        ax = fig.subplots()
+        ax.set_axis_off()
+        _note(ax, res.get("reason") or tr("파형 없음", "no waveform"))
+        return
+    ax1, ax2, ax3 = fig.subplots(3, 1, sharex=True, gridspec_kw={"height_ratios": [1.5, 0.7, 0.8]})
+    t = np.asarray(w["t_us"], float)
+    T = t[-1]
+    tt = np.concatenate((t, t[1:] + T))                 # two periods for reading
+
+    def two(y):
+        y = np.asarray(y, float)
+        return np.concatenate((y, y[1:]))
+    for key, col, lab in (("ia_A", S.PHASE[0], "i_a"), ("ib_A", S.PHASE[1], "i_b"), ("ic_A", S.PHASE[2], "i_c")):
+        ax1.plot(tt, two(w[key]), color=col, lw=1.0, label=lab)
+    ax1b = ax1.twinx()
+    ax1b.plot(tt, two(w["neutral_A"]), color=t_["fg"], lw=1.0, ls="--", label=tr("중성선 (충전기)", "neutral (charger)"))
+    ax1b.set_ylabel(tr("중성선 [A]", "neutral [A]"))
+    ax1.set_ylabel(tr("상전류 [A]", "phase current [A]"))
+    h1, l1 = ax1.get_legend_handles_labels()
+    h2, l2 = ax1b.get_legend_handles_labels()
+    ax1.legend(h1 + h2, l1 + l2, fontsize=7, loc="upper right", ncol=4)
+    c = res["currents"]
+    ax1.set_title(tr(f"한 스위칭 주기 ×2 — 상 리플 {max(c['phase_ripple_pp_A']):.1f} A pk-pk, 중성선 리플 "
+                     f"{c['neutral_ripple_pp_A']:.1f} A pk-pk ({res['inputs']['interleave']})",
+                     f"two switching periods — phase ripple {max(c['phase_ripple_pp_A']):.1f} A pk-pk, neutral ripple "
+                     f"{c['neutral_ripple_pp_A']:.1f} A pk-pk ({res['inputs']['interleave']})"), fontsize=9)
+    for k, (key, col) in enumerate((("upper_a", S.PHASE[0]), ("upper_b", S.PHASE[1]), ("upper_c", S.PHASE[2]))):
+        ax2.step(tt, two(w[key]) * 0.8 + 1.1 * (2 - k), where="post", color=col, lw=1.0)
+    ax2.set_yticks([1.1 * (2 - k) + 0.4 for k in range(3)])
+    ax2.set_yticklabels(["a", "b", "c"])
+    ax2.set_ylabel(tr("상측 도통", "upper path on"))
+    if w.get("torque_Nm") is not None:
+        ax3.plot(tt, two(w["torque_Nm"]), color=S.ACCENT, lw=1.0)
+        tq = res.get("torque") or {}
+        _note(ax3, tr(f"평균 {tq.get('mean_Nm', 0):.3g} N·m, |피크| {tq.get('peak_abs_Nm', 0):.3g} N·m (영상분은 토크 없음)",
+                      f"mean {tq.get('mean_Nm', 0):.3g} N·m, |peak| {tq.get('peak_abs_Nm', 0):.3g} N·m (zero sequence "
+                      f"makes none)"), "upper right")
+    ax3.axhline(0, color=t_["fg"], lw=0.6)
+    ax3.set_ylabel(tr("토크 [N·m]", "torque [N·m]"))
+    ax3.set_xlabel("t [µs]")
+
+
+def fig_charging_losses(fig, res: dict, title: str | None = None):
+    _reset(fig, title)
+    t_ = S.theme()
+    ax, ax2 = fig.subplots(1, 2, gridspec_kw={"width_ratios": [1.3, 1.0]})
+    legs = res.get("legs") or []
+    names, cond, sw = [], [], []
+    for j, leg in enumerate(legs):
+        for die, P in leg["dies_W"].items():
+            names.append(f"{'abc'[j]} {die.replace('_', ' ')}")
+            # split the die heat: switching events of that die vs conduction
+            swk = {"upper_igbt": "upper_switch", "lower_igbt": "lower_switch", "upper_mosfet": "upper_switch",
+                   "lower_mosfet": "lower_switch", "upper_diode": "upper_recovery", "lower_diode": "lower_recovery"}[die]
+            s_ = leg["switching_W"].get(swk, 0.0) + (leg["switching_W"].get(swk.replace("switch", "recovery"), 0.0)
+                                                    if die.endswith("mosfet") else 0.0)
+            sw.append(s_)
+            cond.append(P - s_)
+    y = np.arange(len(names))[::-1]
+    ax.barh(y, cond, color=S.ACCENT, alpha=0.85, label=tr("도통", "conduction"))
+    ax.barh(y, sw, left=cond, color="#bf8700", alpha=0.85, label=tr("스위칭·회복", "switching / recovery"))
+    ax.set_yticks(y)
+    ax.set_yticklabels(names, fontsize=7)
+    ax.set_xlabel(tr("다이 발열 [W]", "die heat [W]"))
+    ax.legend(fontsize=7, loc="lower right")
+    tj = res.get("Tj_C")
+    ax.set_title(tr(f"다이별 발열 — 최고 Tj {tj:.1f} °C ({res.get('hottest_die')})" if tj is not None else
+                    "다이별 발열 — Tj 미확정", f"heat per die — hottest Tj {tj:.1f} °C ({res.get('hottest_die')})"
+                    if tj is not None else "heat per die — Tj not established"), fontsize=9)
+    ax2.set_axis_off()
+    L = res.get("losses_W") or {}
+    lines = [tr(f"충전기 {res['P_charger_W'] / 1e3:.2f} kW → 배터리 {res['P_battery_W'] / 1e3:.2f} kW",
+                f"charger {res['P_charger_W'] / 1e3:.2f} kW → battery {res['P_battery_W'] / 1e3:.2f} kW"),
+             tr(f"효율 {100 * res['efficiency']:.2f} %" if res.get("efficiency") else "효율 —",
+                f"efficiency {100 * res['efficiency']:.2f} %" if res.get("efficiency") else "efficiency —"),
+             tr(f"소자 {L.get('devices') or 0:.0f} W · 권선 {L.get('motor_copper') or 0:.0f} W · DC-link "
+                f"{L.get('dc_link_capacitor') or 0:.2f} W", f"devices {L.get('devices') or 0:.0f} W · winding "
+                f"{L.get('motor_copper') or 0:.0f} W · DC link {L.get('dc_link_capacitor') or 0:.2f} W"),
+             tr(f"상측 듀티 {res['duty_upper']:.3f}", f"upper-path duty {res['duty_upper']:.3f}"), ""]
+    for c in res.get("checks") or []:
+        v = c["value"]
+        vs = "—" if v is None else (f"{v / 1e3:.2f} k" if c["unit"] == "W" else f"{v:.1f} ")
+        ls = "—" if c["limit"] is None else (f"{c['limit'] / 1e3:.3g} k" if c["unit"] == "W" else f"{c['limit']:.4g} ")
+        lines.append(f"{c['status']:>7}  {LIMIT_NAME.get(c['id'], lambda: c['id'])()}: {vs}{c['unit']} / {ls}{c['unit']}")
+    ax2.text(0.0, 0.98, "\n".join(lines), va="top", ha="left", fontsize=8,
+             transform=ax2.transAxes, color=t_["fg"])
+
+
+def fig_charging_capability(fig, cap: dict, title: str | None = None):
+    _reset(fig, title)
+    t_ = S.theme()
+    ax = fig.subplots()
+    rows = cap.get("rows") or []
+    vcs = cap.get("V_chargers_V") or []
+    used = set()
+    for k, vc in enumerate(vcs):
+        rr = [r for r in rows if r["V_charger_V"] == vc]
+        xb = [r["V_battery_V"] for r in rr]
+        yp = [None if r.get("P_max_W") is None else r["P_max_W"] / 1e3 for r in rr]
+        col = _CHG_CMAP(0.1 + 0.75 * (k / max(1, len(vcs) - 1)))   # sequential: never a limit colour
+        ax.plot([x for x, y in zip(xb, yp) if y is not None], [y for y in yp if y is not None], color=col, lw=1.4,
+                marker="", label=f"V_charger {vc:g} V")
+        for r, x, y in zip(rr, xb, yp):
+            if y is None:
+                ax.annotate("UNKNOWN", (x, 0), fontsize=7, color=t_["muted"], ha="center")
+                continue
+            lim = (r.get("limiting") or ["search bound"])[0]
+            used.add(lim)
+            ax.scatter([x], [y], s=34, color=LIMIT_COL.get(lim, "#6e7781"), zorder=3, edgecolor=t_["bg"], lw=0.6)
+    h1 = ax.get_legend_handles_labels()
+    lim_h = [Line2D([], [], ls="", marker="o", ms=6, color=LIMIT_COL.get(k, "#6e7781"),
+                    label=tr("한계: ", "limit: ") + LIMIT_NAME.get(k, lambda: k)()) for k in sorted(used)]
+    ax.legend(h1[0] + lim_h, h1[1] + [h.get_label() for h in lim_h], fontsize=7, loc="lower right", ncol=2)
+    ax.set_xlabel(tr("배터리 전압 [V]", "battery voltage [V]"))
+    ax.set_ylabel(tr("최대 충전 전력 (충전기 측) [kW]", "maximum charging power (charger side) [kW]"))
+    ax.set_title(tr("통합 충전 능력 — 점의 색 = 그 점을 막는 한계", "integrated charging capability — dot colour = the "
+                                                       "limit that binds there"), fontsize=9)
+    ax.set_ylim(bottom=0)

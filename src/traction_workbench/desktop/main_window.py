@@ -15,6 +15,7 @@ from ..i18n import language, tr
 from ..io import load_json_file
 from ..project import request_usage, short, stale_sections
 from . import theme
+from .pages.charging import ChargingPage
 from .pages.decision import DecisionPage
 from .pages.design import DesignPage
 from .pages.drive_cycle import DriveCyclePage
@@ -59,6 +60,7 @@ PAGES = (
     ("emi", lambda: tr("EMI (전도성)", "EMI (conducted)"), EmiPage),
     ("machine", lambda: tr("모터 설계", "Machine design"), MachinePage),
     ("drive_cycle", lambda: tr("주행 사이클", "Drive cycle"), DriveCyclePage),
+    ("charging", lambda: tr("통합 충전", "Integrated charging"), ChargingPage),
     ("project", lambda: tr("프로젝트", "Project"), ProjectPage),
     ("model", lambda: tr("모델·데이터", "Model & data"), ModelPage),
     ("verification", lambda: tr("검증 (V&V)", "Verification"), VerificationPage),
@@ -74,7 +76,7 @@ NAV_GROUPS = (
     (lambda: tr("제어·EMC", "Control & EMC"), ("pwm_driveline", "emi")),
     (lambda: tr("안전·보호", "Safety & protection"), ("safety", "protection", "fault_sim", "reference")),
     (lambda: tr("시스템·설계", "Systems & design"), ("oew_hev", "machine")),
-    (lambda: tr("구동 시스템", "Drive system"), ("drive_cycle",)),
+    (lambda: tr("구동 시스템", "Drive system"), ("drive_cycle", "charging")),
     (lambda: tr("검증", "Verification"), ("verification",)),
 )
 PAGE_INFO = {
@@ -134,6 +136,11 @@ PAGE_INFO = {
                               "the vehicle on a standard (WLTC, UDDS, HWFET, US06) or imported speed trace: machine "
                               "points, energy and losses per component, consumption and range, regeneration and the "
                               "friction brakes, intervals the drive does not deliver"),
+    "charging": lambda: tr("인버터와 모터 권선을 승압기로 쓰는 저전압 DC 충전: 한 스위칭 주기의 전류, 소자·권선 손실과 Tj, "
+                           "선언된 한계, 충전기·배터리 전압별 최대 충전 전력과 막는 한계",
+                           "low-voltage DC charging through the inverter and the motor windings as a boost: one "
+                           "switching period, device and winding losses and Tj, the declared limits, the maximum "
+                           "charging power over charger and battery voltages and the limit that binds"),
 }
 
 

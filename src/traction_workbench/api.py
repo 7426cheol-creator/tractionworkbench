@@ -1242,6 +1242,71 @@ def drive_cycle(body):
     return _jsonable(res)
 
 
+# -- integrated charging (system view, item 9) ---------------------------------------------------------------------
+
+_SYNTH_VDC_SCALING = {"exponent": 1.0, "valid_V": [300.0, 800.0],
+                      "basis": "synthetic example assumption E ~ V (replace with measured E(V) data)"}
+
+
+EXAMPLE_CHARGING = {
+    "charging": PROJECT.data("charging"),
+    "module": {**EXAMPLE_MODULE, "vdc_scaling": _SYNTH_VDC_SCALING},
+    "capacitor": PROJECT.capacitor(), "source": PROJECT.source_impedance(),
+    "V_charger_V": 400.0, "V_battery_V": 600.0, "I_charge_A": 200.0, "coolant_C": 45.0, "rotor_angle_deg": 0.0,
+    "winding_temp_C": None,
+    "charger": {"current_max_A": 500.0, "power_max_W": 200000.0, "basis": "example 400 V-class DC charger"},
+    "battery": {"battery_charge_power_max_W": 180000.0, "battery_charge_current_max_A": 300.0,
+                "basis": "example DC fast-charge acceptance of the pack (BMS limit at mid SOC, warm pack) - not the "
+                         "drive's regeneration limit of the DC source section"},
+    "V_chargers_V": [300.0, 350.0, 400.0, 450.0, 500.0], "V_batteries_V": [520.0, 560.0, 600.0, 640.0, 680.0],
+    "note": "synthetic charging path, module (with a declared synthetic E ~ V scaling) and charger of the example",
+}
+
+
+def _charging_inputs(body):
+    from .extensions.boost_charging import path_from_dict
+    b = {**EXAMPLE_CHARGING, **(body or {})}
+    d = _drive(b)
+    m = b["module"]
+    model = module_model_from_dict(m)
+    path = path_from_dict(b["charging"])
+    bank = src = None
+    if b.get("capacitor"):
+        bank, src = _ripple_bank({"capacitor": b["capacitor"], "source": b.get("source")})
+    ch, bt = b.get("charger") or {}, b.get("battery") or {}
+    limits = {"charger_current_max_A": _opt(ch, "current_max_A"), "charger_power_max_W": _opt(ch, "power_max_W"),
+              "battery_charge_power_max_W": _opt(bt, "battery_charge_power_max_W"),
+              "battery_charge_current_max_A": _opt(bt, "battery_charge_current_max_A")}
+    kw = dict(coolant_C=_num(b, "coolant_C"), Rth_K_per_W=float(m["Rth_K_per_W"]),
+              rotor_angle_deg=float(b.get("rotor_angle_deg") or 0.0), capacitor=bank, source=src,
+              winding_temp_C=_opt(b, "winding_temp_C"), limits=limits)
+    return b, d, model, path, kw
+
+
+def charging_point(body):
+    """One integrated-charging point: waveforms over a switching period, device / copper / capacitor losses, Tj,
+    torque at standstill and the declared limits."""
+    from .extensions.boost_charging import charging_point as _point
+    b, d, model, path, kw = _charging_inputs(body)
+    res = _point(d, model, path, V_c=_num(b, "V_charger_V"), V_b=_num(b, "V_battery_V"), I_charge=_num(b, "I_charge_A"),
+                 **kw)
+    res["module"] = {"name": b["module"].get("name"), "technology": model.device.technology,
+                     "fsw_kHz": model.fsw_Hz / 1e3, "Rth_K_per_W": kw["Rth_K_per_W"],
+                     "vdc_scaling": b["module"].get("vdc_scaling")}
+    return _jsonable(res)
+
+
+def charging_capability(body):
+    """Charging-power capability over charger and battery voltages, with the limiting check named."""
+    from .extensions.boost_charging import capability_map
+    b, d, model, path, kw = _charging_inputs(body)
+    res = capability_map(d, model, path, V_cs=[float(x) for x in b["V_chargers_V"]],
+                         V_bs=[float(x) for x in b["V_batteries_V"]], **kw)
+    res["limits"] = kw["limits"]
+    res["path"] = b["charging"]
+    return _jsonable(res)
+
+
 def _cand(c: dict, fsw_kHz=None):
     from dataclasses import replace as _rep
     from .analysis.efficiency import ModuleCandidate
@@ -1810,7 +1875,7 @@ def concept_sizing(body):
 
 EXAMPLE_NAMES = ("TIMING", "THERMAL", "PROTECTION", "PROTECTION_OT", "MODULE", "MODULE_SIC", "RIPPLE", "ASC",
                  "MISSION", "OEW", "HEV", "EMI", "REDUCER", "EFFICIENCY", "PWM", "DRIVELINE", "MACHINE", "WINDING",
-                 "SIZING", "DRIVE_CYCLE")
+                 "SIZING", "DRIVE_CYCLE", "CHARGING")
 
 
 def _product(name: str, prj, ex: dict) -> dict:
@@ -1859,6 +1924,9 @@ def _product(name: str, prj, ex: dict) -> dict:
         ex["transition"].update(from_kHz=c["fsw_kHz"], deadtime_us=c["deadtime_us"])
     elif name == "DRIVELINE":
         ex["driveline"], ex["controller"] = prj.driveline_rom(), prj.torque_path()
+    elif name == "CHARGING":
+        ex.update(charging=prj.data("charging"), module={**prj.module_spec(), "vdc_scaling": ex["module"]["vdc_scaling"]},
+                  capacitor=prj.capacitor(), source=prj.source_impedance())
     elif name == "DRIVE_CYCLE":
         ex.update(vehicle=prj.vehicle(), reducer=prj.reducer(), module=prj.module_spec(),
                   Vdc_V=float(prj.data("dc_source")["Vdc_nominal_V"]), source_R_mohm=_dc_source_R_mohm(prj))

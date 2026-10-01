@@ -181,6 +181,11 @@ def _v_vehicle(d: dict):
     validate_vehicle(d)
 
 
+def _v_charging(d: dict):
+    from .extensions.boost_charging import validate_path
+    validate_path(d)
+
+
 def _v_safety(d: dict):
     for c in d.get("ftti_chains") or []:
         P.timing_chain_from_dict(c)
@@ -220,6 +225,8 @@ SECTIONS = {s.name: s for s in (
     SectionSpec("driveline", "gearbox: reducer efficiency and torsional ROM", False, _v_driveline),
     SectionSpec("vehicle", "vehicle: mass, wheel radius, road load, axle, regeneration, auxiliaries, usable energy",
                 False, _v_vehicle),
+    SectionSpec("charging", "integrated charging path: neutral access, zero-sequence inductance, neutral and phase "
+                            "current ratings, junction and winding limits, interleaving", False, _v_charging),
     SectionSpec("safety", "FTTI chains and project safe-state rules", False, _v_safety),
     SectionSpec("fault_sim", "protection architecture for the causal fault simulation: sensors and resources, "
                              "mechanisms, reaction paths, safe-state policy, battery management, SG / FSR / TSR",
@@ -254,6 +261,8 @@ ANALYSES = {
     "machine_design": ("motor design study", ("drive",)),
     "drive_cycle": ("drive cycle: vehicle energy, losses per component, followability",
                     ("drive", "dc_source", "module", "controller", "driveline", "vehicle")),
+    "charging": ("integrated charging: the inverter and windings as a boost from a DC charger",
+                 ("drive", "dc_source", "module", "controller", "dc_link", "charging")),
 }
 
 
@@ -956,6 +965,7 @@ TASK_ANALYSIS = {
     "concept_sizing": "machine_design", "fault_sim": "fault_sim", "fault_compare": "fault_sim",
     "fault_campaign": "fault_sim", "fault_rerun": "fault_sim", "fault_validation": "fault_sim",
     "fault_review": "fault_sim", "fault_verification": "fault_sim", "drive_cycle": "drive_cycle",
+    "charging_point": "charging", "charging_capability": "charging",
 }
 
 _ABSENT = object()
@@ -1086,6 +1096,9 @@ COMPONENTS = {
     "drive_cycle": _CORE + (("module", lambda p: p.module_spec(), lambda b: _at(b, "module"), "module"),
                             ("reducer", lambda p: p.reducer(), lambda b: _at(b, "reducer"), "reducer"),
                             ("vehicle", lambda p: p.vehicle(), lambda b: _at(b, "vehicle"), "data")),
+    "charging": _CORE + (("module", lambda p: p.module_spec(), lambda b: _without(_at(b, "module"), "vdc_scaling"),
+                          "module"),
+                         ("charging path", lambda p: p.data("charging"), lambda b: _at(b, "charging"), "data")),
 }
 
 
