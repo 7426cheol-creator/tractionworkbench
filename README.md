@@ -9,15 +9,23 @@
 ![요구 판정 화면](docs/screenshots/decision.jpg)
 
 > [!IMPORTANT]
-> **새 기능: 기능안전(FuSa) 설계 작업대.** 소프트 ASC 같은 반응 전략, JSON 없이 고치는 설계·요구 편집기,
-> 시뮬레이션 전에 모순을 잡는 정적 설계 검토, 전체 시나리오 검증 매트릭스, 심사용 안전 근거 보고서.
-> 실제 파형은 [아래 쇼케이스](#기능안전-설계-작업대--고장-시뮬레이션)에서 볼 수 있습니다.
+> **새 기능: 기능안전(FuSa) 설계 작업대와 기능안전 요구 검증.** 소프트 ASC 같은 반응 전략, JSON 없이 고치는 설계·요구 편집기,
+> 시뮬레이션 전에 모순을 잡는 정적 설계 검토, 전체 시나리오 검증 매트릭스, 심사용 안전 근거 보고서, 고객 기능안전 참고 문서의
+> 항목별 판정과 요구 계층(SG → TLSR → FSR → TSR → SM), 과도 구간 확대와 모든 그래프의 데이터 커서.
+> 실제 화면은 [아래 쇼케이스](#기능안전-설계-작업대--고장-시뮬레이션)에서 볼 수 있습니다.
+>
+> *New: a functional-safety design workbench and customer FuSa reference verification — reaction strategies (soft ASC),
+> typed design editors, static design review, a verification matrix, a safety-case report, item-by-item verdicts of a
+> customer FuSa reference with its SG → TLSR → FSR → TSR → SM hierarchy, a transient zoom and a data cursor on every plot.
+> The showcase below is captured in English.*
 
 ## 기능안전 설계 작업대 — 고장 시뮬레이션
 
 고장 하나를 주입하면 센서 → 제어·감시 → 반응 → 브리지 → 플랜트가 한 시간축에서 인과적으로 돌아가고,
 요구(SG → FSR → TSR)는 명령 비트가 아니라 **실제 토크·전류·전압**으로 판정됩니다.
-아래 화면은 모두 내장 합성 프로젝트에서 `docs/make_fusa_showcase.py`로 찍은 실제 실행 결과입니다.
+아래 화면은 모두 내장 합성 프로젝트에서 `docs/make_fusa_showcase.py`로 찍은 실제 실행 결과입니다(영어 화면; 앱은 한국어·영어 모두 지원).
+*All captures are real runs on the built-in synthetic project, made by `docs/make_fusa_showcase.py` (English UI; the
+application runs in Korean or English).*
 
 ### 같은 고장, 반응만 바꿔서 — 하드 ASC vs 소프트 ASC
 
@@ -34,10 +42,64 @@
 <td width="50%"><img src="docs/screenshots/fusa_waveform_soft_asc.jpg" alt="소프트 ASC 동기 파형"></td>
 </tr>
 <tr>
-<td><b>하드 ASC 동기 파형</b> — ±600 N·m 토크 진동이 요구 허용 창(초록)을 벗어나고, 안전 조건 도달까지 42 ms(FHTI). 참값·센서·명령·실제 브리지가 한 시간축에</td>
-<td><b>소프트 ASC 동기 파형</b> — 전압을 2 ms 동안 0으로 줄인 뒤 ASC를 걸어 토크 진동이 ±120 N·m 안에 머물고, 안전 조건 도달까지 7.8 ms(FHTI)</td>
+<td><b>하드 ASC 동기 파형</b> — ±600 N·m 토크 진동이 요구 허용 창(초록)을 벗어나고, 안전 조건 도달까지 42 ms(FHTI). 고장 후 극값마다 값·시각(○), 먼 TSR 한계(850 V)는 축 밖에 여유와 함께 표기<br><i>Hard ASC: every extreme after the fault with its value and instant; a far limit is named at the axis edge</i></td>
+<td><b>소프트 ASC 동기 파형</b> — 전압을 2 ms 동안 0으로 줄인 뒤 ASC를 걸어 토크 진동이 ±120 N·m 안에 머물고, 안전 조건 도달까지 7.8 ms(FHTI)<br><i>Soft ASC (voltage ramp): the torque stays within ±120 N·m</i></td>
 </tr>
 </table>
+
+### 과도 구간을 샘플 단위로 읽기 — 확대와 데이터 커서
+
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/fusa_transient_zoom.jpg" alt="과도 확대"></td>
+<td width="50%"><img src="docs/screenshots/fusa_data_cursor.jpg" alt="데이터 커서"></td>
+</tr>
+<tr>
+<td><b>과도 확대</b> — 고장 직전부터 반응·극값까지 자동 창(9.6–13.6 ms), 점 = 시뮬레이션 샘플(간격 1.8–10 µs), 사건 이름, 극값: 축 토크 −637 N·m @ 12.100 ms, |i|max 1318 A @ 12.500 ms, 배터리 전류 238 A @ 10.490 ms. 아래 표에 고장 전·극값·고장 후/반응 후 경과·한계 밖 시간·정착·샘플 간격<br><i>Transient zoom: the simulated samples, named instants and a metrics table</i></td>
+<td><b>데이터 커서 (모든 그래프)</b> — 범례에서 신호(배터리 전류)를 고르면 커서가 샘플에 맞춰 곡선을 따라가고, 두 번 클릭해 고정하면 Δt·ΔI·기울기, 판독 줄에 그 시각의 모든 신호 값. ←/→ 한 샘플 이동<br><i>Data cursor on every plot: pick a signal in the legend, follow it sample by sample, pin two cursors for Δt / Δy</i></td>
+</tr>
+</table>
+
+### 제어까지 고장 난 채 굴러갈 때 — 하드웨어가 DC 전압으로 FW/ASC를 고르면
+
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/fusa_hw_vdc_cycling.jpg" alt="MCU 정지 + 배터리 차단, 6000 rpm: 전체 파형"></td>
+<td width="50%"><img src="docs/screenshots/fusa_hw_vdc_zoom.jpg" alt="순환 확대와 데이터 커서"></td>
+</tr>
+<tr>
+<td><b>전체 파형</b> — 10 ms에 MCU 리셋·GDE 상실·배터리 차단. 하드웨어가 ASC를 걸고 능동 방전이 링크를 내린 뒤 49.5 ms부터 순환<br><i>The whole run: the hardware holds ASC while the discharge lowers the link, then cycles from 49.5 ms</i></td>
+<td><b>순환 확대 + 데이터 커서</b> — 줌 도구처럼 확대하고 커서를 DC-link 전압의 연속한 두 저점(X_low 60 V)에 고정: Δt = 7.70 ms(130 Hz). 6SO마다 역기전력이 링크를 약 40 µs 만에 100 V로 재충전<br><i>Zoomed, the cursor pinned at two consecutive low points of the link: Δt = 7.70 ms</i></td>
+</tr>
+</table>
+
+MCU가 리셋에 걸리고 배터리가 차단된 채 6000 rpm으로 굴러가는 경우(프리셋 `hw_vdc_rolling`): GDE를 잃으면 하드웨어가 DC-link 전압만으로
+ASC(X_upp 100 V 위)와 6SO(X_low 60 V 아래)를 고릅니다. 능동 방전이 링크를 60 V까지 내리면 6SO → 역기전력이 약 40 µs 만에 100 V로
+재충전 → ASC → … **7.7 ms 주기(130 Hz)로 순환**하고 링크는 60 V 아래에 머물지 못합니다. 예제 요구는 모두 통과하므로(순환을 묻는 요구가
+없음) 해석이 순환을 따로 보고하고, 참고 패키지에 "역기전력이 X_low를 넘는 속도에서는 ASC 유지" 제안을 추가했습니다.
+*With the processor lost and the battery disconnected while rolling, the hardware selection by the DC voltage alone cycles
+between six-switch-off and ASC every 7.7 ms and never holds the link below 60 V — no requirement asks about it, so the
+reading reports it and a proposal adds one.*
+
+### 고객 기능안전 참고 문서 검증 — 항목별 판정과 요구 계층
+
+<table>
+<tr>
+<td width="50%"><img src="docs/screenshots/fusa_reference_hierarchy.jpg" alt="요구 계층"></td>
+<td width="50%"><img src="docs/screenshots/fusa_reference_proposal.jpg" alt="제안의 증거"></td>
+</tr>
+<tr>
+<td><b>요구 계층·추적</b> — 고객 참고 문서(내장 패키지, 371 항목)를 SG → TLSR → FSR → TSR → SM → 검증으로 분류. 문서가 인용한 번호로 이은 추적과 주제로 추론한 추적(추론 표시)을 분리하고, 원문이 없는 TLSR·WI는 OPEN 자리표시로. 아래에 공백(원문 없음·미세분화·미검증·미시연)과 시뮬레이션 근거의 제안 8건<br><i>The customer reference classified and traced (document-given vs inferred links), gaps and proposals</i></td>
+<td><b>제안의 증거</b> — 제안(DERIVED, 고객 요구 아님)도 같은 방식으로 판정: 순환 시연(반복 20회, 주기 7.7 ms), 링크가 방전 한계를 넘음(반례), ASC 유지 시 순환 없음·링크 7.9 V. OPEN 값은 추정하지 않고(UNKNOWN + 이름), 예시 값은 ILL로 분리, 충돌 기록은 변형으로 둘 다 실행해 CONFLICT<br><i>A proposal verified with its evidence; OPEN values are never guessed</i></td>
+</tr>
+</table>
+
+고객 참고 문서 전체 실행(합성 제품 모델): 고객 프로파일 **PASS 118 · UNKNOWN 155 · MANUAL 91 · FAIL 3 · CONFLICT 0** —
+UNKNOWN은 모두 이름 있는 OPEN 값(39개) 때문이고, 가장 많이 막는 값은 안전 상태 허용오차(각 85 항목)입니다. FAIL 3건은 합성 모델의
+DC 과전류 비교기(300 A)가 문서 규칙(1.5 × Imax ±10 %)을 벗어난 것. 예시 값을 넣으면 PASS 236 · CONFLICT 6(GDE 두 시퀀스) · FAIL 12.
+*The whole customer document on the synthetic product model: 118 PASS, 155 UNKNOWN (each waiting on a named OPEN value),
+91 MANUAL, 3 FAIL (the model's DC over-current comparator outside the document's rule), 0 CONFLICT; with illustrative
+values 236 PASS, 6 CONFLICT, 12 FAIL.*
 
 ![사건 타임라인: 고장 → 검출 → 전략 단계 → 안전 조건 도달](docs/screenshots/fusa_timeline_soft_asc.jpg)
 
@@ -99,7 +161,8 @@ FSR마다 FDTI·FRTI·FHTI가 FTTI 예산과 같은 축에 그려집니다.
 | **설계·병목** | capability vs 파라미터(Vdc, 전류 정격, 예약분, DC 한계, …)와 bisection 역설계, 제약 1% 완화 병목 기여도, 요구 달성 최소 완화·공동 병목 |
 | **안전 스크리닝** | FTTI 체인 Gantt(중복 예산 자동 검출, 모든 연속 경로 중 보장 상한 경로, **안전 종점·종점 종류**(명령 발행은 물리적 안전 상태가 아님 → UNKNOWN)·최댓값 동시 발생 선언, FDTI/FRTI 최악값), **회로 개요도** + 능동 방전 V(t), **패시브 방전**(블리더 R_p 설계 창), 방전 결과 표(**정류 위험**, 역기전력 근거, 목표 이하 최고 속도, 정류 링크 전압 스크리닝 추정), 회생 중 배터리 차단 과전압, ASC/Freewheel 회로 비교와 속도별 곡선, 프로젝트 규칙 표(물리와 분리된 계층) |
 | **보호·고장** | 임계값·디레이팅·고장 반응을 하나의 인과 궤적에서 검증(이벤트 타임라인, 임계값 창·PROT 표 — 판정은 지평이 아니라 반응과 플랜트 정확해로, 검출 루프 개요도), ASC 고장 과도(표본 사이까지 정밀화한 피크, 모델 전류 영역 이탈 표시)와 고객의 두 전류-시간 요구 |
-| **고장 시뮬레이션·FuSa** | 인버터 고장 → 측정·추정 → 제어·감시 → 보호 반응 → 실제 토크·전류·DC-link → 안전 요구 판정의 **한 인과 궤적**(참값·측정·추정·명령·실제를 분리, 감시·반응은 측정만 봄). 스위칭 다리 플랜트(떠 있는 다리·다이오드 도통·6SO 정류·ASC), DC-link·배터리·접촉기·BMS, 센서 고장·이산 FOC·MCU 리셋·재시동, 메커니즘·반응 경로·공유 자원·안전 상태 정책(프로젝트 데이터). SG → FSR → TSR 판정(동적 토크 창·한계·안전 상태·오반응 없음·시간)과 FDTI/FRTI/FHTI, 대표 시나리오, 같은 초기 조건의 **반응 후보 비교**, 캠페인(경계 이분·최악값과 그 실행), **반례** 저장·열기·재실행·입력 변경 표시, 독립 abc 정식화 검증, 독립성(공유 센서·자원) 보기. **설계 편집 탭**(FTTI·TSR 수치·디바운스·임계값·반응 전략·정책을 칸에서, JSON 없음 — 프로젝트 대비 설계 변형으로 실행·저장·반영), **반응 전략**(소프트 ASC 두 방식·상별 순차 ASC·FW → ASC·ASC → 6SO·Vdc 히스테리시스·토크 램프), **안전 근거 탭**(정적 설계 검토, 검출 지연 범위, 검증 매트릭스·시뮬레이션 FMEA, 안전 근거 HTML 보고서) |
+| **고장 시뮬레이션·FuSa** | 인버터 고장 → 측정·추정 → 제어·감시 → 보호 반응 → 실제 토크·전류·DC-link → 안전 요구 판정의 **한 인과 궤적**(참값·측정·추정·명령·실제를 분리, 감시·반응은 측정만 봄). 스위칭 다리 플랜트(떠 있는 다리·다이오드 도통·6SO 정류·ASC), DC-link·배터리·접촉기·BMS, 센서 고장·이산 FOC·MCU 리셋·재시동, 메커니즘·반응 경로·공유 자원·안전 상태 정책(프로젝트 데이터). SG → FSR → TSR 판정(동적 토크 창·한계·안전 상태·오반응 없음·시간)과 FDTI/FRTI/FHTI, 대표 시나리오, 같은 초기 조건의 **반응 후보 비교**, 캠페인(경계 이분·최악값과 그 실행), **반례** 저장·열기·재실행·입력 변경 표시, 독립 abc 정식화 검증, 독립성(공유 센서·자원) 보기. **설계 편집 탭**(FTTI·TSR 수치·디바운스·임계값·반응 전략·정책을 칸에서, JSON 없음 — 프로젝트 대비 설계 변형으로 실행·저장·반영), **반응 전략**(소프트 ASC 두 방식·상별 순차 ASC·FW → ASC·ASC → 6SO·Vdc 히스테리시스·토크 램프), **안전 근거 탭**(정적 설계 검토, 검출 지연 범위, 검증 매트릭스·시뮬레이션 FMEA, 안전 근거 HTML 보고서), **과도 확대 탭**(고장 후 극값의 값·시각·샘플 간격, 한계 밖 시간, 정착), 제어 상실·주행 중 HW DC 전압 선택 프리셋(순환은 해석에 보고) |
+| **기능안전 요구 검증** | 요구·시나리오 패키지(고객 기능안전 참고 문서 — 내장, 중립 예제, 또는 JSON 파일)의 항목을 이 제품 모델에서 **PASS / FAIL / UNKNOWN / CONFLICT / MANUAL**로 판정: OPEN 값은 추정하지 않음(필요한 판정은 UNKNOWN + 값 이름, 허용오차는 0으로 판정하고 손익분기값 보고), 예시 프로파일(ILL 분리), 사용자 값(USER), 충돌 기록은 변형으로 둘 다 실행. 요구-증거 매트릭스, **요구 계층·추적**(SG → TLSR → FSR → TSR → SM → 검증, 문서 인용 vs 추론, 하위 롤업, 공백, 제안), 검사별 증거 파형·여섯 시각 타임라인, 토크창 대시보드, UNKNOWN·CONFLICT 보고, 파라미터 레지스트리, 안전 상태 타당성 지도, HTML·CSV |
 | **열·지속시간** | **냉각수**(입구 온도, 유량, 에틸렌글리콜:물 물성, 순환 순서, 기준 유체 온도) → 부품별 냉각수 온도 상승 ΔT = P/(ṁ·c_p). **열 회로망 표 편집**(Foster/Cauer, 4단 템플릿, 데이터시트 붙여넣기, 유량 의존 단), RC 회로도·냉각수 순환도·Z_th(t), 지속시간별 가용 토크와 노드 온도. **초기 열 상태**(미선언·고온 시작은 UNKNOWN)와 열 모델의 **검증 근거**(없으면 “검증”은 증거 없는 선언)를 입력. **반복 부하**: 펄스–휴지 반복, 고온 시작(예부하 정상상태 / Cauer 노드 온도), R_s(T)·모듈 T_j 손실 피드백, 주기 정상상태(고정점), 허용 펄스 시간·토크, 반복 전 필요 휴지 |
 | **전력변환·수명** | 데이터시트 모듈 손실(소자별 도통·스위칭, 온도×전류 표, 외삽 금지) → P_dc·열·claim, DC-link 리플·커패시터 전류·ESR 손실·수명 게이트, 모듈 열 사이클 rainflow·조건부 손상 |
 | **효율·모듈 비교** | 다섯 제어 체적(인버터 · 모터 · 인버터+모터 · 감속기 · eDrive)의 포트 기준 효율(구동/회생 방향별 정의, N/A · UNKNOWN · INCONSISTENT 구분, clamp 없음), 손실 원장(확정 소계와 미상 항목), 경계별 지도, 미션 E±, 모듈 A/B(IGBT vs SiC: 고정 정책 vs 설계별 정책, Tj는 결과, 선언된 오차 예산을 넘을 때만 우열). 원장에 모터 PWM 동손(정확값 또는 R_dc 하한)과 Fe+PM HF 상한(값 아님), PWM 고조파를 포함한 효율 구간 |

@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """README showcase of the functional-safety design work: curated captures of the fault simulation page.
 
-    python docs/make_fusa_showcase.py                     # writes docs/screenshots/fusa_*.jpg
+    python docs/make_fusa_showcase.py                     # writes docs/screenshots/fusa_*.jpg (English)
+    python docs/make_fusa_showcase.py --lang ko           # the same captures in Korean
     python docs/make_fusa_showcase.py --out out/showcase  # somewhere else
 
 The app runs headless (offscreen) at twice its logical size, so text and plots stay crisp when GitHub scales the
 images down; each capture is the part of the page that shows the point (not the whole window), put into a state
 by the same code paths a person uses: the same fault with the hard active short circuit and two transition
 strategies, the strategy and requirement editors, the safety-case reading and the verification matrix over the
-whole scenario catalog, and the safety-case report the page saves.  Deterministic: light theme, Korean, built-in
-synthetic project.
+whole scenario catalog, the safety-case report the page saves, the transient zoom and the data cursor, the hardware
+selection by the DC voltage cycling while the vehicle rolls with the processor lost, and the reference verification
+(the customer package's hierarchy, a proposal with its evidence).  Deterministic: light theme, English by default,
+built-in synthetic project.
 """
 
 from __future__ import annotations
@@ -25,7 +28,9 @@ os.environ.setdefault("QT_SCALE_FACTOR", "2")
 
 ROOT = Path(__file__).resolve().parents[1]
 WIDTH = {"fusa_hero_transition": 1800, "fusa_report": 1600, "fusa_waveform_hard_asc": 1600,
-         "fusa_waveform_soft_asc": 1600}                          # px after scaling; others DEFAULT_WIDTH
+         "fusa_waveform_soft_asc": 1600, "fusa_transient_zoom": 1600, "fusa_data_cursor": 1600,
+         "fusa_hw_vdc_cycling": 1600, "fusa_hw_vdc_zoom": 1600, "fusa_reference_hierarchy": 1600,
+         "fusa_reference_proposal": 1600}                         # px after scaling; others DEFAULT_WIDTH
 DEFAULT_WIDTH = 1400
 
 
@@ -43,6 +48,7 @@ def save(pixmap, path: Path, width: int) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--out", default=str(ROOT / "docs" / "screenshots"))
+    ap.add_argument("--lang", choices=("en", "ko"), default="en", help="the language of the captured pages")
     a = ap.parse_args()
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -60,7 +66,7 @@ def main() -> int:
 
     app = QApplication.instance() or QApplication([sys.argv[0]])
     app.setProperty("twb_selftest", True)          # questions answered yes, no modal boxes
-    set_language("ko")
+    set_language(a.lang)
     theme.apply(app, "light")
     TaskRunner.synchronous = True
     win = MainWindow()
@@ -72,6 +78,61 @@ def main() -> int:
     def settle():
         for _ in range(6):
             app.processEvents()
+
+    def cursor_demo(panel, signal_word, times_ms, size, redraw=True):
+        """Follow the signal whose name contains ``signal_word`` and pin the cursor at two instants."""
+        from matplotlib.backend_bases import MouseEvent
+        if redraw:
+            win.resize(*size)
+            settle()
+        panel.canvas.draw()
+        settle()
+        k = next(i for i, n in enumerate(panel.cursor.names) if signal_word in n.lower())
+        panel.signal_box.setCurrentIndex(k + 1)
+        s = panel.cursor.signals[k]
+        ax = panel.figure.axes[0]
+        for t_ms in times_ms:
+            i = s.index(t_ms)
+            px, py = s.ax.transData.transform((s.x[i], s.y[i]))
+            MouseEvent("motion_notify_event", panel.canvas, px, py)._process()
+            MouseEvent("button_press_event", panel.canvas, px, py, button=1)._process()
+            settle()
+        x_live = times_ms[0] + 2.4 if times_ms[1] - times_ms[0] < 2.0 else 0.5 * (times_ms[0] + times_ms[1])
+        px, py = ax.transData.transform((x_live, sum(ax.get_ylim()) / 2))
+        MouseEvent("motion_notify_event", panel.canvas, px, py)._process()
+        settle()
+
+    def zoom_cycle(panel, res, size):
+        """Zoom the synchronized waveforms to the first periods of a bridge cycling (as the zoom tool would, every axes
+        to its visible signals), follow the DC-link voltage and pin two consecutive switches to six-switch-off."""
+        import numpy as np
+        win.resize(*size)
+        settle()
+        panel.canvas.draw()
+        settle()
+        from traction_workbench.insight.fault import bridge_cycling
+        t = np.asarray(res["trace"]["t"], dtype=float) * 1e3
+        br = np.asarray(res["trace"]["bridge"]).astype(int)
+        t6 = t[np.where((br[1:] == 3) & (br[:-1] != 3))[0] + 1]            # entries into six-switch-off ...
+        t6 = t6[t6 >= bridge_cycling(res)["first_s"] * 1e3 - 1e-6]           # ... once the cycling runs
+        a, b = float(t6[0]) - 3.0, float(t6[3]) + 2.0
+        panel.figure.axes[0].set_xlim(a, b)
+        seen = {}
+        for s in panel.cursor.signals:
+            m = (s.x >= a) & (s.x <= b)
+            if m.any():
+                seen.setdefault(s.ax, []).append(s.y[m])
+        for ax, ys in seen.items():
+            y = np.concatenate(ys)
+            lo, hi = float(np.nanmin(y)), float(np.nanmax(y))
+            pad = 0.15 * ((hi - lo) or 1.0)
+            ax.set_ylim(lo - pad, hi + pad)
+        v = np.asarray(res["trace"]["v_dc"], dtype=float)
+        lows = []                                   # the link's low point (X_low) just before each of the two switches
+        for x in t6[:2]:
+            m = np.where((t >= x - 0.3) & (t <= x + 0.05))[0]
+            lows.append(float(t[m[np.argmin(v[m])]]))
+        cursor_demo(panel, "dc-link voltage", tuple(lows), size, redraw=False)
 
     def shot(widget, name, size, height=None):
         """``widget`` at window ``size`` (logical px); ``height``: keep only the top part (logical px)."""
@@ -105,6 +166,15 @@ def main() -> int:
         fs.run()
         fs.tabs.setCurrentWidget(fs.p_wave)
         shot(fs.tabs, name, (1240, 1180))
+        if react == "asc_low":
+            # the transient zoomed to the simulated samples, every extreme with value and instant
+            fs.tabs.setCurrentWidget(fs.tab_zoom)
+            shot(fs.tabs, "fusa_transient_zoom", (1240, 1180))
+            # the data cursor on the zoomed transient: the battery current followed, two pins (dt, dI)
+            cursor_demo(fs.p_zoom, "battery", (10.49, 11.10), (1240, 1180))
+            shot(fs.tabs, "fusa_data_cursor", (1240, 1180))
+            fs.p_zoom.cursor.clear_pins()
+            fs.p_zoom.signal_box.setCurrentIndex(0)
     fs.tabs.setCurrentWidget(fs.tab_timeline)      # the soft ASC's steps on the event timeline
     shot(fs.tabs, "fusa_timeline_soft_asc", (1240, 900))
     fs.override.setCurrentIndex(0)
@@ -146,6 +216,43 @@ def main() -> int:
     fs.case_tabs.setCurrentWidget(fs.i_case)
     shot(fs.case_tab, "fusa_design_review", (1240, 780))
     ed.revert()
+
+    # 4b. the processor lost while rolling: the hardware selection by the DC voltage cycles (FW <-> ASC)
+    fs.top.setCurrentIndex(0)
+    fs.preset.setCurrentIndex(fs.preset.findData("hw_vdc_rolling"))
+    fs._load_preset()
+    fs.run()
+    fs.tabs.setCurrentWidget(fs.p_wave)
+    shot(fs.tabs, "fusa_hw_vdc_cycling", (1240, 1180))
+    # the cycling zoomed, the cursor on the DC-link voltage pinned at two consecutive switches to 6SO: dt = the period
+    zoom_cycle(fs.p_wave, fs.last, (1240, 1180))
+    shot(fs.tabs, "fusa_hw_vdc_zoom", (1240, 1180))
+    fs.p_wave.cursor.clear_pins()
+    fs.p_wave.signal_box.setCurrentIndex(0)
+    fs.tabs.setCurrentWidget(fs.insight)
+    shot(fs.tabs, "fusa_hw_vdc_reading", (1240, 780), height=560)
+
+    # 4c. reference verification: the customer package classified (SG -> TLSR -> FSR -> TSR -> SM), and a proposal
+    win.show_page("reference")
+    rf = win.pages["reference"]
+    rf.load_builtin("customer_inverter")
+    rf.tabs.setCurrentWidget(rf.tab_hier)
+    for k in range(rf.tree.topLevelItemCount()):                  # open one TLSR under the first goal
+        top = rf.tree.topLevelItem(k)
+        if top.data(0, Qt.UserRole) == "A-03":
+            top.setExpanded(True)
+            for j in range(top.childCount()):
+                top.child(j).setExpanded(True)
+    shot(rf, "fusa_reference_hierarchy", (1400, 960))
+    rf.load_builtin("example")
+    rf.profile.setCurrentIndex(rf.profile.findData("illustrative"))
+    rf.search.setText("EX-PROP-01")
+    rf.run()
+    rf.matrix.selectRow(0)
+    rf.tabs.setCurrentWidget(rf.p_ev)
+    shot(rf, "fusa_reference_proposal", (1400, 960))
+    rf.search.setText("")
+    win.show_page("fault_sim")
 
     # 5. the report the page saves, rendered by a browser (a person opens the HTML file): its verification section
     page = Path(tempfile.mkdtemp()) / "safety_case.html"

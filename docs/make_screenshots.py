@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Refresh the README screenshots from the desktop self-test.
 
-    python docs/make_screenshots.py                          # runs `twb selftest out/readme_selftest`, then converts
+    python docs/make_screenshots.py                          # runs `twb selftest out/readme_selftest --lang en`
+    python docs/make_screenshots.py --lang ko                # the same gallery in Korean
     python docs/make_screenshots.py --from out/selftest      # converts an existing self-test output
     python docs/make_screenshots.py --prune                  # also deletes docs/screenshots/*.jpg no longer mapped
 
 The self-test drives every page through its real code path in the light theme at 1600 x 1000 (deterministic, the
-same run CI does); this script copies the chosen window captures to docs/screenshots/<name>.jpg, at most 1280 px
+same run CI does; English by default: many readers of the README are not Korean); this script copies the chosen window captures to docs/screenshots/<name>.jpg, at most 1280 px
 wide.  A failing self-test publishes nothing.  SHOTS is the README gallery: change it together with README.md.
 """
 
@@ -83,14 +84,15 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--from", dest="src", default=None, help="an existing self-test output folder")
     ap.add_argument("--prune", action="store_true", help="delete docs/screenshots/*.jpg that SHOTS no longer maps")
+    ap.add_argument("--lang", choices=("en", "ko"), default="en", help="the language of the captured pages")
     a = ap.parse_args()
     from PIL import Image                       # matplotlib's dependency, present with the [gui] extra
 
     src = Path(a.src) if a.src else ROOT / "out" / "readme_selftest"
     if a.src is None:
         env = dict(os.environ, QT_QPA_PLATFORM="offscreen")
-        rc = subprocess.run([sys.executable, "-m", "traction_workbench.cli", "selftest", str(src)], cwd=ROOT,
-                            env=env).returncode
+        rc = subprocess.run([sys.executable, "-m", "traction_workbench.cli", "selftest", str(src), "--lang", a.lang],
+                            cwd=ROOT, env=env).returncode
         if rc != 0:
             print(f"the self-test failed (see {src / 'selftest.json'}): no screenshot was changed", file=sys.stderr)
             return rc

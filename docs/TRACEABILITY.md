@@ -428,7 +428,28 @@ Safety 심사관 관점의 근거. 상세 설명은 `docs/LOGIC_REVIEW.html` §2
 | 화면·해석 | 편집 탭, 안전 근거 탭, 두 언어 | `desktop/pages/fault_sim.py`(세 탭), `insight/fault.py` `safety_case_insight`(모순·누락 → 경고 → 검출 지연 → 요구별 실패·미발동 → 최악 시간 → 미검출 고장), self-test 화면 25j–25m | `test_every_page_reading_is_made_and_readable_in_both_languages`, self-test | implemented |
 | 한계 | — | 센서·자원·배터리·역할은 편집기 밖(프로젝트 파일), 커버리지 주장은 선언(계산 아님), 매트릭스는 카탈로그만 | `docs/LOGIC_REVIEW.html` §22.9 | remaining |
 
-## 20. 비목표 (handoff §15, 추가 명세 비목표)
+## 20. 기능안전 참고 문서 검증 (고객 FuSa 참고 문서·계층·제안·파형 판독·데이터 커서)
+
+요구(사용자): 고객 기능안전 참고 문서의 항목을 최소한 모두 앱에서 검증 가능하게(PASS/FAIL/UNKNOWN/CONFLICT/MANUAL + 근거),
+OPEN 값은 추정하지 않고, DERIVED/RESEARCH는 고객 요구로 내보내지 않으며, 충돌 기록은 변형으로; SG·FSR·TSR이 섞인 문서를
+분류해 반영하고 추론해 보완·추가할 것; 고장 파형의 과도 스파이크 크기·시각을 읽을 수 있을 것; MATLAB/Simulink식 데이터 커서;
+제어까지 고장 났을 때 HW가 DC 전압으로 FW/ASC를 고르는 로직과 주행 중 순환의 확인; 스크린샷은 영어로. 상세 설명은
+`docs/LOGIC_REVIEW.html` §23, 회귀 시험은 `tests/test_reference.py`·`tests/test_reference_page.py`·`tests/test_transient.py`·
+`tests/test_cursor.py`·`tests/test_fault_page.py`에 있습니다.
+
+| 항목 | 요구 | 구현 | 확인 | 상태 |
+|---|---|---|---|---|
+| 참고 패키지·판정 | 항목별 판정과 근거, OPEN 비추정, 충돌은 변형 | `extensions/faultsim/refpkg.py`(`validate_package`, `ReferenceRunner`: 고객/예시 프로파일, USER 값, 실행 캐시, 검사 예외는 그 검사만 UNKNOWN), `refcheck.py`(검사 라이브러리), `safestate.py`(C1–C4, 한 시계의 여섯 시각) | `test_open_value_is_unknown_in_customer_and_flagged_in_illustrative`, `test_user_value_replaces_open`, `test_gde_sequences_kept_as_variants`, `test_a_broken_check_never_stops_the_others`, `test_every_check_is_used_by_the_example` | implemented |
+| 요구 계층·추적 | SG → TLSR → FSR → TSR → SM → 검증, 문서 근거와 추론 분리 | `extensions/faultsim/refhier.py`(`level_of`, `hierarchy`: 롤업·공백·통계), `level`/`traces_to`/`traces_to_inferred`/`proposed` 검증, HTML·CSV에 계층 | `test_example_hierarchy_levels_traces_rollup_and_gaps`, `test_a_proposal_is_derived_and_never_a_customer_requirement`, `test_hierarchy_in_the_html_and_the_csv` | implemented |
+| 고객 패키지 (내장) | 문서 전 항목, 분류·추적, 원문 없는 곳 표시 | `examples/reference_packages/customer_inverter/`(`extract.py` → `doc_extract.json` → `build.py`), `extensions/faultsim/packages/customer_inverter_reference.json`(371 항목: 분류·문서 인용 추적·추론 추적·OPEN 자리표시·제안 8건), `api.reference_builtin*` | `test_the_customer_package_is_shipped_classified_and_traced`, `test_builtin_packages_and_the_hierarchy`, self-test `reference:customer_hierarchy` | implemented (검증 대상은 앱의 제품 모델 — 기본 합성) |
+| 추론한 추가 요구 (제안) | 시뮬레이션 근거로 보완·추가 | 예제 EX-PROP-01, 고객 PROP-SG-HV·PROP-01…07(HW Vdc 선택 순환 금지, GDE 시퀀스 ASC 종료, DCFOC 임계, 클럭 감시, 독립 과속, KL15 에지 재허가, 관측 기반 확인) | `test_the_cycling_proposal_is_demonstrated_and_its_fix_holds`, `test_a_proposal_runs_with_evidence_and_the_reports`, self-test `reference:proposal` | implemented (DERIVED: 고객 요구 아님) |
+| 제어 상실·주행 중 HW Vdc 선택 | FW ↔ ASC 순환 확인 | `study.py` 프리셋 `hw_vdc_rolling`(GDE 감시·`HW_VDC_SELECT`·`HWGD` 설계 변형), `refexample.py` S-HWVDC(순환/ASC 유지), `insight/fault.py` `bridge_cycling`(해석 헤드라인·절), `event` 검사의 반복 횟수 | `test_the_cycling_proposal_is_demonstrated_and_its_fix_holds`, self-test `fault:hw_vdc_cycling` | implemented |
+| 과도 판독 | 스파이크 크기·시각, 확대 | `extensions/faultsim/transient.py`(`transient_metrics`: 극값=샘플·해상도·한계 밖 시간·정착, `transient_window`), `plots/fault_figures.py`(`fig_fault_transient`, 극값 주석, 먼 한계 축 밖 표기, 확대 구간 음영), 고장 페이지 "과도 확대" 탭(그림 + 지표 표), 참고 페이지 증거 그림의 극값 | `test_transient.py` 7건, `test_a_representative_scenario_runs_and_reads_on_the_page`, self-test `fault:transient` | implemented |
+| 데이터 커서 | 범례에서 신호 선택, 곡선 추적, 값 읽기 | `desktop/cursor.py` `DataCursor`(샘플 맞춤·계단선·평면 곡선, 쌍축 범례 적중 판정, 시간 커서, 고정 커서 2개 Δx·Δy·기울기, 방향키, 블리팅), `desktop/widgets.py` `PlotPanel`(토글·신호 목록·판독 3줄; 지도 패널은 꺼진 채 시작) | `test_cursor.py` 7건, self-test `plot:data_cursor` | implemented |
+| 영어 스크린샷 | 해외 독자 | `docs/make_fusa_showcase.py --lang en`(기본), 새 캡처(과도 확대·데이터 커서·HW Vdc 순환·계층·제안 증거) | 생성 로그 | implemented |
+| 한계 | — | 추론 링크는 검토용, OPEN 자리표시는 번호만, 과도 지표는 트레이스 해상도에 묶임, HW 순환 주기는 합성 R·C·역기전력 | `docs/LOGIC_REVIEW.html` §23.8 | remaining |
+
+## 21. 비목표 (handoff §15, 추가 명세 비목표)
 
 generic motor CAD/FEA 복제, 정적 ASC로 demag/SOA 승인, 일반 IGBT 식으로 SiC 수명 보증, 드라이버 typical delay로 ASIL 승인,
 class 번호로 EMC 합격률, 평균 dq로 NVH/베어링/MHz 임피던스, 생산 anti-jerk 제어기 자동 납품, 보편 안정성 인증서,
