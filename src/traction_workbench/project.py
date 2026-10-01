@@ -176,6 +176,21 @@ def _v_driveline(d: dict):
         P.reducer_from_dict(d["reducer"])
 
 
+def _v_vehicle(d: dict):
+    from .extensions.drive_cycle import validate_vehicle
+    validate_vehicle(d)
+
+
+def _v_charging(d: dict):
+    from .extensions.boost_charging import validate_path
+    validate_path(d)
+
+
+def _v_torque_errors(d: dict):
+    from .extensions.system_budget import validate_torque_errors
+    validate_torque_errors(d)
+
+
 def _v_safety(d: dict):
     for c in d.get("ftti_chains") or []:
         P.timing_chain_from_dict(c)
@@ -213,6 +228,13 @@ SECTIONS = {s.name: s for s in (
                               "timing, current sensing, torque path", False, _v_controller),
     SectionSpec("thermal", "cooling system and thermal networks of the thermal page", False, _v_thermal),
     SectionSpec("driveline", "gearbox: reducer efficiency and torsional ROM", False, _v_driveline),
+    SectionSpec("vehicle", "vehicle: mass, wheel radius, road load, axle, regeneration, auxiliaries, usable energy",
+                False, _v_vehicle),
+    SectionSpec("charging", "integrated charging path: neutral access, zero-sequence inductance, neutral and phase "
+                            "current ratings, junction and winding limits, interleaving", False, _v_charging),
+    SectionSpec("torque_errors", "error sources of the torque chain: current-sensor gain and offset, resolver offset, "
+                                 "magnet temperature, model tolerance, estimator, monitor path", False,
+                _v_torque_errors),
     SectionSpec("safety", "FTTI chains and project safe-state rules", False, _v_safety),
     SectionSpec("fault_sim", "protection architecture for the causal fault simulation: sensors and resources, "
                              "mechanisms, reaction paths, safe-state policy, battery management, SG / FSR / TSR",
@@ -245,6 +267,13 @@ ANALYSES = {
     "fault_sim": ("causal fault simulation and safety verdicts",
                   ("drive", "dc_source", "dc_link", "controller", "driveline", "fault_sim")),
     "machine_design": ("motor design study", ("drive",)),
+    "drive_cycle": ("drive cycle: vehicle energy, losses per component, followability",
+                    ("drive", "dc_source", "module", "controller", "driveline", "vehicle")),
+    "charging": ("integrated charging: the inverter and windings as a boost from a DC charger",
+                 ("drive", "dc_source", "module", "controller", "dc_link", "charging")),
+    "budget": ("system budgets: torque accuracy, FTTI, cycle losses", ("drive", "dc_source", "torque_errors", "safety",
+                                                                       "fault_sim")),
+    "sim_export": ("maps and FMU for vehicle simulators", ("drive", "dc_source", "module", "controller", "driveline")),
 }
 
 
@@ -503,6 +532,13 @@ class Project:
 
     def driveline_rom(self) -> dict:
         return self.data("driveline")["rom"]
+
+    def vehicle(self) -> dict:
+        """The vehicle section; the machine inertia comes from the driveline ROM unless the vehicle declares it."""
+        v = copy.deepcopy(self.data("vehicle"))
+        if v.get("J_motor_kgm2") is None and self.has("driveline") and self.data("driveline").get("rom"):
+            v["J_motor_kgm2"] = float(self.data("driveline")["rom"]["Jm_kgm2"])
+        return v
 
     def thermal_spec(self) -> dict:
         return self.data("thermal")
@@ -826,8 +862,69 @@ def _r_thermal_node(p):
     return rows
 
 
+def _r_wheel(p):
+    if not p.has("vehicle"):
+        return []
+    if not (p.has("driveline") and p.data("driveline").get("rom")):
+        return [Finding("PRJ-13", "vehicle wheel radius vs torsional model", NOT_CHECKED, ("vehicle", "driveline"),
+                        "no torsional model to compare with")]
+    a, b = float(p.data("vehicle")["wheel_radius_m"]), float(p.data("driveline")["rom"]["wheel_radius_m"])
+    ok = a == b
+    return [Finding("PRJ-13", "vehicle wheel radius vs torsional model", OK if ok else INCONSISTENT,
+                    ("vehicle", "driveline"),
+                    "one wheel: the drive cycle and the torsional model use the same radius" if ok else
+                    "the drive cycle and the torsional model describe the same wheel with two radii",
+                    {"vehicle_m": a, "rom_m": b})]
+
+
+def _r_motor_inertia(p):
+    if not p.has("vehicle") or p.data("vehicle").get("J_motor_kgm2") is None:
+        return []
+    if not (p.has("driveline") and p.data("driveline").get("rom")):
+        return []
+    a, b = float(p.data("vehicle")["J_motor_kgm2"]), float(p.data("driveline")["rom"]["Jm_kgm2"])
+    return [Finding("PRJ-14", "machine inertia: vehicle vs torsional model", OK if a == b else INCONSISTENT,
+                    ("vehicle", "driveline"), "one rotor inertia" if a == b else
+                    "the vehicle's equivalent mass and the torsional model use two rotor inertias",
+                    {"vehicle_kgm2": a, "rom_kgm2": b})]
+
+
+def _r_torque_sensors(p):
+    """The torque-error budget's sensor errors against the fault simulation's sensor tolerances (one sensor, one
+    tolerance): the control path's current sensors (role current_a / current_b) and angle (position_control)."""
+    if not p.has("torque_errors"):
+        return []
+    if not p.has("fault_sim"):
+        return [Finding("PRJ-15", "torque-error budget vs sensor tolerances", NOT_CHECKED, ("torque_errors",),
+                        "no fault-simulation sensors to compare with")]
+    from .extensions.faultsim.engine import ROLE_DEFAULTS
+    fs, te = p.data("fault_sim"), p.data("torque_errors")
+    roles = fs.get("roles") or {}
+    sensors = {s["name"]: s for s in fs.get("sensors") or []}
+    sen = lambda r: sensors.get(roles.get(r) or roles.get(ROLE_DEFAULTS.get(r, ""), ""), {})     # noqa: E731
+    pairs = []
+    for r in ("current_a", "current_b"):
+        s = sen(r)
+        if s.get("gain_tol") is not None and te.get("current_gain_pct") is not None:
+            pairs.append((f"{s['name']} gain", 100.0 * float(s["gain_tol"]), float(te["current_gain_pct"]), "%"))
+        if s.get("offset_tol_A") is not None and te.get("current_offset_A") is not None:
+            pairs.append((f"{s['name']} offset", float(s["offset_tol_A"]), float(te["current_offset_A"]), "A"))
+    s = sen("position_control")
+    if s.get("offset_tol_deg") is not None and te.get("resolver_offset_deg_e") is not None:
+        pairs.append((f"{s['name']} offset", float(s["offset_tol_deg"]), float(te["resolver_offset_deg_e"]), "deg e"))
+    if not pairs:
+        return [Finding("PRJ-15", "torque-error budget vs sensor tolerances", NOT_CHECKED,
+                        ("torque_errors", "fault_sim"), "no sensor tolerance declared in both sections")]
+    diff = [f"{n}: sensor {a:g} {u}, budget {b:g} {u}" for n, a, b, u in pairs if not math.isclose(a, b, rel_tol=1e-9)]
+    return [Finding("PRJ-15", "torque-error budget vs sensor tolerances", INCONSISTENT if diff else OK,
+                    ("torque_errors", "fault_sim"),
+                    "; ".join(diff) if diff else "the budget uses the sensor tolerances the fault simulation uses",
+                    {n: {"sensor": a, "budget": b, "unit": u} for n, a, b, u in pairs})]
+
+
 RULES = (_r_thermal_path, _r_deadtime, _r_gate, _r_current_range, _r_tj_eval, _r_test_voltage, _r_loop_design,
-         _r_torque_path, _r_loop_reference, _r_gear, _r_esr, _r_thermal_node)
+         _r_torque_path, _r_loop_reference, _r_gear, _r_esr, _r_thermal_node, _r_wheel, _r_motor_inertia,
+         _r_torque_sensors)
 
 
 def check_project(p: Project) -> dict:
@@ -912,6 +1009,9 @@ TASK_ANALYSIS = {
     "hev_planetary": "hev", "emi": "emi", "machine_trade": "machine_design", "winding": "machine_design",
     "concept_sizing": "machine_design", "fault_sim": "fault_sim", "fault_compare": "fault_sim",
     "fault_campaign": "fault_sim", "fault_rerun": "fault_sim", "fault_validation": "fault_sim",
+    "fault_review": "fault_sim", "fault_verification": "fault_sim", "drive_cycle": "drive_cycle",
+    "charging_point": "charging", "charging_capability": "charging", "budget_torque": "budget",
+    "budget_ftti": "budget", "budget_cycle": "budget", "budget_custom": "budget", "sim_maps": "sim_export",
 }
 
 _ABSENT = object()
@@ -1039,6 +1139,19 @@ COMPONENTS = {
                     lambda b: _at(b, "plant", "C_uF") if _at(b, "plant", "kind") == "capacitor_energy" else _ABSENT,
                     "data"),),
     "ftti": (("FTTI chain", lambda p: p.ftti_chain(0), lambda b: b, "data"),),
+    "drive_cycle": _CORE + (("module", lambda p: p.module_spec(), lambda b: _at(b, "module"), "module"),
+                            ("reducer", lambda p: p.reducer(), lambda b: _at(b, "reducer"), "reducer"),
+                            ("vehicle", lambda p: p.vehicle(), lambda b: _at(b, "vehicle"), "data")),
+    "charging": _CORE + (("module", lambda p: p.module_spec(), lambda b: _without(_at(b, "module"), "vdc_scaling"),
+                          "module"),
+                         ("charging path", lambda p: p.data("charging"), lambda b: _at(b, "charging"), "data")),
+    "sim_export": _CORE + (("module", lambda p: p.module_spec(), lambda b: _without(_at(b, "module"), "vdc_scaling"),
+                            "module"),
+                           ("reducer", lambda p: p.reducer(), lambda b: _at(b, "reducer"), "reducer")),
+    "budget": _CORE + (("torque errors", lambda p: p.data("torque_errors"), lambda b: _at(b, "torque", "errors"),
+                        "data"),
+                       ("fault simulation", lambda p: p.data("fault_sim"), lambda b: _at(b, "fault_sim"), "data"),
+                       ("FTTI chain", lambda p: p.ftti_chain(0), lambda b: _at(b, "chain"), "data")),
 }
 
 

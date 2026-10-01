@@ -226,25 +226,83 @@ def run_self_test(app, out_dir) -> int:
         ok_v = (fs.last or {}).get("verdicts") or {}
         check("fault:protection_success", fs.last is not None and all(
             x in ("PASS", "NOT_APPLICABLE") for k, x in ok_v.items() if k.startswith("TSR")), str(ok_v))
+        # the fault form: the selected fault's parameters as fields with their units (no typed key=value text)
+        from PySide6.QtWidgets import QScrollArea
+        fs.faults.table.selectRow(0)
+        app.processEvents()
+        sc_in = fs.faults.parentWidget()
+        while sc_in is not None and not isinstance(sc_in, QScrollArea):
+            sc_in = sc_in.parentWidget()
+        if sc_in is not None:
+            sc_in.ensureWidgetVisible(fs.faults.box, 0, 0)
+        app.processEvents()
+        f0 = fs.faults.faults()[0] if fs.faults.rowCount() else {}
+        check("fault:form", fs.faults.form.rowCount() >= 4 and f0.get("kind") == "sensor"
+              and f0.get("params", {}).get("mode") == "offset", str(f0)[:160])
+        shot(win, "25q_fault_form")
+        if sc_in is not None:
+            sc_in.verticalScrollBar().setValue(0)
+            sc_in.horizontalScrollBar().setValue(0)
         fs.preset.setCurrentIndex(fs.preset.findData("res_lost"))
         fs._load_preset()
         fs.run()
         app.processEvents()
         v = (fs.last or {}).get("verdicts") or {}
         acts = [e.get("reaction") for e in (fs.last or {}).get("events", []) if e["kind"] == "actuation"]
-        check("fault:wrong_reaction", v.get("TSR-06") == "FAIL" and fs.t_req.rowCount() == 12
-              and acts[:1] == ["six_switch_off"], f"{ {k: x for k, x in v.items() if x != 'PASS'} } {acts[:2]}")
+        # the drive system's own consequences; the battery system (BMS, contactor) is outside the scope
+        srcs = {e.get("source") for e in (fs.last or {}).get("events", [])}
+        check("fault:wrong_reaction", v.get("TSR-08") == "FAIL" and fs.t_req.rowCount() == 14
+              and acts[:1] == ["six_switch_off"] and not srcs & {"BMS", "contactor"},
+              f"{ {k: x for k, x in v.items() if x != 'PASS'} } {acts[:2]}")
         reading("fault_sim", fs.insight, "fault_sim")
-        for tab, name in ((fs.p_wave, "25b_fault_waveforms"), (fs.tab_timeline, "25c_fault_timeline"),
+        for tab, name in ((fs.p_wave, "25b_fault_waveforms"), (fs.tab_zoom, "25b2_fault_transient"),
+                          (fs.tab_timeline, "25c_fault_timeline"),
                           (fs.tab_req, "25d_fault_requirements"), (fs.insight, "25e_fault_reading")):
             fs.tabs.setCurrentWidget(tab)
             if tab is fs.tab_req:
                 fs.t_req.selectRow(next(r for r in range(fs.t_req.rowCount()) if fs.t_req.item(r, 0).text() == "TSR-06"))
             shot(win, name)
+        # the transient zoom: every extreme read from the simulated samples (the 6SO rectification brakes beyond the
+        # 450 N*m of TSR-08; the battery holds the DC link); the data cursor follows a curve
+        rows_t = {fs.t_trans.item(r, 0).text(): r for r in range(fs.t_trans.rowCount())}
+        r_t = next((r for k, r in rows_t.items() if k.startswith(("축 토크", "shaft torque"))), None)
+        r_v = rows_t.get("V_dc [V]")
+        check("fault:transient", fs.p_zoom._draw is not None and fs.t_trans.rowCount() == 5 and r_t is not None
+              and r_v is not None and float(fs.t_trans.item(r_t, 2).text()) < -450.0
+              and float(fs.t_trans.item(r_v, 2).text()) < 850.0, f"{fs.t_trans.rowCount()} rows")
+        from matplotlib.backend_bases import MouseEvent
+        fs.tabs.setCurrentWidget(fs.tab_zoom)
+        app.processEvents()
+        ax0 = fs.p_zoom.figure.axes[0]
+        x0, x1 = ax0.get_xlim()
+        px, py = ax0.transData.transform((0.5 * (x0 + x1), sum(ax0.get_ylim()) / 2))
+        MouseEvent("motion_notify_event", fs.p_zoom.canvas, px, py)._process()
+        check("plot:data_cursor", fs.p_zoom.cursor.enabled and fs.p_zoom.cursor.live is not None
+              and "ms" in fs.p_zoom.readout.text(), fs.p_zoom.readout.text()[:120])
+        # the processor lost while rolling: the hardware selection by the DC voltage cycles (a missing requirement)
+        from ..insight.fault import bridge_cycling
+        fs.preset.setCurrentIndex(fs.preset.findData("hw_vdc_rolling"))
+        fs._load_preset()
+        fs.run()
+        app.processEvents()
+        cyc = bridge_cycling(fs.last or {}) or {}
+        check("fault:hw_vdc_cycling", cyc.get("changes", 0) >= 6 and 5.0 < (cyc.get("period_ms") or 0) < 12.0
+              and 55.0 < cyc.get("v_min_V", 0) and cyc.get("v_max_V", 1e9) < 110.0, str(cyc)[:200])
+        fs.tabs.setCurrentWidget(fs.tab_zoom)
+        shot(win, "25b3_fault_hw_vdc_cycling")
+        # the relay opening during the wrong reaction (an event at the drive's interface): the ASC holds the DC link
+        fs.preset.setCurrentIndex(fs.preset.findData("res_lost_relay"))
+        fs._load_preset()
+        from PySide6.QtCore import Qt
+        keep = ("policy", "none", "asc_low", "asc_high", "six_switch_off", "torque_zero", "FW2_ASC_LOW", "SOFT_ASC_V")
+        for i in range(fs.cand_list.count()):            # the primitive reactions and two declared strategies
+            it = fs.cand_list.item(i)
+            it.setCheckState(Qt.Checked if it.data(Qt.UserRole) in keep else Qt.Unchecked)
         fs.run_compare()
         rows = {r["candidate"]: r for r in (fs.last_cmp or {}).get("rows", [])}
-        check("fault:candidates", len(rows) == 6 and rows["policy"]["overall"] == "FAIL"
-              and "TSR-06" not in rows["asc_low"]["failing"], str({k: r["overall"] for k, r in rows.items()}))
+        check("fault:candidates", len(rows) == 8 and "TSR-06" in rows.get("policy", {}).get("failing", [])
+              and "TSR-06" not in rows["asc_low"]["failing"] and "TSR-06" not in rows["FW2_ASC_LOW"]["failing"],
+              str({k: r["overall"] for k, r in rows.items()}))
         reading("fault:candidates", fs.i_cmp, "fault_compare")
         shot(win, "25f_fault_candidates")
         fs.set_axes([{"path": "speed_rpm", "values": [9000, 12000]}])
@@ -272,6 +330,73 @@ def run_self_test(app, out_dir) -> int:
         fs.tabs.setCurrentWidget(fs.tab_dep)
         fs.show_dependencies()
         shot(win, "25i_fault_dependencies")
+        # the design editor (typed fields, no JSON): a strategy, a debounce time; the variant is what runs
+        ed = fs.editor
+        fs.top.setCurrentWidget(ed)
+        ed.tabs.setCurrentIndex(4)
+        ed.l_strat.setCurrentRow(next((i for i in range(ed.l_strat.count()) if ed.l_strat.item(i).text() == "SOFT_ASC_V"), 0))
+        shot(win, "25j_fault_strategies")
+        ed.tabs.setCurrentIndex(3)
+        r_tq = next(i for i, m in enumerate(ed.work["mechanisms"]) if m["id"] == "SM-TQ")
+        ed.t_mech.selectRow(r_tq)
+        ed.t_mech.item(r_tq, next(j for j, c in enumerate(ed.t_mech.cols) if c.key == "p_time")).setText("25")
+        shot(win, "25k_fault_design_editor")
+        check("fault:design_variant", fs.scenario().get("overrides") == {"mechanisms.SM-TQ.params.debounce_ms": 25.0},
+              fs.design_variant.sig.text())
+        # the safety case of the design under study: static review, verification matrix, reading, report
+        fs.top.setCurrentWidget(fs.case_tab)
+        fs.run_review()
+        bad = [f for f in (fs.last_review or {}).get("findings", []) if f["status"] == "INCONSISTENT"]
+        check("fault:review_finds", any("SM-TQ" in f["element"] for f in bad), [f["element"] for f in bad])
+        ed.revert()
+        fs.run_review()
+        cnt = (fs.last_review or {}).get("counts") or {}
+        check("fault:review", cnt.get("INCONSISTENT") == 0 and cnt.get("MISSING") == 0 and cnt.get("WARNING", 0) >= 1,
+              cnt)
+        subset = ("step_ok", "false_trip", "cs_offset", "ov_regen", "res_lost", "sw_short")
+        for i in range(fs.verif_list.count()):
+            it = fs.verif_list.item(i)
+            it.setCheckState(Qt.Checked if it.data(Qt.UserRole) in subset else Qt.Unchecked)
+        fs.run_verification()
+        mx = fs.last_verif or {}
+        check("fault:verification", [r["key"] for r in mx.get("rows", [])] == ["step_ok", "cs_offset", "ov_regen",
+                                                                              "res_lost", "sw_short"]
+              and [x["key"] for x in mx.get("skipped", [])] == ["false_trip"]
+              and fs.t_matrix.columnCount() == 3 + 5, [r["key"] for r in mx.get("rows", [])])
+        reading("fault:safety_case", fs.i_case, "fault_case")
+        fs.case_tabs.setCurrentIndex(fs.case_tabs.indexOf(fs.t_matrix.parentWidget()))
+        shot(win, "25l_fault_verification_matrix")
+        fs.case_tabs.setCurrentWidget(fs.i_case)
+        shot(win, "25m_fault_safety_case")
+        html = api.fault_report({"overrides": fs.variant(), "matrix": fs._current_matrix(),
+                                 "counterexamples": fs.counterexamples}, win.state.project)
+        (out / "fault_safety_case.html").write_text(html, encoding="utf-8")
+        check("fault:report", "5. 검증 매트릭스" in html and "3. 정적 설계 검토" in html and len(html) > 20_000,
+              f"{len(html)} chars")
+        for i in range(fs.verif_list.count()):
+            fs.verif_list.item(i).setCheckState(Qt.Checked)
+        fs.top.setCurrentIndex(0)
+        # reference verification: the built-in customer package classified and traced; a proposal verified
+        rf = visit("reference", 0, [lambda pg: pg.load_builtin("customer_inverter")], [])
+        from PySide6.QtCore import Qt as _Qt
+        tops = {rf.tree.topLevelItem(k).data(0, _Qt.UserRole) for k in range(rf.tree.topLevelItemCount())}
+        check("reference:builtin_hierarchy", len(rf.package["items"]) >= 370 and {"A-02", "A-03", "PROP-SG-HV"} <= tops
+              and rf.t_gaps.rowCount() > 20 and rf.t_props.rowCount() >= 8, f"{len(rf.package['items'])} items")
+        rf.tabs.setCurrentWidget(rf.tab_hier)
+        shot(win, "25n_reference_hierarchy")
+        rf.load_builtin("example")
+        rf.profile.setCurrentIndex(rf.profile.findData("illustrative"))
+        rf.search.setText("EX-PROP-01")
+        rf.run()
+        app.processEvents()
+        row = next((r for r in (rf.last or {}).get("rows", []) if r["id"] == "EX-PROP-01"), {})
+        check("reference:proposal", row.get("verdict") == "PASS" and row.get("proposed"), row.get("verdict"))
+        rf.tabs.setCurrentWidget(rf.overview)
+        shot(win, "25p_reference_overview")
+        rf.tabs.setCurrentWidget(rf.tab_matrix)
+        rf.matrix.selectRow(0)
+        shot(win, "25o_reference_matrix")
+        rf.search.setText("")
         pw = visit("power", 0, ["run_module"], [(lambda pg: pg.mod_tabs.setCurrentIndex(1), "26_power_module"),
                                                 (lambda pg: pg.mod_tabs.setCurrentWidget(pg.i_mod), "26a_power_module_reading")])
         check("power:module", pw.last_module is not None and pw.last_module["losses"]["established"]
@@ -432,6 +557,46 @@ def run_self_test(app, out_dir) -> int:
         reading("machine", mc.i_trade, "machine_trade")
         reading("machine:winding", mc.i_wind, "winding")
         reading("machine:sizing", mc.i_size, "concept_sizing")
+        # drive-system views: the vehicle on a cycle, integrated charging, system budgets, the simulator export
+        dcy = visit("drive_cycle", 0, ["run"], [(lambda pg: pg.tabs.setCurrentWidget(pg.p_trace), "60_drive_cycle"),
+                                                (lambda pg: pg.tabs.setCurrentWidget(pg.p_energy), "60b_drive_cycle_energy"),
+                                                (lambda pg: pg.tabs.setCurrentWidget(pg.reading),
+                                                 "60a_drive_cycle_reading")])
+        cr = dcy.last or {}
+        check("drive_cycle:closure", cr.get("complete") and abs((cr.get("closure") or {}).get("residual_kWh", 1.0)) < 1e-9
+              and (cr.get("consumption_Wh_per_km") or {}).get("battery_ocv"), (cr.get("consumption_Wh_per_km") or {}))
+        reading("drive_cycle", dcy.reading, "drive_cycle")
+        chg = visit("charging", 0, ["run_point", "run_map"],
+                    [(lambda pg: pg.tabs.setCurrentWidget(pg.p_wave), "61_charging_waveforms"),
+                     (lambda pg: pg.tabs.setCurrentWidget(pg.p_map), "61b_charging_capability")])
+        check("charging:point", (chg.last_point or {}).get("status") == "PASS"
+              and 0.9 < (chg.last_point or {}).get("efficiency", 0) < 1.0, (chg.last_point or {}).get("status"))
+        check("charging:map", any(r.get("limiting") for r in (chg.last_map or {}).get("rows", [])))
+        reading("charging", chg.reading, "charging_point", "charging_capability")
+        bud = visit("budget", 0, ["run_torque"], [(lambda pg: pg.tabs.setCurrentWidget(pg.p_pts), "62_budget_torque"),
+                                                  (lambda pg: pg.tabs.setCurrentWidget(pg.p_fusa), "62b_budget_fusa")])
+        bt = bud.last_torque or {}
+        check("budget:torque", bt.get("status") in ("PASS", "FAIL") and (bt.get("fusa") or {}).get("undetected_status")
+              and bt.get("worst_point_budget"), bt.get("counts"))
+        bud.run_ftti()
+        app.processEvents()
+        fb = bud.last_budget or {}
+        check("budget:ftti", fb.get("timing_worst_ms") is not None and abs(fb["total"] - fb["timing_worst_ms"]) < 1e-9,
+              fb.get("total"))
+        bud.tabs.setCurrentWidget(bud.p_bud)
+        shot(win, "62c_budget_ftti")
+        reading("budget", bud.reading, "budget_torque", "budget")
+        sx = visit("sim_export", 0, [lambda pg: (pg.s_step.setValue(4000.0), pg.t_step.setValue(100.0)), "run"],
+                   [(lambda pg: pg.tabs.setCurrentWidget(pg.p_map), "63_sim_export_map")])
+        sm = sx.last or {}
+        check("sim_export:maps", (sm.get("counts") or {}).get("FEASIBLE", 0) > 0, sm.get("counts"))
+        import tempfile as _tf
+        with _tf.TemporaryDirectory() as _td:
+            for kind, name in (("csv", "m.csv"), ("mat", "m.mat"), ("fmu", "m.fmu")):
+                sx.export(kind, str(Path(_td) / name))
+            fmu_ok = (Path(_td) / "m.fmu").exists() and (Path(_td) / "m.mat").exists()
+        check("sim_export:files", fmu_ok, sx.exp_state.text())
+        reading("sim_export", sx.reading, "sim_maps")
         visit("model", 7, [], [(None, "18_model")])
         # project data package (R2): identity, consistency, every result names its product data, a revision switch
         # reloads the pages and marks older results stale

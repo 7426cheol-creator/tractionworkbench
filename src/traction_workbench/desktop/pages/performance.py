@@ -72,7 +72,7 @@ class PerformancePage(QWidget):
         f.addRow("", mrow)
         f.addRow(tr("해상도", "resolution"), self.res_combo)
         v.addWidget(g)
-        self.run_btn = primary_button(tr("성능 곡선·맵 계산", "compute envelope & maps"))
+        self.run_btn = primary_button(tr("성능 곡선·맵 계산", "compute envelope and maps"))
         self.run_btn.clicked.connect(self.run)
         v.addWidget(self.run_btn)
         v.addWidget(hint(tr("곡선: 속도 표본마다 정책 capability(스캔+bisection) — 표본 사이는 보장하지 않음. 맵: 각 격자점의 최소전류 "
@@ -108,7 +108,7 @@ class PerformancePage(QWidget):
         self.quantity.currentIndexChanged.connect(self._draw_map)
         row.addWidget(self.quantity, 1)
         ml.addLayout(row)
-        self.p_map = PlotPanel()
+        self.p_map = PlotPanel(cursor=False)            # the map's hover reads the map value
         ml.addWidget(self.p_map, 1)
         self.tabs.addTab(self.p_env, tr("T–n 성능 곡선", "T–n envelope"))
         self.tabs.addTab(mapw, tr("효율·손실 맵", "efficiency / loss maps"))

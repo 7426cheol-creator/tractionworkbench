@@ -40,7 +40,7 @@ from .safety import FAIL, NA, PASS, UNKNOWN, evaluate
 SCHEMA = "twb-fault-counterexamples/1"
 RELEVANT_SECTIONS = ("drive", "dc_source", "dc_link", "controller", "driveline", "fault_sim")
 METRICS = ("i_phase_peak_A", "v_dc_max_V", "v_dc_min_V", "i_bat_charge_max_A", "T_shaft_max_Nm", "T_shaft_min_Nm",
-           "first_detection_ms", "FDTI_ms", "FRTI_ms", "FHTI_ms")
+           "i_d_min_A", "T_brake_peak_Nm", "first_detection_ms", "FDTI_ms", "FRTI_ms", "FHTI_ms")
 
 
 # ------------------------------------------------------------------------------------------ scenario paths
@@ -101,17 +101,23 @@ def axis_values(ax: dict) -> list:
 # ------------------------------------------------------------------------------------------ identity
 
 def code_identity() -> dict:
+    """The software a result came from: version, git commit and whether the package source differed from that commit
+    (``dirty``: modified or new files under the package; None without git)."""
     from ... import __version__
-    commit = None
+    commit = dirty = None
     try:
         root = Path(__file__).resolve().parents[4]
         r = subprocess.run(["git", "-C", str(root), "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
                            timeout=5)
         if r.returncode == 0:
             commit = r.stdout.strip() or None
+            s = subprocess.run(["git", "-C", str(root), "status", "--porcelain", "--",
+                                str(Path(__file__).resolve().parents[2])], capture_output=True, text=True, timeout=5)
+            if s.returncode == 0:
+                dirty = bool(s.stdout.strip())
     except (OSError, subprocess.SubprocessError):
-        commit = None
-    return {"version": __version__, "commit": commit}
+        commit = dirty = None
+    return {"version": __version__, "commit": commit, "dirty": dirty}
 
 
 def project_identity(project) -> dict:
@@ -151,7 +157,8 @@ def run_one(product, scenario: dict, keep_trace: bool = False) -> dict:
     first = s.get("first_detection")
     metrics = {"i_phase_peak_A": s["i_phase_peak_A"], "v_dc_max_V": s["v_dc_max_V"], "v_dc_min_V": s["v_dc_min_V"],
                "i_bat_charge_max_A": s["i_bat_charge_max_A"], "T_shaft_max_Nm": s["T_shaft_max_Nm"],
-               "T_shaft_min_Nm": s["T_shaft_min_Nm"], "first_detection_ms": ms(first["t"]) if first else None,
+               "T_shaft_min_Nm": s["T_shaft_min_Nm"], "i_d_min_A": s["i_d_min_A"],
+               "T_brake_peak_Nm": s["T_brake_max_Nm"], "first_detection_ms": ms(first["t"]) if first else None,
                "FDTI_ms": ms(fsr_t.get("FDTI")) if fsr_t else None, "FRTI_ms": ms(fsr_t.get("FRTI")) if fsr_t else None,
                "FHTI_ms": ms(fsr_t.get("FHTI")) if fsr_t else None}
     verdicts = {r["id"]: r["verdict"] for r in ev["tsr"]}

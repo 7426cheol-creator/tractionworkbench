@@ -27,6 +27,7 @@ from .extensions.coolant import eg_water_properties
 from .extensions.dclink import active_discharge, passive_discharge, regen_disconnect_overvoltage
 from .extensions.safe_state import safe_state_screening
 from .extensions.thermal import ThermalModel, thermal_duration, torque_availability
+from .extensions.system_budget import TQ_DEFAULT_KIND
 from .extensions.timing import analyze_timing
 from .modulation import MODULATIONS
 from .scenario import DcSourceLimits, Scenario
@@ -471,7 +472,7 @@ EXAMPLE_RIPPLE = {
     "capacitor": PROJECT.capacitor(), "source": PROJECT.source_impedance(),
     "fsw_kHz": _CTRL["fsw_kHz"], "modulation": _CTRL["modulation"],
     "requirement": {"location": "dc_link_bus", "quantity": "voltage_pp", "limit": 15.0, "bandwidth_Hz": 50e3,
-                    "note": "example requirement; a real one needs the customer's measurement definition"},
+                    "note": "example requirement; a real one needs its measurement definition"},
 }
 
 
@@ -518,7 +519,7 @@ EXAMPLE_ASC = {
 
 
 def asc(body):
-    """ASC fault transient and the customer's current-time requirements on one trajectory (review 9.13)."""
+    """ASC fault transient and the two current-time requirements on one trajectory (review 9.13)."""
     from .extensions.asc_transient import CurrentTimeRequirement, asc_transient
     b = {**EXAMPLE_ASC, **(body or {})}
     d = _drive(b)
@@ -1191,6 +1192,246 @@ def efficiency_mission(body):
                       "loss_model": b.get("loss_model", "module"), "model_efficiency": MODEL_EFFICIENCY})
 
 
+# -- drive cycle (system view, item 8) ----------------------------------------------------------------------------
+
+def _dc_source_R_mohm(prj) -> float:
+    imp = prj.source_impedance() if prj is not None else None
+    return float(imp["R_mohm"]) if imp and imp.get("R_mohm") is not None else 0.0
+
+
+EXAMPLE_DRIVE_CYCLE = {
+    "cycle": {"builtin": "WLTC_3b"},
+    "vehicle": PROJECT.vehicle(), "reducer": EXAMPLE_REDUCER, "module": EXAMPLE_MODULE, "loss_model": "module",
+    "Vdc_V": float(PROJECT.data("dc_source")["Vdc_nominal_V"]), "source_R_mohm": _dc_source_R_mohm(PROJECT),
+    "oil_temp_C": 80.0, "winding_temp_C": None, "magnet_temp_C": None, "Tj_eval_C": None,
+    "requirements": {"consumption_Wh_per_km_max": 160.0, "range_km_min": 450.0, "recovery_ratio_min": None},
+    "note": "synthetic vehicle, reducer and module of the built-in project; standard traces from data/drive_cycles.json",
+}
+
+
+def drive_cycles() -> list:
+    """The built-in standard traces with their statistics and official reference values."""
+    from .extensions.drive_cycle import builtin_cycles, cycle_from_builtin
+    out = []
+    for key, c in builtin_cycles().items():
+        cyc = cycle_from_builtin(key)
+        out.append({"key": key, "title": c["title"], "reference": c["reference"], "unit": c["unit"],
+                    "phases": [p["name"] for p in c.get("phases") or []], "stats": cyc.stats(),
+                    "official": c.get("official") or {}})
+    return _jsonable(out)
+
+
+def drive_cycle(body):
+    """A vehicle on a speed trace: machine points, energy per component, consumption, regeneration, followability."""
+    from dataclasses import replace as _rep
+    from .extensions.drive_cycle import cycle_from_csv, cycle_from_dict, run_cycle, vehicle_from_dict
+    b = {**EXAMPLE_DRIVE_CYCLE, **(body or {})}
+    d = _eff_drive(b)
+    tj = _opt(b, "Tj_eval_C")
+    if tj is not None and d.inverter.module_loss is not None:
+        d = _rep(d, inverter=_rep(d.inverter, module_Tj_C=tj))
+    cyc = cycle_from_csv(b["cycle_csv"], str(b.get("cycle_name") or "imported trace")) if b.get("cycle_csv") \
+        else cycle_from_dict(b["cycle"])
+    veh = vehicle_from_dict(b["vehicle"])
+    red = _reducer(b.get("reducer"))
+    temps = {k: _opt(b, k) for k in ("winding_temp_C", "magnet_temp_C", "coolant_temp_C")}
+    res = run_cycle(d, cyc, veh, red, Vdc_V=_num(b, "Vdc_V"), limits=_limits(b), oil_temp_C=_num(b, "oil_temp_C"),
+                    source_R_ohm=float(b.get("source_R_mohm") or 0.0) * 1e-3, temps=temps,
+                    requirements=b.get("requirements") or {}, keep_trace=bool(b.get("keep_trace", True)))
+    res["loss_model"] = b.get("loss_model", "module")
+    res["inverter_Tj_eval_C"] = d.inverter.module_Tj_C
+    return _jsonable(res)
+
+
+# -- integrated charging (system view, item 9) ---------------------------------------------------------------------
+
+_SYNTH_VDC_SCALING = {"exponent": 1.0, "valid_V": [300.0, 800.0],
+                      "basis": "synthetic example assumption E ~ V (replace with measured E(V) data)"}
+
+
+EXAMPLE_CHARGING = {
+    "charging": PROJECT.data("charging"),
+    "module": {**EXAMPLE_MODULE, "vdc_scaling": _SYNTH_VDC_SCALING},
+    "capacitor": PROJECT.capacitor(), "source": PROJECT.source_impedance(),
+    "V_charger_V": 400.0, "V_battery_V": 600.0, "I_charge_A": 200.0, "coolant_C": 45.0, "rotor_angle_deg": 0.0,
+    "winding_temp_C": None,
+    "charger": {"current_max_A": 500.0, "power_max_W": 200000.0, "basis": "example 400 V-class DC charger"},
+    "battery": {"battery_charge_power_max_W": 180000.0, "battery_charge_current_max_A": 300.0,
+                "basis": "example DC fast-charge acceptance of the pack (BMS limit at mid SOC, warm pack) - not the "
+                         "drive's regeneration limit of the DC source section"},
+    "V_chargers_V": [300.0, 350.0, 400.0, 450.0, 500.0], "V_batteries_V": [520.0, 560.0, 600.0, 640.0, 680.0],
+    "note": "synthetic charging path, module (with a declared synthetic E ~ V scaling) and charger of the example",
+}
+
+
+def _charging_inputs(body):
+    from .extensions.boost_charging import path_from_dict
+    b = {**EXAMPLE_CHARGING, **(body or {})}
+    d = _drive(b)
+    m = b["module"]
+    model = module_model_from_dict(m)
+    path = path_from_dict(b["charging"])
+    bank = src = None
+    if b.get("capacitor"):
+        bank, src = _ripple_bank({"capacitor": b["capacitor"], "source": b.get("source")})
+    ch, bt = b.get("charger") or {}, b.get("battery") or {}
+    limits = {"charger_current_max_A": _opt(ch, "current_max_A"), "charger_power_max_W": _opt(ch, "power_max_W"),
+              "battery_charge_power_max_W": _opt(bt, "battery_charge_power_max_W"),
+              "battery_charge_current_max_A": _opt(bt, "battery_charge_current_max_A")}
+    kw = dict(coolant_C=_num(b, "coolant_C"), Rth_K_per_W=float(m["Rth_K_per_W"]),
+              rotor_angle_deg=float(b.get("rotor_angle_deg") or 0.0), capacitor=bank, source=src,
+              winding_temp_C=_opt(b, "winding_temp_C"), limits=limits)
+    return b, d, model, path, kw
+
+
+def charging_point(body):
+    """One integrated-charging point: waveforms over a switching period, device / copper / capacitor losses, Tj,
+    torque at standstill and the declared limits."""
+    from .extensions.boost_charging import charging_point as _point
+    b, d, model, path, kw = _charging_inputs(body)
+    res = _point(d, model, path, V_c=_num(b, "V_charger_V"), V_b=_num(b, "V_battery_V"), I_charge=_num(b, "I_charge_A"),
+                 **kw)
+    res["module"] = {"name": b["module"].get("name"), "technology": model.device.technology,
+                     "fsw_kHz": model.fsw_Hz / 1e3, "Rth_K_per_W": kw["Rth_K_per_W"],
+                     "vdc_scaling": b["module"].get("vdc_scaling")}
+    return _jsonable(res)
+
+
+def charging_capability(body):
+    """Charging-power capability over charger and battery voltages, with the limiting check named."""
+    from .extensions.boost_charging import capability_map
+    b, d, model, path, kw = _charging_inputs(body)
+    res = capability_map(d, model, path, V_cs=[float(x) for x in b["V_chargers_V"]],
+                         V_bs=[float(x) for x in b["V_batteries_V"]], **kw)
+    res["limits"] = kw["limits"]
+    res["path"] = b["charging"]
+    return _jsonable(res)
+
+
+# -- system budgets (system view, item 11) -------------------------------------------------------------------------
+
+EXAMPLE_BUDGET = {
+    "torque": {"errors": PROJECT.data("torque_errors"),
+               "requirement": {"abs_Nm": 5.0, "rel": 0.05,
+                               "basis": "example torque-accuracy requirement: +-5 N m or +-5 % (the larger)"},
+               "combination": "mixed", "kinds": dict(TQ_DEFAULT_KIND), "points": None,
+               "speeds_rpm": [1000.0, 3000.0, 6000.0, 9000.0, 12000.0],
+               "fractions": [-1.0, -0.5, -0.2, 0.2, 0.5, 1.0], "Vdc_V": 600.0},
+    "fault_sim": PROJECT.data("fault_sim"),
+    "cycle": {"allocations_Wh_per_km": {"battery": 0.5, "inverter": 6.0, "motor_copper": 3.0, "motor_rotational": 9.0,
+                                        "reducer": 8.0, "axle": 0.5},
+              "limit_Wh_per_km": 25.0,
+              "basis": "example loss allocation of the drive on WLTC (component targets)"},
+    "custom": {"title": "example: DC-link voltage measurement chain", "unit": "V", "limit": 6.0,
+               "combination": "mixed", "allocation": "equal",
+               "contributors": [{"id": "divider", "title": "resistor divider tolerance", "value": 2.4,
+                                 "kind": "random", "basis": "0.4 % at 600 V (synthetic)"},
+                                {"id": "adc", "title": "ADC gain + offset", "value": 1.8, "kind": "random",
+                                 "basis": "synthetic"},
+                                {"id": "isolation", "title": "isolation amplifier drift", "value": 1.5,
+                                 "kind": "systematic", "basis": "over temperature (synthetic)"}]},
+}
+
+
+def budget_torque(body):
+    """Torque-accuracy budget at operating points over the envelope; the functional-safety window and monitor."""
+    from .extensions.system_budget import default_points, fusa_torque_limits, torque_accuracy
+    b = {**EXAMPLE_BUDGET, **(body or {})}
+    tq = {**EXAMPLE_BUDGET["torque"], **(b.get("torque") or {})}
+    d = _drive(b)
+    vdc = float(tq.get("Vdc_V") or 600.0)
+    temps = {k: _opt(tq, k) for k in ("winding_temp_C", "magnet_temp_C")}
+    pts = tq.get("points")
+    if not pts:
+        pts = default_points(d, vdc, _limits(b), {k: v for k, v in temps.items() if v is not None},
+                             tuple(float(x) for x in tq["speeds_rpm"]), tuple(float(x) for x in tq["fractions"]))
+    res = torque_accuracy(d, Vdc=vdc, limits=_limits(b), points=[(float(n), float(T)) for n, T in pts],
+                          errors=tq["errors"], requirement=tq.get("requirement"), combination=tq.get("combination",
+                                                                                                     "mixed"),
+                          kinds=tq.get("kinds") or {}, temps=temps, fusa=fusa_torque_limits(b.get("fault_sim")))
+    return _jsonable(res)
+
+
+def budget_ftti(body):
+    """The project's FTTI chain as a budget (worst path, proportional allocation)."""
+    from .extensions.system_budget import ftti_budget
+    b = body or {}
+    chain = b.get("chain") or example("TIMING", PROJECT)
+    return _jsonable(ftti_budget(timing(chain), b.get("combination", "worst_case")))
+
+
+def budget_cycle(body):
+    """Loss energy per component of a drive cycle (Wh/km) against declared allocations."""
+    from .extensions.system_budget import cycle_loss_budget
+    b = {**EXAMPLE_BUDGET, **(body or {})}
+    cy = {**EXAMPLE_BUDGET["cycle"], **(b.get("cycle") or {})}
+    res = b.get("cycle_result") or drive_cycle({**(b.get("cycle_body") or {}), "keep_trace": False})
+    out = cycle_loss_budget(res, cy.get("allocations_Wh_per_km") or {}, cy.get("limit_Wh_per_km"))
+    out["cycle"] = res.get("cycle", {}).get("name")
+    return _jsonable(out)
+
+
+def budget_custom(body):
+    """A budget the engineer declares: contributors, limit, combination and allocation."""
+    from .extensions.system_budget import contributor_from_dict, evaluate_budget
+    c = {**EXAMPLE_BUDGET["custom"], **((body or {}).get("custom") or {})}
+    return _jsonable(evaluate_budget(str(c.get("title", "budget")), str(c.get("unit", "")),
+                                     None if c.get("limit") is None else float(c["limit"]),
+                                     [contributor_from_dict(x) for x in c.get("contributors") or []],
+                                     str(c.get("combination", "mixed")), c.get("allocation")))
+
+
+# -- exports for vehicle simulators (system view, item 12) --------------------------------------------------------
+
+EXAMPLE_SIM_EXPORT = {
+    "Vdc_V": [600.0], "declare_vdc_scaling": False,
+    "speed_max_rpm": 16000.0, "speed_step_rpm": 1000.0, "torque_step_Nm": 25.0, "torques_Nm": None,
+    "include_reducer": True, "oil_temp_C": 80.0, "winding_temp_C": None, "magnet_temp_C": None,
+    "loss_model": "module", "module": EXAMPLE_MODULE, "reducer": EXAMPLE_REDUCER, "model_name": "TwbDriveMaps",
+    "source": {},
+}
+
+
+def sim_maps(body):
+    """The drive's maps for a vehicle simulator: DC power, losses per component, output power and currents on a speed x
+    torque grid at the given DC voltages, with the full-load curves (``extensions.sim_export``)."""
+    from .extensions.sim_export import compute_maps, maps_jsonable
+    b = {**EXAMPLE_SIM_EXPORT, **(body or {})}
+    mod = dict(b.get("module") or EXAMPLE_MODULE)
+    if b.get("declare_vdc_scaling"):
+        mod["vdc_scaling"] = _SYNTH_VDC_SCALING           # the labelled synthetic law (as on the charging page)
+    d = _eff_drive({**b, "module": mod})
+    red = _reducer(b.get("reducer")) if b.get("include_reducer") else None
+    smax, sstep = float(b["speed_max_rpm"]), float(b["speed_step_rpm"])
+    if not (smax > 0 and sstep > 0):
+        raise InputValidationError("speed_max_rpm and speed_step_rpm must be > 0", field="speed_step_rpm")
+    speeds = [float(x) for x in np.round(np.arange(0.0, smax + 0.5 * sstep, sstep), 6)]
+    temps = {k: _opt(b, k) for k in ("winding_temp_C", "magnet_temp_C")}
+    src = {**(b.get("source") or {}), "module": mod.get("name"),
+           "switching_energy_vs_Vdc": (mod.get("vdc_scaling") or {}).get("basis") or "test voltage only",
+           "reducer": None if red is None else "declared reducer model"}
+    m = compute_maps(d, Vdc_list=[float(x) for x in b["Vdc_V"]], limits=_limits(b), speeds_rpm=speeds,
+                     torques_Nm=b.get("torques_Nm"), torque_step_Nm=float(b.get("torque_step_Nm") or 25.0),
+                     reducer=red, oil_temp_C=_opt(b, "oil_temp_C") if red is not None else None, temps=temps,
+                     source=src)
+    return maps_jsonable(m)
+
+
+def sim_write(maps: dict, kind: str, path, model_name: str = "TwbDriveMaps") -> dict:
+    """Write computed maps (``sim_maps`` result) as ``csv`` (long), ``grids`` (a folder), ``mat`` or ``fmu``."""
+    from .extensions import sim_export as se
+    m = se.maps_from_json(maps)
+    if kind == "csv":
+        return {"files": [str(se.write_csv_long(m, path))]}
+    if kind == "grids":
+        return {"files": [str(x) for x in se.write_csv_grids(m, path)]}
+    if kind == "mat":
+        return {"files": [str(se.write_mat(m, path))]}
+    if kind == "fmu":
+        return se.write_fmu(m, path, model_name)
+    raise InputValidationError(f"unknown export kind {kind!r}", field="kind")
+
+
 def _cand(c: dict, fsw_kHz=None):
     from dataclasses import replace as _rep
     from .analysis.efficiency import ModuleCandidate
@@ -1759,7 +2000,7 @@ def concept_sizing(body):
 
 EXAMPLE_NAMES = ("TIMING", "THERMAL", "PROTECTION", "PROTECTION_OT", "MODULE", "MODULE_SIC", "RIPPLE", "ASC",
                  "MISSION", "OEW", "HEV", "EMI", "REDUCER", "EFFICIENCY", "PWM", "DRIVELINE", "MACHINE", "WINDING",
-                 "SIZING")
+                 "SIZING", "DRIVE_CYCLE", "CHARGING", "BUDGET", "SIM_EXPORT")
 
 
 def _product(name: str, prj, ex: dict) -> dict:
@@ -1808,6 +2049,18 @@ def _product(name: str, prj, ex: dict) -> dict:
         ex["transition"].update(from_kHz=c["fsw_kHz"], deadtime_us=c["deadtime_us"])
     elif name == "DRIVELINE":
         ex["driveline"], ex["controller"] = prj.driveline_rom(), prj.torque_path()
+    elif name == "SIM_EXPORT":
+        ex["module"], ex["reducer"] = prj.module_spec(), prj.reducer()
+        ex["Vdc_V"] = [float(prj.module_spec().get("v_test_V") or 600.0)]
+    elif name == "BUDGET":
+        ex["torque"]["errors"] = prj.data("torque_errors")
+        ex["fault_sim"] = prj.data("fault_sim") if prj.has("fault_sim") else None
+    elif name == "CHARGING":
+        ex.update(charging=prj.data("charging"), module={**prj.module_spec(), "vdc_scaling": ex["module"]["vdc_scaling"]},
+                  capacitor=prj.capacitor(), source=prj.source_impedance())
+    elif name == "DRIVE_CYCLE":
+        ex.update(vehicle=prj.vehicle(), reducer=prj.reducer(), module=prj.module_spec(),
+                  Vdc_V=float(prj.data("dc_source")["Vdc_nominal_V"]), source_R_mohm=_dc_source_R_mohm(prj))
     return ex
 
 
@@ -1893,9 +2146,163 @@ def fault_validation(body=None, project=None):
 
 
 def fault_independence(body=None, project=None):
-    """Declared dependencies of the protection architecture: shared resources and sensors per mechanism / FSR."""
-    from .extensions.faultsim.study import independence
-    return independence(project or PROJECT)
+    """Declared dependencies of the protection architecture: shared resources and sensors per mechanism / FSR
+    (``body["overrides"]``: of a design variant)."""
+    from .extensions.faultsim.study import independence_data
+    return independence_data(fault_section(project, (body or {}).get("overrides")))
+
+
+def fault_section(project=None, overrides=None) -> dict:
+    """The project's fault_sim section (or the built-in example) with a design variant applied, validated."""
+    import copy as _copy
+    from .extensions.faultsim.configure import FAULT_SIM_EXAMPLE, apply_overrides, validate_section
+    pr = project or PROJECT
+    data = _copy.deepcopy(pr.data("fault_sim") if pr.has("fault_sim") else FAULT_SIM_EXAMPLE)
+    data = apply_overrides(data, overrides)
+    validate_section(data)
+    return data
+
+
+def fault_design(body=None, project=None) -> dict:
+    """What the design editor needs: the project's section (the base of every variant) and the schemas of what can
+    be edited (mechanism kinds and their parameters, strategy actions / exits / templates, requirement fields)."""
+    import copy as _copy
+    from .extensions.faultsim.configure import FAULT_SIM_EXAMPLE
+    from .extensions.faultsim.protection import HW_KINDS, KIND_PARAMS, REACTIONS, RULE_KEYS, SW_KINDS
+    from .extensions.faultsim.safety import ASIL_LEVELS, CRITERIA, QUANTITIES, VERIFICATION_METHODS
+    from .extensions.faultsim.strategy import ACTION_PARAMS, ACTIONS, EXITS, EXITS_FOR, TEMPLATES
+    pr = project or PROJECT
+    return {"base": _copy.deepcopy(pr.data("fault_sim") if pr.has("fault_sim") else FAULT_SIM_EXAMPLE),
+            "from": "project" if pr.has("fault_sim") else "built-in synthetic example",
+            "schema": {"sw_kinds": list(SW_KINDS), "hw_kinds": list(HW_KINDS),
+                       "kind_params": {k: [list(x) for x in v] for k, v in KIND_PARAMS.items()},
+                       "reactions": list(REACTIONS), "rule_keys": list(RULE_KEYS),
+                       "actions": list(ACTIONS), "exits": list(EXITS), "exits_for": {k: list(v) for k, v in
+                                                                                        EXITS_FOR.items()},
+                       "action_params": {k: [list(x) for x in v] for k, v in ACTION_PARAMS.items()},
+                       "templates": _copy.deepcopy(TEMPLATES), "asil": list(ASIL_LEVELS),
+                       "criteria": list(CRITERIA), "quantities": dict(QUANTITIES),
+                       "verification": list(VERIFICATION_METHODS)}}
+
+
+def fault_review(body=None, project=None) -> dict:
+    """Static review of the protection architecture and requirements (with a design variant, ``overrides``)."""
+    from .extensions.faultsim.review import review_section
+    from .extensions.faultsim.study import independence_data
+    data = fault_section(project, (body or {}).get("overrides"))
+    return review_section(data, independence_data(data))
+
+
+def fault_verification(body=None, project=None) -> dict:
+    """The scenario catalog run on one design (the project with ``overrides``): the requirement x scenario matrix,
+    coverage, worst timings and the failure-mode table (``body["keys"]``: a subset of the catalog)."""
+    from .extensions.faultsim.study import SCENARIOS
+    from .extensions.faultsim.verification import verification_matrix
+    b = dict(body or {})
+    fault_section(project, b.get("overrides"))                    # validate the variant first
+    keys = b.get("keys")
+    scs = [s for s in SCENARIOS if not keys or s["key"] in keys]
+    return verification_matrix(fault_product(project), scs, b.get("overrides"))
+
+
+def fault_report(body=None, project=None) -> str:
+    """The safety-case evidence as one self-contained HTML page (``body``: overrides, and optionally the latest
+    verification matrix and counterexamples of the study)."""
+    from .extensions.faultsim.campaign import code_identity
+    from .extensions.faultsim.design import change_rows
+    from .extensions.faultsim.report import safety_case_html
+    from .extensions.faultsim.review import review_section
+    from .extensions.faultsim.study import independence_data, precision_notes
+    from .extensions.faultsim.configure import build_setup
+    b = dict(body or {})
+    pr = project or PROJECT
+    ov = b.get("overrides")
+    data = fault_section(pr, ov)
+    base = fault_design(None, pr)["base"]
+    ind = independence_data(data)
+    setup, _r, _i = build_setup(fault_product(pr), {"speed_rpm": 6000.0, "torque_Nm": 100.0, "overrides": ov,
+                                                    "pwm_model": b.get("pwm_model", "averaged")})
+    return safety_case_html(data, project={"label": pr.label, "digest": pr.digest()}, code=code_identity(),
+                            changes=change_rows(base, ov), review=review_section(data, ind),
+                            matrix=b.get("matrix"), independence=ind, precision_notes=precision_notes(setup),
+                            counterexamples=b.get("counterexamples"))
+
+
+def reference_example() -> dict:
+    """The built-in example reference package (twb-reference/1): a neutral, synthetic catalogue of every check."""
+    import copy as _copy
+    from .extensions.faultsim.refexample import REFERENCE_EXAMPLE
+    return _copy.deepcopy(REFERENCE_EXAMPLE)
+
+
+REFERENCE_BUILTIN = (
+    ("example", "내장 예제 (중립·합성, 모든 검사)", "built-in example (neutral, synthetic, every check)", None),
+    ("customer_inverter", "인버터 FuSa 참고 문서 (분류·추적·제안 포함)",
+     "inverter FuSa reference (classified, traced, with proposals)", "customer_inverter_reference.json"),
+)
+
+
+def reference_builtin() -> list:
+    """The built-in reference packages: [(key, Korean name, English name)]."""
+    return [(k, ko, en) for k, ko, en, _f in REFERENCE_BUILTIN]
+
+
+def reference_builtin_package(key: str) -> dict:
+    """A built-in reference package by key (``example`` or a package shipped with the application)."""
+    import json as _json
+    from pathlib import Path as _Path
+    for k, _ko, _en, fname in REFERENCE_BUILTIN:
+        if k != key:
+            continue
+        if fname is None:
+            return reference_example()
+        path = _Path(__file__).resolve().parent / "extensions" / "faultsim" / "packages" / fname
+        return _json.loads(path.read_text(encoding="utf-8"))
+    raise InputValidationError(f"unknown built-in reference package {key!r}", field="package")
+
+
+def reference_load(src) -> dict:
+    """A reference package from a dict or a JSON file, validated (errors raise; warnings are kept in ``_problems``)."""
+    from .extensions.faultsim.refpkg import load_package
+    return load_package(src)
+
+
+def reference_run(body=None, project=None, progress=None) -> dict:
+    """Verifies a reference package's items on the project's product: ``body`` = {package (default: the built-in
+    example), profile (customer = as given | illustrative; "source" is accepted for customer), values (parameter id -> value entered for this run), ids (a subset of
+    the items)}.  ``progress(fraction, message)`` is called per item (it may raise to cancel).  Returns the summary
+    (rows, counts, the OPEN report, conflicts, manual items), the product identity and the evidence runs (decimated
+    traces, events and timelines for the plots)."""
+    from .extensions.faultsim.refpkg import ReferenceRunner, load_package
+    from .extensions.faultsim.refreport import evidence_runs
+    b = dict(body or {})
+    pr = project or PROJECT
+    pkg = b.get("package") or reference_example()
+    if "_problems" not in pkg:
+        pkg = load_package(pkg)
+    def step(k, n, iid):
+        progress(k / max(n, 1), iid)
+    runner = ReferenceRunner(fault_product(pr), pkg, profile=b.get("profile", "customer"), values=b.get("values"),
+                             progress=step if progress is not None else None)
+    out = runner.run_all(b.get("ids"))
+    out["project"] = {"label": pr.label, "digest": pr.digest()}
+    out["problems"] = pkg.get("_problems") or []
+    out["values"] = dict(b.get("values") or {})
+    out["evidence_runs"] = evidence_runs(runner)
+    return out
+
+
+def reference_html(summary: dict) -> str:
+    """The verification of a reference package as one self-contained HTML page."""
+    from .extensions.faultsim.campaign import code_identity
+    from .extensions.faultsim.refreport import reference_html as _html
+    return _html(summary, project=summary.get("project"), code=code_identity())
+
+
+def reference_csv(summary: dict) -> str:
+    """The requirement-to-evidence matrix (one row per check) as CSV text."""
+    from .extensions.faultsim.refreport import matrix_csv
+    return matrix_csv(summary)
 
 
 ROUTES = {
@@ -1912,6 +2319,8 @@ ROUTES = {
     "driveline": driveline, "driveline_stability": driveline_stability,
     "fault_sim": fault_sim, "fault_compare": fault_compare, "fault_campaign": fault_campaign,
     "fault_rerun": fault_rerun, "fault_validation": fault_validation, "fault_independence": fault_independence,
+    "fault_design": fault_design, "fault_review": fault_review, "fault_verification": fault_verification,
+    "reference_run": reference_run,
 }
 
 

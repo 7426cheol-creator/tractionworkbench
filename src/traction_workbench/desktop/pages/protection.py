@@ -1,5 +1,5 @@
 """Protection & fault page: thresholds / derating / fault reaction on one causal trajectory (review section 9) and
-the ASC fault transient with the customer's two current-time requirements (review 9.13)."""
+the ASC fault transient with its two current-time requirements (review 9.13)."""
 
 from __future__ import annotations
 
@@ -32,11 +32,11 @@ NOTE_PROT = lambda: tr(
 
 NOTE_ASC = lambda: tr(
     "<b>ASC 두 시간영역 전류 요구</b>: 같은 고장 전류 파형 하나로 (1) 단락 직후 짧은 창의 peak, (2) 더 긴 창의 RMS 등 "
-    "고객 요구 두 개를 <b>각자의 연산자·창·시간 원점</b>으로 평가합니다(자동으로 RMS·정상상태로 해석하지 않음). "
+    "두 요구를 <b>각자의 연산자·창·시간 원점</b>으로 평가합니다(자동으로 RMS·정상상태로 해석하지 않음). "
     "dq 전류 크기와 상전류 peak는 다르므로 초기 전기각을 훑어 최악을 찾습니다. 정규 전류 한계로 고장 전류를 자르지 않습니다.<br>"
     "상수 파라미터 모델은 과도 스크리닝용(포화·교차결합·온도 변화 미반영)이고 flux map은 동특성 미검증이므로, 공동 판정은 "
     "SCREENING(=UNKNOWN)입니다. 감자·소자 생존은 공급사 envelope를 넣어야 평가합니다.",
-    "<b>ASC with two current-time requirements</b>: one fault waveform, two customer requirements, each with its own "
+    "<b>ASC with two current-time requirements</b>: one fault waveform, two requirements, each with its own "
     "operator, window and time origin (never silently read as RMS or steady state). The dq norm is not the phase peak, "
     "so the initial electrical angle is swept for the worst case. Fault currents are never clipped at the normal limit.<br>"
     "The constant-parameter model is a transient screening model and flux maps are not dynamically qualified, so the "

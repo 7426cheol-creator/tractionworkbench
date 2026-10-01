@@ -76,7 +76,7 @@ class WitnessCheck:
             "messages": list(self.messages),
             "torque_residual_Nm": self.torque_residual_Nm,
             "torque_residual_tolerance_Nm": self.torque_tolerance_Nm,
-            "note": "the tolerance is a numerical budget, not a customer torque-accuracy requirement",
+            "note": "the tolerance is a numerical budget, not a torque-accuracy requirement",
         }
 
 

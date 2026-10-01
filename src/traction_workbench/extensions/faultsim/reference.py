@@ -169,7 +169,7 @@ def plant_run(m: MachineParams, dc: DcParams, legs, speed_rpm, th0, x0_dq, vdc0,
         pl.cmd[k] = LegCommand(legs[k])
     w_m = speed_rpm * TWO_PI / 60.0
     ibat0 = (dc.V_oc - vdc0) / dc.R_bat if (dc.contactor_closed and dc.inductive) else 0.0
-    x = [x0_dq[0], x0_dq[1], th0, w_m, vdc0, ibat0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    x = [x0_dq[0], x0_dq[1], th0, w_m, vdc0, ibat0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     modes = pl.decide_modes(x)
     tt = np.linspace(0.0, t_end, n_out)
     out = {"t": tt, "i_a": [], "i_b": [], "i_c": [], "i_d": [], "i_q": [], "T_em": [], "v_dc": []}

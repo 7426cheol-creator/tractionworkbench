@@ -182,7 +182,7 @@ def test_every_page_input_has_a_place_in_the_workspace(app):
     w = _window()
     try:
         pages = WS.pages_with_inputs(w)
-        assert len(pages) == 16
+        assert len(pages) == 20
         for key in pages:
             missing = WS.uncaptured(w.pages[key], WS.input_roots(w, key))
             assert not missing, (key, [type(x).__name__ for x in missing])
@@ -244,6 +244,23 @@ def test_what_cannot_be_restored_is_reported_not_guessed(app, tmp_path):
             assert needle in text, (needle, text)
         with pytest.raises(ValueError):
             WS.check({"schema": "twb-project/1"})
+    finally:
+        w.close()
+
+
+def test_a_long_text_set_by_the_program_shows_its_start(app):
+    """A basis line filled by the example, the project or a restored workspace shows its first words and the whole
+    text as its tooltip (the cursor used to sit after the last character, so only the end was visible)."""
+    from traction_workbench.desktop import workspace as WS
+    w = _window()
+    try:
+        le = w.pages["drive_cycle"].v_rl_basis
+        assert le.text() and le.cursorPosition() == 0 and le.toolTip() == le.text()
+        ws = WS.build(w)
+        text = "a road load from the coast-down of the prototype, corrected to the test mass - " * 3
+        ws["pages"]["drive_cycle"]["fields"]["v_rl_basis"]["v"] = text
+        assert not WS.apply(w, ws)
+        assert le.text() == text and le.cursorPosition() == 0 and le.toolTip() == text
     finally:
         w.close()
 

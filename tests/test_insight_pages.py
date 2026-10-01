@@ -74,10 +74,15 @@ def win():
             "pwm_driveline": ["run_policies", "run_timing", "run_ripple", "run_transients", "run_driveline",
                               "run_stability"],
             "machine": ["run_trade", "run_wind", "run_size"],
-            "fault_sim": ["run", "run_compare", "run_campaign", "run_validation"]}
+            "fault_sim": ["run", "run_compare", "run_campaign", "run_validation", "run_review", "run_verification"]}
     fs = w.pages["fault_sim"]                        # a scenario that fails, with its suggested campaign
     fs.preset.setCurrentIndex(fs.preset.findData("res_lost"))
     fs._load_preset()
+    from PySide6.QtCore import Qt                    # the safety case on a few catalog scenarios (one duplicate)
+    for i in range(fs.verif_list.count()):
+        it = fs.verif_list.item(i)
+        it.setCheckState(Qt.Checked if it.data(Qt.UserRole) in ("step_ok", "false_trip", "res_lost", "sens_supply")
+                         else Qt.Unchecked)
     for page, actions in runs.items():
         w.show_page(page)
         for a in actions:
@@ -100,7 +105,7 @@ def test_every_page_reading_is_made_and_readable_in_both_languages(win):
                 "oew_compare", "hev_joint", "hev_crank", "hev_rejection", "hev_planetary", "emi", "emi_oew", "point",
                 "map", "mission", "module_compare", "pwm_policies", "pwm_timing", "pwm_ripple", "pwm_transients",
                 "driveline", "driveline_stability", "machine_trade", "winding", "concept_sizing", "fault_sim",
-                "fault_compare", "fault_campaign", "fault_validation"}
+                "fault_compare", "fault_campaign", "fault_validation", "fault_case"}
     assert expected <= keys, sorted(expected - keys)
     problems = []
     for key, fn, args, before in _CAPTURED:
@@ -109,6 +114,10 @@ def test_every_page_reading_is_made_and_readable_in_both_languages(win):
         if key == "ftti":
             res = args[0]
             declared = {it["id"] for it in res.get("items") or []} | set(res.get("events") or [])
+        if key == "fault_compare":                  # the declared reaction strategies are candidates by their ids
+            declared = {r["candidate"] for r in args[0].get("rows") or []}
+        if key == "fault_case":
+            declared = set((args[0] or {}).get("strategies") or [])
         for lang in ("ko", "en"):
             set_language(lang)
             try:

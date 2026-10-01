@@ -15,6 +15,58 @@ from . import Insight, esc, num, q
 VL = {"PASS": "ok", "FAIL": "bad", "UNKNOWN": "open", "NOT_APPLICABLE": "info"}
 
 
+def bridge_cycling(res: dict, min_changes: int = 4) -> dict | None:
+    """The commanded bridge switching back and forth between the same two states after the first fault (at least
+    ``min_changes`` changes): the states, the number of changes, the period (median time between entering the same
+    state) and the DC-link and torque range while it cycles; None otherwise."""
+    import numpy as np
+    from ..extensions.faultsim.engine import BRIDGE_CODES
+    tr_ = res.get("trace") or {}
+    t = np.asarray(tr_.get("t", []), dtype=float)
+    br = np.asarray(tr_.get("bridge", []), dtype=float)
+    if t.size < 3 or br.size != t.size:
+        return None
+    tf = min((e["t"] for e in res.get("events") or [] if e["kind"] == "fault"), default=float(t[0]))
+    k = np.where(t >= tf - 1e-12)[0]
+    b = br[k].astype(int)
+    ch = np.where(np.diff(b) != 0)[0] + 1
+    if len(ch) < min_changes:
+        return None
+    entered = b[ch]
+    pair = sorted(set(int(x) for x in entered[-min_changes:]))
+    if len(pair) != 2:
+        return None
+    inside = np.isin(b[ch - 1], pair) & np.isin(entered, pair)          # a change between the two states
+    j = len(ch)
+    while j > 0 and inside[j - 1]:                                     # the run of such changes up to the end
+        j -= 1
+    ch, entered = ch[j:], entered[j:]
+    if len(ch) < min_changes:
+        return None
+    names = {v: n for n, v in BRIDGE_CODES.items()}
+    tt = t[k]
+    first = entered[-1]
+    starts = tt[ch][entered == first]
+    per = float(np.median(np.diff(starts))) if starts.size >= 2 else None
+    if per:                                    # the steady cycle starts after the last interval longer than it
+        gaps = np.diff(tt[ch])
+        long_ = np.where(gaps > 1.5 * per)[0]
+        if long_.size:
+            ch, entered = ch[long_[-1] + 1:], entered[long_[-1] + 1:]
+        if len(ch) < min_changes:
+            return None
+    w = (t >= tt[ch[0]])
+    v = np.asarray(tr_.get("v_dc", []), dtype=float)
+    T = np.asarray(tr_.get("T_shaft", []), dtype=float)
+    return {"states": [names.get(pair[0], str(pair[0])), names.get(pair[1], str(pair[1]))], "changes": int(len(ch)),
+            "first_s": float(tt[ch[0]]), "period_ms": None if per is None else per * 1e3,
+            "frequency_Hz": None if not per else 1.0 / per,
+            "v_min_V": float(v[w].min()) if v.size == t.size else None,
+            "v_max_V": float(v[w].max()) if v.size == t.size else None,
+            "T_min_Nm": float(T[w].min()) if T.size == t.size else None,
+            "T_max_Nm": float(T[w].max()) if T.size == t.size else None}
+
+
 def react(r) -> str:
     """A reaction or bridge command as people name it (in the current language)."""
     return {"asc_low": "ASC-low", "asc_high": "ASC-high", "six_switch_off": "6SO", "torque_zero": tr("토크 0", "zero torque"),
@@ -22,7 +74,29 @@ def react(r) -> str:
             "report_only": tr("보고만", "report only"),
             "none": tr("보호 반응 끔 (드라이버 자체 desat 차단은 남음)", "reactions off (the drivers' own desaturation "
                                                                   "turn-off stays)"),
-            "policy": tr("프로젝트 정책", "project policy")}.get(r, str(r))
+            "policy": tr("프로젝트 정책", "project policy"),
+            "torque_ramp": tr("토크 램프 → 0", "torque ramp to zero"),
+            "current_to_asc": tr("전류 사전 조정 → ASC 점", "current pre-conditioning"),
+            "voltage_ramp": tr("전압 램프 → 0", "voltage ramp to zero"),
+            "sequential_asc_low": tr("상별 순차 ASC-low", "phase-sequential ASC-low"),
+            "sequential_asc_high": tr("상별 순차 ASC-high", "phase-sequential ASC-high"),
+            "seq_asc_low": tr("상별 순차 ASC-low", "phase-sequential ASC-low"),
+            "seq_asc_high": tr("상별 순차 ASC-high", "phase-sequential ASC-high"),
+            "vdc_hysteresis_low": tr("Vdc 히스테리시스 6SO↔ASC-low", "Vdc hysteresis 6SO / ASC-low"),
+            "vdc_hysteresis_high": tr("Vdc 히스테리시스 6SO↔ASC-high", "Vdc hysteresis 6SO / ASC-high")}.get(r, str(r))
+
+
+def strategy_log_text(log) -> str:
+    """The steps a reaction strategy took on a trajectory (time, action; a fallback with its reason)."""
+    parts = []
+    for e in log or []:
+        t = f"{num(e['t'] * 1e3, 4)} ms"
+        if e.get("fallback"):
+            parts.append(tr(f"{t} 대체 상태 {esc(react(e['action']))} — {esc(e['fallback'])}",
+                            f"{t} fallback {esc(react(e['action']))} — {esc(e['fallback'])}"))
+        else:
+            parts.append(f"{t} {esc(react(e['action']))}")
+    return " → ".join(parts)
 
 
 def _ms(t, sig=4):
@@ -65,7 +139,7 @@ def reason_word(r: str) -> str:
 
 METRIC_WORDS = {"i_phase_peak_A": ("최대 |상전류| [A]", "peak |phase current| [A]"),
                 "v_dc_max_V": ("최대 V_dc [V]", "max V_dc [V]"), "v_dc_min_V": ("최소 V_dc [V]", "min V_dc [V]"),
-                "i_bat_charge_max_A": ("최대 배터리 충전 전류 [A]", "max battery charging current [A]"),
+                "i_bat_charge_max_A": ("최대 HV 역방향 전류 [A]", "max reverse HV current [A]"),
                 "T_shaft_max_Nm": ("최대 축 토크 [N·m]", "max shaft torque [N·m]"),
                 "T_shaft_min_Nm": ("최소 축 토크 [N·m]", "min shaft torque [N·m]"),
                 "first_detection_ms": ("첫 검출 시각 [ms]", "first detection [ms]"),
@@ -152,6 +226,12 @@ def fault_insight(res: dict) -> Insight:
             + (tr("요구 위반 — ", "requirements violated — ") + ", ".join(esc(x["id"]) for x in fails) if fails else
                tr("모든 적용 요구 통과", "every applicable requirement met") if overall == "PASS" else
                tr("판단불가 항목 있음", "undecided items")))
+    cyc = bridge_cycling(res)
+    if cyc:
+        head += tr(f" — 단, 브리지가 {react(cyc['states'][0])} ↔ {react(cyc['states'][1])} 순환 "
+                   f"(주기 ≈ {num(cyc['period_ms'], 3)} ms)",
+                   f" — but the bridge cycles {react(cyc['states'][0])} ↔ {react(cyc['states'][1])} "
+                   f"(period ≈ {num(cyc['period_ms'], 3)} ms)")
     ins = Insight(headline=head, verdict=overall)
     det = [e for e in res.get("events") or [] if e["kind"] == "detection"]
     act = [e for e in res.get("events") or [] if e["kind"] == "actuation"]
@@ -164,6 +244,28 @@ def fault_insight(res: dict) -> Insight:
         (tr("V_dc 최대", "max V_dc"), q(s.get("v_dc_max_V"), "V"), "info"),
         (tr("축 토크 범위", "shaft torque range"), f"{num(s.get('T_shaft_min_Nm'))} … {num(s.get('T_shaft_max_Nm'))} N·m",
          "info")]
+    # 0) a bridge that keeps switching between two states after the fault (e.g. a hardware selection by the DC
+    #     voltage that freewheels, recharges the link and short-circuits again)
+    if cyc:
+        sc_ = ins.section(tr("브리지 반복 전환 (순환)", "the bridge keeps switching (cycling)"),
+                          tr("같은 두 상태 사이를 고장 뒤 계속 오갑니다: 전환마다 브리지와 DC-link가 다시 과도 상태가 됩니다.",
+                             "it goes back and forth between the same two states after the fault: every change starts a "
+                             "new transient of the bridge and the DC link."))
+        a, b_ = cyc["states"]
+        sc_.add(tr(f"{esc(react(a))} ↔ {esc(react(b_))}: 전환 {cyc['changes']}회, 주기 ≈ {num(cyc['period_ms'], 3)} ms "
+                   f"({num(cyc['frequency_Hz'], 3)} Hz), 첫 전환 {_ms(cyc['first_s'])}",
+                   f"{esc(react(a))} ↔ {esc(react(b_))}: {cyc['changes']} changes, period ≈ "
+                   f"{num(cyc['period_ms'], 3)} ms ({num(cyc['frequency_Hz'], 3)} Hz), first at {_ms(cyc['first_s'])}"),
+                "warn")
+        sc_.add(tr(f"순환 중 DC-link {num(cyc['v_min_V'], 4)} … {num(cyc['v_max_V'], 4)} V, 축 토크 "
+                   f"{num(cyc['T_min_Nm'], 4)} … {num(cyc['T_max_Nm'], 4)} N·m",
+                   f"while cycling the DC link spans {num(cyc['v_min_V'], 4)} … {num(cyc['v_max_V'], 4)} V, the shaft "
+                   f"torque {num(cyc['T_min_Nm'], 4)} … {num(cyc['T_max_Nm'], 4)} N·m"), "warn",
+                tr("6SO 구간마다 역기전력이 링크를 다시 충전합니다(에너지가 HV 쪽으로: C2). 이 설계의 요구는 순환 자체나 링크가 "
+                   "방전 한계 아래에 머무는지를 묻지 않습니다 — 요구가 빠진 곳입니다.",
+                   "every six-switch-off interval lets the back-EMF recharge the link (energy fed to the HV side: C2). "
+                   "No requirement of this design asks about the cycling itself or whether the link stays below the "
+                   "discharge limit - a missing requirement.") if "six_switch_off" in cyc["states"] else "")
     # 1) the causal chain
     sec = ins.section(tr("인과 사슬: 고장 → 측정·추정 → 감시·검출 → 반응 명령 → 실제 브리지 → 결과",
                          "causal chain: fault → measurement / estimate → detection → reaction command → actual bridge → "
@@ -363,15 +465,19 @@ def compare_insight(cmp: dict) -> Insight:
     sec = ins.section(tr("같은 초기 조건·같은 고장에서 후보별", "per candidate, same initial condition and fault"))
     for r in cmp["rows"]:
         m = r["metrics"]
+        steps = strategy_log_text(r.get("strategy_log"))
         sec.add(f"<b>{esc(react(r['candidate']))}</b>: "
                 f"{verdict_ko(r['overall'])}" + (tr(f" — 위반 {esc(', '.join(r['failing']))}", f" — violated "
                                                                                        f"{esc(', '.join(r['failing']))}")
                                                  if r["failing"] else ""),
                 VL.get(r["overall"], "info"),
-                tr(f"최대 상전류 {q(m['i_phase_peak_A'], 'A')}, V_dc 최대 {q(m['v_dc_max_V'], 'V')}, 축 토크 최소 "
-                   f"{q(m['T_shaft_min_Nm'], 'N·m')}; 실제 다리: {esc('; '.join(r['final_actual']))}",
-                   f"peak phase current {q(m['i_phase_peak_A'], 'A')}, max V_dc {q(m['v_dc_max_V'], 'V')}, min shaft "
-                   f"torque {q(m['T_shaft_min_Nm'], 'N·m')}; actual legs: {esc('; '.join(r['final_actual']))}"))
+                tr(f"최대 상전류 {q(m['i_phase_peak_A'], 'A')}, 최저 i_d {q(m.get('i_d_min_A'), 'A')}, 최대 제동 토크 "
+                   f"{q(m.get('T_brake_peak_Nm'), 'N·m')}, V_dc 최대 {q(m['v_dc_max_V'], 'V')}; 실제 다리: "
+                   f"{esc('; '.join(r['final_actual']))}",
+                   f"peak phase current {q(m['i_phase_peak_A'], 'A')}, min i_d {q(m.get('i_d_min_A'), 'A')}, peak "
+                   f"braking torque {q(m.get('T_brake_peak_Nm'), 'N·m')}, max V_dc {q(m['v_dc_max_V'], 'V')}; actual "
+                   f"legs: {esc('; '.join(r['final_actual']))}")
+                + (tr(f"<br>단계: {steps}", f"<br>steps: {steps}") if steps else ""))
     return ins.nonempty()
 
 
@@ -436,4 +542,206 @@ def validation_insight(val: dict) -> Insight:
         sec.add(f"{esc(r['case'])} · {esc(r['quantity'])}: {num(r['plant'], 5)} vs {num(r['reference'], 5)} "
                 f"(|Δ| {num(r['abs_error'], 3)} ≤ {num(r['tolerance'], 3)})", "ok" if r["pass"] else "bad",
                 f"{esc(r['reference_kind'])} — {esc(r['basis'])}")
+    return ins.nonempty()
+
+
+CHECK_WORDS = {"ASIL": ("ASIL", "ASIL"), "FTTI": ("FTTI", "FTTI"), "safe state": ("안전 상태", "safe state"),
+               "refined by an FSR": ("FSR로 구체화", "refined by an FSR"),
+               "ASIL inheritance": ("ASIL 상속", "ASIL inheritance"),
+               "FDTI / FRTI budgets": ("FDTI·FRTI 예산", "FDTI / FRTI budgets"),
+               "budgets vs FTTI": ("예산 합 vs FTTI", "budgets vs FTTI"),
+               "allocated mechanisms": ("할당 메커니즘", "allocated mechanisms"),
+               "detection latency vs FDTI budget": ("검출 지연 상한 vs FDTI 예산", "detection latency vs FDTI budget"),
+               "refined by TSRs": ("TSR로 구체화", "refined by TSRs"),
+               "hazard-related TSR": ("위험 판정 TSR", "hazard-related TSR"),
+               "safe-state TSR": ("안전 상태 TSR", "safe-state TSR"),
+               "warning / degradation": ("경고·성능 저하", "warning / degradation"),
+               "verification methods": ("검증 방법", "verification methods"),
+               "allocation": ("HW/SW 할당", "allocation"), "rationale of the value": ("한계값 근거", "rationale"),
+               "tolerance vs FTTI": ("허용 시간 vs FTTI", "tolerance vs FTTI"),
+               "within vs FRTI budget": ("도달 시간 vs FRTI 예산", "within vs FRTI budget"),
+               "hold time": ("유지 시간", "hold time"), "traced to an FSR": ("FSR 추적", "traced to an FSR"),
+               "latent-fault test": ("잠재 고장 시험", "latent-fault test"),
+               "diagnostic coverage claim": ("진단 커버리지 주장", "diagnostic coverage claim"),
+               "executable on its paths": ("경로에서 실행 가능", "executable on its paths"),
+               "used": ("사용 여부", "used"), "bounded step": ("단계 시간 상한", "bounded step"),
+               "measured exit on a hardware path": ("HW 경로의 측정 종료 조건", "measured exit on a hardware path"),
+               "reaction latency vs FRTI budget": ("반응 지연 vs FRTI 예산", "reaction latency vs FRTI budget"),
+               "default rule": ("기본 규칙", "default rule"), "priority list": ("우선순위 목록", "priority list"),
+               "no single declared common cause": ("단일 공통 원인 없음", "no single declared common cause"),
+               "budgets judged on trajectories": ("예산의 궤적 판정", "budgets judged on trajectories")}
+FINDING_WORDS = {"OK": ("OK", "OK"), "INCONSISTENT": ("모순", "inconsistent"), "MISSING": ("누락", "missing"),
+                 "WARNING": ("경고", "warning"), "NOTE": ("참고", "note")}
+
+
+def check_word(c: str) -> str:
+    """A static-review check as people name it (in the current language)."""
+    w = CHECK_WORDS.get(c)
+    return tr(*w) if w else esc(c)
+
+
+def finding_word(s: str) -> str:
+    w = FINDING_WORDS.get(s)
+    return tr(*w) if w else esc(s)
+
+
+def safety_case_insight(review: dict | None, matrix: dict | None = None) -> Insight:
+    """The assessor's reading of the evidence: the static review first (contradictions and gaps, then warnings), then
+    the verification matrix (requirements failing or never exercised, the worst timings against the budgets, faults
+    no mechanism detected).  Every statement comes from the two results; a PASS is about the simulated trajectories
+    only."""
+    review = review or {}
+    titles = {}
+    for r in list((matrix or {}).get("rows") or []) + list((matrix or {}).get("skipped") or []):
+        t = r.get("title") or {}
+        titles[r["key"]] = t.get(tr("ko", "en")) or t.get("en") or r["key"] if isinstance(t, dict) else str(t)
+
+    def sc(k):                                      # a scenario as people name it (the key stays in the tables)
+        return esc(titles.get(k, k))
+    c = review.get("counts") or {}
+    n_bad = c.get("INCONSISTENT", 0) + c.get("MISSING", 0)
+    rows = (matrix or {}).get("rows") or []
+    cov = (matrix or {}).get("coverage") or {}
+    failing = {q: v["failing_in"] for q, v in cov.items() if v.get("fail")}
+    never = list((matrix or {}).get("not_exercised") or [])
+    if not review and not rows:
+        return Insight(headline=tr("정적 설계 검토 또는 검증 매트릭스를 실행하세요.",
+                                   "Run the static design review or the verification matrix."))
+    if n_bad:
+        head, verdict = tr(f"설계 근거에 모순 {c.get('INCONSISTENT', 0)}건 · 누락 {c.get('MISSING', 0)}건 — 심사 전에 "
+                           f"해결할 항목", f"{c.get('INCONSISTENT', 0)} contradiction(s) and {c.get('MISSING', 0)} gap(s) "
+                                       f"in the design evidence — to resolve before an assessment"), "FAIL"
+    elif failing:
+        head, verdict = tr(f"정적 검토의 모순·누락은 없지만 검증 매트릭스에서 요구 {len(failing)}개가 실패 — "
+                           f"{', '.join(sorted(failing))}",
+                           f"no contradiction or gap in the static review, but {len(failing)} requirement(s) fail in "
+                           f"the verification matrix — {', '.join(sorted(failing))}"), "FAIL"
+    elif c.get("WARNING", 0) or never or not rows or not review:
+        what = []
+        if c.get("WARNING", 0):
+            what.append(tr(f"경고 {c['WARNING']}건", f"{c['WARNING']} warning(s)"))
+        if never:
+            what.append(tr(f"한 번도 발동되지 않은 요구 {len(never)}개", f"{len(never)} requirement(s) never exercised"))
+        if not rows:
+            what.append(tr("검증 매트릭스 미실행", "verification matrix not run"))
+        if not review:
+            what.append(tr("정적 검토 미실행", "static review not run"))
+        head, verdict = tr("모순·누락·실패 없음 — 남은 항목: ", "no contradiction, gap or failure — open: ") + \
+            ", ".join(what), "UNKNOWN"
+    else:
+        head, verdict = tr(f"모순·누락 없음, 검증 매트릭스 {len(rows)}개 궤적에서 실패한 요구 없음 (이 궤적들에 대해서만)",
+                           f"no contradiction or gap; no requirement fails on the {len(rows)} trajectories of the "
+                           f"verification matrix (for these trajectories only)"), "PASS"
+    ins = Insight(headline=head, verdict=verdict)
+    if review:
+        ins.metrics += [(tr("모순", "inconsistent"), str(c.get("INCONSISTENT", 0)),
+                         "bad" if c.get("INCONSISTENT") else "ok"),
+                        (tr("누락", "missing"), str(c.get("MISSING", 0)), "bad" if c.get("MISSING") else "ok"),
+                        (tr("경고", "warnings"), str(c.get("WARNING", 0)), "warn" if c.get("WARNING") else "ok")]
+    if rows:
+        ins.metrics += [(tr("궤적", "trajectories"), str(len(rows)), "info"),
+                        (tr("실패 요구", "failing requirements"), str(len(failing)), "bad" if failing else "ok"),
+                        (tr("미발동 요구", "never exercised"), str(len(never)), "warn" if never else "ok")]
+    finds = review.get("findings") or []
+    s1 = ins.section(tr("모순·누락 — 선언된 데이터끼리 맞지 않거나 사슬에 빠진 것", "contradictions and gaps — declared data "
+                                                                     "that disagree or are missing from the chain"))
+    for f in finds:
+        if f["status"] in ("INCONSISTENT", "MISSING"):
+            s1.add(f"<b>{esc(f['element'])}</b> · {check_word(f['check'])} ({finding_word(f['status'])})", "bad",
+                   esc(f["detail"]))
+    s2 = ins.section(tr("경고 — 허용되지만 약한 곳", "warnings — allowed but weak"))
+    for f in finds:
+        if f["status"] == "WARNING":
+            s2.add(f"<b>{esc(f['element'])}</b> · {check_word(f['check'])}", "warn", esc(f["detail"]))
+    budgets = {}
+    for r in review.get("latency") or []:
+        budgets.setdefault(r["fsr"], (r.get("fdti_budget_s"), r.get("frti_budget_s")))
+    s3 = ins.section(tr("검출 지연 범위 (선언된 매개변수, 큰 계단 고장)", "detection latency bounds (declared parameters, "
+                                                                "gross step fault)"),
+                     tr("디바운스 + 센서 지연(+ 시간 제한) … 여기에 태스크 주기 하나(+ 창 지연)까지. 최소가 예산을 넘으면 모순, 최대만 "
+                        "넘으면 고장 시점에 따라 늦음(경고). 경계 근처 고장은 더 늦게 검출됩니다(캠페인).",
+                        "debounce + sensor delay (+ timeout) … plus up to one task period (+ window delay). The minimum "
+                        "above the budget is a contradiction, only the maximum a warning (the fault instant decides). "
+                        "A marginal fault is detected later (campaign)."))
+    for r in review.get("latency") or []:
+        hi, lo, bud = r["detection_s"], r.get("detection_min_s", r["detection_s"]), r["fdti_budget_s"]
+        level = ("ok" if hi is None or bud is None or hi <= bud + 1e-12 else
+                 "bad" if lo is not None and lo > bud + 1e-12 else "warn")
+        span = _ms(hi) if lo is None or abs(hi - lo) < 1e-12 else f"{_ms(lo)} … {_ms(hi)}"
+        s3.add(f"{esc(r['fsr'])} / <b>{esc(r['mechanism'])}</b>: {span} "
+               + tr(f"(FDTI 예산 {_ms(bud)})", f"(FDTI budget {_ms(bud)})"), level, esc(r["detection_basis"]))
+    if rows:
+        s4 = ins.section(tr("검증 매트릭스 — 요구별", "verification matrix — per requirement"),
+                         esc(matrix.get("statement", "")))
+        for q_, v in cov.items():
+            if v.get("fail"):
+                s4.add(tr(f"<b>{esc(q_)}</b> 실패 — {'; '.join(sc(k) for k in v['failing_in'])} (재현 가능한 반례)",
+                          f"<b>{esc(q_)}</b> fails — {'; '.join(sc(k) for k in v['failing_in'])} (reproducible "
+                          f"counterexamples)"), "bad",
+                       tr(f"발동 {v['exercised']}/{len(rows)} · 통과 {v['pass']} · 판단불가 {v['unknown']}",
+                          f"exercised {v['exercised']}/{len(rows)} · pass {v['pass']} · unknown {v['unknown']}"))
+        for q_ in never:
+            s4.add(tr(f"<b>{esc(q_)}</b>: 어느 시나리오에서도 발동되지 않음 — 이 요구를 발동하는 시나리오가 필요",
+                      f"<b>{esc(q_)}</b>: exercised by no scenario — a scenario that triggers it is needed"), "open")
+        for q_, v in cov.items():
+            if not v.get("fail") and v["exercised"] and v.get("unknown"):
+                s4.add(tr(f"<b>{esc(q_)}</b>: 판단불가 {v['unknown']}건 (관측 창·허용 오차) — 통과 {v['pass']}",
+                          f"<b>{esc(q_)}</b>: {v['unknown']} undecided (window, allowance) — pass {v['pass']}"), "open")
+        ok_ = [q_ for q_, v in cov.items() if v["exercised"] and not v.get("fail") and not v.get("unknown")]
+        if ok_:
+            s4.add(tr(f"발동된 모든 궤적에서 통과: {', '.join(esc(x) for x in ok_)}",
+                      f"pass on every trajectory that exercised them: {', '.join(esc(x) for x in ok_)}"), "ok")
+        s5 = ins.section(tr("FSR별 최악 시간 — 각각 한 궤적", "worst times per FSR — each from one trajectory"),
+                         tr("FDTI = t_D − t_F (첫 주 고장부터 할당 메커니즘의 첫 검출까지). 시간 판정 TSR이 있는 FSR만 판정에 들어갑니다.",
+                            "FDTI = t_D − t_F (first primary fault to the first detection by an allocated mechanism). "
+                            "Only an FSR with a timing TSR has it judged."))
+        judged = {f["id"]: f.get("timing_tsr") or [] for g in review.get("trace") or [] for f in g["fsr"]}
+        for fid, d in (matrix.get("timing") or {}).items():
+            fd, fr = budgets.get(fid, (None, None))
+            parts, over_any = [], False
+            for key, bud in (("FDTI", fd), ("FRTI", fr), ("FHTI", None)):
+                if key in d:
+                    v = d[key]["value_s"]
+                    over = bud is not None and v > bud + 1e-12
+                    over_any = over_any or over
+                    parts.append(f"{key} {_ms(v)} ({sc(d[key]['scenario'])})"
+                                 + (tr(f" > 예산 {_ms(bud)}", f" > budget {_ms(bud)}") if over else ""))
+            if not parts:
+                continue
+            j = judged.get(fid)
+            note = ("" if not review else tr(f"판정: {', '.join(j)}", f"judged by {', '.join(j)}") if j else
+                    tr("이 FSR에는 시간 판정 TSR이 없어 예산 초과가 판정에 들어가지 않음 — 시간 판정 TSR을 두거나 예산의 의미를 "
+                       "밝히세요", "no timing TSR judges this FSR's budgets on trajectories — declare one or state "
+                                   "what the budget means"))
+            s5.add(f"<b>{esc(fid)}</b>: " + " · ".join(parts),
+                   ("bad" if (j or not review) else "warn") if over_any else "info", note)
+        s6 = ins.section(tr("고장 모드 (시뮬레이션 FMEA)", "failure modes (simulation-based FMEA)"))
+        for r in rows:
+            fm = r["fmea"]
+            if fm["fault"] != "no fault" and not fm["detected_by"]:
+                s6.add(tr(f"<b>{sc(r['key'])}</b>: 고장을 어느 메커니즘도 검출하지 못함 — {esc(fm['fault'])}",
+                          f"<b>{sc(r['key'])}</b>: no mechanism detected the fault — {esc(fm['fault'])}"),
+                       "bad" if fm["failing"] else "warn",
+                       tr(f"실패 요구: {', '.join(fm['failing']) or '없음'}", f"failing: {', '.join(fm['failing']) or 'none'}"))
+            elif fm["failing"]:
+                rx = esc(react(fm["reaction"])) if fm["reaction"] else "—"
+                s6.add(tr(f"<b>{sc(r['key'])}</b>: {esc(fm['detected_by'] or '—')} 검출 → {rx} → "
+                          f"실패 {', '.join(fm['failing'])}", f"<b>{sc(r['key'])}</b>: detected by "
+                                                              f"{esc(fm['detected_by'] or '—')} → {rx} "
+                                                              f"→ failing {', '.join(fm['failing'])}"), "bad",
+                       tr(f"최대 |i| {q(fm['i_phase_peak_A'], 'A')}, 최저 i_d {q(fm['i_d_min_A'], 'A')}, 최대 제동 토크 "
+                          f"{q(fm['T_brake_max_Nm'], 'N·m')}, 최대 V_dc {q(fm['v_dc_max_V'], 'V')}",
+                          f"peak |i| {q(fm['i_phase_peak_A'], 'A')}, min i_d {q(fm['i_d_min_A'], 'A')}, peak braking "
+                          f"torque {q(fm['T_brake_max_Nm'], 'N·m')}, max V_dc {q(fm['v_dc_max_V'], 'V')}"))
+        for s_ in matrix.get("skipped") or []:
+            s6.add(tr(f"{sc(s_['key'])}: {sc(s_['same_as'])}와 같은 궤적이라 뺌 (자기 설계 변형을 빼면 중복)",
+                      f"{sc(s_['key'])}: skipped, same trajectory as {sc(s_['same_as'])} (its own design variant "
+                      f"removed)"), "info")
+    s7 = ins.section(tr("근거의 범위", "scope of the evidence"))
+    if review.get("statement"):
+        s7.add(esc(review["statement"]), "info")
+    s7.add(tr("인버터 수준의 엔지니어링 근거 — 차량 수준 제어 가능성, 하드웨어 지표(SPFM/LFM/PMHF), 프로세스 산출물은 범위 밖이며 "
+              "ISO 26262 적합성 판정이 아닙니다.", "inverter-level engineering evidence — vehicle controllability, hardware "
+                                             "metrics (SPFM / LFM / PMHF) and process work products are outside it; "
+                                             "not an ISO 26262 compliance verdict."), "info")
     return ins.nonempty()

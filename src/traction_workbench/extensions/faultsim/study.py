@@ -69,11 +69,20 @@ SCENARIOS = [
                   "overrides": {"mechanisms.SM-OVSW.params.debounce_ms": 2.0}}},
     {"key": "res_lost", "category": "wrong reaction",
      "title": {"ko": "레졸버 신호 소실 · 12,000 rpm", "en": "resolver signal loss · 12,000 rpm"},
-     "hint": {"ko": "얼어붙은 각도로 속도 추정이 0 → 정책이 6SO 선택(실제 고속) → 비제어 정류 → BMS 차단 → 과전압",
+     "hint": {"ko": "얼어붙은 각도로 속도 추정이 0 → 정책이 6SO 선택(실제 고속) → 비제어 정류 → 제동 토크·d축 전류 한계 초과",
               "en": "the frozen angle drives the speed estimate to 0 → the policy picks 6SO at high speed → "
-                    "uncontrolled rectification → BMS opens → over-voltage"},
+                    "uncontrolled rectification → braking torque and d-axis current beyond their limits"},
      "scenario": {"speed_rpm": 12000, "torque_Nm": 150, "horizon_ms": 60,
                   "faults": [{"kind": "sensor", "t_ms": 10, "params": {"target": "RES", "mode": "lost"}}]}},
+    {"key": "res_lost_relay", "category": "wrong reaction",
+     "title": {"ko": "레졸버 신호 소실 + 배터리 릴레이 개방 · 12,000 rpm",
+               "en": "resolver signal loss + battery relay opens · 12,000 rpm"},
+     "hint": {"ko": "6SO 정류 중에 릴레이가 열리면(구동 시스템 경계의 사건) 정류 전류가 DC-link를 충전 → 850 V 초과",
+              "en": "the relay opens during the 6SO rectification (an event at the drive's interface): the rectified "
+                    "current charges the DC link beyond 850 V"},
+     "scenario": {"speed_rpm": 12000, "torque_Nm": 150, "horizon_ms": 60,
+                  "faults": [{"kind": "sensor", "t_ms": 10, "params": {"target": "RES", "mode": "lost"}},
+                             {"kind": "battery_disconnect", "t_ms": 22}]}},
     {"key": "sw_short", "category": "protection success",
      "title": {"ko": "상단 스위치 단락 · 12,000 rpm", "en": "upper switch short · 12,000 rpm"},
      "hint": {"ko": "하단 스위치 desat → 단락된 쪽의 ASC(ASC-high): 전류·토크 모두 허용 안",
@@ -110,19 +119,6 @@ SCENARIOS = [
                     "device current limit exceeded"},
      "scenario": {"speed_rpm": 12000, "torque_Nm": 150, "horizon_ms": 60,
                   "faults": [{"kind": "resource_loss", "t_ms": 10, "params": {"resource": "SENS_5V"}}]}},
-    {"key": "stale_indep", "category": "protection success",
-     "title": {"ko": "토크 명령 고착 · 감시기 독립 메시지", "en": "stale torque command · independent monitor message"},
-     "hint": {"ko": "요청 150→0인데 구동은 150 유지 → 독립 메시지로 감시기 검출 → 안전 상태",
-              "en": "request 150→0 while the drive keeps 150 → the monitor's own message detects it"},
-     "scenario": {"speed_rpm": 12000, "request": {"kind": "step", "T0_Nm": 150, "T1_Nm": 0, "t0_ms": 20},
-                  "horizon_ms": 80, "faults": [{"kind": "torque_command", "t_ms": 15, "params": {"mode": "stale"}}]}},
-    {"key": "stale_common", "category": "common cause",
-     "title": {"ko": "토크 명령 고착 · 감시기가 같은 메시지 사용", "en": "stale torque command · monitor on the same message"},
-     "hint": {"ko": "공통 원인: 감시기도 같은 오래된 값을 봄 → 미검출, 의도치 않은 가속 토크 (FAIL)",
-              "en": "common cause: the monitor sees the same stale value → undetected unintended acceleration (FAIL)"},
-     "scenario": {"speed_rpm": 12000, "request": {"kind": "step", "T0_Nm": 150, "T1_Nm": 0, "t0_ms": 20},
-                  "horizon_ms": 100, "faults": [{"kind": "torque_command", "t_ms": 15,
-                                                 "params": {"mode": "stale", "paths": "both"}}]}},
     {"key": "restart_flying", "category": "recovery / restart",
      "title": {"ko": "MCU 리셋 2 ms → flying 재시동", "en": "MCU reset 2 ms → flying restart"},
      "hint": {"ko": "속도를 다시 잡고 램프로 복귀: 반응 없이 토크 회복", "en": "speed re-established, torque ramps back"},
@@ -156,7 +152,40 @@ SCENARIOS = [
                   "faults": [{"kind": "switch_open", "t_ms": 0, "params": {"leg": "a", "device": "upper"}},
                              {"kind": "battery_disconnect", "t_ms": 10},
                              {"kind": "gate_supply_loss", "t_ms": 10, "params": {"side": "lower"}}]}},
+    {"key": "hw_vdc_rolling", "category": "hardware safe-state selection",
+     "title": {"ko": "제어 상실·주행 중 · MCU 정지 + 배터리 차단 → HW가 DC 전압으로 FW/ASC 선택",
+               "en": "control lost while rolling · MCU dead + battery off → hardware FW / ASC by the DC voltage"},
+     "hint": {"ko": "GDE 상실 → HW가 DC-link 전압으로 선택(X_upp 100 V 위 ASC, X_low 60 V 아래 6SO). 능동 방전이 링크를 60 V까지 "
+                    "내리면 6SO → 역기전력이 수십 µs 만에 100 V로 재충전 → ASC → … 순환하고 링크가 60 V 아래에 머물지 못함 "
+                    "(설계 편집 탭에서 임계값·전략을 바꿔 볼 수 있음)",
+              "en": "GDE lost → the hardware selects by the DC-link voltage (ASC above X_upp 100 V, 6SO below X_low 60 V). "
+                    "Once the active discharge has pulled the link to 60 V, 6SO lets the back-EMF recharge it to 100 V in "
+                    "tens of us → ASC → … it cycles and the link never stays below 60 V (thresholds and strategy in the "
+                    "design tab)"},
+     "scenario": {"speed_rpm": 6000, "torque_Nm": 50, "horizon_ms": 120,
+                  "faults": [{"kind": "mcu_reset", "t_ms": 10, "params": {"duration_ms": 5000.0}},
+                             {"kind": "gde_disable", "t_ms": 10},
+                             {"kind": "battery_disconnect", "t_ms": 10}]}},
 ]
+
+
+def _hw_vdc_design() -> dict:
+    """The design variant of ``hw_vdc_rolling``: the example's mechanisms, strategies and paths with a hardware GDE
+    monitor whose path selects the bridge by the hardware DC voltage (added records: whole-list changes)."""
+    from .configure import FAULT_SIM_EXAMPLE as X
+    mech = {"id": "SM-GDE", "kind": "gde_monitor", "path": "HWGD", "reaction": "safe_state", "params": {"delay_us": 1.0},
+            "resources": ["CPLD"], "text": "hardware GDE monitor (logic device): the processor lost its PWM authority"}
+    strat = {"id": "HW_VDC_SELECT", "fallback": "six_switch_off",
+             "text": "hardware selection by the DC-link voltage: ASC above X_upp, six-switch-off below X_low",
+             "steps": [{"action": "hv_select_low", "exit": "none", "params": {"v_upp_V": 100.0, "v_low_V": 60.0}}]}
+    path = {"id": "HWGD", "delay_us": 2.0, "resources": ["CPLD"], "fixed_reaction": "HW_VDC_SELECT",
+            "basis": "logic device next to the gate drivers: works without the processor"}
+    return {"mechanisms": copy.deepcopy(X["mechanisms"]) + [mech],
+            "strategies": copy.deepcopy(X.get("strategies") or []) + [strat],
+            "paths": copy.deepcopy(X["paths"]) + [path]}
+
+
+next(s for s in SCENARIOS if s["key"] == "hw_vdc_rolling")["scenario"]["overrides"] = _hw_vdc_design()
 
 
 # a campaign each representative scenario suggests (its base is the scenario): the axes and what they explore
@@ -190,6 +219,9 @@ CAMPAIGNS = {
                  {"ko": "잘못 고른 6SO가 해가 되는 속도: 정류 개시(≈8,270 rpm) 위", "en": "where the wrongly chosen 6SO "
                                                                                   "hurts: above the rectification "
                                                                                   "onset (≈8,270 rpm)"}),
+    "res_lost_relay": ([{"path": "faults.1.t_ms", "values": [12, 16, 22, 30, 40]}],
+                       {"ko": "릴레이가 언제 열려도 6SO 정류 중이면 과전압", "en": "whenever the relay opens during the "
+                                                                       "6SO rectification: over-voltage"}),
     "sw_short": ([{"path": "speed_rpm", "values": [1000, 3000, 6000, 12000]}],
                  {"ko": "ASC-high의 유효 영역: 저속에서는 제동 토크가 FRTI 안에 가라앉지 않음", "en": "the effective region "
                                                                                       "of ASC-high: at low speed its "
@@ -208,13 +240,6 @@ CAMPAIGNS = {
     "sens_supply": ([{"path": "speed_rpm", "values": [3000, 6000, 12000]}],
                     {"ko": "공통 원인 결과가 운전점에 따라 달라짐", "en": "the common-cause outcome depends on the "
                                                                 "operating point"}),
-    "stale_indep": ([{"path": "overrides.mechanisms.SM-TQ.params.debounce_ms", "values": [5, 10, 20, 40]}],
-                    {"ko": "감시기 디바운스와 FDTI 예산(20 ms)", "en": "the monitor's debounce against the FDTI budget "
-                                                                   "(20 ms)"}),
-    "stale_common": ([{"path": "faults.0.params.paths", "values": ["control", "monitor", "both"]}],
-                     {"ko": "고장이 제어 메시지·감시 사본·둘 다(공통 원인)에 있을 때", "en": "the fault on the control "
-                                                                          "message, the monitor's copy, or both "
-                                                                          "(common cause)"}),
     "restart_flying": ([{"path": "faults.0.params.duration_ms", "values": [1, 2, 5, 10]}],
                        {"ko": "리셋 길이에 따른 flying 재시동 결과", "en": "the flying restart against the reset "
                                                                      "length"}),
@@ -226,6 +251,10 @@ CAMPAIGNS = {
                                                                                       "break the held safe condition"}),
     "no_safe_reaction": ([{"path": "speed_rpm", "values": [3000, 6000, 12000]}],
                          {"ko": "실행 가능한 안전 반응이 없는 영역", "en": "where no executable safe reaction exists"}),
+    "hw_vdc_rolling": ([{"path": "speed_rpm", "values": [500, 1000, 2000, 4000, 6000]}],
+                       {"ko": "순환이 시작되는 속도: 6SO에서 역기전력이 링크를 X_low 위로 다시 충전하는 속도부터",
+                        "en": "the speed from which it cycles: where the back-EMF recharges the link above X_low in "
+                              "six-switch-off"}),
 }
 for _s in SCENARIOS:
     if _s["key"] in CAMPAIGNS:
@@ -270,7 +299,8 @@ def precision_notes(setup) -> list:
              "the horizon): currents far above the rating need a dynamically qualified flux model",
              "ideal switches and diodes (no forward drop, switching loss, ringing or device survival): device SOA and "
              "short-circuit withstand need supplier data",
-             "battery as Thevenin source with series inductance; the contactor arc is booked, not modelled"]
+             "the HV source at the drive's DC terminals (battery and harness) as a Thevenin source with series "
+             "inductance; the relay arc is booked, not modelled"]
     if setup.pwm_model == "averaged":
         notes.insert(0, "averaged PWM: currents without switching ripple; comparator trips and peaks near a limit need "
                         "the switched model")
@@ -280,8 +310,13 @@ def precision_notes(setup) -> list:
 def independence(project) -> dict:
     """Static dependency analysis of the architecture: per resource, which sensors, mechanisms and paths need it
     (a common cause), and per FSR whether a single resource removes every allocated mechanism or every path."""
-    from .configure import FAULT_SIM_EXAMPLE, mechanisms_from, paths_from, sensors_from
-    data = project.data("fault_sim") if project.has("fault_sim") else FAULT_SIM_EXAMPLE
+    from .configure import FAULT_SIM_EXAMPLE
+    return independence_data(project.data("fault_sim") if project.has("fault_sim") else FAULT_SIM_EXAMPLE)
+
+
+def independence_data(data: dict) -> dict:
+    """``independence`` of one fault_sim section (a design variant included)."""
+    from .configure import mechanisms_from, paths_from, sensors_from
     sens = sensors_from(data, {})
     mechs = mechanisms_from(data)
     paths = paths_from(data, {})
@@ -293,7 +328,7 @@ def independence(project) -> dict:
     reads = {"torque_monitor": ["current_mon_a", "current_mon_b", "position_monitor"],
              "current_plausibility": ["current_mon_a", "current_mon_b", "current_mon_c"],
              "overcurrent_sw": ["current_mon_a", "current_mon_b", "current_mon_c"],
-             "overvoltage_sw": ["vdc_monitor"], "undervoltage_sw": ["vdc_monitor"],
+             "overvoltage_sw": ["vdc_monitor"], "undervoltage_sw": ["vdc_monitor"], "overspeed_sw": ["position_control"],
              "position_los": ["position_monitor"], "overcurrent_hw": ["current_hw_a", "current_hw_b", "current_hw_c"],
              "overvoltage_hw": ["vdc_hw"]}
     control_reads = {role(r) for r in ("current_a", "current_b", "current_c", "position_control", "vdc_control")}
@@ -349,6 +384,7 @@ def compare(product, sc: dict, candidates=CANDIDATES) -> dict:
                          "metrics": r["metrics"], "final_bridge": res.summary["final_bridge"],
                          "final_actual": res.summary["final_actual"], "first_actuation": acts[0] if acts else None,
                          "status": res.status, "stop_reason": res.stop_reason,
+                         "strategy_log": list(res.summary.get("strategy_log") or []),
                          "trace": {k: res.trace[k] for k in ("t", "T_shaft", "T_request", "i_a", "i_b", "i_c",
                                                             "v_dc", "i_bat")}})
             sp.step(c)

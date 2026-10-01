@@ -15,7 +15,9 @@ jobs:
   test:
     name: tests (Linux, headless Qt)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # the whole suite (golden, engines, reference packages, desktop pages) runs in about 30-40 min on a hosted
+    # runner; 30 min cancelled it before the end
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

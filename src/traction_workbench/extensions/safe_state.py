@@ -13,7 +13,7 @@ For (speed, Vdc, PM flux, HV state) each candidate is screened for
   limit, back-EMF vs the declared device voltage rating;
 * transition time and hardware-path availability as *declared* inputs.
 
-Project/customer rules (e.g. "below 60 V HVDC use a specific freewheel path")
+Project rules (e.g. "below 60 V HVDC use a specific freewheel path")
 are evaluated in a separate layer and labelled as rules, not physics.
 
 Not evaluated (UNKNOWN by construction): ASC entry transient peak current and
@@ -178,7 +178,7 @@ def safe_state_screening(drive: DriveModel, speed_rpm: float, Vdc_V: float, hv_s
         applies = _rule_applies(rule, n, vdc, hv_state)
         rules.append({"rule_id": rule["rule_id"], "applies": applies, "require": rule.get("require"),
                       "forbid": rule.get("forbid"), "basis": rule["basis"],
-                      "kind": "project/customer rule (not physics)"})
+                      "kind": "project rule (not physics)"})
     claim = Claim("safe_state_selection", Status.UNKNOWN,
                   f"safe-reaction candidate at {n:g} rpm, Vdc = {vdc:g} V, {hv_state}",
                   "steady-state fundamental screening only",

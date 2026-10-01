@@ -121,7 +121,7 @@ FTTI_CHAIN = {
 }
 
 SAFE_STATE_RULES = [{"rule_id": "PRJ-SR-01", "when": {"Vdc_below_V": 60}, "require": "FREEWHEEL",
-                     "basis": "project safety concept: HVDC < 60 V -> force the freewheel path (customer/project rule, "
+                     "basis": "project safety concept: HVDC < 60 V -> force the freewheel path (project rule, "
                               "not physics)"}]
 
 # -- gearbox: torsional ROM and reducer efficiency of the same single-speed reducer --------------------------------
@@ -137,6 +137,43 @@ DRIVELINE_ROM = {
     "wheel_radius_m": 0.33, "contact": "maintained", "backlash_out_rad": None,
     "basis": "synthetic two-inertia ROM (1800 kg, r 0.33 m, two half-shafts) - replace with an FRF-identified / "
              "validated torsional model",
+}
+
+VEHICLE = {
+    "mass_kg": 1900.0, "wheel_radius_m": 0.33, "J_wheels_kgm2": 4.0,
+    "road_load": {"form": "abc", "A_N": 140.0, "B_N_per_mps": 0.72, "C_N_per_mps2": 0.36, "includes_edrive_drag": False,
+                  "basis": "synthetic road load of a 1.9 t passenger car (tyres + aerodynamics; the drive's own drag is "
+                           "modelled by the reducer and machine) - replace with coast-down / target values"},
+    "axle": {"ratio": 1.0, "eta_forward": 1.0, "eta_reverse": 1.0},
+    "regen": {"share": 1.0, "min_speed_kmh": 5.0},
+    "aux_hv_W": 300.0, "usable_energy_kWh": 75.0,
+    "basis": "synthetic vehicle for the drive-cycle view (test mass incl. driver and payload; the machine inertia "
+             "comes from the driveline ROM)",
+}
+
+CHARGING_PATH = {
+    "neutral_access": True, "L0_uH": 30.0,
+    "L0_basis": "synthetic estimate (zero-sequence = mostly leakage inductance, ~15 % of L_d) - measure it: the three "
+                "phase terminals joined, against the neutral, L0 = 3 x the measured inductance",
+    "neutral_current_max_A": 400.0, "phase_current_peak_max_A": 450.0, "Tj_max_C": 150.0, "winding_loss_max_W": 1500.0,
+    "interleave": "120deg",
+    "basis": "synthetic integrated-charging path (neutral brought out through a contactor; ratings are examples)",
+}
+
+TORQUE_ERRORS = {
+    "current_gain_pct": 1.0, "current_offset_A": 2.0, "resolver_offset_deg_e": 0.5, "magnet_temp_dev_K": 15.0,
+    "magnet_coeff_per_K": -0.0011, "psi_tol_pct": 1.0, "Ld_tol_pct": 2.0, "Lq_tol_pct": 2.0, "estimator_pct": 1.0,
+    "monitor_mismatch_pct": 3.0,
+    "magnet_coeff_basis": "typical NdFeB remanence coefficient (-0.11 %/K) - replace with the magnet grade's data",
+    "basis": {"current_gain": "sensor total gain error over temperature (= the fault simulation's CS_A/B gain_tol)",
+              "current_offset": "residual offset after the power-up calibration (= CS_A/B offset_tol_A)",
+              "resolver_offset": "residual angle offset after the end-of-line calibration (= RES offset_tol_deg)",
+              "magnet_temperature": "magnet-temperature estimator error (synthetic)",
+              "model_tolerance": "unit-to-unit spread of magnets and laminations around the calibrated design "
+                                 "(synthetic)",
+              "estimator": "torque-table interpolation (synthetic)",
+              "monitor_mismatch": "the monitor's independent torque estimate vs the control path (synthetic)"},
+    "source": "synthetic error sources of the torque chain",
 }
 
 # -- fault simulation: protection architecture and safety requirements (synthetic) --------------------------------
@@ -221,6 +258,19 @@ SYNTHETIC_PROJECT = {
             "provenance": {"origin": "synthetic", "source": "synthetic vehicle / reducer example", "revision": "1",
                            "qualified": False, "evidence": ""},
             "data": {"rom": DRIVELINE_ROM, "reducer": REDUCER}},
+        "vehicle": {
+            "provenance": {"origin": "synthetic", "source": "synthetic vehicle (mass, road load, regeneration, "
+                                                          "auxiliaries)", "revision": "1", "qualified": False,
+                           "evidence": ""},
+            "data": VEHICLE},
+        "charging": {
+            "provenance": {"origin": "synthetic", "source": "synthetic integrated-charging path", "revision": "1",
+                           "qualified": False, "evidence": ""},
+            "data": CHARGING_PATH},
+        "torque_errors": {
+            "provenance": {"origin": "synthetic", "source": "synthetic torque-chain error sources", "revision": "1",
+                           "qualified": False, "evidence": ""},
+            "data": TORQUE_ERRORS},
         "safety": {
             "provenance": {"origin": "synthetic", "source": "example FTTI chain and project rule", "revision": "1",
                            "qualified": False, "evidence": ""},

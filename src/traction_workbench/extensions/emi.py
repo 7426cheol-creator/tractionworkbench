@@ -139,7 +139,7 @@ class LimitCurve:
         if self.detector not in DETECTORS:
             raise InputValidationError(f"detector must be one of {DETECTORS}", field="limit.detector")
         if not self.source.strip():
-            raise InputValidationError("a limit curve needs its source (standard / customer document, revision)",
+            raise InputValidationError("a limit curve needs its source (standard / specification document, revision)",
                                        field="limit.source")
         gaps = []
         for g in self.gaps or ():

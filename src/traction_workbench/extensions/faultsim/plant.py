@@ -53,8 +53,8 @@ TWO_PI = 2.0 * math.pi
 PHASE_SHIFT = (0.0, -TWO_PI / 3.0, TWO_PI / 3.0)
 PHASES = ("a", "b", "c")
 # state vector
-ID, IQ, TH, WM, VDC, IBAT, E_BAT, E_CU, E_MECH, E_BLEED, E_INV = range(11)
-N_STATE = 11
+ID, IQ, TH, WM, VDC, IBAT, E_BAT, E_CU, E_MECH, E_BLEED, E_INV, E_EXT = range(12)
+N_STATE = 12
 
 
 class OutOfModel(Exception):
@@ -222,6 +222,9 @@ class Plant:
         # a current below this is zero for the mode decision (1e-6 of the machine's characteristic current psi / L_d)
         self.i_zero_A = 1e-6 * abs(m.psi) / m.Ld if m.Ld > 0 else 1e-9
         self.zeno = {"intervals": 0, "time_s": 0.0}     # time-stepped (event location suspended) intervals
+        # another load on the DC link (e.g. a second machine's inverter): current drawn from the link as a
+        # function of its voltage (A, positive = taken from the link); None: none
+        self.i_ext_fn = None
 
     # -- electrical relations ---------------------------------------------------------------------------------
     def torque(self, i_d, i_q):
@@ -407,7 +410,7 @@ class Plant:
 
     # -- right-hand side --------------------------------------------------------------------------------------
     def rhs(self, x, modes):
-        """d/dt of [i_d, i_q, theta_e, w_m, v_dc, i_bat, E_bat, E_cu, E_mech, E_bleed, E_inv]."""
+        """d/dt of [i_d, i_q, theta_e, w_m, v_dc, i_bat, E_bat, E_cu, E_mech, E_bleed, E_inv, E_ext]."""
         i_d, i_q, th, w_m, v_dc = x[ID], x[IQ], x[TH], x[WM], x[VDC]
         m, dc = self.m, self.dc
         w_e = m.p * w_m
@@ -421,14 +424,16 @@ class Plant:
                     i_dc += (poles[k] / v_dc + 0.5) * ia[k]
         i_bat = self.battery_current(x)
         i_bl = self.bleed_current(v_dc)
-        dv = (i_bat - i_dc - i_bl) / dc.C
+        i_x = self.i_ext_fn(v_dc) if self.i_ext_fn is not None else 0.0
+        dv = (i_bat - i_dc - i_bl - i_x) / dc.C
         T = self.torque(i_d, i_q)
         if m.J is None:
             dw = 0.0
         else:
             dw = (T - (m.b_visc * w_m + m.c_quad * w_m * abs(w_m)) - m.T_load) / m.J
         p_cu = 1.5 * m.Rs * (i_d * i_d + i_q * i_q)
-        return [did, diq, w_e, dw, dv, self._dibat(x), v_dc * i_bat, p_cu, T * w_m, v_dc * i_bl, v_dc * i_dc]
+        return [did, diq, w_e, dw, dv, self._dibat(x), v_dc * i_bat, p_cu, T * w_m, v_dc * i_bl, v_dc * i_dc,
+                v_dc * i_x]
 
     def dc_current(self, x, modes):
         """Current drawn by the bridge from the + rail (averaged over the PWM period in the averaged model)."""

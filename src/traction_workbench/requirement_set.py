@@ -122,7 +122,7 @@ def _exceeds(need: float, limit: float, floor: float) -> bool:
 
 
 def spec_check(req, limits: DcSourceLimits) -> dict:
-    """Model-free necessary condition from the customer numbers alone (the entry point without a motor model).
+    """Model-free necessary condition from the requirement numbers alone (the entry point without a motor model).
 
     At ONE operating point - this requirement's own torque and speed, never the maximum torque of one requirement
     times the maximum speed of another - motoring needs P_dc >= P_shaft = T*omega (losses are never negative).  A
@@ -271,7 +271,7 @@ def _with_spec_verdict(row: dict) -> dict:
                        "class_label_en": "proven violation (model-free)", "effort": None},
                    decided_by="model-free necessary condition (spec_check)",
                    limiting=f"model-free: {sc['text']}", next_data=["a design or requirement change is needed: the "
-                                                                     "customer numbers alone exceed the source limits"])
+                                                                     "requirement numbers alone exceed the source limits"])
     return row
 
 

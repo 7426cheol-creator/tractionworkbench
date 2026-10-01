@@ -15,8 +15,12 @@ from ..i18n import language, tr
 from ..io import load_json_file
 from ..project import request_usage, short, stale_sections
 from . import theme
+from .pages.charging import ChargingPage
 from .pages.decision import DecisionPage
 from .pages.design import DesignPage
+from .pages.budget import BudgetPage
+from .pages.sim_export import SimExportPage
+from .pages.drive_cycle import DriveCyclePage
 from .pages.efficiency import EfficiencyPage
 from .pages.emi import EmiPage
 from .pages.explorer import ExplorerPage
@@ -28,6 +32,7 @@ from .pages.performance import PerformancePage
 from .pages.power import PowerPage
 from .pages.project import ProjectPage
 from .pages.protection import ProtectionPage
+from .pages.reference import ReferencePage
 from .pages.requirement_set import RequirementSetPage
 from .pages.pwm_driveline import PwmDrivelinePage
 from .pages.safety import SafetyPage
@@ -48,6 +53,7 @@ PAGES = (
     ("safety", lambda: tr("안전 스크리닝", "Safety screening"), SafetyPage),
     ("protection", lambda: tr("보호·고장", "Protection & fault"), ProtectionPage),
     ("fault_sim", lambda: tr("고장 시뮬레이션·FuSa", "Fault simulation & FuSa"), FaultSimPage),
+    ("reference", lambda: tr("기능안전 요구 검증", "FuSa reference verification"), ReferencePage),
     ("thermal", lambda: tr("열·지속시간", "Thermal & duration"), ThermalPage),
     ("power", lambda: tr("전력변환·수명", "Power stage & life"), PowerPage),
     ("efficiency", lambda: tr("효율·모듈 비교", "Efficiency & modules"), EfficiencyPage),
@@ -55,6 +61,10 @@ PAGES = (
     ("oew_hev", lambda: tr("OEW·HEV", "OEW & HEV"), OewHevPage),
     ("emi", lambda: tr("EMI (전도성)", "EMI (conducted)"), EmiPage),
     ("machine", lambda: tr("모터 설계", "Machine design"), MachinePage),
+    ("drive_cycle", lambda: tr("주행 사이클", "Drive cycle"), DriveCyclePage),
+    ("charging", lambda: tr("통합 충전", "Integrated charging"), ChargingPage),
+    ("budget", lambda: tr("시스템 버짓", "System budgets"), BudgetPage),
+    ("sim_export", lambda: tr("시뮬레이터 내보내기", "Simulator export"), SimExportPage),
     ("project", lambda: tr("프로젝트", "Project"), ProjectPage),
     ("model", lambda: tr("모델·데이터", "Model & data"), ModelPage),
     ("verification", lambda: tr("검증 (V&V)", "Verification"), VerificationPage),
@@ -68,8 +78,9 @@ NAV_GROUPS = (
                                                                    "performance", "design")),
     (lambda: tr("전력·열·효율", "Power, heat & efficiency"), ("thermal", "power", "efficiency")),
     (lambda: tr("제어·EMC", "Control & EMC"), ("pwm_driveline", "emi")),
-    (lambda: tr("안전·보호", "Safety & protection"), ("safety", "protection", "fault_sim")),
+    (lambda: tr("안전·보호", "Safety & protection"), ("safety", "protection", "fault_sim", "reference")),
     (lambda: tr("시스템·설계", "Systems & design"), ("oew_hev", "machine")),
+    (lambda: tr("구동 시스템", "Drive system"), ("drive_cycle", "charging", "budget", "sim_export")),
     (lambda: tr("검증", "Verification"), ("verification",)),
 )
 PAGE_INFO = {
@@ -112,11 +123,38 @@ PAGE_INFO = {
                             "causal simulation fault → measurement → control and monitoring → reaction → actual "
                             "bridge, torque, current, DC link → SG / FSR / TSR verdicts; reaction candidates, "
                             "campaigns and counterexamples, validation evidence"),
+    "reference": lambda: tr("사양서·스터디 참고 패키지의 항목을 이 제품 모델에서 하나씩 판정: 근거 수준 유지, OPEN 값은 "
+                            "추정하지 않음(UNKNOWN), 충돌 기록은 변형으로, 안전 상태는 물리 결과(C1-C4)로 - 요구-증거 매트릭스"
+                            "·UNKNOWN/CONFLICT 보고·타당성 지도·HTML/CSV",
+                            "a specification or study reference verified item by item on this product "
+                            "model: provenance kept, OPEN values never guessed (UNKNOWN), conflicting records as "
+                            "variants, the safe state on the physics (C1-C4) - requirement-to-evidence matrix, "
+                            "unknown / conflict report, feasibility map, HTML / CSV"),
     "oew_hev": lambda: tr("OEW 듀얼 인버터와 HEV 두 기기 공통 bus", "open-end winding dual inverter and HEV two-machine bus"),
     "machine": lambda: tr("모터 스케일링 트레이드, 권선 계산, 개념 사이징",
                           "machine scaling trade study, winding calculator, concept sizing"),
     "verification": lambda: tr("golden fixture 대비 acceptance와 참조 패키지 무결성",
                                "acceptance against golden fixtures and reference package integrity"),
+    "drive_cycle": lambda: tr("차량을 표준(WLTC·UDDS·HWFET·US06) 또는 가져온 속도 궤적 위에서: 모터 운전점, 부품별 에너지·손실, "
+                              "소비·주행거리, 회생과 마찰 제동, 구동이 전달하지 못한 구간",
+                              "the vehicle on a standard (WLTC, UDDS, HWFET, US06) or imported speed trace: machine "
+                              "points, energy and losses per component, consumption and range, regeneration and the "
+                              "friction brakes, intervals the drive does not deliver"),
+    "charging": lambda: tr("인버터와 모터 권선을 승압기로 쓰는 저전압 DC 충전: 한 스위칭 주기의 전류, 소자·권선 손실과 Tj, "
+                           "선언된 한계, 충전기·배터리 전압별 최대 충전 전력과 막는 한계",
+                           "low-voltage DC charging through the inverter and the motor windings as a boost: one "
+                           "switching period, device and winding losses and Tj, the declared limits, the maximum "
+                           "charging power over charger and battery voltages and the limit that binds"),
+    "budget": lambda: tr("한계를 기여 항목에 나누고 아래에서 위로 확인: 운전점별 토크 정확도(센서·레졸버·자석 온도·모델 공차를 "
+                         "기기 모델로 계산)와 기능안전 창·모니터 문턱, FTTI 체인, 주행 사이클 손실, 직접 선언하는 버짓",
+                         "a limit split over its contributors and checked bottom-up: torque accuracy per operating "
+                         "point (sensors, resolver, magnet temperature and model tolerance computed with the machine "
+                         "model) with the safety window and monitor threshold, the FTTI chain, drive-cycle losses, "
+                         "a budget you declare"),
+    "sim_export": lambda: tr("차량 시뮬레이터용 구동계 지도: 속도·토크 격자의 DC 전력·부품별 손실·출력 전력과 최대 토크 곡선을 CSV, "
+                             "MATLAB .mat, FMI 2.0 FMU로",
+                             "drive maps for a vehicle simulator: DC power, losses per component, output power and the "
+                             "full-load curves on a speed x torque grid as CSV, MATLAB .mat and an FMI 2.0 FMU"),
 }
 
 
@@ -135,7 +173,10 @@ TASK_PAGE = {"decision": "decision", "decision-env": "decision", "requirement_se
              "winding": "machine", "concept_sizing": "machine", "ftti": "safety", "passive": "safety",
              "discharge": "safety", "overvoltage": "safety", "safe_state": "safety", "pdf": "decision",
              "acceptance": "verification", "fault_sim": "fault_sim", "fault_compare": "fault_sim",
-             "fault_campaign": "fault_sim", "fault_rerun": "fault_sim", "fault_validation": "fault_sim"}
+             "fault_campaign": "fault_sim", "fault_rerun": "fault_sim", "fault_validation": "fault_sim",
+             "fault_review": "fault_sim", "fault_verification": "fault_sim", "drive_cycle": "drive_cycle",
+             "charging_point": "charging", "charging_capability": "charging", "budget_torque": "budget",
+             "budget_ftti": "budget", "budget_cycle": "budget", "budget_custom": "budget", "sim_maps": "sim_export"}
 # what a task is called on screen (a running task uses the label it was started with)
 TASK_LABELS = {
     "decision": lambda: tr("요구 판정", "decision"), "decision-env": lambda: tr("T–n 곡선", "T–n envelope"),
@@ -165,6 +206,16 @@ TASK_LABELS = {
     "fault_campaign": lambda: tr("고장 캠페인", "fault campaign"),
     "fault_rerun": lambda: tr("반례 재실행", "counterexample re-run"),
     "fault_validation": lambda: tr("플랜트 검증", "plant validation"),
+    "fault_review": lambda: tr("정적 설계 검토", "static design review"),
+    "fault_verification": lambda: tr("검증 매트릭스", "verification matrix"),
+    "reference": lambda: tr("기능안전 요구 검증", "reference verification"),
+    "drive_cycle": lambda: tr("주행 사이클", "drive cycle"),
+    "charging_point": lambda: tr("통합 충전 운전점", "integrated charging point"),
+    "charging_capability": lambda: tr("충전 능력 지도", "charging capability"),
+    "budget_torque": lambda: tr("토크 정확도 버짓", "torque-accuracy budget"),
+    "budget_ftti": lambda: tr("FTTI 버짓", "FTTI budget"), "budget_cycle": lambda: tr("사이클 손실 버짓", "cycle-loss budget"),
+    "budget_custom": lambda: tr("선언 버짓", "declared budget"),
+    "sim_maps": lambda: tr("구동계 지도", "drive maps"),
 }
 # tasks whose argument is not a request body: they run on the state's drive and limits
 STATE_TASKS = ("decision-env", "requirement_set", "explorer", "trajectory", "performance", "design-sweep",

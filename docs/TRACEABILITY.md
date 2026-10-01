@@ -1,4 +1,4 @@
-# 요구 추적표 (Traceability) — 0.5.0
+# 요구 추적표 (Traceability) — 0.6.0
 
 이 문서는 독립 엔지니어링 리뷰(handoff), 감사 증거 패키지(dc7b338)의 재현 스크립트, 그리고 세 추가 명세
 (OEW/HEV, 파워모듈별 손실·단계별 효율, 가변 PWM·anti-jerk)의 각 항목이 **어디에 구현되었고 무엇으로 확인했는지**를
@@ -289,7 +289,7 @@ EMI·PWM 예시의 데드타임 불일치(1.0 µs vs 손실 1.5 µs — 프로�
 | 사용자 기능 1 | 요구 묶음의 총괄 판정: CSV, 조건/연산자 확인, 요구별 판정·여유·지배 원인·미확인 근거; band 존재성 ≠ 제어 정확도 | `requirement_set.evaluate_set`(같은 제품·조건·근거, 행 = 단일 판정 기록과 동일한 record id), `parse_requirements_csv`(case 파일 파서, 알 수 없는 열·중복 id·모호한 정의 거절, `speed_kind`, `Vdc_port`), `interpretation`(band: '존재성 — 제어 정확도·전 구간 추종 아님'), 결과 CSV; 페이지 **요구 묶음·후보**(해석 확인, 판정 페이지에서 열기) | `tests/test_requirement_set.py` | implemented |
 | 사용자 기능 2 | 후보별로 모든 필수 요구를 재평가, 가중합 없음, 비용 자료 없이 비용 최적 없음 | `evaluate_candidates`: 후보마다 모든 요구 재판정, 개선/악화 목록, 전부 만족 여부, 진단용 파라미터 표시, Vdc는 요구의 조건이라 후보에서 거절 | `test_candidates_are_rejudged_…`, `test_candidate_changes_that_are_not_design_changes_…` | implemented |
 | 사용자 기능 3 | UNKNOWN을 다음 결정으로: 원인 분리와 추가 자료 우선순위(측정 난이도·판정 영향) | `classify`(모든 Reason이 정확히 한 분류 또는 위반 사유, 원인이 여럿이면 모두 유지), `next_data_priorities`(작업 종류: 선언 < 문서 < 해석 < 새 자료, 그다음 영향 받는 요구 수; '이것만으로 확정' vs '추가로 필요'), `levers`(바인딩 제약 → 완화하는 파라미터); 판정 페이지 배너에 분류와 닫는 방법 | `test_every_reason_is_classed_…`, `test_classify_keeps_every_cause_…`, `test_next_data_is_prioritised_…` | implemented |
-| 사용자 기능 4 | 입력 완성도별 진입점: 고객 사양만으로 필요조건, 서로 다른 운전점의 최대 토크×최대 속도 곱 금지, 포트·기계/전기 속도·지속시간 확인 | `spec_check`: 같은 운전점의 P_shaft = T·ω ≥ 0(구동)이면 P_dc ≥ P_shaft → 방전 전력/전류(범위면 최저 Vdc) 한계 초과는 어떤 드라이브로도 불가능; 회생은 손실이 흡수할 수 있어 '모델 필요'; 모델과 같은 허용오차. 모델이 UNKNOWN인 요구를 이 조건이 결정(FAIL, decided_by), 모델 PASS와 모순이면 표시하지 않고 오류 | `test_the_customer_numbers_alone_…`, `test_the_model_never_contradicts_…` | implemented |
+| 사용자 기능 4 | 입력 완성도별 진입점: 요구 사양만으로 필요조건, 서로 다른 운전점의 최대 토크×최대 속도 곱 금지, 포트·기계/전기 속도·지속시간 확인 | `spec_check`: 같은 운전점의 P_shaft = T·ω ≥ 0(구동)이면 P_dc ≥ P_shaft → 방전 전력/전류(범위면 최저 Vdc) 한계 초과는 어떤 드라이브로도 불가능; 회생은 손실이 흡수할 수 있어 '모델 필요'; 모델과 같은 허용오차. 모델이 UNKNOWN인 요구를 이 조건이 결정(FAIL, decided_by), 모델 PASS와 모순이면 표시하지 않고 오류 | `test_the_customer_numbers_alone_…`, `test_the_model_never_contradicts_…` | implemented |
 | 사용자 기능 5 | 결과 화면 순서: 요구 → 조건·데이터 수준 → 결론/여유 → 제한 원인 → 바꿀 수 있는 항목 → 다음 자료 → 상세 | 요구 묶음 상세 창이 이 순서(1–7)로 표시, 4층 판정·stale 표시는 판정 페이지에 그대로(선택한 요구를 판정 페이지에서 열기) | `test_desktop_requirement_set_page_…`(순서 검사), self-test `requirement_set:*` | implemented |
 
 ## 14. PWM 고조파·가변 PWM 인계 (P0)
@@ -408,7 +408,81 @@ PR #5의 코드는 병합하지 않고 이 문서의 의미를 현재 코드 기
 | P3 EMI | 설계 예비 공란 → 조용히 0 dB, 공백이 많은데 "모든 수신 주파수" | 공란 메모·플래그·해석 지표, FEASIBLE 문구에 판정하지 않은 선언 공백 구간 | `test_emi_p3_blank_reserve_is_stated_and_declared_gaps_are_named` | fixed |
 | P3 EMI | 획득 메타데이터 없는 측정 trace는 INDETERMINATE(FAIL 아님) | 리뷰대로 보수적 — 변경 없음 | 기존 시험 | kept |
 
-## 19. 비목표 (handoff §15, 추가 명세 비목표)
+## 19. 기능안전 설계 작업 (고장 시뮬레이션·FuSa 사용성·심사 근거)
+
+요구(사용자): FTTI·TSR 요구 수치·검출 디바운스를 조정할 수 있을 것, 반응을 단일 상태가 아니라 소프트 ASC 등 과도를 줄이는 대표
+방법들과 "FW 잠깐 → ASC" 같은 단계로 설계할 수 있을 것, 보호 반응 설계 변경을 JSON 직접 입력 없이 할 수 있을 것, FSR·TSR 보강,
+Safety 심사관 관점의 근거. 상세 설명은 `docs/LOGIC_REVIEW.html` §22, 회귀 시험은 `tests/test_fusa_design.py`·`tests/test_fault_page.py`에 있습니다.
+
+| 항목 | 요구 | 구현 | 확인 | 상태 |
+|---|---|---|---|---|
+| FTTI·예산·TSR 수치 편집 | 타입이 있는 칸, JSON 없음 | `desktop/fault_design.py` `DesignEditor`: SG(ASIL·FTTI·위험·안전 상태·운전 상황), FSR(ASIL·FDTI/FRTI 예산·할당·안전 상태 TSR·경고·검증 방법), TSR(유형별 판정 기준 칸·안전 상태 조건 표·할당·검증·근거), id 바꾸면 참조도 바뀜, 편집마다 섹션 검증 | `test_the_design_editor_changes_ftti_tsr_limits_debounce_and_strategies_without_json` | implemented |
+| 디바운스·필터·임계값 편집 | 메커니즘별 | 메커니즘 표(주기·임계값·디바운스/필터·잠재 고장 시험·커버리지) + 종류별 매개변수 칸(`KIND_PARAMS`), 범위·선택지 검증(`_check_params`) | 위 시험, `test_engineer_entered_values_are_checked_where_they_are_entered` | implemented |
+| 설계 변형 | 실행·저장·추적·반영 | `extensions/faultsim/design.py`(`diff_overrides`, `change_rows`: 없는 키·None·빈 컨테이너는 변경 아님), `VariantField`(입력 추적·작업 공간), 시나리오 불러올 때 편집 변경 교체 전 확인, 프로젝트에 반영(`with_section`) | `test_a_design_variant_is_the_difference_and_applies_back`, `test_empty_containers_and_missing_keys_are_not_changes`, `test_removing_and_reordering_items_are_named`, `test_the_edited_design_is_written_into_the_project_and_survives_a_workspace`, `test_scenario_files_round_trip_and_the_page_survives_a_workspace` | implemented |
+| 반응 전략 | 단계열, 소프트 ASC 대표 방법, FW → ASC | `extensions/faultsim/strategy.py`(동작 11종·종료 조건 7종·최대 시간·대체 상태·템플릿 7종), `engine.py`(`_start_strategy`·`_enter_step`·`_advance_strategies`·`_strategy_fallback`·`_rank`, 이미 실행 중이면 재시작 안 함), `control.py`(토크·토크 램프·ASC 점 전류 사전 조정·전압 램프 모드), `asc_steady_point` | `test_soft_asc_by_voltage_ramp_removes_the_asc_transient`, `test_current_preconditioning_ends_by_its_maximum_time_when_the_measurement_is_wrong`, `test_freewheel_first_and_phase_sequential_asc`, `test_a_software_strategy_on_a_hardware_path_falls_back_to_its_bridge_state`, `test_asc_while_fast_then_freewheel_below_the_declared_speed`, `test_torque_ramp_down_then_freewheel_takes_the_declared_rate`, `test_a_running_strategy_is_not_restarted_by_a_second_request`, `test_the_policy_selects_a_strategy_through_a_design_variant`, `test_the_asc_steady_point_solves_the_steady_dq_equations`, `test_strategy_declarations_are_validated` | implemented (개념 모델: 상수 파라미터 ASC 점, 개루프 전압 램프; HW 소프트 ASC는 모델 밖) |
+| 후보 비교 | 전략을 후보로, 과도 지표 | 후보 체크 목록(기본 반응 + 선언 전략), 강제 반응에 전략, 비교 표에 최저 i_d·최대 제동 토크, 단계 기록(해석·툴팁) | `test_reaction_candidates_run_from_the_same_initial_condition` | implemented |
+| FSR·TSR 보강 | 심사 속성 | `safety.py`: SG 안전 상태·운전 상황, FSR ASIL·경고·할당·검증 방법, TSR ASIL·할당·검증 방법·근거, 물리량 i_d·제동 토크, 예제 TSR-08(제동 토크 ≤ 450 N·m)·TSR-09(i_d ≥ −1,000 A), FTTI·예산 > 0, 판정 기준 시간·폭 ≥ 0 | `test_engineer_entered_values_are_checked_where_they_are_entered`, `test_a_representative_scenario_runs_and_reads_on_the_page` | implemented (값은 합성 예제) |
+| 정적 설계 검토 | 시뮬레이션 전 일관성 | `extensions/faultsim/review.py`: 모순·누락·경고·참고, ASIL 상속, 예산 합 ≤ FTTI, 검출 지연 범위(최소 초과 = 모순, 최대만 = 경고), 전략 시간 대 FRTI(경고), 잠재 고장 시험, 실행 가능성, 시간 판정 TSR 없는 예산, 공통 원인 | `test_the_example_design_has_no_contradiction_or_gap_and_names_its_weak_points`, `test_the_review_finds_contradictions_between_declared_values`, `test_the_review_finds_gaps_and_unexecutable_strategies`, `test_a_detection_bound_is_a_contradiction_only_when_its_minimum_exceeds_the_budget` | implemented |
+| 검증 매트릭스·FMEA | 카탈로그 전체 근거 | `extensions/faultsim/verification.py`: 한 설계로 카탈로그 실행(시나리오 자신의 변형 제거, 중복 제외), 요구 × 시나리오, 발동 수, FSR별 최악 시간(한 궤적), 시뮬레이션 기반 고장 모드 표 | `test_the_catalog_runs_on_one_design_without_its_own_design_variants`, `test_the_verification_matrix_counts_coverage_and_worst_times` | implemented (시나리오 커버리지 — 진단 커버리지 SPFM/LFM 아님) |
+| 안전 근거 보고서 | 심사용 한 파일 | `extensions/faultsim/report.py` `safety_case_html`(설계·변형, 요구, 검토, 전략, 매트릭스, 공통 원인, 반례, 한계; 매트릭스는 같은 설계·프로젝트일 때만, 커밋되지 않은 소스 변경을 머리에 경고 — `code_identity`의 `dirty`), `api.fault_report` | `test_the_safety_case_report_is_one_self_contained_page`, `test_the_report_says_when_the_source_had_uncommitted_changes`, `test_the_api_serves_the_editor_schema_review_matrix_and_report`, `test_the_safety_case_tab_reviews_verifies_and_saves_the_report` | implemented |
+| 화면·해석 | 편집 탭, 안전 근거 탭, 두 언어 | `desktop/pages/fault_sim.py`(세 탭), `insight/fault.py` `safety_case_insight`(모순·누락 → 경고 → 검출 지연 → 요구별 실패·미발동 → 최악 시간 → 미검출 고장), self-test 화면 25j–25m | `test_every_page_reading_is_made_and_readable_in_both_languages`, self-test | implemented |
+| 한계 | — | 센서·자원·배터리·역할은 편집기 밖(프로젝트 파일), 커버리지 주장은 선언(계산 아님), 매트릭스는 카탈로그만 | `docs/LOGIC_REVIEW.html` §22.9 | remaining |
+
+## 20. 기능안전 참고 문서 검증 (FuSa 참고 문서·계층·제안·파형 판독·데이터 커서)
+
+요구(사용자): 기능안전 참고 문서의 항목을 최소한 모두 앱에서 검증 가능하게(PASS/FAIL/UNKNOWN/CONFLICT/MANUAL + 근거),
+OPEN 값은 추정하지 않고, DERIVED/RESEARCH는 원문 요구로 내보내지 않으며, 충돌 기록은 변형으로; SG·FSR·TSR이 섞인 문서를
+분류해 반영하고 추론해 보완·추가할 것; 고장 파형의 과도 스파이크 크기·시각을 읽을 수 있을 것; MATLAB/Simulink식 데이터 커서;
+제어까지 고장 났을 때 HW가 DC 전압으로 FW/ASC를 고르는 로직과 주행 중 순환의 확인; 스크린샷은 영어로. 상세 설명은
+`docs/LOGIC_REVIEW.html` §23, 회귀 시험은 `tests/test_reference.py`·`tests/test_reference_page.py`·`tests/test_transient.py`·
+`tests/test_cursor.py`·`tests/test_fault_page.py`에 있습니다.
+
+| 항목 | 요구 | 구현 | 확인 | 상태 |
+|---|---|---|---|---|
+| 참고 패키지·판정 | 항목별 판정과 근거, OPEN 비추정, 충돌은 변형 | `extensions/faultsim/refpkg.py`(`validate_package`, `ReferenceRunner`: 원문 값/예시 프로파일, USER 값, 실행 캐시, 검사 예외는 그 검사만 UNKNOWN), `refcheck.py`(검사 라이브러리), `safestate.py`(C1–C4, 한 시계의 여섯 시각) | `test_open_value_is_unknown_in_customer_and_flagged_in_illustrative`, `test_user_value_replaces_open`, `test_gde_sequences_kept_as_variants`, `test_a_broken_check_never_stops_the_others`, `test_every_check_is_used_by_the_example` | implemented |
+| 요구 계층·추적 | SG → TLSR → FSR → TSR → SM → 검증, 문서 근거와 추론 분리 | `extensions/faultsim/refhier.py`(`level_of`, `hierarchy`: 롤업·공백·통계), `level`/`traces_to`/`traces_to_inferred`/`proposed` 검증, HTML·CSV에 계층 | `test_example_hierarchy_levels_traces_rollup_and_gaps`, `test_a_proposal_is_derived_and_never_a_source_requirement`, `test_hierarchy_in_the_html_and_the_csv` | implemented |
+| 참고 문서 패키지 (내장) | 문서 전 항목, 분류·추적, 원문 없는 곳 표시 | `examples/reference_packages/customer_inverter/`(`extract.py` → `doc_extract.json` → `build.py`), `extensions/faultsim/packages/customer_inverter_reference.json`(371 항목: 분류·문서 인용 추적·추론 추적·OPEN 자리표시·제안 8건), `api.reference_builtin*` | `test_the_builtin_reference_is_shipped_classified_and_traced`, `test_builtin_packages_and_the_hierarchy`, self-test `reference:builtin_hierarchy` | implemented (검증 대상은 앱의 제품 모델 — 기본 합성) |
+| 추론한 추가 요구 (제안) | 시뮬레이션 근거로 보완·추가 | 예제 EX-PROP-01, 내장 패키지 PROP-SG-HV·PROP-01…07(HW Vdc 선택 순환 금지, GDE 시퀀스 ASC 종료, DCFOC 임계, 클럭 감시, 독립 과속, KL15 에지 재허가, 관측 기반 확인) | `test_the_cycling_proposal_is_demonstrated_and_its_fix_holds`, `test_a_proposal_runs_with_evidence_and_the_reports`, self-test `reference:proposal` | implemented (DERIVED: 원문 요구 아님) |
+| 용어 | 앱이 쓰는 말은 '원문 요구'(문서가 준 요구) — 프로파일 '원문 값'·'예시 값', 근거 태그 PAST-PROJECT, CSV 열 `source` (패키지 필드 `customer_tags`·프로파일 키 `customer`는 호환용으로 유지, `source`도 받음) | `refhier.py`(`DEFAULT_SOURCE_TAGS`, `SET_NAMES`, `set_name`), `refreport.py`, `desktop/pages/reference.py`, 빌더(`TAG`, `GROUP_SHOWN`) | `test_the_application_speaks_of_source_requirements`, `test_builtin_packages_and_the_hierarchy`(페이지 라벨) | implemented (문서에서 그대로 옮긴 요구 원문은 바꾸지 않음) |
+| 제어 상실·주행 중 HW Vdc 선택 | FW ↔ ASC 순환 확인 | `study.py` 프리셋 `hw_vdc_rolling`(GDE 감시·`HW_VDC_SELECT`·`HWGD` 설계 변형), `refexample.py` S-HWVDC(순환/ASC 유지), `insight/fault.py` `bridge_cycling`(해석 헤드라인·절), `event` 검사의 반복 횟수 | `test_the_cycling_proposal_is_demonstrated_and_its_fix_holds`, self-test `fault:hw_vdc_cycling` | implemented |
+| 과도 판독 | 스파이크 크기·시각, 확대 | `extensions/faultsim/transient.py`(`transient_metrics`: 극값=샘플·해상도·한계 밖 시간·정착, `transient_window`), `plots/fault_figures.py`(`fig_fault_transient`, 극값 주석, 먼 한계 축 밖 표기, 확대 구간 음영), 고장 페이지 "과도 확대" 탭(그림 + 지표 표), 참고 페이지 증거 그림의 극값 | `test_transient.py` 7건, `test_a_representative_scenario_runs_and_reads_on_the_page`, self-test `fault:transient` | implemented |
+| 데이터 커서 | 범례에서 신호 선택, 곡선 추적, 값 읽기 | `desktop/cursor.py` `DataCursor`(샘플 맞춤·계단선·평면 곡선, 쌍축 범례 적중 판정, 시간 커서, 고정 커서 2개 Δx·Δy·기울기, 방향키, 블리팅), `desktop/widgets.py` `PlotPanel`(토글·신호 목록·판독 3줄; 지도 패널은 꺼진 채 시작) | `test_cursor.py` 7건, self-test `plot:data_cursor` | implemented |
+| 영어 스크린샷 | 해외 독자 | `docs/make_fusa_showcase.py --lang en`(기본), 새 캡처(과도 확대·데이터 커서·HW Vdc 순환·계층·제안 증거) | 생성 로그 | implemented |
+| 한계 | — | 추론 링크는 검토용, OPEN 자리표시는 번호만, 과도 지표는 트레이스 해상도에 묶임, HW 순환 주기는 합성 R·C·역기전력 | `docs/LOGIC_REVIEW.html` §23.8 | remaining |
+
+## 21. 구동 시스템 (주행 사이클·통합 충전·시스템 버짓·시뮬레이터 내보내기)
+
+요구(사용자): 인버터·모터뿐 아니라 전체 PE 시스템 관점의 엔지니어가 쓸 수 있게 — 그중 구동 시스템 항목 8(주행 사이클), 9(통합 충전),
+11(시스템 버짓), 12(시뮬레이터 내보내기)을 먼저. 상세 설명은 `docs/LOGIC_REVIEW.html` §24, 회귀 시험은 `tests/test_drive_cycle.py`·
+`tests/test_boost_charging.py`·`tests/test_system_budget.py`·`tests/test_sim_export.py`에 있습니다.
+
+| 항목 | 요구 | 구현 | 확인 | 상태 |
+|---|---|---|---|---|
+| 주행 사이클 | 표준 궤적 위 차량 → 모터 운전점 → 부품별 에너지, 소비·주행거리 | `extensions/drive_cycle.py`(`run_cycle`: 도로 부하·경사·등가 질량, 감속기 역함수 + 최소전류 정책점, 회생 비율·하한 속도·이분법 축소·마찰 제동, 미전달 보고, 배터리 R I², 닫히는 장부, 단계별 값, 판정), `data/drive_cycles.json`(WLTC 3b·UDDS·HWFET·US06), CSV 가져오기, 프로젝트 섹션 `vehicle`, 규칙 PRJ-13·14, `api.drive_cycle`, 주행 사이클 페이지 | `test_drive_cycle.py` 11건(공식 시간·거리·최고속도·WLTC 단계 거리, 손 계산 도로 부하·모터 토크, 경사 일·운동 에너지, 회생/마찰 분배, R I², 미전달·UNKNOWN, WLTC 장부 폐쇄, CSV, 프로젝트), self-test `drive_cycle:closure` | implemented (역방향 모델 — 운전자 모델·속도 허용 대역·사이클 중 열 결합 없음) |
+| 통합 충전 | 인버터·권선을 승압기로 쓰는 저전압 DC 충전: 리플·손실·T_j·한계·충전 능력 | `extensions/boost_charging.py`(`period_waveforms`: 스위칭 순간 사이 정확 적분, 영상분 L0·d/q L_d·L_q, 인터리브; `_device_losses`: 순간 전류의 데이터시트 곡선, SiC 데드타임; `_cap_current`; `charging_point`; `capability`·`capability_map`: 제한 요인), 프로젝트 섹션 `charging`, `api.charging_point`·`charging_capability`, 통합 충전 페이지 | `test_boost_charging.py` 11건(동상 리플 = 승압 공식, 듀티 1/3 인터리브 상쇄, 선형 곡선 손 계산 손실·에너지 균형, 스케일 법칙 게이트, NOT_APPLICABLE·UNKNOWN, 선언된 한계만, 제한 요인, 방전, SiC 데드타임, 역전류), self-test `charging:point`·`charging:map` | implemented (L0는 선언값 — 측정 필요) |
+| 시스템 버짓 | 한계를 기여 항목에 배분하고 아래에서 위로 확인 | `extensions/system_budget.py`(`evaluate_budget`: worst-case·RSS·mixed, 몫, 손익분기 증가량, 균등·비례·선언 배분; 미확립 항목 비채움) | `test_three_stacks_and_shares_by_hand`, `test_break_even_growth_brings_the_stack_exactly_to_the_limit`, `test_allocations_stack_to_the_limit`, `test_unknown_contributors_are_never_zero` | implemented |
+| 토크 정확도 버짓 + 기능안전 연결 | 센서·각·자석 온도·모델 공차의 축 토크 오차, TSR 창·SM 문턱과의 관계 | `torque_contributions`(기기 모델로 계산), `default_points`(능력 × 비율, 0 쪽으로 자름), `torque_accuracy`, `_fusa_row`(창·오트립·미검출), `monitor_view`(센서 역할), 프로젝트 섹션 `torque_errors`, 규칙 PRJ-15, 시스템 버짓 페이지 | `test_torque_contributions_against_the_dq_equation`, `test_current_offset_peak_over_a_revolution`, `test_monitor_view_follows_the_sensor_roles`, `test_fusa_row_window_false_trip_and_undetected_deviation`, `test_torque_budget_api_on_the_project`, `test_full_load_points_stay_on_the_delivered_side`, `test_project_torque_errors_section_and_rule`, self-test `budget:torque` | implemented (정적 오차 — 전류 제어기 포화·동적 추종 오차 없음) |
+| FTTI·사이클 손실·직접 선언 버짓 | 다른 한계에도 같은 방식 | `ftti_budget`(타이밍 최악 경로), `cycle_loss_budget`(주행 사이클 부품별 Wh/km), `api.budget_custom` | `test_ftti_budget_is_the_timing_worst_path`, `test_cycle_loss_budget_per_component`, `test_custom_budget_api`, self-test `budget:ftti` | implemented |
+| 시뮬레이터 내보내기 | 차량 시뮬레이터용 지도와 FMU | `extensions/sim_export.py`(`compute_maps`: 정책점 칸·장부 손실·최대 토크 곡선·상태 코드, 총손실은 모든 부품 손실이 있을 때만·빈 칸 개수와 이유; `write_csv_long`·`write_csv_grids`·`write_mat`; `write_fmu`: FMI 2.0 ME+CS, 최대 토크 제한·삼선형 보간·역회전 거울상·바깥 칸만 채움·안쪽 빈 칸 NaN, 로컬 컴파일), `data/fmi2/*.h`(BSD-2-Clause), `api.sim_maps`·`sim_write`, 시뮬레이터 내보내기 페이지 | `test_sim_export.py` 8건(칸 에너지 균형·최대 토크 = 정책 능력·곡선 밖 비움, 시험 전압 밖 UNKNOWN, 자동 토크 격자, 채움 표시, 감속기 범위 밖 총손실 비움, CSV·.mat 같은 숫자, FMU를 FMPy로 검증·CS/ME 실행: 격자점 정확·제한·거울상·빈 칸 NaN, API 왕복), self-test `sim_export:maps`·`sim_export:files` | implemented (정상상태 지도 — 시간에 따른 열 디레이팅 없음, FMU는 대수 모델) |
+| 화면·작업공간 | 네 페이지, 같은 입력 흐름 | `desktop/pages/drive_cycle.py`·`charging.py`·`budget.py`·`sim_export.py`, 메뉴 묶음 "구동 시스템", `TASK_PAGE` 라우팅(작업공간·입력 변경 표시), NumTable 선택 목록 열, 긴 근거 문구는 앞부분 표시(`widgets.tidy_inputs`) | `test_every_page_input_has_a_place_in_the_workspace`(20 페이지), `test_a_restored_workspace_gives_every_page_the_same_requests`, `test_a_long_text_set_by_the_program_shows_its_start`, self-test 캡처 60–63 | implemented |
+| 한계 | — | 역방향 사이클, 이상 스위치·균등 분담·선언 L0, 정적 토크 오차, 정상상태 지도 | `docs/LOGIC_REVIEW.html` §24.7 | remaining |
+
+## 22. 기능안전 사용성 (고장 입력 양식·캠페인 축·요구 검증 안내)
+
+요구(사용자): 고장 시뮬레이션의 고장 매개변수가 예시만 있고 그마저 잘리며 직접 글로 입력해야 함 — 불편; 기능안전 요구 검증은 쓸
+엄두가 나지 않음. 상세 설명은 `docs/LOGIC_REVIEW.html` §25, 회귀 시험은 `tests/test_fault_editor.py`·`tests/test_reference_page.py`에
+있습니다.
+
+| 항목 | 요구 | 구현 | 확인 | 상태 |
+|---|---|---|---|---|
+| 고장 입력 양식 | 글 입력·잘린 예시 대신 양식 | `desktop/fault_editor.py` `FaultEditor`(목록 + 고른 고장의 양식: `FAULT_KINDS`에서 생성, 단위·선택·설계 이름·지속시간·라벨, 모드별 대표값, 예전 글 읽기), `desktop/pages/fault_sim.py` | `test_fault_editor.py`(모든 프리셋 왕복, 종류 기본값, 양식 편집 → 줄의 말, 예전 작업공간 글, 페이지가 두 편집기 사용), self-test `fault:form`·캡처 `25q_fault_form` | implemented |
+| 캠페인 축 선택 | 경로 글 대신 고르기 | `axis_catalog`(운전점·고장 시각/매개변수·센서 공차·기기 배율·데드타임·반응 경로·안전 메커니즘), `AxisEditor`(범위 또는 목록, 빈 줄은 이름을 대며 거절), 캠페인 탭 분할창 | `test_fault_editor.py`(축 목록 경로·범위, 축 줄), self-test `fault:campaign` | implemented |
+| 요구 검증 안내 | 처음 쓰는 사람이 시작할 수 있게 | `desktop/pages/reference.py`(①②③ 단계, 안전 목표 하위 트리 `_subtree`, 범위 수·시간 추정 `_scope_text`, 개요 탭 `_fill_overview`, 항목 카드 `_item_card`, 링크, 값 입력 `enter_value`, 예시 값 채택 `_use_illustrative`, 목록 편집기 `_edit_list`, "OPEN 값만" 필터) | `test_a_first_time_user_is_guided`, self-test 캡처 `25p_reference_overview`·`25o_reference_matrix` | implemented |
+| 고장 시뮬레이션 범위 | 배터리 과전류·컨택터 개방 같은 상위 판단은 빼고, 다른 제어기 고장(BMS, CAN 미수신 등)은 가정하지 않되 릴레이 개방과 그 결합은 모사 | 예제 `fault_sim.scope`·BMS 모델 제거(`extensions/faultsim/example.py`), `engine.OUTSIDE_DRIVE_SCOPE`(VCU 토크 명령·포락선, CAN·E2E, 컨택터 융착, 충전 수용 상실 — 엔진은 문서 검증용으로 유지), 프리셋에서 토크 명령 고착 2개 제거·레졸버 상실 + 릴레이 개방 추가(`study.py`), 고장 양식의 종류 목록과 범위 안내(`desktop/fault_editor.py`), 참고 패키지의 GDE 저전압 변형 = HV 계통 분리·BMS 덮어쓰기 제거(`refexample.py`, 빌더로 다시 만든 `customer_inverter_reference.json`), 'HV 입력 전류' 표시 | `test_the_example_is_scoped_to_the_drive_system`, `test_frozen_position_sensor_makes_the_policy_choose_six_switch_off_at_high_speed_wrong_reaction`(단독: TSR-08·09·03 FAIL, BMS·컨택터 사건 없음, V_dc < 700 V; 릴레이 결합: 937.9 V, TSR-06 FAIL), `test_fault_editor.py`(범위 밖 종류), `test_the_packages_assume_no_battery_system_protection` | implemented |
+| 페이지 폭 | 결과가 창 밖으로 잘리지 않게 | `widgets.tidy_inputs`(콤보 최소 폭 캐시 비우기, 측정 전 크기 재계산, 자유 폭 옆 패널), `PlotPanel` 도구줄 최소 폭, 고장 페이지의 긴 라벨·버튼 배치, 설계 편집기 설명 줄바꿈, 고장 양식의 짧은 라벨(설명은 툴팁)·열 폭에 따라 줄어드는 콤보 | `tests/test_page_width.py`(1536 px 창, EN·KO 모든 페이지; 콤보 축소; 고장 양식이 입력 패널 안 — 가로 스크롤 없음) | implemented |
+| 한계 | — | 시간 추정은 내장 패키지 평균(시나리오당 약 5.5 s), 예시 값 채택은 USER 근거로 기록 | `docs/LOGIC_REVIEW.html` §25.4, 점검표 C25-2 | remaining |
+
+## 23. 비목표 (handoff §15, 추가 명세 비목표)
 
 generic motor CAD/FEA 복제, 정적 ASC로 demag/SOA 승인, 일반 IGBT 식으로 SiC 수명 보증, 드라이버 typical delay로 ASIL 승인,
 class 번호로 EMC 합격률, 평균 dq로 NVH/베어링/MHz 임피던스, 생산 anti-jerk 제어기 자동 납품, 보편 안정성 인증서,

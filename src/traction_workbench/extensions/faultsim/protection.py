@@ -32,17 +32,104 @@ from dataclasses import dataclass, field
 from ...errors import InputValidationError
 
 SW_KINDS = ("torque_monitor", "current_plausibility", "overcurrent_sw", "overvoltage_sw", "undervoltage_sw",
-            "position_los", "command_timeout")
-HW_KINDS = ("overcurrent_hw", "overvoltage_hw", "desat", "gate_uvlo", "watchdog")
+            "position_los", "command_timeout", "torque_window_signed", "torque_integral", "osc_power", "osc_energy",
+            "rx_monitor", "rotor_plausibility", "vdc_plausibility", "estimator_domain", "pwm_feedback", "overspeed_sw")
+HW_KINDS = ("overcurrent_hw", "overvoltage_hw", "desat", "gate_uvlo", "watchdog", "dc_overcurrent_hw", "gde_monitor")
+SYS_KINDS = ("system",)                         # a safe state requested by the system layer (not a detection)
 REACTIONS = ("safe_state", "asc_low", "asc_high", "six_switch_off", "torque_zero", "report_only")
 BRIDGE_REACTIONS = ("asc_low", "asc_high", "six_switch_off")
 RULE_KEYS = ("speed_above_rpm", "speed_below_rpm", "vdc_above_V", "vdc_below_V", "detected_by", "device",
              "uvlo", "mechanism")
+# the declared parameters of each mechanism kind as the data names them (unit in the key): (key, unit, default,
+# what it is) - the design editor builds its fields from this; other keys in the data are kept as they are
+KIND_PARAMS = {
+    "torque_monitor": (("abs_Nm", "N*m", 30.0, "absolute half-width of the torque window"),
+                       ("rel", "-", 0.15, "relative half-width (fraction of |T|)"),
+                       ("delay_ms", "ms", 1.0, "request delay the window allows (message period, latency)"),
+                       ("response_tau_ms", "ms", 2.0, "normal first-order torque response the window follows"),
+                       ("ramp_Nm_per_ms", "N*m/ms", 50.0, "healthy torque ramp the window follows (blank: none)"),
+                       ("debounce_ms", "ms", 3.0, "time outside the window before the trip"),
+                       ("request_input", ("monitor_message", "control_command", "vehicle"), "monitor_message",
+                        "which request the monitor compares with")),
+    "current_plausibility": (("threshold_A", "A", 60.0, "|i_a + i_b + i_c| threshold"),
+                             ("debounce_ms", "ms", 1.0, "time above the threshold before the trip")),
+    "overcurrent_sw": (("threshold_A", "A", 900.0, "measured phase-current threshold"),
+                       ("debounce_ms", "ms", 0.2, "time above the threshold before the trip")),
+    "overvoltage_sw": (("threshold_V", "V", 760.0, "measured DC-voltage threshold"),
+                       ("debounce_ms", "ms", 0.2, "time above the threshold before the trip")),
+    "undervoltage_sw": (("threshold_V", "V", 300.0, "measured DC-voltage threshold"),
+                        ("debounce_ms", "ms", 1.0, "time below the threshold before the trip")),
+    "overspeed_sw": (("threshold_rpm", "rpm", 14000.0, "measured speed magnitude that is an overspeed"),
+                     ("debounce_ms", "ms", 1.0, "time above the threshold before the trip")),
+    "position_los": (("debounce_ms", "ms", 0.0, "time the loss-of-signal flag must stay set"),),
+    "command_timeout": (("timeout_ms", "ms", 50.0, "maximum age of the torque command"),),
+    "overcurrent_hw": (("threshold_A", "A", 900.0, "comparator threshold on the analog current outputs"),
+                       ("filter_us", "us", 2.0, "glitch filter: the condition must persist this long")),
+    "overvoltage_hw": (("threshold_V", "V", 780.0, "comparator threshold on the analog DC-voltage output"),
+                       ("filter_us", "us", 5.0, "glitch filter: the condition must persist this long")),
+    "desat": (("threshold_A", "A", 1500.0, "device current at which the switch desaturates"),
+              ("turnoff_us", "us", 2.0, "soft turn-off time of the gate driver")),
+    "gate_uvlo": (("delay_us", "us", 2.0, "report delay of the under-voltage lockout"),),
+    "watchdog": (("timeout_ms", "ms", 5.0, "alive-signal timeout"),
+                 ("service_by", ("control", "safety_task"), "control",
+                  "what services it: the control task's alive signal or the safety task's checkpoints")),
+    "torque_window_signed": (("limit_source", ("factor", "envelope", "both"), "factor",
+                              "window: the request scaled by the limit factor and / or the received envelope"),
+                             ("limit_factor", "-", 1.2, "limit factor F (high = max(T F, T / F), low = min(...))"),
+                             ("abs_Nm", "N*m", 20.0, "absolute margin added to the factor window"),
+                             ("env_above_Nm", "N*m", 50.0, "received maximum above the request (no static max)"),
+                             ("env_below_Nm", "N*m", 50.0, "received minimum below the request (no static min)"),
+                             ("tol_Nm", "N*m", 0.0, "tolerance when no speed map is declared"),
+                             ("tol_rule", ("add", "widen"), "add",
+                              "add: T + tol > high / T - tol < low (as recovered); widen: T - tol > high / T + tol "
+                              "< low"),
+                             ("debounce_ms", "ms", 5.0, "time outside the window before the trip"),
+                             ("response_tau_ms", "ms", 0.0, "healthy first-order response the window also covers "
+                                                            "(0: the literal formula)"),
+                             ("delay_ms", "ms", 0.0, "request delay the window also covers (0: none)"),
+                             ("request_input", ("monitor_message", "control_command", "vehicle"), "monitor_message",
+                              "which request the window is built on")),
+    "torque_integral": (("limit_source", ("factor", "envelope", "both"), "factor", "window as the time monitor"),
+                        ("limit_factor", "-", 1.2, "limit factor F"),
+                        ("abs_Nm", "N*m", 20.0, "absolute margin added to the factor window"),
+                        ("tol_Nm", "N*m", 0.0, "tolerance when no speed map is declared"),
+                        ("tol_rule", ("add", "widen"), "add", "tolerance rule (as the time monitor)"),
+                        ("limit_Nms", "N*m*s", 0.5, "integral of the excess beyond the window that trips"),
+                        ("leak_per_s", "1/s", 0.0, "leak of the integral (0: none)"),
+                        ("request_input", ("monitor_message", "control_command", "vehicle"), "monitor_message",
+                         "which request the window is built on")),
+    "osc_power": (("f_hp_Hz", "Hz", 2.0, "high-pass corner of the estimate-minus-request oscillation"),
+                  ("tau_env_ms", "ms", 20.0, "envelope time constant of the oscillating power"),
+                  ("threshold_W", "W", 5000.0, "oscillating-power threshold"),
+                  ("debounce_ms", "ms", 50.0, "time above the threshold before the trip")),
+    "osc_energy": (("f_hp_Hz", "Hz", 2.0, "high-pass corner"),
+                   ("allow_W", "W", 1000.0, "oscillating power that accumulates nothing"),
+                   ("limit_J", "J", 200.0, "accumulated oscillation energy that trips"),
+                   ("leak_per_s", "1/s", 0.0, "leak of the accumulation (0: none)")),
+    "rx_monitor": (("max_age_ms", "ms", 30.0, "maximum age of the last ACCEPTED torque frame"),
+                   ("max_invalid", "-", 0, "consecutive invalid frames that trip (0: age only)"),
+                   ("debounce_ms", "ms", 0.0, "time in violation before the trip")),
+    "rotor_plausibility": (("threshold_deg", "deg", 20.0, "allowed angle difference of the two position channels"),
+                           ("debounce_ms", "ms", 1.0, "time beyond the threshold before the trip")),
+    "vdc_plausibility": (("threshold_V", "V", 30.0, "allowed difference of the two DC-voltage channels"),
+                         ("debounce_ms", "ms", 1.0, "time beyond the threshold before the trip")),
+    "estimator_domain": (("speed_max_rpm", "rpm", 11000.0, "qualified speed domain of the torque estimate"),
+                         ("current_max_A", "A", 1000.0, "qualified current domain of the torque estimate"),
+                         ("debounce_ms", "ms", 0.0, "time outside the domain before the trip")),
+    "pwm_feedback": (("duty_tol", "-", 0.05, "allowed difference of the observed and commanded duty"),
+                     ("debounce_ms", "ms", 0.2, "time in mismatch before the trip")),
+    "dc_overcurrent_hw": (("threshold_A", "A", 600.0, "comparator threshold on the analog DC-current output"),
+                          ("filter_us", "us", 2.0, "glitch filter: the condition must persist this long")),
+    "gde_monitor": (("delay_us", "us", 1.0, "logic delay from the lost enable to the hardware selection"),),
+}
 REQUIRED_PARAMS = {"current_plausibility": ("threshold_A",), "overcurrent_sw": ("threshold_A",),
                    "overvoltage_sw": ("threshold_V",), "undervoltage_sw": ("threshold_V",),
+                   "overspeed_sw": ("threshold_rpm",),
                    "command_timeout": ("timeout_s",), "overcurrent_hw": ("threshold_A",),
                    "overvoltage_hw": ("threshold_V",), "desat": ("threshold_A",), "watchdog": ("timeout_s",),
-                   "torque_monitor": ("abs_Nm",)}
+                   "torque_monitor": ("abs_Nm",), "torque_integral": ("limit_Nms",), "osc_power": ("threshold_W",),
+                   "osc_energy": ("limit_J",), "rotor_plausibility": ("threshold_deg",),
+                   "vdc_plausibility": ("threshold_V",), "dc_overcurrent_hw": ("threshold_A",)}
 
 
 @dataclass(frozen=True)
@@ -56,8 +143,8 @@ class PathSpec:
     def __post_init__(self):
         if not (self.delay_s >= 0.0 and math.isfinite(self.delay_s)):
             raise InputValidationError("a path delay must be finite and >= 0", field=f"paths.{self.path_id}.delay_s")
-        if self.fixed_reaction is not None and self.fixed_reaction not in REACTIONS:
-            raise InputValidationError(f"fixed reaction must be one of {REACTIONS}",
+        if self.fixed_reaction is not None and not str(self.fixed_reaction).strip():
+            raise InputValidationError("a fixed reaction needs a name (a reaction or a strategy id)",
                                        field=f"paths.{self.path_id}.fixed_reaction")
 
 
@@ -75,17 +162,19 @@ class MechanismSpec:
     text: str = ""
 
     def __post_init__(self):
-        if self.kind not in SW_KINDS + HW_KINDS:
+        if self.kind not in SW_KINDS + HW_KINDS + SYS_KINDS:
             raise InputValidationError(f"mechanism kind must be one of {SW_KINDS + HW_KINDS}",
                                        field=f"mechanisms.{self.mech_id}.kind")
-        if self.reaction not in REACTIONS:
-            raise InputValidationError(f"reaction must be one of {REACTIONS}", field=f"mechanisms.{self.mech_id}")
+        # a primitive reaction or a declared strategy id (checked against the strategies where the set is known)
+        if not str(self.reaction).strip():
+            raise InputValidationError(f"reaction must be one of {REACTIONS} or a strategy id",
+                                       field=f"mechanisms.{self.mech_id}")
         if self.kind in SW_KINDS and not (self.period_s and self.period_s > 0):
             raise InputValidationError("a software mechanism needs its task period",
                                        field=f"mechanisms.{self.mech_id}.period_s")
         for k in REQUIRED_PARAMS.get(self.kind, ()):
-            if k not in self.params:
-                raise InputValidationError(f"a {self.kind} mechanism needs {k}",
+            if self.params.get(k) is None:
+                raise InputValidationError(f"a mechanism of kind {self.kind} needs {k}",
                                            field=f"mechanisms.{self.mech_id}.params.{k}")
 
     @property
@@ -105,15 +194,18 @@ class SafeStatePolicy:
     basis: str = ""
     speed_hysteresis_rpm: float = 0.0           # a speed rule that decided keeps deciding within this band
     replace_unexecutable: bool = True           # an active ASC of a side the drivers report lost is replaced
+    strategies: tuple = ()                      # the declared strategy ids a rule may name
 
     def __post_init__(self):
+        known = tuple(r for r in REACTIONS if r != "safe_state") + tuple(self.strategies)
         for i, r in enumerate(self.rules):
             if "else" in r:
-                if r["else"] not in REACTIONS:
-                    raise InputValidationError(f"rule reaction must be one of {REACTIONS}", field=f"policy.rules[{i}]")
+                if r["else"] not in known:
+                    raise InputValidationError(f"rule reaction must be one of {known}", field=f"policy.rules[{i}]")
                 continue
-            if r.get("then") not in REACTIONS or r.get("then") == "safe_state":
-                raise InputValidationError("a rule needs 'then': a concrete reaction", field=f"policy.rules[{i}]")
+            if r.get("then") not in known:
+                raise InputValidationError(f"a rule needs 'then': a concrete reaction or a strategy {known}",
+                                           field=f"policy.rules[{i}]")
             unknown = set(r.get("if") or {}) - set(RULE_KEYS)
             if unknown:
                 raise InputValidationError(f"unknown rule condition(s) {sorted(unknown)}; known: {RULE_KEYS}",
@@ -178,6 +270,7 @@ class MechanismState:
     pending_since: float | None = None         # hardware glitch filter: violation seen since
     lag_ref: float | None = None               # torque monitor: lagged reference state
     ref_hist: list = field(default_factory=list)   # torque monitor: (t, reference) over the delay allowance
+    aux: dict = field(default_factory=dict)    # the extended monitors' own states (integrals, filters)
 
 
 class ResourceBook:
@@ -201,6 +294,68 @@ class ResourceBook:
 
 def window_width(T: float, params: dict) -> float:
     return max(float(params.get("abs_Nm", 0.0)), float(params.get("rel", 0.0)) * abs(T))
+
+
+def signed_window(T_req: float, P: dict, env_fault=None) -> tuple:
+    """(high, low, contradiction) of the customer-style signed window (pure): the received envelope (around the
+    request, or declared static) and / or the request scaled by the limit factor - high = max(T F, T / F) + abs,
+    low = min(T F, T / F) - abs, signed (never |T|) - bounded by independent limits.  ``env_fault``: (mode, value) of
+    a corrupted received envelope (a contradiction or a wrong maximum)."""
+    src = P.get("limit_source", "factor")
+    hi, lo = math.inf, -math.inf
+    if src in ("envelope", "both"):
+        e_hi, e_lo = P.get("env_max_Nm"), P.get("env_min_Nm")
+        e_hi = T_req + float(P.get("env_above_Nm", 50.0)) if e_hi is None else float(e_hi)
+        e_lo = T_req - float(P.get("env_below_Nm", 50.0)) if e_lo is None else float(e_lo)
+        if env_fault is not None:
+            md, val = env_fault
+            e_hi = (e_lo - abs(val or 1.0)) if md == "contradiction" else val
+        if e_hi <= e_lo:
+            return e_hi, e_lo, f"received envelope contradiction: maximum {e_hi:.1f} <= minimum {e_lo:.1f} N*m"
+        hi, lo = e_hi, e_lo
+    if src in ("factor", "both"):
+        F = float(P.get("limit_factor", 1.2))
+        a = float(P.get("abs_Nm", 0.0))
+        f_hi, f_lo = max(T_req * F, T_req / F) + a, min(T_req * F, T_req / F) - a
+        hi, lo = (f_hi, f_lo) if src == "factor" else (min(hi, f_hi), max(lo, f_lo))
+    if P.get("independent_max_Nm") is not None:
+        hi = min(hi, float(P["independent_max_Nm"]))
+    if P.get("independent_min_Nm") is not None:
+        lo = max(lo, float(P["independent_min_Nm"]))
+    return hi, lo, None
+
+
+def window_excess(T_est: float, tol: float, hi: float, lo: float, P: dict) -> tuple:
+    """(high-side excess, low-side excess) of the estimate against the window with the tolerance (pure; > 0 is a
+    violation).  ``tol_rule`` add (as recovered): T + tol > high, T - tol < low; widen: T - tol > high, T + tol < low.
+    ``sides``: both | high | low."""
+    add = P.get("tol_rule", "add") == "add"
+    x_hi = (T_est + tol - hi) if add else (T_est - tol - hi)
+    x_lo = (lo - (T_est - tol)) if add else (lo - (T_est + tol))
+    sides = P.get("sides", "both")
+    if sides == "high":
+        x_lo = -math.inf
+    elif sides == "low":
+        x_hi = -math.inf
+    return x_hi, x_lo
+
+
+def speed_tolerance(speed_rpm: float, P: dict) -> float:
+    """The speed-dependent tolerance: a map over the measured speed (linear, flat outside; |speed| unless
+    ``tol_speed_abs`` is false), or the fixed ``tol_Nm``."""
+    tm = P.get("tol_map")
+    if not tm:
+        return float(P.get("tol_Nm", 0.0))
+    sp = abs(speed_rpm) if P.get("tol_speed_abs", True) else speed_rpm
+    xs, ys = [float(a) for a, _ in tm], [float(b) for _, b in tm]
+    if sp <= xs[0]:
+        return ys[0]
+    if sp >= xs[-1]:
+        return ys[-1]
+    for k in range(1, len(xs)):
+        if sp <= xs[k]:
+            return ys[k - 1] + (ys[k] - ys[k - 1]) * (sp - xs[k - 1]) / (xs[k] - xs[k - 1])
+    return ys[-1]
 
 
 def torque_window(T_min: float, T_max: float, T_lag: float, params: dict) -> tuple[float, float]:
