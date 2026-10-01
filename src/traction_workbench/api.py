@@ -1191,6 +1191,57 @@ def efficiency_mission(body):
                       "loss_model": b.get("loss_model", "module"), "model_efficiency": MODEL_EFFICIENCY})
 
 
+# -- drive cycle (system view, item 8) ----------------------------------------------------------------------------
+
+def _dc_source_R_mohm(prj) -> float:
+    imp = prj.source_impedance() if prj is not None else None
+    return float(imp["R_mohm"]) if imp and imp.get("R_mohm") is not None else 0.0
+
+
+EXAMPLE_DRIVE_CYCLE = {
+    "cycle": {"builtin": "WLTC_3b"},
+    "vehicle": PROJECT.vehicle(), "reducer": EXAMPLE_REDUCER, "module": EXAMPLE_MODULE, "loss_model": "module",
+    "Vdc_V": float(PROJECT.data("dc_source")["Vdc_nominal_V"]), "source_R_mohm": _dc_source_R_mohm(PROJECT),
+    "oil_temp_C": 80.0, "winding_temp_C": None, "magnet_temp_C": None, "Tj_eval_C": None,
+    "requirements": {"consumption_Wh_per_km_max": 160.0, "range_km_min": 450.0, "recovery_ratio_min": None},
+    "note": "synthetic vehicle, reducer and module of the built-in project; standard traces from data/drive_cycles.json",
+}
+
+
+def drive_cycles() -> list:
+    """The built-in standard traces with their statistics and official reference values."""
+    from .extensions.drive_cycle import builtin_cycles, cycle_from_builtin
+    out = []
+    for key, c in builtin_cycles().items():
+        cyc = cycle_from_builtin(key)
+        out.append({"key": key, "title": c["title"], "reference": c["reference"], "unit": c["unit"],
+                    "phases": [p["name"] for p in c.get("phases") or []], "stats": cyc.stats(),
+                    "official": c.get("official") or {}})
+    return _jsonable(out)
+
+
+def drive_cycle(body):
+    """A vehicle on a speed trace: machine points, energy per component, consumption, regeneration, followability."""
+    from dataclasses import replace as _rep
+    from .extensions.drive_cycle import cycle_from_csv, cycle_from_dict, run_cycle, vehicle_from_dict
+    b = {**EXAMPLE_DRIVE_CYCLE, **(body or {})}
+    d = _eff_drive(b)
+    tj = _opt(b, "Tj_eval_C")
+    if tj is not None and d.inverter.module_loss is not None:
+        d = _rep(d, inverter=_rep(d.inverter, module_Tj_C=tj))
+    cyc = cycle_from_csv(b["cycle_csv"], str(b.get("cycle_name") or "imported trace")) if b.get("cycle_csv") \
+        else cycle_from_dict(b["cycle"])
+    veh = vehicle_from_dict(b["vehicle"])
+    red = _reducer(b.get("reducer"))
+    temps = {k: _opt(b, k) for k in ("winding_temp_C", "magnet_temp_C", "coolant_temp_C")}
+    res = run_cycle(d, cyc, veh, red, Vdc_V=_num(b, "Vdc_V"), limits=_limits(b), oil_temp_C=_num(b, "oil_temp_C"),
+                    source_R_ohm=float(b.get("source_R_mohm") or 0.0) * 1e-3, temps=temps,
+                    requirements=b.get("requirements") or {}, keep_trace=bool(b.get("keep_trace", True)))
+    res["loss_model"] = b.get("loss_model", "module")
+    res["inverter_Tj_eval_C"] = d.inverter.module_Tj_C
+    return _jsonable(res)
+
+
 def _cand(c: dict, fsw_kHz=None):
     from dataclasses import replace as _rep
     from .analysis.efficiency import ModuleCandidate
@@ -1759,7 +1810,7 @@ def concept_sizing(body):
 
 EXAMPLE_NAMES = ("TIMING", "THERMAL", "PROTECTION", "PROTECTION_OT", "MODULE", "MODULE_SIC", "RIPPLE", "ASC",
                  "MISSION", "OEW", "HEV", "EMI", "REDUCER", "EFFICIENCY", "PWM", "DRIVELINE", "MACHINE", "WINDING",
-                 "SIZING")
+                 "SIZING", "DRIVE_CYCLE")
 
 
 def _product(name: str, prj, ex: dict) -> dict:
@@ -1808,6 +1859,9 @@ def _product(name: str, prj, ex: dict) -> dict:
         ex["transition"].update(from_kHz=c["fsw_kHz"], deadtime_us=c["deadtime_us"])
     elif name == "DRIVELINE":
         ex["driveline"], ex["controller"] = prj.driveline_rom(), prj.torque_path()
+    elif name == "DRIVE_CYCLE":
+        ex.update(vehicle=prj.vehicle(), reducer=prj.reducer(), module=prj.module_spec(),
+                  Vdc_V=float(prj.data("dc_source")["Vdc_nominal_V"]), source_R_mohm=_dc_source_R_mohm(prj))
     return ex
 
 

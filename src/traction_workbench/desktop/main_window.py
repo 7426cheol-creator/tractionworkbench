@@ -17,6 +17,7 @@ from ..project import request_usage, short, stale_sections
 from . import theme
 from .pages.decision import DecisionPage
 from .pages.design import DesignPage
+from .pages.drive_cycle import DriveCyclePage
 from .pages.efficiency import EfficiencyPage
 from .pages.emi import EmiPage
 from .pages.explorer import ExplorerPage
@@ -57,6 +58,7 @@ PAGES = (
     ("oew_hev", lambda: tr("OEW·HEV", "OEW & HEV"), OewHevPage),
     ("emi", lambda: tr("EMI (전도성)", "EMI (conducted)"), EmiPage),
     ("machine", lambda: tr("모터 설계", "Machine design"), MachinePage),
+    ("drive_cycle", lambda: tr("주행 사이클", "Drive cycle"), DriveCyclePage),
     ("project", lambda: tr("프로젝트", "Project"), ProjectPage),
     ("model", lambda: tr("모델·데이터", "Model & data"), ModelPage),
     ("verification", lambda: tr("검증 (V&V)", "Verification"), VerificationPage),
@@ -72,6 +74,7 @@ NAV_GROUPS = (
     (lambda: tr("제어·EMC", "Control & EMC"), ("pwm_driveline", "emi")),
     (lambda: tr("안전·보호", "Safety & protection"), ("safety", "protection", "fault_sim", "reference")),
     (lambda: tr("시스템·설계", "Systems & design"), ("oew_hev", "machine")),
+    (lambda: tr("구동 시스템", "Drive system"), ("drive_cycle",)),
     (lambda: tr("검증", "Verification"), ("verification",)),
 )
 PAGE_INFO = {
@@ -126,6 +129,11 @@ PAGE_INFO = {
                           "machine scaling trade study, winding calculator, concept sizing"),
     "verification": lambda: tr("golden fixture 대비 acceptance와 참조 패키지 무결성",
                                "acceptance against golden fixtures and reference package integrity"),
+    "drive_cycle": lambda: tr("차량을 표준(WLTC·UDDS·HWFET·US06) 또는 가져온 속도 궤적 위에서: 모터 운전점, 부품별 에너지·손실, "
+                              "소비·주행거리, 회생과 마찰 제동, 구동이 전달하지 못한 구간",
+                              "the vehicle on a standard (WLTC, UDDS, HWFET, US06) or imported speed trace: machine "
+                              "points, energy and losses per component, consumption and range, regeneration and the "
+                              "friction brakes, intervals the drive does not deliver"),
 }
 
 

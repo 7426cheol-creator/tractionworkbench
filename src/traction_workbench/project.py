@@ -176,6 +176,11 @@ def _v_driveline(d: dict):
         P.reducer_from_dict(d["reducer"])
 
 
+def _v_vehicle(d: dict):
+    from .extensions.drive_cycle import validate_vehicle
+    validate_vehicle(d)
+
+
 def _v_safety(d: dict):
     for c in d.get("ftti_chains") or []:
         P.timing_chain_from_dict(c)
@@ -213,6 +218,8 @@ SECTIONS = {s.name: s for s in (
                               "timing, current sensing, torque path", False, _v_controller),
     SectionSpec("thermal", "cooling system and thermal networks of the thermal page", False, _v_thermal),
     SectionSpec("driveline", "gearbox: reducer efficiency and torsional ROM", False, _v_driveline),
+    SectionSpec("vehicle", "vehicle: mass, wheel radius, road load, axle, regeneration, auxiliaries, usable energy",
+                False, _v_vehicle),
     SectionSpec("safety", "FTTI chains and project safe-state rules", False, _v_safety),
     SectionSpec("fault_sim", "protection architecture for the causal fault simulation: sensors and resources, "
                              "mechanisms, reaction paths, safe-state policy, battery management, SG / FSR / TSR",
@@ -245,6 +252,8 @@ ANALYSES = {
     "fault_sim": ("causal fault simulation and safety verdicts",
                   ("drive", "dc_source", "dc_link", "controller", "driveline", "fault_sim")),
     "machine_design": ("motor design study", ("drive",)),
+    "drive_cycle": ("drive cycle: vehicle energy, losses per component, followability",
+                    ("drive", "dc_source", "module", "controller", "driveline", "vehicle")),
 }
 
 
@@ -503,6 +512,13 @@ class Project:
 
     def driveline_rom(self) -> dict:
         return self.data("driveline")["rom"]
+
+    def vehicle(self) -> dict:
+        """The vehicle section; the machine inertia comes from the driveline ROM unless the vehicle declares it."""
+        v = copy.deepcopy(self.data("vehicle"))
+        if v.get("J_motor_kgm2") is None and self.has("driveline") and self.data("driveline").get("rom"):
+            v["J_motor_kgm2"] = float(self.data("driveline")["rom"]["Jm_kgm2"])
+        return v
 
     def thermal_spec(self) -> dict:
         return self.data("thermal")
@@ -826,8 +842,35 @@ def _r_thermal_node(p):
     return rows
 
 
+def _r_wheel(p):
+    if not p.has("vehicle"):
+        return []
+    if not (p.has("driveline") and p.data("driveline").get("rom")):
+        return [Finding("PRJ-13", "vehicle wheel radius vs torsional model", NOT_CHECKED, ("vehicle", "driveline"),
+                        "no torsional model to compare with")]
+    a, b = float(p.data("vehicle")["wheel_radius_m"]), float(p.data("driveline")["rom"]["wheel_radius_m"])
+    ok = a == b
+    return [Finding("PRJ-13", "vehicle wheel radius vs torsional model", OK if ok else INCONSISTENT,
+                    ("vehicle", "driveline"),
+                    "one wheel: the drive cycle and the torsional model use the same radius" if ok else
+                    "the drive cycle and the torsional model describe the same wheel with two radii",
+                    {"vehicle_m": a, "rom_m": b})]
+
+
+def _r_motor_inertia(p):
+    if not p.has("vehicle") or p.data("vehicle").get("J_motor_kgm2") is None:
+        return []
+    if not (p.has("driveline") and p.data("driveline").get("rom")):
+        return []
+    a, b = float(p.data("vehicle")["J_motor_kgm2"]), float(p.data("driveline")["rom"]["Jm_kgm2"])
+    return [Finding("PRJ-14", "machine inertia: vehicle vs torsional model", OK if a == b else INCONSISTENT,
+                    ("vehicle", "driveline"), "one rotor inertia" if a == b else
+                    "the vehicle's equivalent mass and the torsional model use two rotor inertias",
+                    {"vehicle_kgm2": a, "rom_kgm2": b})]
+
+
 RULES = (_r_thermal_path, _r_deadtime, _r_gate, _r_current_range, _r_tj_eval, _r_test_voltage, _r_loop_design,
-         _r_torque_path, _r_loop_reference, _r_gear, _r_esr, _r_thermal_node)
+         _r_torque_path, _r_loop_reference, _r_gear, _r_esr, _r_thermal_node, _r_wheel, _r_motor_inertia)
 
 
 def check_project(p: Project) -> dict:
@@ -912,7 +955,7 @@ TASK_ANALYSIS = {
     "hev_planetary": "hev", "emi": "emi", "machine_trade": "machine_design", "winding": "machine_design",
     "concept_sizing": "machine_design", "fault_sim": "fault_sim", "fault_compare": "fault_sim",
     "fault_campaign": "fault_sim", "fault_rerun": "fault_sim", "fault_validation": "fault_sim",
-    "fault_review": "fault_sim", "fault_verification": "fault_sim",
+    "fault_review": "fault_sim", "fault_verification": "fault_sim", "drive_cycle": "drive_cycle",
 }
 
 _ABSENT = object()
@@ -1040,6 +1083,9 @@ COMPONENTS = {
                     lambda b: _at(b, "plant", "C_uF") if _at(b, "plant", "kind") == "capacitor_energy" else _ABSENT,
                     "data"),),
     "ftti": (("FTTI chain", lambda p: p.ftti_chain(0), lambda b: b, "data"),),
+    "drive_cycle": _CORE + (("module", lambda p: p.module_spec(), lambda b: _at(b, "module"), "module"),
+                            ("reducer", lambda p: p.reducer(), lambda b: _at(b, "reducer"), "reducer"),
+                            ("vehicle", lambda p: p.vehicle(), lambda b: _at(b, "vehicle"), "data")),
 }
 
 

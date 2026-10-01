@@ -139,6 +139,18 @@ DRIVELINE_ROM = {
              "validated torsional model",
 }
 
+VEHICLE = {
+    "mass_kg": 1900.0, "wheel_radius_m": 0.33, "J_wheels_kgm2": 4.0,
+    "road_load": {"form": "abc", "A_N": 140.0, "B_N_per_mps": 0.72, "C_N_per_mps2": 0.36, "includes_edrive_drag": False,
+                  "basis": "synthetic road load of a 1.9 t passenger car (tyres + aerodynamics; the drive's own drag is "
+                           "modelled by the reducer and machine) - replace with coast-down / target values"},
+    "axle": {"ratio": 1.0, "eta_forward": 1.0, "eta_reverse": 1.0},
+    "regen": {"share": 1.0, "min_speed_kmh": 5.0},
+    "aux_hv_W": 300.0, "usable_energy_kWh": 75.0,
+    "basis": "synthetic vehicle for the drive-cycle view (test mass incl. driver and payload; the machine inertia "
+             "comes from the driveline ROM)",
+}
+
 # -- fault simulation: protection architecture and safety requirements (synthetic) --------------------------------
 from .extensions.faultsim.example import FAULT_SIM  # noqa: E402  (engine-side data, used by the project below)
 
@@ -221,6 +233,11 @@ SYNTHETIC_PROJECT = {
             "provenance": {"origin": "synthetic", "source": "synthetic vehicle / reducer example", "revision": "1",
                            "qualified": False, "evidence": ""},
             "data": {"rom": DRIVELINE_ROM, "reducer": REDUCER}},
+        "vehicle": {
+            "provenance": {"origin": "synthetic", "source": "synthetic vehicle (mass, road load, regeneration, "
+                                                          "auxiliaries)", "revision": "1", "qualified": False,
+                           "evidence": ""},
+            "data": VEHICLE},
         "safety": {
             "provenance": {"origin": "synthetic", "source": "example FTTI chain and project rule", "revision": "1",
                            "qualified": False, "evidence": ""},
