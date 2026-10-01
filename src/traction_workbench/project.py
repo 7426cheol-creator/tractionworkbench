@@ -273,6 +273,7 @@ ANALYSES = {
                  ("drive", "dc_source", "module", "controller", "dc_link", "charging")),
     "budget": ("system budgets: torque accuracy, FTTI, cycle losses", ("drive", "dc_source", "torque_errors", "safety",
                                                                        "fault_sim")),
+    "sim_export": ("maps and FMU for vehicle simulators", ("drive", "dc_source", "module", "controller", "driveline")),
 }
 
 
@@ -1010,7 +1011,7 @@ TASK_ANALYSIS = {
     "fault_campaign": "fault_sim", "fault_rerun": "fault_sim", "fault_validation": "fault_sim",
     "fault_review": "fault_sim", "fault_verification": "fault_sim", "drive_cycle": "drive_cycle",
     "charging_point": "charging", "charging_capability": "charging", "budget_torque": "budget",
-    "budget_ftti": "budget", "budget_cycle": "budget", "budget_custom": "budget",
+    "budget_ftti": "budget", "budget_cycle": "budget", "budget_custom": "budget", "sim_maps": "sim_export",
 }
 
 _ABSENT = object()
@@ -1144,6 +1145,9 @@ COMPONENTS = {
     "charging": _CORE + (("module", lambda p: p.module_spec(), lambda b: _without(_at(b, "module"), "vdc_scaling"),
                           "module"),
                          ("charging path", lambda p: p.data("charging"), lambda b: _at(b, "charging"), "data")),
+    "sim_export": _CORE + (("module", lambda p: p.module_spec(), lambda b: _without(_at(b, "module"), "vdc_scaling"),
+                            "module"),
+                           ("reducer", lambda p: p.reducer(), lambda b: _at(b, "reducer"), "reducer")),
     "budget": _CORE + (("torque errors", lambda p: p.data("torque_errors"), lambda b: _at(b, "torque", "errors"),
                         "data"),
                        ("fault simulation", lambda p: p.data("fault_sim"), lambda b: _at(b, "fault_sim"), "data"),

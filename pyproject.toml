@@ -16,7 +16,7 @@ dependencies = [
 [project.optional-dependencies]
 gui = ["PySide6-Essentials>=6.6", "matplotlib>=3.8"]
 report = ["matplotlib>=3.8"]
-test = ["pytest>=7"]
+test = ["pytest>=7", "fmpy>=0.3.20"]
 build = ["pyinstaller>=6.3"]
 
 [project.scripts]
@@ -30,7 +30,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 traction_workbench = ["desktop/resources/*", "mathworks/matlab/+twb/*.m", "extensions/faultsim/packages/*.json",
-                       "data/*.json"]
+                       "data/*.json", "data/fmi2/*.h"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

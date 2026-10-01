@@ -537,3 +537,71 @@ def fig_budget_bars(fig, b: dict, title: str | None = None):
                   + ("" if lim is None else tr(f", 한계 (│) {lim:.4g} {unit}", f", limit (│) {lim:.4g} {unit}"))
                   + ("" if b.get("margin") is None else tr(f", 여유 {b['margin']:.3g} {unit}",
                                                            f", margin {b['margin']:.3g} {unit}")), fontsize=9)
+
+
+# ---------------------------------------------------------------------------------------------- simulator export
+
+SIM_Q = {"P_dc_W": lambda: tr("DC 전력", "DC power"), "loss_total_W": lambda: tr("총 손실 (평가된 항목)", "total loss (evaluated)"),
+         "loss_inverter_W": lambda: tr("인버터 손실", "inverter loss"), "loss_motor_W": lambda: tr("모터 손실", "motor loss"),
+         "loss_reducer_W": lambda: tr("감속기 손실", "reducer loss"), "P_out_W": lambda: tr("출력 전력", "output power"),
+         "P_shaft_W": lambda: tr("축 전력", "shaft power"), "P_ac_W": lambda: tr("모터 단자 전력", "motor terminal power"),
+         "id_A": lambda: "i_d", "iq_A": lambda: "i_q"}
+
+
+def fig_sim_map(fig, maps: dict, title: str | None = None, quantity: str = "P_dc_W", vdc_index: int = 0):
+    """One table of the export at one voltage: cells as computed (blank = no value), the full-load curves on top."""
+    _reset(fig, title)
+    t_ = S.theme()
+    ax = fig.subplots()
+    sp = np.asarray(maps["speeds_rpm"], float)
+    tq = np.asarray(maps["torques_Nm"], float)
+    a = min(max(0, int(vdc_index)), len(maps["Vdc_V"]) - 1)
+    tab = np.array([[np.nan if v is None else v for v in row] for row in maps["tables"][quantity][a]], dtype=float)
+    unit = "A" if quantity.endswith("_A") else "kW"
+    z = tab if unit == "A" else tab / 1e3
+    signed = quantity in ("P_dc_W", "P_ac_W", "P_shaft_W", "P_out_W", "id_A", "iq_A")
+    if np.isfinite(z).any():
+        if signed:
+            lim = float(np.nanmax(np.abs(z))) or 1.0
+            mesh = ax.pcolormesh(sp, tq, z, shading="nearest", cmap="RdBu_r", vmin=-lim, vmax=lim)
+        else:
+            mesh = ax.pcolormesh(sp, tq, z, shading="nearest", cmap="viridis")
+        cb = fig.colorbar(mesh, ax=ax)
+        cb.set_label(f"{SIM_Q.get(quantity, lambda: quantity)()} [{unit}]")
+    st = np.asarray(maps["status"][a])
+    unk = np.argwhere(st == 1)
+    if unk.size:
+        ax.scatter(sp[unk[:, 1]], tq[unk[:, 0]], marker="x", s=14, color=t_["muted"], lw=0.8, label="UNKNOWN")
+    tmax = np.array([np.nan if v is None else v for v in maps["T_max_Nm"][a]], float)
+    tmin = np.array([np.nan if v is None else v for v in maps["T_min_Nm"][a]], float)
+    ax.plot(sp, tmax, color=t_["fg"], lw=1.6, label=tr("최대 토크 (구동)", "full load (motoring)"))
+    ax.plot(sp, tmin, color=t_["fg"], lw=1.6, ls="--", label=tr("최대 토크 (회생)", "full load (generating)"))
+    ax.axhline(0, color=t_["grid"], lw=0.8)
+    ax.set_xlabel(tr("속도 [rpm]", "speed [rpm]"))
+    ax.set_ylabel(tr("축 토크 [N·m]", "shaft torque [N·m]"))
+    ax.legend(fontsize=7, loc="upper right")
+    ax.set_title(tr(f"{SIM_Q.get(quantity, lambda: quantity)()} — Vdc {maps['Vdc_V'][a]:g} V (빈 칸 = 값 없음)",
+                    f"{SIM_Q.get(quantity, lambda: quantity)()} — Vdc {maps['Vdc_V'][a]:g} V (blank = no value)"),
+                 fontsize=9)
+
+
+def fig_sim_fullload(fig, maps: dict, title: str | None = None):
+    """The full-load curves (motoring above, generating below) at every exported voltage."""
+    _reset(fig, title)
+    t_ = S.theme()
+    ax = fig.subplots()
+    sp = np.asarray(maps["speeds_rpm"], float)
+    n = len(maps["Vdc_V"])
+    for a, V in enumerate(maps["Vdc_V"]):
+        col = _CHG_CMAP(0.15 + 0.7 * (a / max(1, n - 1)))
+        tmax = np.array([np.nan if v is None else v for v in maps["T_max_Nm"][a]], float)
+        tmin = np.array([np.nan if v is None else v for v in maps["T_min_Nm"][a]], float)
+        ax.plot(sp, tmax, color=col, lw=1.6, marker="o", ms=3, label=f"{V:g} V")
+        ax.plot(sp, tmin, color=col, lw=1.6, ls="--", marker="o", ms=3)
+    ax.axhline(0, color=t_["grid"], lw=0.8)
+    ax.set_xlabel(tr("속도 [rpm]", "speed [rpm]"))
+    ax.set_ylabel(tr("최대 축 토크 [N·m]", "full-load shaft torque [N·m]"))
+    ax.legend(fontsize=7, loc="upper right", title="Vdc", title_fontsize=7)
+    ax.set_title(tr("최대 토크 곡선 — 실선 구동, 점선 회생 (FMU는 요청을 이 곡선으로 제한)",
+                    "full-load curves — solid motoring, dashed generating (the FMU clamps the request to them)"),
+                 fontsize=9)

@@ -355,3 +355,51 @@ def budget_insight(b: dict) -> Insight:
         s.add(tr(f"타이밍 해석의 최악 경로 {num(b['timing_worst_ms'], 4)} ms = 이 버짓의 선형 합",
                  f"the timing analysis' worst path {num(b['timing_worst_ms'], 4)} ms = this budget's linear sum"), "info")
     return ins.nonempty()
+
+
+def sim_insight(maps: dict) -> Insight:
+    """What the simulator export holds: cells by status, the envelope, what is not in the losses, what each file is."""
+    c = maps.get("counts") or {}
+    V = maps.get("Vdc_V") or []
+    tmax = [v for row in maps.get("T_max_Nm") or [] for v in row if v is not None]
+    tmin = [v for row in maps.get("T_min_Nm") or [] for v in row if v is not None]
+    n_cells = sum(c.values())
+    feas = c.get("FEASIBLE", 0)
+    head = tr(f"지도 {n_cells}칸: 값 {feas}칸 · 최대 토크 밖 {c.get('BEYOND', 0)} · UNKNOWN {c.get('UNKNOWN', 0)} · "
+              f"Vdc {', '.join(f'{x:g}' for x in V)} V",
+              f"{n_cells} cells: {feas} with a value · {c.get('BEYOND', 0)} beyond the full load · UNKNOWN "
+              f"{c.get('UNKNOWN', 0)} · Vdc {', '.join(f'{x:g}' for x in V)} V")
+    ins = Insight(headline=head, verdict="UNKNOWN" if c.get("UNKNOWN") and not feas else None)
+    ins.metrics += [(tr("최대 구동 토크", "peak motoring torque"), q(max(tmax) if tmax else None, "N·m", 4), "info"),
+                    (tr("최대 회생 토크", "peak generating torque"), q(min(tmin) if tmin else None, "N·m", 4), "info"),
+                    (tr("속도 범위", "speed range"), f"{maps['speeds_rpm'][0]:g}–{maps['speeds_rpm'][-1]:g} rpm", "info")]
+    m = maps.get("meta") or {}
+    if c.get("UNKNOWN"):
+        s = ins.section(tr("UNKNOWN 칸", "UNKNOWN cells"))
+        s.add(tr("이 칸은 모델이 판정하지 못했습니다(예: 스위칭 시험 전압 밖인데 전압 스케일 법칙이 선언되지 않음). 값으로 채우지 "
+                 "않았습니다 — 다른 전압을 내보내려면 모듈의 스케일 법칙을 선언하세요.",
+                 "the model could not decide these cells (e.g. away from the switching test voltage without a declared "
+                 "voltage-scaling law); they are not filled - to export other voltages, declare the module's "
+                 "scaling law."), "warn")
+    s = ins.section(tr("손실에 들어 있지 않은 것 (모든 칸 또는 일부 칸)", "what the losses do not contain (in every or in some "
+                                                                       "cells)"))
+    for it in m.get("not_evaluated") or []:
+        s.add(it, "warn")
+    s.add(tr(f"스위칭 에너지의 전압 의존: {(m.get('source') or {}).get('switching_energy_vs_Vdc', '—')}",
+             f"switching energy vs voltage: {(m.get('source') or {}).get('switching_energy_vs_Vdc', '—')}"), "info")
+    s = ins.section(tr("내보내는 파일", "the files"))
+    s.add(tr("CSV (긴 표): 칸마다 한 행 — 모든 양과 상태. CSV 격자: 양·전압마다 표 하나(속도 가로, 토크 세로) + 최대 토크 곡선.",
+             "CSV (long): one row per cell - every quantity and the status. CSV grids: one table per quantity and "
+             "voltage (speeds across, torques down) + the full-load curves."), "info")
+    s.add(tr("MATLAB .mat: twb_maps 구조체 — 중단점과 [토크 × 속도 × Vdc] 표(NaN = 값 없음), 최대 토크 곡선, 메타데이터(JSON). "
+             "Simulink 2-D/n-D Lookup Table에 바로 연결.",
+             "MATLAB .mat: struct twb_maps - breakpoints and [torque x speed x Vdc] tables (NaN = no value), the "
+             "full-load curves and the metadata (JSON); for Simulink 2-D / n-D lookup tables."), "info")
+    s.add(tr("FMU (FMI 2.0, ME + CS): 입력 속도·토크 요청·Vdc → 요청을 최대 토크 곡선으로 제한한 뒤 표를 보간. 경계 옆 보간에 "
+             "필요한 바깥 칸만 가장 가까운 값으로 채웠고(설명에 명시), 역회전은 거울상. C 컴파일러가 있으면 바이너리 포함, 없으면 "
+             "소스 FMU.",
+             "FMU (FMI 2.0, ME + CS): inputs speed, torque request, Vdc - the request is clamped to the full-load curve, "
+             "then the tables are interpolated. Only the outside cells an interpolation next to the boundary needs are "
+             "filled with the nearest value (stated in its description); reverse rotation is the mirror. With a C "
+             "compiler the binary is included, otherwise a source FMU."), "info")
+    return ins.nonempty()

@@ -1381,6 +1381,57 @@ def budget_custom(body):
                                      str(c.get("combination", "mixed")), c.get("allocation")))
 
 
+# -- exports for vehicle simulators (system view, item 12) --------------------------------------------------------
+
+EXAMPLE_SIM_EXPORT = {
+    "Vdc_V": [600.0], "declare_vdc_scaling": False,
+    "speed_max_rpm": 16000.0, "speed_step_rpm": 1000.0, "torque_step_Nm": 25.0, "torques_Nm": None,
+    "include_reducer": True, "oil_temp_C": 80.0, "winding_temp_C": None, "magnet_temp_C": None,
+    "loss_model": "module", "module": EXAMPLE_MODULE, "reducer": EXAMPLE_REDUCER, "model_name": "TwbDriveMaps",
+    "source": {},
+}
+
+
+def sim_maps(body):
+    """The drive's maps for a vehicle simulator: DC power, losses per component, output power and currents on a speed x
+    torque grid at the given DC voltages, with the full-load curves (``extensions.sim_export``)."""
+    from .extensions.sim_export import compute_maps, maps_jsonable
+    b = {**EXAMPLE_SIM_EXPORT, **(body or {})}
+    mod = dict(b.get("module") or EXAMPLE_MODULE)
+    if b.get("declare_vdc_scaling"):
+        mod["vdc_scaling"] = _SYNTH_VDC_SCALING           # the labelled synthetic law (as on the charging page)
+    d = _eff_drive({**b, "module": mod})
+    red = _reducer(b.get("reducer")) if b.get("include_reducer") else None
+    smax, sstep = float(b["speed_max_rpm"]), float(b["speed_step_rpm"])
+    if not (smax > 0 and sstep > 0):
+        raise InputValidationError("speed_max_rpm and speed_step_rpm must be > 0", field="speed_step_rpm")
+    speeds = [float(x) for x in np.round(np.arange(0.0, smax + 0.5 * sstep, sstep), 6)]
+    temps = {k: _opt(b, k) for k in ("winding_temp_C", "magnet_temp_C")}
+    src = {**(b.get("source") or {}), "module": mod.get("name"),
+           "switching_energy_vs_Vdc": (mod.get("vdc_scaling") or {}).get("basis") or "test voltage only",
+           "reducer": None if red is None else "declared reducer model"}
+    m = compute_maps(d, Vdc_list=[float(x) for x in b["Vdc_V"]], limits=_limits(b), speeds_rpm=speeds,
+                     torques_Nm=b.get("torques_Nm"), torque_step_Nm=float(b.get("torque_step_Nm") or 25.0),
+                     reducer=red, oil_temp_C=_opt(b, "oil_temp_C") if red is not None else None, temps=temps,
+                     source=src)
+    return maps_jsonable(m)
+
+
+def sim_write(maps: dict, kind: str, path, model_name: str = "TwbDriveMaps") -> dict:
+    """Write computed maps (``sim_maps`` result) as ``csv`` (long), ``grids`` (a folder), ``mat`` or ``fmu``."""
+    from .extensions import sim_export as se
+    m = se.maps_from_json(maps)
+    if kind == "csv":
+        return {"files": [str(se.write_csv_long(m, path))]}
+    if kind == "grids":
+        return {"files": [str(x) for x in se.write_csv_grids(m, path)]}
+    if kind == "mat":
+        return {"files": [str(se.write_mat(m, path))]}
+    if kind == "fmu":
+        return se.write_fmu(m, path, model_name)
+    raise InputValidationError(f"unknown export kind {kind!r}", field="kind")
+
+
 def _cand(c: dict, fsw_kHz=None):
     from dataclasses import replace as _rep
     from .analysis.efficiency import ModuleCandidate
@@ -1949,7 +2000,7 @@ def concept_sizing(body):
 
 EXAMPLE_NAMES = ("TIMING", "THERMAL", "PROTECTION", "PROTECTION_OT", "MODULE", "MODULE_SIC", "RIPPLE", "ASC",
                  "MISSION", "OEW", "HEV", "EMI", "REDUCER", "EFFICIENCY", "PWM", "DRIVELINE", "MACHINE", "WINDING",
-                 "SIZING", "DRIVE_CYCLE", "CHARGING", "BUDGET")
+                 "SIZING", "DRIVE_CYCLE", "CHARGING", "BUDGET", "SIM_EXPORT")
 
 
 def _product(name: str, prj, ex: dict) -> dict:
@@ -1998,6 +2049,9 @@ def _product(name: str, prj, ex: dict) -> dict:
         ex["transition"].update(from_kHz=c["fsw_kHz"], deadtime_us=c["deadtime_us"])
     elif name == "DRIVELINE":
         ex["driveline"], ex["controller"] = prj.driveline_rom(), prj.torque_path()
+    elif name == "SIM_EXPORT":
+        ex["module"], ex["reducer"] = prj.module_spec(), prj.reducer()
+        ex["Vdc_V"] = [float(prj.module_spec().get("v_test_V") or 600.0)]
     elif name == "BUDGET":
         ex["torque"]["errors"] = prj.data("torque_errors")
         ex["fault_sim"] = prj.data("fault_sim") if prj.has("fault_sim") else None

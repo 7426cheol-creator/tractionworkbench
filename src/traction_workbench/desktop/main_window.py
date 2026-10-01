@@ -19,6 +19,7 @@ from .pages.charging import ChargingPage
 from .pages.decision import DecisionPage
 from .pages.design import DesignPage
 from .pages.budget import BudgetPage
+from .pages.sim_export import SimExportPage
 from .pages.drive_cycle import DriveCyclePage
 from .pages.efficiency import EfficiencyPage
 from .pages.emi import EmiPage
@@ -63,6 +64,7 @@ PAGES = (
     ("drive_cycle", lambda: tr("주행 사이클", "Drive cycle"), DriveCyclePage),
     ("charging", lambda: tr("통합 충전", "Integrated charging"), ChargingPage),
     ("budget", lambda: tr("시스템 버짓", "System budgets"), BudgetPage),
+    ("sim_export", lambda: tr("시뮬레이터 내보내기", "Simulator export"), SimExportPage),
     ("project", lambda: tr("프로젝트", "Project"), ProjectPage),
     ("model", lambda: tr("모델·데이터", "Model & data"), ModelPage),
     ("verification", lambda: tr("검증 (V&V)", "Verification"), VerificationPage),
@@ -78,7 +80,7 @@ NAV_GROUPS = (
     (lambda: tr("제어·EMC", "Control & EMC"), ("pwm_driveline", "emi")),
     (lambda: tr("안전·보호", "Safety & protection"), ("safety", "protection", "fault_sim", "reference")),
     (lambda: tr("시스템·설계", "Systems & design"), ("oew_hev", "machine")),
-    (lambda: tr("구동 시스템", "Drive system"), ("drive_cycle", "charging", "budget")),
+    (lambda: tr("구동 시스템", "Drive system"), ("drive_cycle", "charging", "budget", "sim_export")),
     (lambda: tr("검증", "Verification"), ("verification",)),
 )
 PAGE_INFO = {
@@ -149,6 +151,10 @@ PAGE_INFO = {
                          "point (sensors, resolver, magnet temperature and model tolerance computed with the machine "
                          "model) with the safety window and monitor threshold, the FTTI chain, drive-cycle losses, "
                          "a budget you declare"),
+    "sim_export": lambda: tr("차량 시뮬레이터용 구동계 지도: 속도·토크 격자의 DC 전력·부품별 손실·출력 전력과 최대 토크 곡선을 CSV, "
+                             "MATLAB .mat, FMI 2.0 FMU로",
+                             "drive maps for a vehicle simulator: DC power, losses per component, output power and the "
+                             "full-load curves on a speed x torque grid as CSV, MATLAB .mat and an FMI 2.0 FMU"),
 }
 
 
@@ -170,7 +176,7 @@ TASK_PAGE = {"decision": "decision", "decision-env": "decision", "requirement_se
              "fault_campaign": "fault_sim", "fault_rerun": "fault_sim", "fault_validation": "fault_sim",
              "fault_review": "fault_sim", "fault_verification": "fault_sim", "drive_cycle": "drive_cycle",
              "charging_point": "charging", "charging_capability": "charging", "budget_torque": "budget",
-             "budget_ftti": "budget", "budget_cycle": "budget", "budget_custom": "budget"}
+             "budget_ftti": "budget", "budget_cycle": "budget", "budget_custom": "budget", "sim_maps": "sim_export"}
 # what a task is called on screen (a running task uses the label it was started with)
 TASK_LABELS = {
     "decision": lambda: tr("요구 판정", "decision"), "decision-env": lambda: tr("T–n 곡선", "T–n envelope"),
@@ -209,6 +215,7 @@ TASK_LABELS = {
     "budget_torque": lambda: tr("토크 정확도 버짓", "torque-accuracy budget"),
     "budget_ftti": lambda: tr("FTTI 버짓", "FTTI budget"), "budget_cycle": lambda: tr("사이클 손실 버짓", "cycle-loss budget"),
     "budget_custom": lambda: tr("선언 버짓", "declared budget"),
+    "sim_maps": lambda: tr("구동계 지도", "drive maps"),
 }
 # tasks whose argument is not a request body: they run on the state's drive and limits
 STATE_TASKS = ("decision-env", "requirement_set", "explorer", "trajectory", "performance", "design-sweep",
