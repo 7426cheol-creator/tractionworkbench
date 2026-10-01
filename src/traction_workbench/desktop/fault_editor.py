@@ -401,6 +401,9 @@ class FaultEditor(QWidget):
 
     def _mark(self, w: QWidget) -> QWidget:
         w.setProperty("twb_not_input", True)          # a view of the selected row: the list holds the data
+        if isinstance(w, QComboBox):                  # built after the page was tidied: it shrinks with the column
+            w.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)   # too (a long kind or sensor
+            w.setMinimumContentsLength(8)                                              # name widened the panel)
         return w
 
     def _selected(self) -> None:
@@ -436,14 +439,17 @@ class FaultEditor(QWidget):
         t.setSuffix(" ms")
         t.setValue(float(row["t_ms"]))
         t.valueChanged.connect(lambda v, i=i: self._set(i, None, v, time=True))
-        self.form.addRow(tr("시각 (시뮬레이션 시작 기준)", "time (from the start of the run)"), t)
+        t.setToolTip(tr("고장이 생기는 시각 (시뮬레이션 시작 기준)", "when the fault occurs (from the start of the run)"))
+        self.form.addRow(tr("시각", "time"), t)       # short labels: the form fits the input panel (EN 534 > 488 px)
         for name, typ, default in FAULT_KINDS[row["kind"]][1]:
             self.form.addRow(self._param_label(row, name), self._param_widget(i, row, name, typ, default))
         if row["kind"] not in PERMANENT + OWN_DURATION:
             box = QWidget()
             hl = QHBoxLayout(box)
             hl.setContentsMargins(0, 0, 0, 0)
-            chk = self._mark(QCheckBox(tr("간헐 고장 — 지속", "intermittent — lasts")))
+            chk = self._mark(QCheckBox(tr("간헐", "intermittent")))
+            chk.setToolTip(tr("켜면 고장이 옆 시간 동안만 있다가 사라짐 (간헐 고장)",
+                              "on: the fault lasts the time next to it, then clears (an intermittent fault)"))
             dur = self._mark(QDoubleSpinBox())
             dur.setRange(0.001, 1e7)
             dur.setDecimals(3)

@@ -242,6 +242,7 @@ def run_self_test(app, out_dir) -> int:
         shot(win, "25q_fault_form")
         if sc_in is not None:
             sc_in.verticalScrollBar().setValue(0)
+            sc_in.horizontalScrollBar().setValue(0)
         fs.preset.setCurrentIndex(fs.preset.findData("res_lost"))
         fs._load_preset()
         fs.run()
@@ -261,11 +262,14 @@ def run_self_test(app, out_dir) -> int:
             if tab is fs.tab_req:
                 fs.t_req.selectRow(next(r for r in range(fs.t_req.rowCount()) if fs.t_req.item(r, 0).text() == "TSR-06"))
             shot(win, name)
-        # the transient zoom: every extreme read from the simulated samples; the data cursor follows a curve
+        # the transient zoom: every extreme read from the simulated samples (the 6SO rectification brakes beyond the
+        # 450 N*m of TSR-08; the battery holds the DC link); the data cursor follows a curve
         rows_t = {fs.t_trans.item(r, 0).text(): r for r in range(fs.t_trans.rowCount())}
+        r_t = next((r for k, r in rows_t.items() if k.startswith(("축 토크", "shaft torque"))), None)
         r_v = rows_t.get("V_dc [V]")
-        check("fault:transient", fs.p_zoom._draw is not None and fs.t_trans.rowCount() == 5 and r_v is not None
-              and float(fs.t_trans.item(r_v, 2).text()) > 850.0, f"{fs.t_trans.rowCount()} rows")
+        check("fault:transient", fs.p_zoom._draw is not None and fs.t_trans.rowCount() == 5 and r_t is not None
+              and r_v is not None and float(fs.t_trans.item(r_t, 2).text()) < -450.0
+              and float(fs.t_trans.item(r_v, 2).text()) < 850.0, f"{fs.t_trans.rowCount()} rows")
         from matplotlib.backend_bases import MouseEvent
         fs.tabs.setCurrentWidget(fs.tab_zoom)
         app.processEvents()

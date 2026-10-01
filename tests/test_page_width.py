@@ -64,3 +64,38 @@ def test_a_combo_box_shrinks_after_the_policy_change(app):
     tidy_inputs(root)
     assert cb.minimumSizeHint().width() < wide / 3
     assert cb.toolTip() == cb.currentText()
+
+
+@pytest.mark.parametrize("lang", ["en", "ko"])
+def test_the_fault_form_fits_its_input_panel(app, lang):
+    """The selected fault's form is built after the page was tidied: its widest row (a long label, a combo box with
+    the longest kind or sensor name) used to push the input panel into a horizontal scroll that hid the left edge
+    (EN 534 px in a 488 px panel)."""
+    from PySide6.QtWidgets import QScrollArea
+
+    from traction_workbench.desktop.main_window import MainWindow
+    before = language()
+    set_language(lang)
+    try:
+        w = MainWindow()
+        w.resize(1536, 1000)
+        w.show()
+        w.show_page("fault_sim")
+        app.processEvents()
+        fs = w.pages["fault_sim"]
+        sc = fs.faults.parentWidget()
+        while not isinstance(sc, QScrollArea):
+            sc = sc.parentWidget()
+        over = {}
+        for key in ("cs_offset", "res_lost_relay", "hw_vdc_rolling", "sw_short"):
+            fs.preset.setCurrentIndex(fs.preset.findData(key))
+            fs._load_preset()
+            for row in range(fs.faults.table.rowCount()):
+                fs.faults.table.selectRow(row)
+                app.processEvents()
+                if sc.horizontalScrollBar().maximum() > 0:
+                    over[(key, row)] = (sc.widget().minimumSizeHint().width(), sc.viewport().width())
+        w.close()
+    finally:
+        set_language(before)
+    assert not over, over
