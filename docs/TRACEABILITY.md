@@ -1,4 +1,4 @@
-# 요구 추적표 (Traceability) — 0.5.0
+# 요구 추적표 (Traceability) — 0.6.0
 
 이 문서는 독립 엔지니어링 리뷰(handoff), 감사 증거 패키지(dc7b338)의 재현 스크립트, 그리고 세 추가 명세
 (OEW/HEV, 파워모듈별 손실·단계별 효율, 가변 PWM·anti-jerk)의 각 항목이 **어디에 구현되었고 무엇으로 확인했는지**를
@@ -450,7 +450,37 @@ OPEN 값은 추정하지 않고, DERIVED/RESEARCH는 원문 요구로 내보내�
 | 영어 스크린샷 | 해외 독자 | `docs/make_fusa_showcase.py --lang en`(기본), 새 캡처(과도 확대·데이터 커서·HW Vdc 순환·계층·제안 증거) | 생성 로그 | implemented |
 | 한계 | — | 추론 링크는 검토용, OPEN 자리표시는 번호만, 과도 지표는 트레이스 해상도에 묶임, HW 순환 주기는 합성 R·C·역기전력 | `docs/LOGIC_REVIEW.html` §23.8 | remaining |
 
-## 21. 비목표 (handoff §15, 추가 명세 비목표)
+## 21. 구동 시스템 (주행 사이클·통합 충전·시스템 버짓·시뮬레이터 내보내기)
+
+요구(사용자): 인버터·모터뿐 아니라 전체 PE 시스템 관점의 엔지니어가 쓸 수 있게 — 그중 구동 시스템 항목 8(주행 사이클), 9(통합 충전),
+11(시스템 버짓), 12(시뮬레이터 내보내기)을 먼저. 상세 설명은 `docs/LOGIC_REVIEW.html` §24, 회귀 시험은 `tests/test_drive_cycle.py`·
+`tests/test_boost_charging.py`·`tests/test_system_budget.py`·`tests/test_sim_export.py`에 있습니다.
+
+| 항목 | 요구 | 구현 | 확인 | 상태 |
+|---|---|---|---|---|
+| 주행 사이클 | 표준 궤적 위 차량 → 모터 운전점 → 부품별 에너지, 소비·주행거리 | `extensions/drive_cycle.py`(`run_cycle`: 도로 부하·경사·등가 질량, 감속기 역함수 + 최소전류 정책점, 회생 비율·하한 속도·이분법 축소·마찰 제동, 미전달 보고, 배터리 R I², 닫히는 장부, 단계별 값, 판정), `data/drive_cycles.json`(WLTC 3b·UDDS·HWFET·US06), CSV 가져오기, 프로젝트 섹션 `vehicle`, 규칙 PRJ-13·14, `api.drive_cycle`, 주행 사이클 페이지 | `test_drive_cycle.py` 11건(공식 시간·거리·최고속도·WLTC 단계 거리, 손 계산 도로 부하·모터 토크, 경사 일·운동 에너지, 회생/마찰 분배, R I², 미전달·UNKNOWN, WLTC 장부 폐쇄, CSV, 프로젝트), self-test `drive_cycle:closure` | implemented (역방향 모델 — 운전자 모델·속도 허용 대역·사이클 중 열 결합 없음) |
+| 통합 충전 | 인버터·권선을 승압기로 쓰는 저전압 DC 충전: 리플·손실·T_j·한계·충전 능력 | `extensions/boost_charging.py`(`period_waveforms`: 스위칭 순간 사이 정확 적분, 영상분 L0·d/q L_d·L_q, 인터리브; `_device_losses`: 순간 전류의 데이터시트 곡선, SiC 데드타임; `_cap_current`; `charging_point`; `capability`·`capability_map`: 제한 요인), 프로젝트 섹션 `charging`, `api.charging_point`·`charging_capability`, 통합 충전 페이지 | `test_boost_charging.py` 11건(동상 리플 = 승압 공식, 듀티 1/3 인터리브 상쇄, 선형 곡선 손 계산 손실·에너지 균형, 스케일 법칙 게이트, NOT_APPLICABLE·UNKNOWN, 선언된 한계만, 제한 요인, 방전, SiC 데드타임, 역전류), self-test `charging:point`·`charging:map` | implemented (L0는 선언값 — 측정 필요) |
+| 시스템 버짓 | 한계를 기여 항목에 배분하고 아래에서 위로 확인 | `extensions/system_budget.py`(`evaluate_budget`: worst-case·RSS·mixed, 몫, 손익분기 증가량, 균등·비례·선언 배분; 미확립 항목 비채움) | `test_three_stacks_and_shares_by_hand`, `test_break_even_growth_brings_the_stack_exactly_to_the_limit`, `test_allocations_stack_to_the_limit`, `test_unknown_contributors_are_never_zero` | implemented |
+| 토크 정확도 버짓 + 기능안전 연결 | 센서·각·자석 온도·모델 공차의 축 토크 오차, TSR 창·SM 문턱과의 관계 | `torque_contributions`(기기 모델로 계산), `default_points`(능력 × 비율, 0 쪽으로 자름), `torque_accuracy`, `_fusa_row`(창·오트립·미검출), `monitor_view`(센서 역할), 프로젝트 섹션 `torque_errors`, 규칙 PRJ-15, 시스템 버짓 페이지 | `test_torque_contributions_against_the_dq_equation`, `test_current_offset_peak_over_a_revolution`, `test_monitor_view_follows_the_sensor_roles`, `test_fusa_row_window_false_trip_and_undetected_deviation`, `test_torque_budget_api_on_the_project`, `test_full_load_points_stay_on_the_delivered_side`, `test_project_torque_errors_section_and_rule`, self-test `budget:torque` | implemented (정적 오차 — 전류 제어기 포화·동적 추종 오차 없음) |
+| FTTI·사이클 손실·직접 선언 버짓 | 다른 한계에도 같은 방식 | `ftti_budget`(타이밍 최악 경로), `cycle_loss_budget`(주행 사이클 부품별 Wh/km), `api.budget_custom` | `test_ftti_budget_is_the_timing_worst_path`, `test_cycle_loss_budget_per_component`, `test_custom_budget_api`, self-test `budget:ftti` | implemented |
+| 시뮬레이터 내보내기 | 차량 시뮬레이터용 지도와 FMU | `extensions/sim_export.py`(`compute_maps`: 정책점 칸·장부 손실·최대 토크 곡선·상태 코드, 총손실은 모든 부품 손실이 있을 때만·빈 칸 개수와 이유; `write_csv_long`·`write_csv_grids`·`write_mat`; `write_fmu`: FMI 2.0 ME+CS, 최대 토크 제한·삼선형 보간·역회전 거울상·바깥 칸만 채움·안쪽 빈 칸 NaN, 로컬 컴파일), `data/fmi2/*.h`(BSD-2-Clause), `api.sim_maps`·`sim_write`, 시뮬레이터 내보내기 페이지 | `test_sim_export.py` 8건(칸 에너지 균형·최대 토크 = 정책 능력·곡선 밖 비움, 시험 전압 밖 UNKNOWN, 자동 토크 격자, 채움 표시, 감속기 범위 밖 총손실 비움, CSV·.mat 같은 숫자, FMU를 FMPy로 검증·CS/ME 실행: 격자점 정확·제한·거울상·빈 칸 NaN, API 왕복), self-test `sim_export:maps`·`sim_export:files` | implemented (정상상태 지도 — 시간에 따른 열 디레이팅 없음, FMU는 대수 모델) |
+| 화면·작업공간 | 네 페이지, 같은 입력 흐름 | `desktop/pages/drive_cycle.py`·`charging.py`·`budget.py`·`sim_export.py`, 메뉴 묶음 "구동 시스템", `TASK_PAGE` 라우팅(작업공간·입력 변경 표시), NumTable 선택 목록 열, 긴 근거 문구는 앞부분 표시(`widgets.tidy_inputs`) | `test_every_page_input_has_a_place_in_the_workspace`(20 페이지), `test_a_restored_workspace_gives_every_page_the_same_requests`, `test_a_long_text_set_by_the_program_shows_its_start`, self-test 캡처 60–63 | implemented |
+| 한계 | — | 역방향 사이클, 이상 스위치·균등 분담·선언 L0, 정적 토크 오차, 정상상태 지도 | `docs/LOGIC_REVIEW.html` §24.7 | remaining |
+
+## 22. 기능안전 사용성 (고장 입력 양식·캠페인 축·요구 검증 안내)
+
+요구(사용자): 고장 시뮬레이션의 고장 매개변수가 예시만 있고 그마저 잘리며 직접 글로 입력해야 함 — 불편; 기능안전 요구 검증은 쓸
+엄두가 나지 않음. 상세 설명은 `docs/LOGIC_REVIEW.html` §25, 회귀 시험은 `tests/test_fault_editor.py`·`tests/test_reference_page.py`에
+있습니다.
+
+| 항목 | 요구 | 구현 | 확인 | 상태 |
+|---|---|---|---|---|
+| 고장 입력 양식 | 글 입력·잘린 예시 대신 양식 | `desktop/fault_editor.py` `FaultEditor`(목록 + 고른 고장의 양식: `FAULT_KINDS`에서 생성, 단위·선택·설계 이름·지속시간·라벨, 모드별 대표값, 예전 글 읽기), `desktop/pages/fault_sim.py` | `test_fault_editor.py`(모든 프리셋 왕복, 종류 기본값, 양식 편집 → 줄의 말, 예전 작업공간 글, 페이지가 두 편집기 사용), self-test `fault:form`·캡처 `25q_fault_form` | implemented |
+| 캠페인 축 선택 | 경로 글 대신 고르기 | `axis_catalog`(운전점·고장 시각/매개변수·센서 공차·기기 배율·데드타임·반응 경로·안전 메커니즘), `AxisEditor`(범위 또는 목록, 빈 줄은 이름을 대며 거절), 캠페인 탭 분할창 | `test_fault_editor.py`(축 목록 경로·범위, 축 줄), self-test `fault:campaign` | implemented |
+| 요구 검증 안내 | 처음 쓰는 사람이 시작할 수 있게 | `desktop/pages/reference.py`(①②③ 단계, 안전 목표 하위 트리 `_subtree`, 범위 수·시간 추정 `_scope_text`, 개요 탭 `_fill_overview`, 항목 카드 `_item_card`, 링크, 값 입력 `enter_value`, 예시 값 채택 `_use_illustrative`, 목록 편집기 `_edit_list`, "OPEN 값만" 필터) | `test_a_first_time_user_is_guided`, self-test 캡처 `25p_reference_overview`·`25o_reference_matrix` | implemented |
+| 한계 | — | 시간 추정은 내장 패키지 평균(시나리오당 약 5.5 s), 예시 값 채택은 USER 근거로 기록 | `docs/LOGIC_REVIEW.html` §25.4, 점검표 C25-2 | remaining |
+
+## 23. 비목표 (handoff §15, 추가 명세 비목표)
 
 generic motor CAD/FEA 복제, 정적 ASC로 demag/SOA 승인, 일반 IGBT 식으로 SiC 수명 보증, 드라이버 typical delay로 ASIL 승인,
 class 번호로 EMC 합격률, 평균 dq로 NVH/베어링/MHz 임피던스, 생산 anti-jerk 제어기 자동 납품, 보편 안정성 인증서,
