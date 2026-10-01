@@ -1,6 +1,6 @@
 # Verification Report — Traction Workbench
 
-자동 생성: `python verification/make_report.py` · software 0.5.0 · commit `3cd8acc` · 2026-10-01 · Python 3.11.15, NumPy 2.4.6, SciPy 1.17.1
+자동 생성: `python verification/make_report.py` · software 0.6.0 · commit `cef4439` · 2026-10-01 · Python 3.11.15, NumPy 2.4.6, SciPy 1.17.1
 
 > 범위: 합성(synthetic) 참조 fixture에 대한 검증(verification)입니다. 하드웨어·공급사 데이터·외부 시뮬레이터에 대한 validation은 수행하지 않았습니다. 수치 자릿수는 회귀 검산용이며 실제 제품 정확도가 아닙니다.
 
@@ -9,10 +9,10 @@
 | 항목 | 결과 |
 |---|---|
 | 참조 패키지 무결성 (manifest SHA-256, 10 files) | OK |
-| 독립 fixture 검산 (production 코드 미사용) | 136/136 pass (38 s) |
+| 독립 fixture 검산 (production 코드 미사용) | 136/136 pass (41 s) |
 | Production vs golden acceptance | 21/21 pass |
-| pytest | 1114 passed, 376 warnings in 2188.04s (0:36:28) (2236 s) |
-| 데스크톱 앱 self-test (headless, `twb selftest`) | 112/112 pass (318 s) |
+| pytest | 1179 passed, 409 warnings in 3060.22s (0:51:00) (3145 s) |
+| 데스크톱 앱 self-test (headless, `twb selftest`) | 124/124 pass (360 s) |
 | MathWorks 이식 패키지 (`twb mathworks`) | parity PASS — 80 PASS · 0 FAIL · 0 ERROR · 1 NOT_SUPPORTED; GNU Octave 8.4.0 - MATLAB-language proxy; MATLAB / Simulink not run (15 s) |
 
 ## 2. 독립 fixture 검산 (`verification/independent_fixture_check.py`)
@@ -77,7 +77,7 @@ PASS  inverse:I10_STANDSTILL_TORQUE:golden                             |did|=5.5
 |---|---|---|
 | decision:ts012_600 | PASS | verdict PASS, expected PASS |
 | decision:ts012_450 | PASS | verdict FAIL, expected FAIL |
-| pdf_report | PASS | 159554 bytes |
+| pdf_report | PASS | 159512 bytes |
 | decision:ts012_10s | PASS | verdict UNKNOWN, expected UNKNOWN |
 | decision:regen_80 | PASS | verdict PASS, expected PASS |
 | decision:regen_100 | PASS | verdict FAIL, expected FAIL |
@@ -113,10 +113,11 @@ PASS  inverse:I10_STANDSTILL_TORQUE:golden                             |did|=5.5
 | protection:asc | PASS | screening indicates the requirement(s) ASC-RMS are exceeded - confirm with a qualified nonlinear fault-domain model befo |
 | reading:protection:asc | PASS | 1 reading(s) |
 | fault:protection_success | PASS | {'TSR-01': 'PASS', 'TSR-02': 'PASS', 'TSR-03': 'PASS', 'TSR-04': 'PASS', 'TSR-05': 'NOT_APPLICABLE', 'TSR-06': 'PASS', ' |
-| fault:wrong_reaction | PASS | {'TSR-05': 'NOT_APPLICABLE', 'TSR-06': 'FAIL', 'TSR-08': 'FAIL', 'TSR-09': 'FAIL', 'FSR-01': 'FAIL', 'FSR-02': 'FAIL', ' |
+| fault:form | PASS | {'kind': 'sensor', 't_ms': 10.0, 'params': {'target': 'CS_A', 'mode': 'offset', 'value': 150}} |
+| fault:wrong_reaction | PASS | {'TSR-02': 'UNKNOWN', 'TSR-03': 'FAIL', 'TSR-04': 'FAIL', 'TSR-05': 'NOT_APPLICABLE', 'TSR-08': 'FAIL', 'TSR-09': 'FAIL' |
 | reading:fault_sim | PASS | 1 reading(s) |
 | fault:transient | PASS | 5 rows |
-| plot:data_cursor | PASS | 시간 = 17.85 ms  │  ▶ 실제 축 토크 (참값) = -149.424 N·m  │  차량 요청 (의도) = 150 N·m  │  수신 명령 (메시지) = 150 N·m |
+| plot:data_cursor | PASS | 시간 = 10.71 ms  │  ▶ 실제 축 토크 (참값) = -384.248 N·m  │  차량 요청 (의도) = 150 N·m  │  수신 명령 (메시지) = 150 N·m |
 | fault:hw_vdc_cycling | PASS | {'states': ['asc_low', 'six_switch_off'], 'changes': 20, 'first_s': 0.04951553710937501, 'period_ms': 7.7036422729492084 |
 | fault:candidates | PASS | {'policy': 'FAIL', 'none': 'FAIL', 'asc_low': 'FAIL', 'asc_high': 'FAIL', 'six_switch_off': 'FAIL', 'torque_zero': 'FAIL |
 | reading:fault:candidates | PASS | 1 reading(s) |
@@ -129,7 +130,7 @@ PASS  inverse:I10_STANDSTILL_TORQUE:golden                             |did|=5.5
 | fault:review | PASS | {'INCONSISTENT': 0, 'MISSING': 0, 'WARNING': 2, 'NOTE': 10, 'OK': 96} |
 | fault:verification | PASS | ['step_ok', 'cs_offset', 'ov_regen', 'res_lost', 'sw_short'] |
 | reading:fault:safety_case | PASS | 1 reading(s) |
-| fault:report | PASS | 25306 chars |
+| fault:report | PASS | 25395 chars |
 | reference:builtin_hierarchy | PASS | 371 items |
 | reference:proposal | PASS | PASS |
 | power:module | PASS |  |
@@ -172,8 +173,19 @@ PASS  inverse:I10_STANDSTILL_TORQUE:golden                             |did|=5.5
 | reading:machine | PASS | 1 reading(s) |
 | reading:machine:winding | PASS | 1 reading(s) |
 | reading:machine:sizing | PASS | 1 reading(s) |
+| drive_cycle:closure | PASS | {'battery_ocv': 124.40338319719612, 'battery_terminal': 124.0926749748987, 'inverter_dc_net': 117.64557581135003} |
+| reading:drive_cycle | PASS | 1 reading(s) |
+| charging:point | PASS | PASS |
+| charging:map | PASS |  |
+| reading:charging | PASS | 2 reading(s) |
+| budget:torque | PASS | {'PASS': 21, 'FAIL': 9, 'UNKNOWN': 0} |
+| budget:ftti | PASS | 22.8 |
+| reading:budget | PASS | 2 reading(s) |
+| sim_export:maps | PASS | {'FEASIBLE': 24, 'UNKNOWN': 0, 'INFEASIBLE': 0, 'BEYOND': 31} |
+| sim_export:files | PASS | FMU 저장: m.fmu — 바이너리 binaries/linux64/TwbDriveMaps.so |
+| reading:sim_export | PASS | 1 reading(s) |
 | project:identity | PASS | OK |
-| project:usage | PASS | ['asc', 'concept_sizing', 'decision', 'decision-env', 'design-dom', 'design-sweep', 'discharge', 'driveline', 'driveline |
+| project:usage | PASS | ['asc', 'budget_ftti', 'budget_torque', 'charging_capability', 'charging_point', 'concept_sizing', 'decision', 'decision |
 | project:switch | PASS | ⚠ <b>입력이 바뀜</b> — 화면의 결과는 바뀌기 전 입력으로 계산됐습니다: <b>EMI</b> (데드타임 1.500 µs → 1.200 µs) · 다시 실행: Ctrl+Enter<br>⚠ <b>프로젝트 데이터가 |
 | project:restore | PASS |  |
 | datasheet:module | PASS | Example Semiconductor (fictitious) EXM-750-820 datasheet rev 0.1 (synthetic format example) |
@@ -181,11 +193,11 @@ PASS  inverse:I10_STANDSTILL_TORQUE:golden                             |did|=5.5
 | datasheet:entry_motor | PASS | EXMOT-200 |
 | mathworks:package | PASS | ['no target report yet: every target stage is NOT_RUN'] |
 | guide | PASS |  |
-| acceptance | PASS | <span style='color:#1a7f37; font-weight:600'>21/21 PASS · manifest OK</span> · 1.74 s · verification against synthetic f |
+| acceptance | PASS | <span style='color:#1a7f37; font-weight:600'>21/21 PASS · manifest OK</span> · 1.84 s · verification against synthetic f |
 | exchange:package | PASS |  |
 | decision:flux_map | PASS | PASS |
-| progress:engine_steps | PASS | 63 messages, 58 in the capability scan; e.g. 요구 판정: 1/2 판정 · 토크 능력 84/227 (스캔) |
-| workspace:roundtrip | PASS | 16 pages, 125 KB |
+| progress:engine_steps | PASS | 72 messages, 67 in the capability scan; e.g. 요구 판정: 1/2 판정 · 토크 능력 81/227 (스캔) |
+| workspace:roundtrip | PASS | 20 pages, 137 KB |
 | no_error_dialogs | PASS |  |
 
 ## 6. MathWorks 이식 패키지 (`twb mathworks`)
@@ -194,7 +206,7 @@ Python reference(층 2)의 값과 수용된 원천(층 1: golden·계약 수식�
 
 | 단계 | 결과 |
 |---|---|
-| 패키지 | fingerprint `78aeb3461ee70608` · case {'forward': 48, 'flux_lookup': 21, 'requirement_witness': 12} · 층 2 ↔ 층 1 불일치 0 |
+| 패키지 | fingerprint `abeda7fbcab5f385` · case {'forward': 48, 'flux_lookup': 21, 'requirement_witness': 12} · 층 2 ↔ 층 1 불일치 0 |
 | 패키지 검사 | PASS |
 | 대상 환경 | GNU Octave 8.4.0 - MATLAB-language proxy; MATLAB / Simulink not run |
 | stage `package_check` | PASS |
