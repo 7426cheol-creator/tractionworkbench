@@ -248,6 +248,23 @@ def test_what_cannot_be_restored_is_reported_not_guessed(app, tmp_path):
         w.close()
 
 
+def test_a_long_text_set_by_the_program_shows_its_start(app):
+    """A basis line filled by the example, the project or a restored workspace shows its first words and the whole
+    text as its tooltip (the cursor used to sit after the last character, so only the end was visible)."""
+    from traction_workbench.desktop import workspace as WS
+    w = _window()
+    try:
+        le = w.pages["drive_cycle"].v_rl_basis
+        assert le.text() and le.cursorPosition() == 0 and le.toolTip() == le.text()
+        ws = WS.build(w)
+        text = "a road load from the coast-down of the prototype, corrected to the test mass - " * 3
+        ws["pages"]["drive_cycle"]["fields"]["v_rl_basis"]["v"] = text
+        assert not WS.apply(w, ws)
+        assert le.text() == text and le.cursorPosition() == 0 and le.toolTip() == text
+    finally:
+        w.close()
+
+
 def test_the_session_is_offered_back_and_a_changed_workspace_file_is_confirmed(app, tmp_path, monkeypatch):
     from traction_workbench.desktop import workspace as WS
     from traction_workbench.desktop import main_window as MW

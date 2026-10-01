@@ -197,6 +197,14 @@ LIMIT_NAME = {"neutral_rms": lambda: tr("중성선 RMS", "neutral RMS"), "phase_
               "search bound": lambda: tr("탐색 상한", "search bound")}
 
 
+def mean_torque_Nm(tq: dict) -> float | None:
+    """The period-mean torque for display: a mean below 1e-9 of the peak is the round-off of a zero mean."""
+    m, pk = tq.get("mean_Nm"), tq.get("peak_abs_Nm") or 0.0
+    if m is None:
+        return None
+    return 0.0 if abs(m) < 1e-9 * max(abs(pk), 1.0) else m
+
+
 def fig_charging_waveforms(fig, res: dict, title: str | None = None):
     _reset(fig, title)
     t_ = S.theme()
@@ -236,8 +244,9 @@ def fig_charging_waveforms(fig, res: dict, title: str | None = None):
     if w.get("torque_Nm") is not None:
         ax3.plot(tt, two(w["torque_Nm"]), color=S.ACCENT, lw=1.0)
         tq = res.get("torque") or {}
-        _note(ax3, tr(f"평균 {tq.get('mean_Nm', 0):.3g} N·m, |피크| {tq.get('peak_abs_Nm', 0):.3g} N·m (영상분은 토크 없음)",
-                      f"mean {tq.get('mean_Nm', 0):.3g} N·m, |peak| {tq.get('peak_abs_Nm', 0):.3g} N·m (zero sequence "
+        m = mean_torque_Nm(tq) or 0.0
+        _note(ax3, tr(f"평균 {m:.3g} N·m, |피크| {tq.get('peak_abs_Nm', 0):.3g} N·m (영상분은 토크 없음)",
+                      f"mean {m:.3g} N·m, |peak| {tq.get('peak_abs_Nm', 0):.3g} N·m (zero sequence "
                       f"makes none)"), "upper right")
     ax3.axhline(0, color=t_["fg"], lw=0.6)
     ax3.set_ylabel(tr("토크 [N·m]", "torque [N·m]"))

@@ -9,12 +9,12 @@ from pathlib import Path
 import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg, NavigationToolbar2QT
 from matplotlib.figure import Figure
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtGui import QColor, QFont
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
-                               QFrame, QHBoxLayout, QHeaderView, QLabel, QMessageBox, QPushButton, QScrollArea,
-                               QSizePolicy, QSpinBox, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QAbstractSpinBox, QApplication, QCheckBox, QComboBox, QDoubleSpinBox,
+                               QFileDialog, QFormLayout, QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+                               QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSpinBox, QTableWidget,
+                               QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from ..i18n import tr
 from ..plots import style as S
@@ -93,7 +93,7 @@ class PlotPanel(QWidget):
         self.signal_box.setToolTip(tr("데이터 커서가 따라갈 신호 (범례 항목을 클릭해도 고릅니다)",
                                       "the signal the data cursor follows (or click its legend entry)"))
         self.signal_box.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
-        self.signal_box.setMinimumContentsLength(14)
+        self.signal_box.setMinimumContentsLength(6)
         self.signal_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)     # the room the row has, up to
         self.signal_box.setMaximumWidth(330)                   # a long signal name (not cut to a few letters)
         self.signal_box.setFixedHeight(26)
@@ -111,6 +111,9 @@ class PlotPanel(QWidget):
             "· ←/→: move the last pin one sample (Shift: 10) · right click / Esc: remove the pins"))
         self.cursor_btn.toggled.connect(self.set_cursor)
         top.addWidget(self.cursor_btn)
+        # the row shrinks with a narrow panel instead of widening the page (a push button holds 80 px by default:
+        # six of them made every plot panel at least 636 px wide and pushed results off the window)
+        self.cursor_btn.setMinimumWidth(self.cursor_btn.fontMetrics().horizontalAdvance(self.cursor_btn.text()) + 16)
         self.fig_buttons = []
         for label, fn in (("PNG", lambda: self.export("png")), ("SVG", lambda: self.export("svg")),
                           ("PDF", lambda: self.export("pdf")), ("CSV", self.export_csv)):
@@ -118,6 +121,7 @@ class PlotPanel(QWidget):
             b.setToolTip(tr(f"{label}로 내보내기", f"export as {label}"))
             b.clicked.connect(fn)
             b.setFixedHeight(26)
+            b.setMinimumWidth(b.fontMetrics().horizontalAdvance(label) + 16)
             top.addWidget(b)
             if label == "CSV":
                 self.csv_button = b
@@ -715,9 +719,22 @@ def tidy_inputs(root: QWidget) -> None:
         view = cb.view()
         view.setTextElideMode(Qt.ElideNone)
         view.setMinimumWidth(view.sizeHintForColumn(0) + 28)
+        # Qt keeps the minimum size it computed under the previous policy (a scenario list held the fault page's
+        # input panel at 761 px): only a style change clears that cache
+        QApplication.sendEvent(cb, QEvent(QEvent.StyleChange))
         if not cb.toolTip():
             cb.setToolTip(cb.currentText())
             cb.currentTextChanged.connect(cb.setToolTip)
+    # a long text set by the program (example, project, saved workspace) showed its END - the cursor sat after the
+    # last character, so a basis line read "...d machine) - replace with...": show the start, the tooltip the whole
+    for le in root.findChildren(QLineEdit):
+        if isinstance(le.parent(), (QAbstractSpinBox, QComboBox)):
+            continue
+        le.setCursorPosition(0)
+        le.textChanged.connect(lambda _t, e=le: e.hasFocus() or e.setCursorPosition(0))
+        if not le.toolTip():
+            le.setToolTip(le.text())
+            le.textChanged.connect(le.setToolTip)
     # a check box added as addRow("", box) sat in the field column next to the widest label: give it the full row
     for form in root.findChildren(QFormLayout):
         for row in range(form.rowCount() - 1, -1, -1):
@@ -730,11 +747,14 @@ def tidy_inputs(root: QWidget) -> None:
                 if lab is not None:
                     lab.deleteLater()
                 form.insertRow(row, box)
-    # an input panel is never squeezed below its content (the splitter takes the width from the results side)
+    # an input panel is never squeezed below its content (the splitter takes the width from the results side) -
+    # measured after every widget dropped its cached size (the combo boxes above), not from the stale layout caches
+    for ch in root.findChildren(QWidget):
+        ch.updateGeometry()
     for sc in root.findChildren(QScrollArea):
         w = sc.widget()
-        if w is None or not sc.widgetResizable():
-            continue
+        if w is None or not sc.widgetResizable() or sc.property("twb_free_width"):     # a side panel next to the
+            continue                                                                   # results keeps its own minimum
         need = w.minimumSizeHint().width() + sc.verticalScrollBar().sizeHint().width() + 2 * sc.frameWidth() + 2
         if need > sc.minimumWidth():
             sc.setMinimumWidth(need)

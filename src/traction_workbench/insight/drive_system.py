@@ -381,6 +381,17 @@ def sim_insight(maps: dict) -> Insight:
                  "the model could not decide these cells (e.g. away from the switching test voltage without a declared "
                  "voltage-scaling law); they are not filled - to export other voltages, declare the module's "
                  "scaling law."), "warn")
+    holes = m.get("empty_in_envelope") or {}
+    if holes:
+        s = ins.section(tr("최대 토크 안인데 값이 없는 칸", "cells inside the full load without a value"))
+        cnt = ", ".join(f"{k} {n}" for k, n in holes.items())
+        why = m.get("empty_in_envelope_why") or ""
+        s.add(tr(f"{cnt}칸 — {why}. 모든 형식에서 빈 칸(NaN)이고 FMU도 채우지 않습니다(그 근처의 출력은 NaN). 총손실은 한 "
+                 "부품이라도 손실이 없으면 비웁니다: 그 부품을 뺀 합은 더 작은 손실로 읽히기 때문입니다. 감속기 데이터의 범위를 "
+                 "넓히거나 감속기 없이 내보내세요.",
+                 f"{cnt} cell(s) - {why}. Empty (NaN) in every format and not filled in the FMU either (the outputs "
+                 "next to them are NaN). The total loss is left empty when one part has no loss: the sum without it "
+                 "would read as a lower loss. Extend the reducer data or export without the reducer."), "warn")
     s = ins.section(tr("손실에 들어 있지 않은 것 (모든 칸 또는 일부 칸)", "what the losses do not contain (in every or in some "
                                                                        "cells)"))
     for it in m.get("not_evaluated") or []:

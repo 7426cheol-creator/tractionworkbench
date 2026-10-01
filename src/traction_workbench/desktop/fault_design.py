@@ -316,6 +316,13 @@ def _unique(base: str, used) -> str:
     return name
 
 
+def _note(text: str) -> QLabel:
+    """An explanation line that wraps with the panel (one line held the editor at 1,236 px wide)."""
+    lab = QLabel(text)
+    lab.setWordWrap(True)
+    return lab
+
+
 class DesignEditor(QWidget):
     """The editor (see the module note).  ``changed`` after every edit; ``overrides()`` = the design variant."""
     changed = Signal()
@@ -502,7 +509,7 @@ class DesignEditor(QWidget):
     def _build_sg(self):
         w = QWidget()
         v = QVBoxLayout(w)
-        v.addWidget(QLabel(tr("안전 목표: ASIL·FTTI·위험 종류·안전 상태. FTTI는 FSR 예산(FDTI + FRTI)과 FHTI 판정의 상한입니다.",
+        v.addWidget(_note(tr("안전 목표: ASIL·FTTI·위험 종류·안전 상태. FTTI는 FSR 예산(FDTI + FRTI)과 FHTI 판정의 상한입니다.",
                               "Safety goals: ASIL, FTTI, hazard, safe state. The FTTI bounds the FSR budgets (FDTI + "
                               "FRTI) and the FHTI verdict.")))
 
@@ -546,7 +553,7 @@ class DesignEditor(QWidget):
     def _build_fsr(self):
         w = QWidget()
         v = QVBoxLayout(w)
-        v.addWidget(QLabel(tr("기능 안전 요구: 담당 SG, ASIL, FDTI·FRTI 예산, 할당 메커니즘(쉼표로 구분), 안전 상태를 정의하는 TSR, "
+        v.addWidget(_note(tr("기능 안전 요구: 담당 SG, ASIL, FDTI·FRTI 예산, 할당 메커니즘(쉼표로 구분), 안전 상태를 정의하는 TSR, "
                               "경고·성능 저하와 검증 방법.",
                               "Functional safety requirements: goals, ASIL, FDTI / FRTI budgets, allocated mechanisms "
                               "(comma separated), the TSR that defines the safe state, warning / degradation and "
@@ -737,7 +744,7 @@ class DesignEditor(QWidget):
     def _build_mech(self):
         w = QWidget()
         v = QVBoxLayout(w)
-        v.addWidget(QLabel(tr("안전 메커니즘: 사용 여부, 반응 경로, 요청 반응(정책·기본 반응·전략), SW 주기, 임계값과 디바운스·필터. "
+        v.addWidget(_note(tr("안전 메커니즘: 사용 여부, 반응 경로, 요청 반응(정책·기본 반응·전략), SW 주기, 임계값과 디바운스·필터. "
                               "종류별 나머지 매개변수는 아래에서 편집합니다.",
                               "Safety mechanisms: enabled, path, reaction (policy, primitive or strategy), task "
                               "period, threshold and debounce / filter; the other parameters below.")))
@@ -858,7 +865,7 @@ class DesignEditor(QWidget):
         self.s_head = ParamForm()
         self.s_head.edited.connect(self._strategy_head_edited)
         right.addWidget(self.s_head)
-        right.addWidget(QLabel(tr("단계: 각 동작을 종료 조건까지 유지합니다. 마지막 단계는 '유지'. 제어 동작(토크·전류·전압 램프)은 SW 경로와 "
+        right.addWidget(_note(tr("단계: 각 동작을 종료 조건까지 유지합니다. 마지막 단계는 '유지'. 제어 동작(토크·전류·전압 램프)은 SW 경로와 "
                                   "동작 중인 전류 제어가 필요하며, 불가능하면 대체 상태로 바뀝니다.",
                                   "Steps: each action holds until its exit; the last step holds. Control actions "
                                   "need the software path and running current control, else the fallback state "
@@ -1018,7 +1025,7 @@ class DesignEditor(QWidget):
     def _build_policy(self):
         w = QWidget()
         v = QVBoxLayout(w)
-        v.addWidget(QLabel(tr("안전 상태 정책: '안전 상태'를 요청한 메커니즘의 반응을 위에서부터 첫 규칙이 정합니다(측정 정보만). 빈 칸 = 조건 없음, "
+        v.addWidget(_note(tr("안전 상태 정책: '안전 상태'를 요청한 메커니즘의 반응을 위에서부터 첫 규칙이 정합니다(측정 정보만). 빈 칸 = 조건 없음, "
                               "'기본'을 켠 행은 else.",
                               "Safe-state policy: the first matching rule decides a 'safe state' request (measured "
                               "information only). Blank = no condition; a 'default' row is the else.")))
@@ -1165,7 +1172,7 @@ class DesignEditor(QWidget):
     def _build_paths(self):
         w = QWidget()
         v = QVBoxLayout(w)
-        v.addWidget(QLabel(tr("반응 경로: 요청에서 브리지까지의 지연과 필요한 자원(자원을 잃으면 경로도 잃음). MCU를 쓰지 않는 경로는 HW 경로 — "
+        v.addWidget(_note(tr("반응 경로: 요청에서 브리지까지의 지연과 필요한 자원(자원을 잃으면 경로도 잃음). MCU를 쓰지 않는 경로는 HW 경로 — "
                               "소프트웨어 단계가 있는 전략은 그 경로에서 대체 상태로 바뀝니다.",
                               "Reaction paths: delay from the request to the bridge and the resources they need. A "
                               "path without the MCU is a hardware path - strategies with software steps degrade "
@@ -1196,7 +1203,7 @@ class DesignEditor(QWidget):
     def _build_changes(self):
         w = QWidget()
         v = QVBoxLayout(w)
-        v.addWidget(QLabel(tr("프로젝트 fault_sim 데이터 대비 이 설계 변형의 변경 (실행·시나리오 파일·반례·보고서에 그대로 기록됨)",
+        v.addWidget(_note(tr("프로젝트 fault_sim 데이터 대비 이 설계 변형의 변경 (실행·시나리오 파일·반례·보고서에 그대로 기록됨)",
                               "Changes of this design variant against the project's fault_sim data (recorded in "
                               "runs, scenario files, counterexamples and the report)")))
         self.t_changes = QTableWidget(0, 4)

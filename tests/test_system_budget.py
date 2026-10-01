@@ -168,6 +168,24 @@ def test_torque_budget_api_on_the_project():
     assert r["not_declared"] == []
 
 
+def test_full_load_points_stay_on_the_delivered_side():
+    """The default points are fractions of the policy capability; the full-load point (fraction +-1) used to be rounded
+    half up to 1 mN*m and land just beyond the boundary, where the policy solve fails (3 of 30 points not evaluated)."""
+    from traction_workbench.scenario import Scenario
+    from traction_workbench.solvers.capability import policy_capability
+    from traction_workbench.solvers.policy import PolicyEvaluator
+    b = api.EXAMPLE_BUDGET
+    lim = api._limits(b)
+    pts = sb.default_points(DRIVE, 600.0, lim, {}, (3000.0, 6000.0), (-1.0, 1.0))
+    for n, T in pts:
+        ev = PolicyEvaluator(DRIVE, Scenario("t", n, 600.0, lim))
+        cap = policy_capability(ev, 1 if T > 0 else -1, certify=False).value_Nm
+        assert abs(T) <= abs(cap) and abs(cap) - abs(T) < 1e-3
+        assert ev.solve(T).policy_claim.status.value == "FEASIBLE"
+    r = api.budget_torque({})
+    assert r["not_evaluated"] == 0 and sum(r["counts"].values()) == 30
+
+
 def test_ftti_budget_is_the_timing_worst_path():
     b = api.budget_ftti({})
     assert b["total"] == pytest.approx(b["timing_worst_ms"], rel=1e-12)

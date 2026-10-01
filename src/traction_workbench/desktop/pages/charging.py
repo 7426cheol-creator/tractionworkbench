@@ -242,7 +242,7 @@ class ChargingPage(QWidget):
                 (tr("최고 Tj", "hottest Tj"), f"{fmt(res['Tj_C'], 5)} °C ({res.get('hottest_die')})"),
                 (tr("DC-link 커패시터 RMS", "DC-link capacitor RMS"), f"{fmt(res['dc_link'].get('cap_rms_A'), 4)} A"),
                 (tr("토크 (평균 / |피크|)", "torque (mean / |peak|)"),
-                 f"{fmt(res['torque']['mean_Nm'], 3)} / {fmt(res['torque']['peak_abs_Nm'], 4)} N·m"),
+                 f"{fmt(F.mean_torque_Nm(res['torque']), 3)} / {fmt(res['torque']['peak_abs_Nm'], 4)} N·m"),
                 (tr("스위칭 에너지", "switching energies"), res.get("energy_scaling", ""))]
         self.kv.set_rows(rows)
 

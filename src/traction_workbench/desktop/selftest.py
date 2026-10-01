@@ -226,6 +226,22 @@ def run_self_test(app, out_dir) -> int:
         ok_v = (fs.last or {}).get("verdicts") or {}
         check("fault:protection_success", fs.last is not None and all(
             x in ("PASS", "NOT_APPLICABLE") for k, x in ok_v.items() if k.startswith("TSR")), str(ok_v))
+        # the fault form: the selected fault's parameters as fields with their units (no typed key=value text)
+        from PySide6.QtWidgets import QScrollArea
+        fs.faults.table.selectRow(0)
+        app.processEvents()
+        sc_in = fs.faults.parentWidget()
+        while sc_in is not None and not isinstance(sc_in, QScrollArea):
+            sc_in = sc_in.parentWidget()
+        if sc_in is not None:
+            sc_in.ensureWidgetVisible(fs.faults.box, 0, 0)
+        app.processEvents()
+        f0 = fs.faults.faults()[0] if fs.faults.rowCount() else {}
+        check("fault:form", fs.faults.form.rowCount() >= 4 and f0.get("kind") == "sensor"
+              and f0.get("params", {}).get("mode") == "offset", str(f0)[:160])
+        shot(win, "25q_fault_form")
+        if sc_in is not None:
+            sc_in.verticalScrollBar().setValue(0)
         fs.preset.setCurrentIndex(fs.preset.findData("res_lost"))
         fs._load_preset()
         fs.run()
@@ -533,6 +549,46 @@ def run_self_test(app, out_dir) -> int:
         reading("machine", mc.i_trade, "machine_trade")
         reading("machine:winding", mc.i_wind, "winding")
         reading("machine:sizing", mc.i_size, "concept_sizing")
+        # drive-system views: the vehicle on a cycle, integrated charging, system budgets, the simulator export
+        dcy = visit("drive_cycle", 0, ["run"], [(lambda pg: pg.tabs.setCurrentWidget(pg.p_trace), "60_drive_cycle"),
+                                                (lambda pg: pg.tabs.setCurrentWidget(pg.p_energy), "60b_drive_cycle_energy"),
+                                                (lambda pg: pg.tabs.setCurrentWidget(pg.reading),
+                                                 "60a_drive_cycle_reading")])
+        cr = dcy.last or {}
+        check("drive_cycle:closure", cr.get("complete") and abs((cr.get("closure") or {}).get("residual_kWh", 1.0)) < 1e-9
+              and (cr.get("consumption_Wh_per_km") or {}).get("battery_ocv"), (cr.get("consumption_Wh_per_km") or {}))
+        reading("drive_cycle", dcy.reading, "drive_cycle")
+        chg = visit("charging", 0, ["run_point", "run_map"],
+                    [(lambda pg: pg.tabs.setCurrentWidget(pg.p_wave), "61_charging_waveforms"),
+                     (lambda pg: pg.tabs.setCurrentWidget(pg.p_map), "61b_charging_capability")])
+        check("charging:point", (chg.last_point or {}).get("status") == "PASS"
+              and 0.9 < (chg.last_point or {}).get("efficiency", 0) < 1.0, (chg.last_point or {}).get("status"))
+        check("charging:map", any(r.get("limiting") for r in (chg.last_map or {}).get("rows", [])))
+        reading("charging", chg.reading, "charging_point", "charging_capability")
+        bud = visit("budget", 0, ["run_torque"], [(lambda pg: pg.tabs.setCurrentWidget(pg.p_pts), "62_budget_torque"),
+                                                  (lambda pg: pg.tabs.setCurrentWidget(pg.p_fusa), "62b_budget_fusa")])
+        bt = bud.last_torque or {}
+        check("budget:torque", bt.get("status") in ("PASS", "FAIL") and (bt.get("fusa") or {}).get("undetected_status")
+              and bt.get("worst_point_budget"), bt.get("counts"))
+        bud.run_ftti()
+        app.processEvents()
+        fb = bud.last_budget or {}
+        check("budget:ftti", fb.get("timing_worst_ms") is not None and abs(fb["total"] - fb["timing_worst_ms"]) < 1e-9,
+              fb.get("total"))
+        bud.tabs.setCurrentWidget(bud.p_bud)
+        shot(win, "62c_budget_ftti")
+        reading("budget", bud.reading, "budget_torque", "budget")
+        sx = visit("sim_export", 0, [lambda pg: (pg.s_step.setValue(4000.0), pg.t_step.setValue(100.0)), "run"],
+                   [(lambda pg: pg.tabs.setCurrentWidget(pg.p_map), "63_sim_export_map")])
+        sm = sx.last or {}
+        check("sim_export:maps", (sm.get("counts") or {}).get("FEASIBLE", 0) > 0, sm.get("counts"))
+        import tempfile as _tf
+        with _tf.TemporaryDirectory() as _td:
+            for kind, name in (("csv", "m.csv"), ("mat", "m.mat"), ("fmu", "m.fmu")):
+                sx.export(kind, str(Path(_td) / name))
+            fmu_ok = (Path(_td) / "m.fmu").exists() and (Path(_td) / "m.mat").exists()
+        check("sim_export:files", fmu_ok, sx.exp_state.text())
+        reading("sim_export", sx.reading, "sim_maps")
         visit("model", 7, [], [(None, "18_model")])
         # project data package (R2): identity, consistency, every result names its product data, a revision switch
         # reloads the pages and marks older results stale

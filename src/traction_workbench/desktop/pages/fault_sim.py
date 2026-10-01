@@ -8,8 +8,9 @@ from __future__ import annotations
 import json
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QFileDialog, QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QListWidget,
-                               QListWidgetItem, QPushButton, QScrollArea, QSplitter, QTabWidget, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QFileDialog, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel,
+                               QListWidget, QListWidgetItem, QPushButton, QScrollArea, QSplitter, QTabWidget, QVBoxLayout,
+                               QWidget)
 
 from ... import api
 from ...errors import InputValidationError
@@ -144,9 +145,11 @@ class FaultSimPage(QWidget):
         v.addWidget(g)
         g = QGroupBox(tr("보호·반응·설계 변형", "protection · reaction · design variants"))
         f = QFormLayout(g)
-        self.protect = check(tr("보호 반응 적용 (끄면 비교용 궤적; 게이트 드라이버 자체 desat 차단은 남음)",
-                                "protection reactions on (off: the comparison trajectory; the gate drivers' own "
-                                "desaturation turn-off stays)"), True)
+        # a short label and the explanation below it: the one-line label held the input panel at 655 px
+        self.protect = check(tr("보호 반응 적용", "protection reactions on"), True)
+        protect_hint = hint(tr("끄면 비교용 궤적입니다. 게이트 드라이버 자체 desat 차단은 남습니다.",
+                               "off: the comparison trajectory; the gate drivers' own desaturation turn-off stays."))
+        protect_hint.setWordWrap(True)
         # the design variant (the difference to the project's fault_sim data, edited in the editor tab) - created
         # before the forced-reaction choice: a restored workspace puts the variant (its strategies) back first
         self.design_variant = VariantField()
@@ -162,6 +165,7 @@ class FaultSimPage(QWidget):
         vbox.addWidget(self.design_variant)
         vbox.addWidget(self.edit_design_btn)
         f.addRow(self.protect)
+        f.addRow(protect_hint)
         f.addRow(tr("설계 변형", "design variant"), vbox)
         f.addRow(tr("반응 강제 (후보)", "forced reaction (candidate)"), self.override)
         v.addWidget(g)
@@ -344,7 +348,7 @@ class FaultSimPage(QWidget):
         self.t_cx = KeyValueTable(headers=["ID", tr("실패 요구", "failing"), tr("만든 시점", "created"), tr("상태", "state")])
         self.t_cx.setProperty("twb_not_input", True)          # shows ``counterexamples`` (workspace data), not an input
         gl.addWidget(self.t_cx)
-        row = QHBoxLayout()
+        row = QGridLayout()                        # two by two: one row of four held the panel 420 px wide
         self.cx_rerun = QPushButton(tr("선택 재실행", "re-run selected"))
         self.cx_load = QPushButton(tr("시나리오로 불러오기", "load as scenario"))
         self.cx_save = QPushButton(tr("파일로 저장", "save to file"))
@@ -353,8 +357,8 @@ class FaultSimPage(QWidget):
         self.cx_load.clicked.connect(self._cx_to_scenario)
         self.cx_save.clicked.connect(self._cx_save)
         self.cx_open.clicked.connect(self._cx_open)
-        for b in (self.cx_rerun, self.cx_load, self.cx_save, self.cx_open):
-            row.addWidget(b)
+        for k, b in enumerate((self.cx_rerun, self.cx_load, self.cx_save, self.cx_open)):
+            row.addWidget(b, k // 2, k % 2)
         gl.addLayout(row)
         self.cx_state = QLabel("")
         self.cx_state.setWordWrap(True)
@@ -364,7 +368,8 @@ class FaultSimPage(QWidget):
         sc = QScrollArea()
         sc.setWidgetResizable(True)
         sc.setWidget(left)
-        sc.setMinimumWidth(360)
+        sc.setMinimumWidth(300)                   # narrower than its content when the window is: it scrolls, the
+        sc.setProperty("twb_free_width", True)    # results stay whole (the splitter gives it its full width)
         w.addWidget(sc)
         right = QWidget()
         rv = QVBoxLayout(right)

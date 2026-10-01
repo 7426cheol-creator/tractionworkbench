@@ -311,7 +311,8 @@ def default_points(drive, Vdc, limits, temps, speeds=(1000.0, 3000.0, 6000.0, 90
         for f in fractions:
             c = cap[1 if f > 0 else -1].value_Nm
             if c is not None:                      # the capability carries the sign (braking < 0)
-                pts.append((float(n), round(abs(f) * c, 3)))
+                # to 1 mN*m toward zero: rounding half up put the full-load point 0.1 mN*m beyond the boundary
+                pts.append((float(n), math.trunc(abs(f) * c * 1e3) / 1e3))
     return pts
 
 

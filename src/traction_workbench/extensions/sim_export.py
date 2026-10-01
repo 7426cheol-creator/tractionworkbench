@@ -12,10 +12,14 @@ torque (largest motoring and generating torque the policy delivers).  Written as
     interpolates the tables - the same numbers in a vehicle simulator.
 
 The honesty rules of the tool hold: a cell outside the delivered envelope or with an undecided policy is NaN with its
-status (never a number made up); the loss items the model does not evaluate are listed in the metadata.  Only the FMU
-needs values in the cells next to the envelope an interpolation touches: those are filled with the nearest feasible
-cell's value (in grid-index distance), marked in the mask and stated in the FMU's description - the request is
-clamped to the full-load curve first, so a filled cell only shapes the value within one grid cell of the boundary.
+status (never a number made up); the loss items the model does not evaluate are listed in the metadata.  Inside the
+envelope a quantity can still be empty where one part has no loss there - a reducer outside its declared torque or
+speed range: its loss, the output power and the total loss stay NaN in every format (the total is never the
+subtotal without that part), counted per quantity in the metadata.  Only the FMU needs values in the cells next to
+the envelope an interpolation touches: those cells OUTSIDE the envelope are filled with the nearest feasible cell's
+value (in grid-index distance), marked in the mask and stated in the FMU's description - the request is clamped to
+the full-load curve first, so a filled cell only shapes the value within one grid cell of the boundary.  An empty
+cell inside the envelope stays NaN in the FMU too (the interpolation never reads a corner of zero weight).
 """
 
 from __future__ import annotations
@@ -98,6 +102,7 @@ def compute_maps(drive, *, Vdc_list, limits, speeds_rpm, torques_Nm=None, torque
     tables = {k: np.full(shape, np.nan) for k in QUANTITIES}
     status = np.full(shape, STATUS_CODE["UNKNOWN"], dtype=int)
     unevaluated: set = set()
+    parts = ("loss_inverter_W", "loss_motor_W") + (("loss_reducer_W",) if reducer is not None else ())
     with progress.span(len(vd) * len(sp), "simulator maps") as span:
         for a, V in enumerate(vd):
             for j, n in enumerate(sp):
@@ -126,13 +131,26 @@ def compute_maps(drive, *, Vdc_list, limits, speeds_rpm, torques_Nm=None, torque
                         r = bnd.get(b) or {}
                         if r.get("loss_W") is not None and r.get("status") in (DEFINED, NA):
                             tables[key][a, i, j] = r["loss_W"]
-                    tables["loss_total_W"][a, i, j] = led["loss_known_subtotal_W"]
+                    # the total only where every modelled part has its loss: the subtotal without the reducer
+                    # (outside its declared range) read as a LOWER loss right where the reducer is loaded hardest
+                    if all(np.isfinite(tables[k][a, i, j]) for k in parts):
+                        tables["loss_total_W"][a, i, j] = led["loss_known_subtotal_W"]
                     tables["id_A"][a, i, j] = sol.point.id_A
                     tables["iq_A"][a, i, j] = sol.point.iq_A
                     unevaluated.update(led.get("loss_unknown_items") or [])
     if reducer is None:
         tables["P_out_W"][:] = np.nan
         tables["loss_reducer_W"][:] = np.nan
+    inside = status == STATUS_CODE["FEASIBLE"]
+    skip = ("P_out_W", "loss_reducer_W") if reducer is None else ()
+    holes = {k: int((inside & ~np.isfinite(t)).sum()) for k, t in tables.items() if k not in skip}
+    holes = {k: n for k, n in holes.items() if n}
+    why = ""
+    if holes and reducer is not None:
+        r = reducer.describe()
+        rng = "; ".join(f"{k} {v[0]:g} to {v[1]:g}" for k, v in r.items()
+                        if k in ("torque_Nm", "speed_rpm", "oil_temp_C") and isinstance(v, (list, tuple)) and len(v) == 2)
+        why = f"the reducer model gives no loss outside its declared range ({rng})"
     from .. import __version__
     meta = {"schema": "twb-simmaps/1", "software": f"traction-workbench {__version__}",
             "created": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -143,6 +161,8 @@ def compute_maps(drive, *, Vdc_list, limits, speeds_rpm, torques_Nm=None, torque
                             "table_order": "[Vdc][torque][speed]"},
             "status_codes": STATUS_CODE,
             "not_evaluated": sorted(unevaluated),
+            "empty_in_envelope": holes,
+            "empty_in_envelope_why": why,
             "policy": "minimum-current policy point (steady state) at each cell",
             "quantities": {k: {"unit": u, "meaning": m} for k, (u, m) in QUANTITIES.items()}}
     return {"speeds_rpm": sp, "torques_Nm": tq, "Vdc_V": vd, "tables": tables, "status": status,
@@ -253,6 +273,10 @@ def _readme(maps: dict) -> str:
              "BEYOND the full-load curve) - clamp the torque request to full_load_*.csv first",
              "conventions: " + "; ".join(f"{k}: {v}" for k, v in m["conventions"].items()),
              "losses not evaluated by the model (not in the tables): " + (", ".join(m["not_evaluated"]) or "none")]
+    if m.get("empty_in_envelope"):
+        lines.append("blank inside the delivered envelope (a part without a loss there - "
+                     f"{m.get('empty_in_envelope_why') or 'see the metadata'}): "
+                     + ", ".join(f"{k} {n} cell(s)" for k, n in m["empty_in_envelope"].items()))
     for k, q in m["quantities"].items():
         lines.append(f"  {k} [{q['unit']}]: {q['meaning']}")
     return "\n".join(lines) + "\n"
@@ -283,14 +307,15 @@ def write_mat(maps: dict, path) -> Path:
 
 def _c_array(name: str, a) -> str:
     flat = np.asarray(a, dtype=float).ravel()
-    body = ",".join(f"{v:.17g}" for v in flat)
+    body = ",".join("NAN" if math.isnan(v) else f"{v:.17g}" for v in flat)
     return f"static const double {name}[{max(1, flat.size)}] = {{{body if flat.size else '0'}}};\n"
 
 
 _C_TEMPLATE = r"""/* Generated by Traction Workbench: a map-based drive model (FMI 2.0, Model Exchange and Co-Simulation).
    The torque request is clamped to the full-load curve of the present speed and DC voltage, then the tables are
    interpolated (linear in speed, torque and voltage; outside the grid the edge value).  Table cells outside the
-   delivered envelope were filled with the nearest feasible cell (see the model description).  */
+   delivered envelope were filled with the nearest feasible cell (see the model description); a cell inside it
+   without a value is NAN and so is every output that interpolates with it.  */
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -323,17 +348,18 @@ static void bracket(const double *g, int n, double v, int *k, double *w) {
     *k = lo; *w = (v - g[lo]) / (g[lo + 1] - g[lo]);
 }
 
+/* w = 0 or 1 never reads the other end: it may be NAN (a cell without a value) and 0 * NAN is NAN */
+static double lerp(double y0, double y1, double w) { return w <= 0.0 ? y0 : (w >= 1.0 ? y1 : y0 + w * (y1 - y0)); }
+
 static double curve(const double *c, int a, int j, double ws) {       /* [NV][NS] */
-    double y0 = c[a * NS + j], y1 = c[a * NS + (NS > 1 ? j + 1 : j)];
-    return y0 + ws * (y1 - y0);
+    return lerp(c[a * NS + j], c[a * NS + (NS > 1 ? j + 1 : j)], ws);
 }
 
 static double table(const double *t, int a, int i, int j, double wt, double ws) {   /* [NV][NT][NS] */
     int i1 = NT > 1 ? i + 1 : i, j1 = NS > 1 ? j + 1 : j;
-    double y00 = t[(a * NT + i) * NS + j], y01 = t[(a * NT + i) * NS + j1];
-    double y10 = t[(a * NT + i1) * NS + j], y11 = t[(a * NT + i1) * NS + j1];
-    double y0 = y00 + ws * (y01 - y00), y1 = y10 + ws * (y11 - y10);
-    return y0 + wt * (y1 - y0);
+    double y0 = lerp(t[(a * NT + i) * NS + j], t[(a * NT + i) * NS + j1], ws);
+    double y1 = lerp(t[(a * NT + i1) * NS + j], t[(a * NT + i1) * NS + j1], ws);
+    return lerp(y0, y1, wt);
 }
 
 static void update(Inst *s) {
@@ -346,16 +372,15 @@ static void update(Inst *s) {
     bracket(SPEED, NS, fabs(n), &js, &ws);
     bracket(VDC, NV, v, &a, &wv);
     int a1 = NV > 1 ? a + 1 : a;
-    double tmax = curve(TMAX, a, js, ws) + wv * (curve(TMAX, a1, js, ws) - curve(TMAX, a, js, ws));
-    double tmin = curve(TMIN, a, js, ws) + wv * (curve(TMIN, a1, js, ws) - curve(TMIN, a, js, ws));
+    double tmax = lerp(curve(TMAX, a, js, ws), curve(TMAX, a1, js, ws), wv);
+    double tmin = lerp(curve(TMIN, a, js, ws), curve(TMIN, a1, js, ws), wv);
     double t = treq > tmax ? tmax : (treq < tmin ? tmin : treq);
     int it; double wt;
     bracket(TORQUE, NT, t, &it, &wt);
     s->x[3] = sg * t; s->x[4] = sg > 0 ? tmax : -tmin; s->x[5] = sg > 0 ? tmin : -tmax;
     s->x[6] = (t != treq) ? 1.0 : 0.0;
     for (int k = 0; k < NOUT; k++) {
-        double y0 = table(OUT_TABLES[k], a, it, js, wt, ws), y1 = table(OUT_TABLES[k], a1, it, js, wt, ws);
-        s->x[7 + k] = y0 + wv * (y1 - y0);
+        s->x[7 + k] = lerp(table(OUT_TABLES[k], a, it, js, wt, ws), table(OUT_TABLES[k], a1, it, js, wt, ws), wv);
     }
     s->dirty = 0;
 }
@@ -492,15 +517,20 @@ def write_fmu(maps: dict, path, model_name: str = "TwbDriveMaps", compile_binary
             ok = np.where(np.isfinite(c[a]))[0]
             for j in np.where(~np.isfinite(c[a]))[0]:
                 c[a, j] = c[a, ok[np.argmin(np.abs(ok - j))]] if ok.size else 0.0
-    outs, filled_any = [], {}
+    outs, filled_any, holes = [], {}, {}
     for k in FMU_OUTPUTS:
         t = np.asarray(maps["tables"][k], dtype=float)
         ok = valid & np.isfinite(t)
         if not ok.any():
             continue
         f, mask = fill_nearest(t, ok)
+        hole = valid & ~np.isfinite(t)              # inside the envelope without a value: stays NaN, never filled
+        f[hole] = np.nan
+        mask &= ~hole
         outs.append((k, f))
         filled_any[k] = int(mask.sum())
+        if hole.any():
+            holes[k] = int(hole.sum())
     guid = "{" + str(uuid.uuid4()) + "}"
     arrays = (_c_array("SPEED", sp) + _c_array("TORQUE", tq) + _c_array("VDC", vd) + _c_array("TMAX", tmax)
               + _c_array("TMIN", tmin) + "".join(_c_array(f"TAB_{i}", f) for i, (_k, f) in enumerate(outs)))
@@ -508,11 +538,16 @@ def write_fmu(maps: dict, path, model_name: str = "TwbDriveMaps", compile_binary
                          "arrays": arrays, "out_tables": ", ".join(f"TAB_{i}" for i in range(len(outs))),
                          "guid": guid, "n0": repr(float(n0 if n0 is not None else sp[0])), "v0": repr(float(vd[0]))}
     m = maps["meta"]
+    hole_txt = ""
+    if holes:
+        why = m.get("empty_in_envelope_why") or "see the metadata"
+        hole_txt = (f"NaN inside the envelope where the model gives no value ({why}): "
+                    + ", ".join(f"{k} {n} cell(s)" for k, n in holes.items()) + ". ")
     desc = (f"Map-based drive model from Traction Workbench ({m['software']}, {m['created']}). Inputs: speed [rpm], "
             f"torque request [N*m], DC voltage [V]. The request is clamped to the full-load curve of the present speed "
             f"and voltage, then the tables (minimum-current policy points) are interpolated. Cells outside the "
-            f"delivered envelope were filled with the nearest feasible cell for interpolation only. Losses not "
-            f"evaluated by the model: {', '.join(m['not_evaluated']) or 'none'}. Source: "
+            f"delivered envelope were filled with the nearest feasible cell for interpolation only. {hole_txt}"
+            f"Losses not evaluated by the model: {', '.join(m['not_evaluated']) or 'none'}. Source: "
             f"{json.dumps(m.get('source') or {}, ensure_ascii=False)}")
     var = [("speed_rpm", "input", "rpm", "motor speed (< 0: reverse rotation, the mirrored map)", float(sp[0])),
            ("torque_request_Nm", "input", "N.m", "shaft torque request (> 0 motoring)", 0.0),
@@ -580,5 +615,5 @@ def write_fmu(maps: dict, path, model_name: str = "TwbDriveMaps", compile_binary
                 z.write(td / "bin" / f"{ident}{ext}", built)
     return {"path": str(path), "model_identifier": ident, "guid": guid, "binary": built,
             "compiler": cmd, "source_fmu": built is None, "outputs": [k for k, _f in outs],
-            "filled_cells": filled_any,
+            "filled_cells": filled_any, "empty_cells": holes,
             "note": None if built else "no C compiler found: a source FMU (the importing tool compiles sources/)"}

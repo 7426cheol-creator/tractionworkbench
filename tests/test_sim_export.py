@@ -49,6 +49,26 @@ def test_cells_are_policy_points_with_their_energy_balance(maps):
     assert "motor: PWM harmonic copper" in maps["meta"]["not_evaluated"]
 
 
+def test_a_part_without_a_loss_leaves_the_total_empty(maps):
+    """The reducer is declared up to 400 N*m: at 450 N*m inside the full load its loss is not given - the reducer loss,
+    the output power and the total stay empty (the total used to be the subtotal without the reducer, a lower loss
+    right where the reducer is loaded hardest); P_dc and the inverter and motor losses keep their values."""
+    t, st = maps["tables"], maps["status"]
+    ok = st == se.STATUS_CODE["FEASIBLE"]
+    hole = ok & np.isnan(t["loss_reducer_W"])
+    assert hole.any()
+    assert all(abs(maps["torques_Nm"][i]) > 400.0 for _a, i, _j in np.argwhere(hole))
+    for k in ("loss_total_W", "P_out_W"):
+        assert np.isnan(t[k][hole]).all()
+    for k in ("P_dc_W", "loss_inverter_W", "loss_motor_W"):
+        assert np.isfinite(t[k][ok]).all()
+    full = ok & ~hole
+    s3 = t["loss_inverter_W"] + t["loss_motor_W"] + t["loss_reducer_W"]
+    assert np.allclose(t["loss_total_W"][full], s3[full], rtol=1e-9, atol=1e-6)
+    m = maps["meta"]
+    assert m["empty_in_envelope"]["loss_total_W"] == int(hole.sum()) and "400" in m["empty_in_envelope_why"]
+
+
 def test_a_voltage_without_a_scaling_law_stays_unknown():
     kw = dict(limits=api._limits(B), speeds_rpm=[3000.0, 6000.0], torques_Nm=[-100.0, 0.0, 100.0])
     m = se.compute_maps(DRIVE, Vdc_list=[500.0], **kw)
@@ -121,6 +141,10 @@ def test_the_fmu_validates_and_returns_the_tables(maps, tmp_path):
         out = ev(maps["speeds_rpm"][j], maps["torques_Nm"][i])
         assert out["P_dc_W"] == pytest.approx(maps["tables"]["P_dc_W"][0, i, j], rel=1e-12, abs=1e-9)
         assert out["limited"] == 0.0
+    assert r["empty_cells"]["loss_reducer_W"] > 0 and "loss_reducer_W" in md.description
+    hole = ev(3000.0, 450.0)                                 # inside the full load, the reducer outside its range
+    assert hole["limited"] == 0.0 and math.isnan(hole["loss_total_W"])
+    assert hole["P_dc_W"] == pytest.approx(maps["tables"]["P_dc_W"][0, 5, 1], rel=1e-12)
     hi = ev(6000.0, 1e4)                                     # beyond the full load: clamped to it
     assert hi["limited"] == 1.0 and hi["torque_Nm"] == pytest.approx(maps["T_max_Nm"][0, 2])
     fw = ev(6000.0, 150.0)

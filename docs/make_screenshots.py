@@ -77,6 +77,15 @@ SHOTS = {
     "pwm_policies": "47_pwm_policies",
     "pwm_timing": "48_pwm_timing",
     "antijerk": "49_antijerk_variants",
+    "fault_form": "25q_fault_form",
+    "reference_overview": "25p_reference_overview",
+    "drive_cycle": "60_drive_cycle",
+    "drive_cycle_energy": "60b_drive_cycle_energy",
+    "charging_waveforms": "61_charging_waveforms",
+    "charging_capability": "61b_charging_capability",
+    "budget_torque": "62_budget_torque",
+    "budget_fusa": "62b_budget_fusa",
+    "sim_export_map": "63_sim_export_map",
 }
 
 
