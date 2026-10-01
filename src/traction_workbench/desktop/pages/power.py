@@ -894,8 +894,9 @@ class PowerPage(QWidget):
         self.l_D = number(1.0, 0, 100, "", 3, 0.1)
         self.l_cut = number(0.0, 0, 100, "K", 2, 0.5)
         self.l_mrep = QLineEdit("1")
-        for lab, w in (("", self.l_cm_on), (tr("메커니즘", "mechanism"), self.l_mech), ("A", self.l_A), ("a (ΔT 지수)", self.l_a),
-                       ("b [K]", self.l_b), ("c (t_on 지수)", self.l_c), (tr("기준 온도", "reference temperature"), self.l_tref),
+        for lab, w in (("", self.l_cm_on), (tr("메커니즘", "mechanism"), self.l_mech), ("A", self.l_A),
+                       (tr("a (ΔT 지수)", "a (ΔT exponent)"), self.l_a), ("b [K]", self.l_b),
+                       (tr("c (t_on 지수)", "c (t_on exponent)"), self.l_c), (tr("기준 온도", "reference temperature"), self.l_tref),
                        (tr("ΔT 유효 [K]", "ΔT valid [K]"), self.l_dT), (tr("T 유효 [°C]", "T valid [°C]"), self.l_Tv),
                        (tr("t_on 유효 [s]", "t_on valid [s]"), self.l_ton), (tr("분위", "quantile"), self.l_q),
                        (tr("scatter 계수", "scatter factor"), self.l_scat), (tr("근거", "basis"), self.l_basis),

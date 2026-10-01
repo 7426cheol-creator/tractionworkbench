@@ -44,6 +44,7 @@ CRIT_KO = {"torque_window": "토크 창", "bound": "물리량 한계", "safe_sta
            "no_false_reaction": "오반응 없음", "timing": "시간 (FDTI/FRTI/FHTI)"}
 REACT_KO = {"safe_state": "안전 상태 (정책 결정)", "asc_low": "ASC-low", "asc_high": "ASC-high", "six_switch_off": "6SO",
             "torque_zero": "토크 0", "report_only": "보고만"}
+REACT_EN = {"safe_state": "safe state (the policy decides)", "torque_zero": "torque 0", "report_only": "report only"}
 PARAM_KO = {"abs_Nm": ("절대 폭", "absolute half-width"), "rel": ("상대 폭 (|T| 비율)", "relative half-width"),
             "delay_ms": ("요청 지연 허용", "request delay allowance"),
             "response_tau_ms": ("정상 응답 시상수", "normal response time constant"),
@@ -55,6 +56,10 @@ PARAM_KO = {"abs_Nm": ("절대 폭", "absolute half-width"), "rel": ("상대 폭
             "tol_A": ("완료 판정 허용 오차", "'done' tolerance"), "rate_Nm_per_ms": ("램프율", "ramp rate"),
             "i_zero_A": ("닫힘 판정 전류", "closing current threshold"),
             "v_on_V": ("ASC 전환 전압", "ASC-on voltage"), "v_off_V": ("프리휠 복귀 전압", "freewheel-again voltage")}
+
+
+def _react(r: str) -> str:
+    return tr(REACT_KO.get(r, r), REACT_EN.get(r, r))
 
 
 def _plabel(key: str) -> str:
@@ -95,7 +100,7 @@ def strategy_summary(st: dict) -> str:
         parts.append(f"{i + 1}. {act}{ex}")
     out = " → ".join(parts)
     if st.get("fallback"):
-        out += tr(f" · 실행 불가 시 {REACT_KO.get(st['fallback'], st['fallback'])}", f" · fallback {st['fallback']}")
+        out += tr(f" · 실행 불가 시 {REACT_KO.get(st['fallback'], st['fallback'])}", f" · fallback {_react(st['fallback'])}")
     return out
 
 
@@ -432,7 +437,7 @@ class DesignEditor(QWidget):
         return [str(x.get("id")) for x in src]
 
     def reaction_choices(self, with_policy=True):
-        base = [(REACT_KO.get(r, r), r) for r in self.schema["reactions"]
+        base = [(_react(r), r) for r in self.schema["reactions"]
                 if with_policy or r not in ("safe_state", "report_only")]
         return base + [(tr(f"전략: {s}", f"strategy: {s}"), s) for s in self._ids("strategy")]
 
@@ -1049,7 +1054,7 @@ class DesignEditor(QWidget):
 
         def then_put(r, val):
             r["else" if "else" in r else "then"] = val
-        kinds = [("—", None)] + [(KIND_KO.get(k, k), k) for k in self.schema["sw_kinds"] + self.schema["hw_kinds"]]
+        kinds = [("—", None)] + [(tr(KIND_KO.get(k, k), k), k) for k in self.schema["sw_kinds"] + self.schema["hw_kinds"]]
         side = [("—", None), (tr("상단", "upper"), "upper"), (tr("하단", "lower"), "lower")]
         cols = [Col("else", tr("기본 (else)", "default (else)"), "bool", get=is_else_get, put=is_else_put),
                 cond("speed_above_rpm", tr("속도 > [rpm]", "speed > [rpm]")),
@@ -1129,7 +1134,7 @@ class DesignEditor(QWidget):
     def _fill_priority(self):
         self.l_prio.clear()
         for x in self.work["policy"]["priority"]:
-            self.l_prio.addItem(REACT_KO.get(x, x) if x in REACT_KO else x)
+            self.l_prio.addItem(_react(x) if x in REACT_KO else x)
 
     def _move_prio(self, d):
         pr = self.work["policy"]["priority"]
