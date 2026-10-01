@@ -81,7 +81,7 @@ def win():
     from PySide6.QtCore import Qt                    # the safety case on a few catalog scenarios (one duplicate)
     for i in range(fs.verif_list.count()):
         it = fs.verif_list.item(i)
-        it.setCheckState(Qt.Checked if it.data(Qt.UserRole) in ("step_ok", "false_trip", "res_lost", "stale_common")
+        it.setCheckState(Qt.Checked if it.data(Qt.UserRole) in ("step_ok", "false_trip", "res_lost", "sens_supply")
                          else Qt.Unchecked)
     for page, actions in runs.items():
         w.show_page(page)

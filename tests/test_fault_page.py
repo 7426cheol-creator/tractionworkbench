@@ -84,11 +84,11 @@ def test_a_representative_scenario_runs_and_reads_on_the_page(win, tmp_path, mon
     from PySide6.QtWidgets import QFileDialog
     from traction_workbench.extensions.faultsim.study import scenario
     page = win.pages["fault_sim"]
-    _load(page, "res_lost")
+    _load(page, "res_lost_relay")
     sc = page.scenario()
-    ref = scenario("res_lost")
-    assert sc["speed_rpm"] == ref["speed_rpm"] and sc["faults"] == [dict(f, t_ms=float(f["t_ms"])) for f in
-                                                                    ref["faults"]]
+    ref = scenario("res_lost_relay")
+    assert sc["speed_rpm"] == ref["speed_rpm"] and sc["faults"] == [   # (no parameters = an empty params entry)
+        dict(f, t_ms=float(f["t_ms"]), params=f.get("params") or {}) for f in ref["faults"]]
     page.run()
     res = page.last
     assert res is not None and res["verdicts"]["TSR-06"] == "FAIL"
@@ -124,7 +124,7 @@ def test_a_representative_scenario_runs_and_reads_on_the_page(win, tmp_path, mon
 def test_reaction_candidates_run_from_the_same_initial_condition(win):
     from PySide6.QtCore import Qt
     page = win.pages["fault_sim"]
-    _load(page, "res_lost")
+    _load(page, "res_lost_relay")
     # every declared strategy is a candidate next to the primitive reactions; keep one strategy for a short test
     keys = [page.cand_list.item(i).data(Qt.UserRole) for i in range(page.cand_list.count())]
     assert keys[:6] == ["policy", "none", "asc_low", "asc_high", "six_switch_off", "torque_zero"]
@@ -174,7 +174,7 @@ def test_a_counterexample_is_rerun_saved_opened_loaded_and_marked_stale(win, tmp
     camp = page.last_camp
     assert page.t_runs.rowCount() == 2 and camp["scope"]["region"] == "NOT_ESTABLISHED"
     cx = [c for c in page.counterexamples if c["scenario"]["speed_rpm"] == 12000]
-    assert cx and "TSR-06" in cx[0]["failing"]
+    assert cx and "TSR-08" in cx[0]["failing"]
     # 9000 rpm is above the rectification onset too: the six-switch-off braking torque fails TSR-08 there
     assert "TSR-08" in next(c for c in page.counterexamples if c["scenario"]["speed_rpm"] == 9000)["failing"]
     assert "현재 프로젝트와 같음" in page.t_cx.item(0, 3).text()

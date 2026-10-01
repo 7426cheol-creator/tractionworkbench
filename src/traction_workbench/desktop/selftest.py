@@ -248,8 +248,11 @@ def run_self_test(app, out_dir) -> int:
         app.processEvents()
         v = (fs.last or {}).get("verdicts") or {}
         acts = [e.get("reaction") for e in (fs.last or {}).get("events", []) if e["kind"] == "actuation"]
-        check("fault:wrong_reaction", v.get("TSR-06") == "FAIL" and fs.t_req.rowCount() == 14
-              and acts[:1] == ["six_switch_off"], f"{ {k: x for k, x in v.items() if x != 'PASS'} } {acts[:2]}")
+        # the drive system's own consequences; the battery system (BMS, contactor) is outside the scope
+        srcs = {e.get("source") for e in (fs.last or {}).get("events", [])}
+        check("fault:wrong_reaction", v.get("TSR-08") == "FAIL" and fs.t_req.rowCount() == 14
+              and acts[:1] == ["six_switch_off"] and not srcs & {"BMS", "contactor"},
+              f"{ {k: x for k, x in v.items() if x != 'PASS'} } {acts[:2]}")
         reading("fault_sim", fs.insight, "fault_sim")
         for tab, name in ((fs.p_wave, "25b_fault_waveforms"), (fs.tab_zoom, "25b2_fault_transient"),
                           (fs.tab_timeline, "25c_fault_timeline"),
@@ -283,7 +286,8 @@ def run_self_test(app, out_dir) -> int:
               and 55.0 < cyc.get("v_min_V", 0) and cyc.get("v_max_V", 1e9) < 110.0, str(cyc)[:200])
         fs.tabs.setCurrentWidget(fs.tab_zoom)
         shot(win, "25b3_fault_hw_vdc_cycling")
-        fs.preset.setCurrentIndex(fs.preset.findData("res_lost"))
+        # the relay opening during the wrong reaction (an event at the drive's interface): the ASC holds the DC link
+        fs.preset.setCurrentIndex(fs.preset.findData("res_lost_relay"))
         fs._load_preset()
         from PySide6.QtCore import Qt
         keep = ("policy", "none", "asc_low", "asc_high", "six_switch_off", "torque_zero", "FW2_ASC_LOW", "SOFT_ASC_V")
@@ -292,7 +296,7 @@ def run_self_test(app, out_dir) -> int:
             it.setCheckState(Qt.Checked if it.data(Qt.UserRole) in keep else Qt.Unchecked)
         fs.run_compare()
         rows = {r["candidate"]: r for r in (fs.last_cmp or {}).get("rows", [])}
-        check("fault:candidates", len(rows) == 8 and rows["policy"]["overall"] == "FAIL"
+        check("fault:candidates", len(rows) == 8 and "TSR-06" in rows.get("policy", {}).get("failing", [])
               and "TSR-06" not in rows["asc_low"]["failing"] and "TSR-06" not in rows["FW2_ASC_LOW"]["failing"],
               str({k: r["overall"] for k, r in rows.items()}))
         reading("fault:candidates", fs.i_cmp, "fault_compare")

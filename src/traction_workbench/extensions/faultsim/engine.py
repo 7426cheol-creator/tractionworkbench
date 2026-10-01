@@ -114,6 +114,13 @@ FAULT_KINDS = {
                  (("J_kgm2", "float", 0.0), ("T_load_Nm", "float", 0.0))),
 }
 
+# The drive-system scope of the fault simulation: faults of other controllers and of the vehicle network (the VCU's
+# torque command and envelope, CAN reception, end-to-end checks) and of the battery system (its contactor, its charge
+# acceptance) are not assumed there - the battery relay opening, the LV supply lost and a coupling change are events
+# at the drive's interfaces.  The engine keeps these kinds for the reference verification of documents that require
+# them.
+OUTSIDE_DRIVE_SCOPE = ("torque_command", "e2e", "envelope", "contactor_stuck", "charge_acceptance_loss")
+
 
 @dataclass(frozen=True)
 class FaultSpec:

@@ -133,8 +133,16 @@ def test_sensor_fault_acts_through_closed_loop_control_and_is_seen_by_measured_c
     assert tl["t_S"] > tl["t_R"] >= tl["t_D"] > tl["t_F"]          # detection, command, safe condition in order
 
 
+STALE = {"speed_rpm": 12000, "request": {"kind": "step", "T0_Nm": 150, "T1_Nm": 0, "t0_ms": 20}, "horizon_ms": 80,
+         "faults": [{"kind": "torque_command", "t_ms": 15, "params": {"mode": "stale"}}]}
+STALE_COMMON = {**STALE, "horizon_ms": 100,
+                "faults": [{"kind": "torque_command", "t_ms": 15, "params": {"mode": "stale", "paths": "both"}}]}
+
+
 def test_monitor_without_independent_request_misses_a_stale_command_common_cause():
-    ok, bad = run("stale_indep"), run("stale_common")
+    """An engine capability kept for the reference verification of documents that require it: a fault of the sender
+    (another controller) is not a drive-system preset."""
+    ok, bad = run(copy.deepcopy(STALE)), run(copy.deepcopy(STALE_COMMON))
     assert events(ok, "detection", "SM-TQ") and ok["verdicts"]["TSR-01"] == "PASS"
     assert all(v in ("PASS", "NOT_APPLICABLE") for k, v in ok["verdicts"].items() if k.startswith("TSR"))
     assert not events(bad, "detection") and bad["verdicts"]["TSR-01"] == "FAIL"
@@ -157,13 +165,29 @@ def test_protection_path_lost_backup_reacts_later_and_delay_violates_the_rating(
 
 
 def test_frozen_position_sensor_makes_the_policy_choose_six_switch_off_at_high_speed_wrong_reaction():
-    """The safe-state selection uses the speed measured from the faulty sensor: 6SO at a true 12000 rpm rectifies,
-    the BMS opens the contactor and the DC link over-charges."""
+    """The safe-state selection uses the speed measured from the faulty sensor: 6SO at a true 12000 rpm rectifies
+    into the battery - a braking torque and a d-axis current beyond their limits, the safe state never reached.  The
+    battery system's own protection is outside the drive-system scope: the battery stays connected (no BMS, no
+    contactor event); the relay opening is a scenario event, and with it the DC link over-charges."""
     r = run("res_lost")
     act = events(r, "actuation")[0]
     assert act["reaction"] == "six_switch_off" and r["summary"]["final_bridge"] == "six_switch_off"
-    assert r["verdicts"]["TSR-06"] == "FAIL"
-    assert any(e["source"] == "contactor" for e in r["events"])
+    v = r["verdicts"]
+    assert v["TSR-08"] == v["TSR-09"] == v["TSR-03"] == "FAIL" and v["TSR-06"] == "PASS"
+    assert not any(e["source"] in ("BMS", "contactor") for e in r["events"])
+    assert r["summary"]["v_dc_max_V"] < 700.0                       # the battery holds the DC link
+    relay = run("res_lost_relay")                                    # the relay opens at 22 ms, during the 6SO
+    assert relay["verdicts"]["TSR-06"] == "FAIL" and relay["summary"]["v_dc_max_V"] > 850.0
+    assert any(e["source"] == "contactor" and "fault" in e["text"] for e in relay["events"])
+
+
+def test_the_example_is_scoped_to_the_drive_system():
+    """No battery-system protection in the example and no preset built on another controller's fault."""
+    fs = builtin_project().data("fault_sim")
+    assert "bms" not in fs["battery"] and "BMS" in fs["scope"]["not_assumed"]
+    from traction_workbench.extensions.faultsim.engine import OUTSIDE_DRIVE_SCOPE
+    kinds = {f["kind"] for s in SCENARIOS for f in s["scenario"].get("faults", [])}
+    assert not kinds & set(OUTSIDE_DRIVE_SCOPE) and "battery_disconnect" in kinds
 
 
 def test_shorted_switch_selects_the_asc_of_its_own_side_and_a_speed_only_policy_does_not():
@@ -275,7 +299,7 @@ def test_a_safe_state_missed_by_its_deadline_is_a_fail_even_if_the_hold_window_i
 
 
 def test_sg_carries_inverter_evidence_and_a_vehicle_indicator_never_a_vehicle_approval():
-    r = run("stale_common")
+    r = run(copy.deepcopy(STALE_COMMON))
     sg = {g["id"]: g for g in r["evaluation"]["sg"]}["SG-01"]
     assert sg["inverter_evidence"] == "FAIL" and "not a vehicle safety approval" in sg["statement"]
     assert sg["vehicle"]["status"] == "INDICATOR" and "rigid-driveline" in sg["vehicle"]["detail"]

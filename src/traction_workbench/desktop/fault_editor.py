@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDoubleS
                                QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton, QTableWidget, QTableWidgetItem,
                                QVBoxLayout, QWidget)
 
-from ..extensions.faultsim.engine import FAULT_KINDS
+from ..extensions.faultsim.engine import FAULT_KINDS, OUTSIDE_DRIVE_SCOPE
 from ..i18n import tr
 
 # faults that are permanent by nature (the engine never clears them) and the one with its own duration
@@ -198,6 +198,17 @@ class FaultEditor(QWidget):
             row.addWidget(b)
         row.addStretch(1)
         lay.addLayout(row)
+        self.scope_note = QLabel(tr(
+            "범위: 구동 시스템(인버터·모터). 다른 제어기(BMS·VCU)와 차량 통신(CAN 수신·E2E)의 고장, 배터리 시스템 자체의 보호는 "
+            "가정하지 않습니다. 배터리 릴레이 개방·저전압 전원 상실·커플링 변화는 구동 시스템 경계의 사건으로 넣고 다른 고장과 "
+            "함께 쓸 수 있습니다.",
+            "Scope: the drive system (inverter and motor). Faults of other controllers (BMS, VCU) and of the vehicle "
+            "network (CAN reception, end-to-end) and the battery system's own protection are not assumed. The battery "
+            "relay opening, the low-voltage supply lost and a coupling change are events at the drive's interfaces, "
+            "alone or with other faults."))
+        self.scope_note.setWordWrap(True)
+        self.scope_note.setStyleSheet("color: palette(mid);")
+        lay.addWidget(self.scope_note)
         self.box = QGroupBox(tr("선택한 고장", "selected fault"))
         self.form = QFormLayout(self.box)
         self.form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
@@ -407,7 +418,10 @@ class FaultEditor(QWidget):
         self.box.setTitle(tr(f"고장 {i + 1}: {fault_name(row['kind'])}", f"fault {i + 1}: {fault_name(row['kind'])}"))
         kind = self._mark(QComboBox())
         for k in FAULT_KINDS:
-            kind.addItem(fault_name(k), k)
+            if k in OUTSIDE_DRIVE_SCOPE and k != row["kind"]:
+                continue
+            out = k in OUTSIDE_DRIVE_SCOPE          # a saved scenario keeps its kind, marked
+            kind.addItem(fault_name(k) + (tr(" (구동 시스템 범위 밖)", " (outside the drive-system scope)") if out else ""), k)
             kind.setItemData(kind.count() - 1, fault_description(k), Qt.ToolTipRole)
         kind.setCurrentIndex(max(0, kind.findData(row["kind"])))
         kind.currentIndexChanged.connect(lambda _x, w=kind, i=i: self._kind_changed(i, w.currentData()))

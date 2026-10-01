@@ -69,11 +69,20 @@ SCENARIOS = [
                   "overrides": {"mechanisms.SM-OVSW.params.debounce_ms": 2.0}}},
     {"key": "res_lost", "category": "wrong reaction",
      "title": {"ko": "레졸버 신호 소실 · 12,000 rpm", "en": "resolver signal loss · 12,000 rpm"},
-     "hint": {"ko": "얼어붙은 각도로 속도 추정이 0 → 정책이 6SO 선택(실제 고속) → 비제어 정류 → BMS 차단 → 과전압",
+     "hint": {"ko": "얼어붙은 각도로 속도 추정이 0 → 정책이 6SO 선택(실제 고속) → 비제어 정류 → 제동 토크·d축 전류 한계 초과",
               "en": "the frozen angle drives the speed estimate to 0 → the policy picks 6SO at high speed → "
-                    "uncontrolled rectification → BMS opens → over-voltage"},
+                    "uncontrolled rectification → braking torque and d-axis current beyond their limits"},
      "scenario": {"speed_rpm": 12000, "torque_Nm": 150, "horizon_ms": 60,
                   "faults": [{"kind": "sensor", "t_ms": 10, "params": {"target": "RES", "mode": "lost"}}]}},
+    {"key": "res_lost_relay", "category": "wrong reaction",
+     "title": {"ko": "레졸버 신호 소실 + 배터리 릴레이 개방 · 12,000 rpm",
+               "en": "resolver signal loss + battery relay opens · 12,000 rpm"},
+     "hint": {"ko": "6SO 정류 중에 릴레이가 열리면(구동 시스템 경계의 사건) 정류 전류가 DC-link를 충전 → 850 V 초과",
+              "en": "the relay opens during the 6SO rectification (an event at the drive's interface): the rectified "
+                    "current charges the DC link beyond 850 V"},
+     "scenario": {"speed_rpm": 12000, "torque_Nm": 150, "horizon_ms": 60,
+                  "faults": [{"kind": "sensor", "t_ms": 10, "params": {"target": "RES", "mode": "lost"}},
+                             {"kind": "battery_disconnect", "t_ms": 22}]}},
     {"key": "sw_short", "category": "protection success",
      "title": {"ko": "상단 스위치 단락 · 12,000 rpm", "en": "upper switch short · 12,000 rpm"},
      "hint": {"ko": "하단 스위치 desat → 단락된 쪽의 ASC(ASC-high): 전류·토크 모두 허용 안",
@@ -110,19 +119,6 @@ SCENARIOS = [
                     "device current limit exceeded"},
      "scenario": {"speed_rpm": 12000, "torque_Nm": 150, "horizon_ms": 60,
                   "faults": [{"kind": "resource_loss", "t_ms": 10, "params": {"resource": "SENS_5V"}}]}},
-    {"key": "stale_indep", "category": "protection success",
-     "title": {"ko": "토크 명령 고착 · 감시기 독립 메시지", "en": "stale torque command · independent monitor message"},
-     "hint": {"ko": "요청 150→0인데 구동은 150 유지 → 독립 메시지로 감시기 검출 → 안전 상태",
-              "en": "request 150→0 while the drive keeps 150 → the monitor's own message detects it"},
-     "scenario": {"speed_rpm": 12000, "request": {"kind": "step", "T0_Nm": 150, "T1_Nm": 0, "t0_ms": 20},
-                  "horizon_ms": 80, "faults": [{"kind": "torque_command", "t_ms": 15, "params": {"mode": "stale"}}]}},
-    {"key": "stale_common", "category": "common cause",
-     "title": {"ko": "토크 명령 고착 · 감시기가 같은 메시지 사용", "en": "stale torque command · monitor on the same message"},
-     "hint": {"ko": "공통 원인: 감시기도 같은 오래된 값을 봄 → 미검출, 의도치 않은 가속 토크 (FAIL)",
-              "en": "common cause: the monitor sees the same stale value → undetected unintended acceleration (FAIL)"},
-     "scenario": {"speed_rpm": 12000, "request": {"kind": "step", "T0_Nm": 150, "T1_Nm": 0, "t0_ms": 20},
-                  "horizon_ms": 100, "faults": [{"kind": "torque_command", "t_ms": 15,
-                                                 "params": {"mode": "stale", "paths": "both"}}]}},
     {"key": "restart_flying", "category": "recovery / restart",
      "title": {"ko": "MCU 리셋 2 ms → flying 재시동", "en": "MCU reset 2 ms → flying restart"},
      "hint": {"ko": "속도를 다시 잡고 램프로 복귀: 반응 없이 토크 회복", "en": "speed re-established, torque ramps back"},
@@ -223,6 +219,9 @@ CAMPAIGNS = {
                  {"ko": "잘못 고른 6SO가 해가 되는 속도: 정류 개시(≈8,270 rpm) 위", "en": "where the wrongly chosen 6SO "
                                                                                   "hurts: above the rectification "
                                                                                   "onset (≈8,270 rpm)"}),
+    "res_lost_relay": ([{"path": "faults.1.t_ms", "values": [12, 16, 22, 30, 40]}],
+                       {"ko": "릴레이가 언제 열려도 6SO 정류 중이면 과전압", "en": "whenever the relay opens during the "
+                                                                       "6SO rectification: over-voltage"}),
     "sw_short": ([{"path": "speed_rpm", "values": [1000, 3000, 6000, 12000]}],
                  {"ko": "ASC-high의 유효 영역: 저속에서는 제동 토크가 FRTI 안에 가라앉지 않음", "en": "the effective region "
                                                                                       "of ASC-high: at low speed its "
@@ -241,13 +240,6 @@ CAMPAIGNS = {
     "sens_supply": ([{"path": "speed_rpm", "values": [3000, 6000, 12000]}],
                     {"ko": "공통 원인 결과가 운전점에 따라 달라짐", "en": "the common-cause outcome depends on the "
                                                                 "operating point"}),
-    "stale_indep": ([{"path": "overrides.mechanisms.SM-TQ.params.debounce_ms", "values": [5, 10, 20, 40]}],
-                    {"ko": "감시기 디바운스와 FDTI 예산(20 ms)", "en": "the monitor's debounce against the FDTI budget "
-                                                                   "(20 ms)"}),
-    "stale_common": ([{"path": "faults.0.params.paths", "values": ["control", "monitor", "both"]}],
-                     {"ko": "고장이 제어 메시지·감시 사본·둘 다(공통 원인)에 있을 때", "en": "the fault on the control "
-                                                                          "message, the monitor's copy, or both "
-                                                                          "(common cause)"}),
     "restart_flying": ([{"path": "faults.0.params.duration_ms", "values": [1, 2, 5, 10]}],
                        {"ko": "리셋 길이에 따른 flying 재시동 결과", "en": "the flying restart against the reset "
                                                                      "length"}),

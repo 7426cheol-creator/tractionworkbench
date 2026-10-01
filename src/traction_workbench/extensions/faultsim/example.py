@@ -1,8 +1,13 @@
 """The synthetic protection architecture and safety requirements of the built-in example project.
 
 Demonstration data, not a product: every value is an example of what a project declares (sensors and the resources
-they need, the sensor roles each consumer reads, reaction paths, safety mechanisms, the safe-state policy, battery
-management, SG / FSR / TSR).  The built-in project carries it as its ``fault_sim`` section.
+they need, the sensor roles each consumer reads, reaction paths, safety mechanisms, the safe-state policy, SG / FSR /
+TSR).  The built-in project carries it as its ``fault_sim`` section.
+
+Scope: the drive system (inverter and motor).  The battery system's own protection (its current limit and contactor
+decisions) and faults of other controllers and of the vehicle network (BMS, VCU, CAN reception) are not assumed: the
+battery stays connected unless a scenario opens the relay - an event at the drive's interface that combines with any
+drive fault.
 """
 
 from .strategy import TEMPLATES as _TEMPLATES
@@ -12,8 +17,14 @@ FAULT_SIM = {
     "basis": "synthetic protection architecture (not a product): one MCU runs control, the monitor task and the "
              "software reaction path; a protection logic device (CPLD) forces the gates on hardware trips with the "
              "safe state the MCU pre-selects; gate drivers with desaturation and UVLO; external watchdog",
-    "battery": {"L_uH": 2.0, "bms": {"charge_current_max_A": 200.0, "delay_ms": 10.0,
-                                     "basis": "synthetic: the BMS opens the contactor 10 ms after the charge limit"}},
+    "scope": {"item": "drive system: inverter (power stage, gate drivers, control and monitoring MCU, protection "
+                      "logic, its sensors) and the motor",
+              "interface_events": "the battery relay opening, the low-voltage supply lost and a coupling change are "
+                                  "scenario events at the drive's interfaces - alone or combined with drive faults",
+              "not_assumed": "faults of other controllers and of the vehicle network (BMS, VCU, CAN reception / "
+                             "end-to-end) and the battery system's own protection (its current limit, its contactor "
+                             "decisions): the battery stays connected unless a scenario opens the relay"},
+    "battery": {"L_uH": 2.0},
     "dc_link": {"bleeder_ohm": 100e3, "active_discharge_ohm": 30.0, "active_discharge_delay_ms": 5.0},
     "control": {"command_period_ms": 10.0, "command_latency_ms": 0.5, "comm_timeout_ms": 50.0,
                 "timeout_ramp_Nm_per_ms": 5.0, "speed_filter_ms": 0.5, "v_limit_fraction": 1.0,
@@ -132,7 +143,7 @@ FAULT_SIM = {
              "text": "limit DC-link voltage, phase current and d-axis current to the component ratings",
              "mechanisms": ["SM-OV", "SM-OVSW", "SM-OC", "SM-DSAT"],
              "fdti_budget_ms": 1.0, "frti_budget_ms": 2.0, "safe_state": None,
-             "warning": "HV system fault message; contactor opened by the BMS where needed",
+             "warning": "HV system fault message to the vehicle (the battery system decides on its contactor)",
              "allocation": ["CPLD", "HW comparators", "gate drivers", "MCU monitor task"],
              "verification": ["simulation", "fault injection", "bench test"]},
         ],

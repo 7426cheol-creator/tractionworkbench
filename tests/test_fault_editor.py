@@ -62,6 +62,31 @@ def test_every_preset_round_trips_through_the_editor(editor):
             assert b["kind"] == a["kind"] and b["t_ms"] == float(a.get("t_ms", 0.0)) and b["params"] == p
 
 
+def test_the_form_offers_the_drive_systems_faults_only(editor, app):
+    """Faults of other controllers, of the vehicle network and of the battery system are not offered; a scenario saved
+    with one still opens, keeps its kind and says it is outside the drive-system scope."""
+    from PySide6.QtWidgets import QFormLayout
+
+    from traction_workbench.extensions.faultsim.engine import OUTSIDE_DRIVE_SCOPE
+
+    def kinds():
+        editor.table.selectRow(0)
+        app.processEvents()
+        cb = editor.form.itemAt(0, QFormLayout.FieldRole).widget()
+        return [cb.itemData(i) for i in range(cb.count())], cb.currentText()
+    editor.set_faults([{"kind": "sensor", "t_ms": 10.0, "params": {"target": "CS_A", "mode": "offset", "value": 150.0}}])
+    offered, _ = kinds()
+    assert not set(offered) & set(OUTSIDE_DRIVE_SCOPE)
+    assert {"sensor", "battery_disconnect", "lv_loss", "coupling", "mcu_reset", "switch_short"} <= set(offered)
+    old = {"kind": "torque_command", "t_ms": 15.0, "params": {"mode": "stale", "value": 0.0, "paths": "control",
+                                                              "freq_Hz": 20.0}}
+    editor.set_faults([old])
+    offered, text = kinds()
+    assert "torque_command" in offered and ("범위 밖" in text or "outside" in text)
+    assert editor.faults()[0]["kind"] == "torque_command"
+    assert "BMS" in editor.scope_note.text() and "CAN" in editor.scope_note.text()
+
+
 def test_a_new_fault_and_a_kind_change_take_the_declared_defaults(editor, app):
     editor.set_faults([])
     editor.add()
