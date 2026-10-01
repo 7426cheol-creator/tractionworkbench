@@ -170,8 +170,8 @@ def main() -> int:
             # the transient zoomed to the simulated samples, every extreme with value and instant
             fs.tabs.setCurrentWidget(fs.tab_zoom)
             shot(fs.tabs, "fusa_transient_zoom", (1240, 1180))
-            # the data cursor on the zoomed transient: the battery current followed, two pins (dt, dI)
-            cursor_demo(fs.p_zoom, "battery", (10.49, 11.10), (1240, 1180))
+            # the data cursor on the zoomed transient: the HV input current followed, two pins (dt, dI)
+            cursor_demo(fs.p_zoom, "hv input", (10.49, 11.10), (1240, 1180))
             shot(fs.tabs, "fusa_data_cursor", (1240, 1180))
             fs.p_zoom.cursor.clear_pins()
             fs.p_zoom.signal_box.setCurrentIndex(0)

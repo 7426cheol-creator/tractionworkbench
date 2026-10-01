@@ -55,8 +55,8 @@ application runs in Korean or English).*
 <td width="50%"><img src="docs/screenshots/fusa_data_cursor.jpg" alt="데이터 커서"></td>
 </tr>
 <tr>
-<td><b>과도 확대</b> — 고장 직전부터 반응·극값까지 자동 창(9.6–13.6 ms), 점 = 시뮬레이션 샘플(간격 1.8–10 µs), 사건 이름, 극값: 축 토크 −637 N·m @ 12.100 ms, |i|max 1318 A @ 12.500 ms, 배터리 전류 238 A @ 10.490 ms. 아래 표에 고장 전·극값·고장 후/반응 후 경과·한계 밖 시간·정착·샘플 간격<br><i>Transient zoom: the simulated samples, named instants and a metrics table</i></td>
-<td><b>데이터 커서 (모든 그래프)</b> — 범례에서 신호(배터리 전류)를 고르면 커서가 샘플에 맞춰 곡선을 따라가고, 두 번 클릭해 고정하면 Δt·ΔI·기울기, 판독 줄에 그 시각의 모든 신호 값. ←/→ 한 샘플 이동<br><i>Data cursor on every plot: pick a signal in the legend, follow it sample by sample, pin two cursors for Δt / Δy</i></td>
+<td><b>과도 확대</b> — 고장 직전부터 반응·극값까지 자동 창(9.6–13.6 ms), 점 = 시뮬레이션 샘플(간격 1.8–10 µs), 사건 이름, 극값: 축 토크 −637 N·m @ 12.100 ms, |i|max 1318 A @ 12.500 ms, HV 입력 전류 238 A @ 10.490 ms. 아래 표에 고장 전·극값·고장 후/반응 후 경과·한계 밖 시간·정착·샘플 간격<br><i>Transient zoom: the simulated samples, named instants and a metrics table</i></td>
+<td><b>데이터 커서 (모든 그래프)</b> — 범례에서 신호(HV 입력 전류)를 고르면 커서가 샘플에 맞춰 곡선을 따라가고, 두 번 클릭해 고정하면 Δt·ΔI·기울기, 판독 줄에 그 시각의 모든 신호 값. ←/→ 한 샘플 이동<br><i>Data cursor on every plot: pick a signal in the legend, follow it sample by sample, pin two cursors for Δt / Δy</i></td>
 </tr>
 </table>
 
@@ -262,7 +262,7 @@ FSR마다 FDTI·FRTI·FHTI가 FTTI 예산과 같은 축에 그려집니다.
 | ![보호 타임라인](docs/screenshots/protection_timeline.jpg) | ![ASC 과도](docs/screenshots/asc_transient.jpg) |
 | **보호·고장 인과 궤적**: 임계값·디레이팅·고장 반응을 하나의 궤적에서 — DC-link 전압, 경고·고장·차단 임계값, 필터·확인 지연을 거친 반응 시각 | **ASC 고장 과도**: 운전점 → 단락 → ASC 정상상태의 상전류(비선형 자기 모델이 없으면 선형 스크리닝), 두 전류-시간 요구(피크·RMS)와 판정 |
 | ![고장 파형](docs/screenshots/fault_waveforms.jpg) | ![고장 타임라인](docs/screenshots/fault_timeline.jpg) |
-| **고장 시뮬레이션 파형**: 고장 주입부터 검출·반응·안전 상태까지 참값(축 토크·상전류·DC-link·배터리 전류)과 측정·감시기 추정, 요구 허용 창과 감시기 창 | **사건 타임라인**: 출처별 사건(고장·검출·반응 명령·실제 브리지 상태)과 FSR별 FDTI·FRTI·FHTI, 예산·FTTI 대비 |
+| **고장 시뮬레이션 파형**: 고장 주입부터 검출·반응·안전 상태까지 참값(축 토크·상전류·DC-link·HV 입력 전류)과 측정·감시기 추정, 요구 허용 창과 감시기 창 | **사건 타임라인**: 출처별 사건(고장·검출·반응 명령·실제 브리지 상태)과 FSR별 FDTI·FRTI·FHTI, 예산·FTTI 대비 |
 | ![반응 후보 비교](docs/screenshots/fault_candidates.jpg) | ![고장 캠페인](docs/screenshots/fault_campaign.jpg) |
 | **반응 후보 비교**: 같은 초기 조건·같은 고장에서 보호 적용/미적용·ASC-low·ASC-high·6SO·토크 0과 선언된 반응 전략의 축 토크·최대 상전류·최저 i_d·제동 토크·V_dc와 종합 판정, 전략이 실제로 밟은 단계 — 모든 요구를 만족하는 후보가 없으면 "실행 가능한 안전 반응 없음" | **캠페인**: 실행별 종합 판정 지도와 판정이 바뀌는 구간(경계 이분), 물리량별 최악값과 그 실행(서로 다른 실행의 합은 상한일 뿐), 탐색 집합의 범위 |
 | ![반응 전략 편집](docs/screenshots/fault_strategies.jpg) | ![설계 편집](docs/screenshots/fault_design_editor.jpg) |
