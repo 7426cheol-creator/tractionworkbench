@@ -333,7 +333,7 @@ def test_example_hierarchy_levels_traces_rollup_and_gaps(pkg):
     assert level_of({"kind": "tsr"}) == ("TSR", True) and "VER" in REQ_LEVELS
 
 
-def test_a_proposal_is_derived_and_never_a_customer_requirement(pkg):
+def test_a_proposal_is_derived_and_never_a_source_requirement(pkg):
     bad = copy.deepcopy(REFERENCE_EXAMPLE)
     p = next(it for it in bad["items"] if it["id"] == "EX-PROP-01")
     p["provenance"] = "CONFIRMED"
@@ -360,7 +360,7 @@ def test_the_cycling_proposal_is_demonstrated_and_its_fix_holds(runner, customer
         c == "EX-PROP-01" for c, _b in s["hierarchy"]["children"]["EX-DIS-01"])
 
 
-def test_the_customer_package_is_shipped_classified_and_traced():
+def test_the_builtin_reference_is_shipped_classified_and_traced():
     from traction_workbench.extensions.faultsim.refhier import hierarchy
     raw = api.reference_builtin_package("customer_inverter")
     pkg = api.reference_load(raw)
@@ -385,4 +385,20 @@ def test_hierarchy_in_the_html_and_the_csv():
     html = api.reference_html(res)
     assert "Hierarchy" in html and "EX-TLSR-01" in html and "Gaps the structure shows" in html
     head = api.reference_csv(res).splitlines()[0].split(",")
-    assert {"level", "traces_to", "traces_to_inferred", "proposed"} <= set(head)
+    assert {"level", "traces_to", "traces_to_inferred", "proposed", "source"} <= set(head)
+
+
+def test_the_application_speaks_of_source_requirements():
+    """The report, the matrix CSV and the example package say "source requirement" (the package field keeps its
+    historical name ``customer_tags``; the profile key ``customer`` means the values as given, ``source`` is
+    accepted for it); an earlier project's requirement is tagged PAST-PROJECT."""
+    for prof in ("customer", "source", "illustrative"):
+        res = api.reference_run({"profile": prof, "ids": ["EX-SG-01", "EX-PROP-01", "EX-TQ-01"]})
+        text = (api.reference_html(res) + api.reference_csv(res)).lower()
+        assert "customer" not in text and "\uace0\uac1d" not in text, prof
+    pkg = api.reference_example()
+    assert "CUSTOMER-PAST" not in json.dumps(pkg) and "PAST-PROJECT" in pkg["customer_tags"]
+    raw = api.reference_builtin_package("customer_inverter")
+    assert not any(it.get("provenance") == "CUSTOMER-PAST" for it in raw["items"])
+    assert "customer" not in raw["meta"]["title"].lower()
+    assert not [it["group"] for it in raw["items"] if "customer" in it["group"].lower() or "\uace0\uac1d" in it["group"]]

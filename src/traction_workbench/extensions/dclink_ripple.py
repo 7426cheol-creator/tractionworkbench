@@ -698,7 +698,7 @@ def _state_reason(hot: dict | None) -> Reason:
 
 
 def _requirement_claim(out: dict, req: dict | None, net: _Network, st: dict, source, refine) -> dict:
-    title = "customer DC ripple requirement"
+    title = "DC ripple requirement"
     if not req:
         return Claim("ripple_requirement", Status.UNKNOWN, title, "not stated",
                      reasons=(Reason.REQUIREMENT_INCOMPLETE,), detail="no ripple requirement stated").to_dict()

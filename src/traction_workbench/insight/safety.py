@@ -443,7 +443,7 @@ def safe_state_insight(res: dict) -> Insight:
             s.add(f"{lab}: {esc(engine_text(fw[key]))}", "warn" if "exceed" in fw[key] or "above" in fw[key] else "info")
     rules = res.get("project_rules") or []
     if rules:
-        s = ins.section(tr("프로젝트·고객 규칙 (물리 판정과 별개)", "project / customer rules (separate from physics)"))
+        s = ins.section(tr("프로젝트 규칙 (물리 판정과 별개)", "project rules (separate from physics)"))
         for r in rules:
             s.add(tr(f"<b>{esc(r.get('rule_id', ''))}</b>: {'적용됨' if r.get('applies') else '조건 불일치 (적용 안 됨)'} — 요구 "
                      f"{esc(r.get('require') or '—')}, 금지 {esc(r.get('forbid') or '—')}",

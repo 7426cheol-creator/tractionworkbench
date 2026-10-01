@@ -1,4 +1,4 @@
-"""Reference verification: a requirement / scenario package (a customer specification, a study reference or the
+"""Reference verification: a requirement / scenario package (a specification, a study reference or the
 built-in example) verified item by item on the product - the requirement-to-evidence matrix with PASS / FAIL /
 UNKNOWN / CONFLICT / MANUAL, the evidence of every check on one clock, the OPEN parameters with the items that wait for
 them, the conflicts kept as variants, the safe-state feasibility map, HTML and CSV exports."""
@@ -14,7 +14,8 @@ from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QFormL
                                QTableWidgetItem, QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from ... import api
-from ...extensions.faultsim.refhier import LEVELS, REQ_LEVELS, hierarchy, level_name, level_of
+from ...extensions.faultsim.refhier import (DEFAULT_SOURCE_TAGS, LEVELS, REQ_LEVELS, hierarchy, level_name,
+                                            level_of, set_name)
 from ...i18n import tr
 from ...plots import reference_figures as RF
 from ..widgets import Cell, ConceptNote, KeyValueTable, PlotPanel, combo, error_box, hint, primary_button
@@ -25,18 +26,19 @@ VKO = {"PASS": "PASS", "FAIL": "FAIL", "UNKNOWN": "UNKNOWN", "CONFLICT": "CONFLI
        "NOT_APPLICABLE": "N/A"}
 
 NOTE = lambda: tr(  # noqa: E731
-    "<b>기능안전 요구 검증</b>: 요구·시나리오 패키지(고객 사양, 스터디 참고 문서, 또는 내장 예제)의 항목을 이 제품 모델에서 "
-    "하나씩 판정합니다. 근거 수준(CONFIRMED / CUSTOMER-PAST / PROJECT / DERIVED / RESEARCH / OPEN / CONFLICT)을 그대로 "
+    "<b>기능안전 요구 검증</b>: 요구·시나리오 패키지(사양서, 스터디 참고 문서, 또는 내장 예제)의 항목을 이 제품 모델에서 "
+    "하나씩 판정합니다. 근거 수준(CONFIRMED / PAST-PROJECT / PROJECT / DERIVED / RESEARCH / OPEN / CONFLICT)을 그대로 "
     "유지하며, <b>OPEN 값은 추정하지 않습니다</b> - 그 값이 필요한 판정은 UNKNOWN이 되고 어떤 값이 필요한지 이름을 남깁니다. "
-    "예시 값으로 보고 싶다면 '예시(illustrative)' 프로파일을 고르세요: 예시 값을 쓴 결과는 모두 ILL로 표시되고 고객 판정과 "
+    "예시 값으로 보고 싶다면 '예시(illustrative)' 프로파일을 고르세요: 예시 값을 쓴 결과는 모두 ILL로 표시되고 원문 값 판정과 "
     "섞이지 않습니다. 기록이 충돌하는 항목은 변형(variant)으로 둘 다 실행하며, 확정된 두 판정이 다를 때만 CONFLICT입니다. "
     "안전 상태는 명령 비트가 아니라 <b>물리 결과</b>(C1-C4: 토크·DC 전력 방향·능동 펄싱·TLSR)로 판정합니다.<br>"
     "모든 시뮬레이션 판정은 이 앱에 불러온 <b>제품 모델</b>에 대한 것입니다 (기본은 합성 예제 제품).",
-    "<b>Reference verification</b>: the items of a requirement / scenario package (a customer specification, a study "
+    "<b>Reference verification</b>: the items of a requirement / scenario package (a specification, a study "
     "reference or the built-in example) judged one by one on this product model.  The provenance tags (CONFIRMED / "
-    "CUSTOMER-PAST / PROJECT / DERIVED / RESEARCH / OPEN / CONFLICT) are kept, and <b>OPEN values are never "
+    "PAST-PROJECT / PROJECT / DERIVED / RESEARCH / OPEN / CONFLICT) are kept, and <b>OPEN values are never "
     "guessed</b>: a verdict that needs one is UNKNOWN and names it.  Choose the 'illustrative' profile to see example "
-    "values: every result that used one is marked ILL and kept apart from the customer verdicts.  Conflicting records "
+    "values: every result that used one is marked ILL and kept apart from the verdicts on the given values.  "
+    "Conflicting records "
     "run as variants; CONFLICT only when two definite verdicts differ.  The safe state is judged on the <b>physical "
     "outcome</b> (C1-C4: torque, DC power direction, active pulsing, the TLSR band), never on a command bit.<br>"
     "Every simulation verdict is about the <b>product model</b> loaded in the application (by default the synthetic "
@@ -91,17 +93,17 @@ class ReferencePage(QWidget):
         self.builtin = QComboBox()
         for key, ko, en in api.reference_builtin():
             self.builtin.addItem(tr(ko, en), key)
-        self.builtin.setToolTip(tr("앱에 들어 있는 패키지: 중립 예제, 고객 인버터 FuSa 참고 문서(계층 분류·추적·제안 포함)",
-                                   "packages shipped with the application: the neutral example and the customer "
-                                   "inverter FuSa reference (classified, traced, with proposals)"))
+        self.builtin.setToolTip(tr("앱에 들어 있는 패키지: 중립 예제, 인버터 FuSa 참고 문서(계층 분류·추적·제안 포함)",
+                                   "packages shipped with the application: the neutral example and the inverter "
+                                   "FuSa reference (classified, traced, with proposals)"))
         f.addWidget(self.builtin)
         self.example_btn = QPushButton(tr("내장 패키지 불러오기", "load the built-in package"))
         self.example_btn.clicked.connect(lambda: self.load_builtin(self.builtin.currentData()))
         self.open_btn = QPushButton(tr("파일 불러오기…", "open file…"))
         self.open_btn.clicked.connect(self.open_package)
         self.save_pkg_btn = QPushButton(tr("패키지 저장…", "save package…"))
-        self.save_pkg_btn.setToolTip(tr("지금 패키지를 JSON으로 저장 (고객 패키지의 틀로 쓰기)",
-                                        "save the current package as JSON (a template for a customer package)"))
+        self.save_pkg_btn.setToolTip(tr("지금 패키지를 JSON으로 저장 (새 패키지의 틀로 쓰기)",
+                                        "save the current package as JSON (a template for a new package)"))
         self.save_pkg_btn.clicked.connect(self.save_package)
         for b in (self.example_btn, self.open_btn, self.save_pkg_btn):
             row.addWidget(b)
@@ -109,7 +111,7 @@ class ReferencePage(QWidget):
         v.addWidget(g)
         g = QGroupBox(tr("판정 프로파일", "profile"))
         fl = QFormLayout(g)
-        self.profile = combo([(tr("고객 (OPEN은 UNKNOWN)", "customer (OPEN stays UNKNOWN)"), "customer"),
+        self.profile = combo([(tr("원문 값 (OPEN은 UNKNOWN)", "as given (OPEN stays UNKNOWN)"), "customer"),
                               (tr("예시 (illustrative, 결과에 ILL 표시)", "illustrative (results marked ILL)"),
                                "illustrative")])
         fl.addRow(self.profile)
@@ -124,7 +126,7 @@ class ReferencePage(QWidget):
         self.search.setPlaceholderText(tr("ID·제목 검색", "search id / title"))
         self.search.textChanged.connect(self._fill_matrix)
         self.only_customer = combo([(tr("모든 항목", "all items"), "all"),
-                                    (tr("고객 요구만", "customer requirements only"), "customer"),
+                                    (tr("원문 요구만", "source requirements only"), "customer"),
                                     (tr("내부 (DERIVED 등)만", "internal only"), "internal")])
         self.only_customer.currentIndexChanged.connect(self._fill_matrix)
         self.level = QComboBox()
@@ -171,7 +173,7 @@ class ReferencePage(QWidget):
         ml = QVBoxLayout(mw)
         msplit = QSplitter(Qt.Vertical)
         self.matrix = QTableWidget()
-        heads = [tr("ID", "ID"), tr("판정", "verdict"), tr("레벨", "level"), tr("근거", "provenance"), tr("고객", "customer"),
+        heads = [tr("ID", "ID"), tr("판정", "verdict"), tr("레벨", "level"), tr("근거", "provenance"), tr("원문", "source"),
                  "ASIL",
                  tr("합의", "agreement"), tr("그룹", "group"), tr("종류", "kind"), tr("제목", "title"),
                  tr("OPEN 값", "OPEN values"), tr("시나리오", "scenarios")]
@@ -204,11 +206,11 @@ class ReferencePage(QWidget):
         hl.addWidget(hint(tr(
             "레벨과 추적은 패키지에 적힌 대로입니다: 문서가 인용한 번호로 이은 추적은 실선, 주제로 <i>추론</i>한 연결은 '(추론)'으로 "
             "표시합니다(검토용). 판정 = 항목 자체, 하위 = 아래 모든 요구의 최악(FAIL > CONFLICT > UNKNOWN > PASS). "
-            "'제안'은 시뮬레이션이 빠졌다고 보여 준 DERIVED 추가 요구로, 고객 요구로 세지 않습니다.",
+            "'제안'은 시뮬레이션이 빠졌다고 보여 준 DERIVED 추가 요구로, 원문 요구로 세지 않습니다.",
             "Levels and traces as the package states them: a trace by a number the source cites is plain, a link "
             "<i>inferred</i> by topic is marked '(inferred)' (for review). Verdict = the item itself, subtree = the worst "
             "of every requirement below (FAIL > CONFLICT > UNKNOWN > PASS). A 'proposal' is a DERIVED addition the "
-            "simulation shows is missing: never counted as a customer requirement.")))
+            "simulation shows is missing: never counted as a source requirement.")))
         hsplit = QSplitter(Qt.Vertical)
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels([tr("ID", "ID"), tr("레벨", "level"), tr("판정", "verdict"), tr("하위", "subtree"),
@@ -248,7 +250,7 @@ class ReferencePage(QWidget):
         # unknown / conflict
         uw = QWidget()
         ul = QVBoxLayout(uw)
-        ul.addWidget(hint(tr("고객 근거가 없어 판정할 수 없는 값: FAIL이 아니라 UNKNOWN으로 두고, 각 값을 기다리는 항목 수로 "
+        ul.addWidget(hint(tr("원문이 값을 주지 않아 판정할 수 없는 값: FAIL이 아니라 UNKNOWN으로 두고, 각 값을 기다리는 항목 수로 "
                              "우선순위를 봅니다.", "Values the source does not give: UNKNOWN, never FAIL - ranked by "
                                                  "the number of items waiting for each.")))
         self.t_open = KeyValueTable(headers=[tr("파라미터", "parameter"), tr("근거", "provenance"), tr("단위", "unit"),
@@ -408,7 +410,7 @@ class ReferencePage(QWidget):
         g = self.group.currentData()
         q = self.search.text().strip().lower()
         which = self.only_customer.currentData()
-        cust = set(self.package.get("customer_tags") or ("CONFIRMED", "CUSTOMER-PAST", "PROJECT"))
+        cust = set(self.package.get("customer_tags") or DEFAULT_SOURCE_TAGS)
         out = []
         lvf = self.level.currentData()
         for it in self.package.get("items") or []:
@@ -430,7 +432,7 @@ class ReferencePage(QWidget):
         items = self._visible_items()
         self.matrix.clearSelection()                  # the rows change: a kept selection would point elsewhere
         self._rows_shown = [it["id"] for it in items]
-        cust = set(self.package.get("customer_tags") or ("CONFIRMED", "CUSTOMER-PAST", "PROJECT"))
+        cust = set(self.package.get("customer_tags") or DEFAULT_SOURCE_TAGS)
         self.matrix.setRowCount(len(items))
         for i, it in enumerate(items):
             r = rows.get(it["id"])
@@ -577,7 +579,7 @@ class ReferencePage(QWidget):
                 top.setExpanded(True)
         for j, w in enumerate((200, 60, 80, 80, 130)):
             self.tree.setColumnWidth(j, w)
-        self.t_gaps.set_rows([(g["id"] + (tr(" (고객)", " (customer)") if g.get("customer") else ""), g["level"],
+        self.t_gaps.set_rows([(g["id"] + (tr(" (원문)", " (source)") if g.get("customer") else ""), g["level"],
                                g["text"], ", ".join(g.get("proposals") or []) or "—") for g in h.get("gaps") or []])
         prows, cols = [], {}
         for it in items.values():
@@ -649,7 +651,7 @@ class ReferencePage(QWidget):
         cnt = res.get("counts") or {}
         rows, cols = [], {}
         for i, (k, c) in enumerate(cnt.items()):
-            rows.append((k,) + tuple(str(c.get(v, 0)) for v in RF.VORDER) + (str(sum(c.values())),))
+            rows.append((set_name(k),) + tuple(str(c.get(v, 0)) for v in RF.VORDER) + (str(sum(c.values())),))
         self.t_counts.set_rows(rows, colors=cols)
         self.p_sum.draw(RF.fig_reference_summary, res, title=tr("그룹별 판정", "verdicts per group"),
                         name="reference_summary")

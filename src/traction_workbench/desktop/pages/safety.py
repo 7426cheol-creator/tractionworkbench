@@ -63,7 +63,7 @@ NOTE_SAFE = lambda: (tr("<b>ASC (능동 단락)</b>: 상단 또는 하단 스위
                 "risk).<br>Transients, device SOA, detection and approval are not evaluated (screening)."))
 
 EXAMPLE_RULES = [{"rule_id": "PRJ-SR-01", "when": {"Vdc_below_V": 60}, "require": "FREEWHEEL",
-                  "basis": "project safety concept: HVDC < 60 V -> force the freewheel path (customer/project rule, not physics)"}]
+                  "basis": "project safety concept: HVDC < 60 V -> force the freewheel path (project rule, not physics)"}]
 ITEM_COLS = ("id", "from", "to", "owner", "min_ms", "nom_ms", "max_ms", "period_ms")
 RULE_NUM = (("Vdc_below_V", "Vdc < [V]"), ("Vdc_above_V", "Vdc > [V]"), ("speed_above_rpm", "|n| > [rpm]"),
             ("speed_below_rpm", "|n| < [rpm]"))
@@ -71,7 +71,7 @@ REACTIONS = ("", "ASC", "FREEWHEEL")
 
 
 class RulesTable(QTableWidget):
-    """Project/customer safe-reaction rules as a table (one row per rule; empty cells = condition not used)."""
+    """Project safe-reaction rules as a table (one row per rule; empty cells = condition not used)."""
 
     def __init__(self, rules: list, parent=None):
         heads = [tr("규칙 ID", "rule id")] + [h for _k, h in RULE_NUM] + [tr("HV 상태", "HV state"), tr("요구", "require"),
@@ -438,7 +438,7 @@ class SafetyPage(QWidget):
         self.p_C = number(self._dc_link_uF(), 0.1, 1e6, "µF", 1, 10)
         self.p_V0 = number(600, 1, 5000, "V", 1, 10)
         self.p_Vf = number(60, 0.1, 5000, "V", 1, 5)
-        self.p_t = number(120, 0.001, 1e6, "s", 3, 5, tr("요구 방전 시간 (사내·고객 요구값을 입력)", "required discharge time"))
+        self.p_t = number(120, 0.001, 1e6, "s", 3, 5, tr("요구 방전 시간 (요구값을 입력)", "required discharge time"))
         self.p_R_on = check(tr("R_p 지정", "given R_p"), True, tr("해제하면 시간 조건을 만족하는 최대 R_p를 사용", "off: the largest R_p meeting the time"))
         self.p_R = number(90, 0.001, 1e6, "kΩ", 3, 1)
         self.p_Vnom = number(400, 1, 5000, "V", 1, 10, tr("상시 손실 계산용 정격 링크 전압", "nominal link voltage for the continuous loss"))
@@ -680,7 +680,7 @@ class SafetyPage(QWidget):
                         (tr("소자 정격 전압", "device rating"), self.s_dev), (tr("DC 링크 한계", "DC-link limit"), self.s_link)):
             f.addRow(lab, wd)
         v.addWidget(g)
-        g = QGroupBox(tr("프로젝트 규칙 (물리 법칙이 아닌 고객·프로젝트 규칙)", "project rules (customer/project rules, not physics)"))
+        g = QGroupBox(tr("프로젝트 규칙 (물리 법칙이 아님)", "project rules (not physics)"))
         gl = QVBoxLayout(g)
         self.s_rules = RulesTable(self._project_rules())
         gl.addWidget(self.s_rules)
@@ -694,9 +694,9 @@ class SafetyPage(QWidget):
         row.addStretch(1)
         gl.addLayout(row)
         gl.addWidget(hint(tr("조건 칸이 비어 있으면 그 조건은 쓰지 않습니다. 모든 조건이 맞을 때 규칙이 적용되며, 결과는 물리 판정과 "
-                             "별도 계층(project/customer rule)으로 표시됩니다.",
+                             "별도 계층(프로젝트 규칙)으로 표시됩니다.",
                              "Empty condition cells are not used; a rule applies when all its conditions hold and is reported "
-                             "as a separate project/customer layer, not physics.")))
+                             "as a separate project-rule layer, not physics.")))
         v.addWidget(g, 1)
         b = primary_button(tr("안전 상태 스크리닝", "screen safe states"))
         b.clicked.connect(self.run_safe)

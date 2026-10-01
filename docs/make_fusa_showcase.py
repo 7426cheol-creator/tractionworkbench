@@ -11,7 +11,7 @@ by the same code paths a person uses: the same fault with the hard active short 
 strategies, the strategy and requirement editors, the safety-case reading and the verification matrix over the
 whole scenario catalog, the safety-case report the page saves, the transient zoom and the data cursor, the hardware
 selection by the DC voltage cycling while the vehicle rolls with the processor lost, and the reference verification
-(the customer package's hierarchy, a proposal with its evidence).  Deterministic: light theme, English by default,
+(the built-in reference's hierarchy, a proposal with its evidence).  Deterministic: light theme, English by default,
 built-in synthetic project.
 """
 
@@ -232,7 +232,7 @@ def main() -> int:
     fs.tabs.setCurrentWidget(fs.insight)
     shot(fs.tabs, "fusa_hw_vdc_reading", (1240, 780), height=560)
 
-    # 4c. reference verification: the customer package classified (SG -> TLSR -> FSR -> TSR -> SM), and a proposal
+    # 4c. reference verification: the built-in reference classified (SG -> TLSR -> FSR -> TSR -> SM), and a proposal
     win.show_page("reference")
     rf = win.pages["reference"]
     rf.load_builtin("customer_inverter")

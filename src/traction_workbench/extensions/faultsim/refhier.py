@@ -8,7 +8,7 @@ missing, failing evidence below a requirement).
 
 Level and traces are package content (``level``, ``traces_to``, ``traces_to_inferred``); an item without a level gets
 one inferred from its kind (and is listed as such).  A proposal (``proposed``: true) is a DERIVED addition: it sits in
-the tree where it belongs but is never counted as a customer requirement; a gap it addresses names it.
+the tree where it belongs but is never counted as a source requirement; a gap it addresses names it.
 """
 
 from __future__ import annotations
@@ -40,6 +40,15 @@ KIND_LEVEL = {"goal": "STUDY", "tsr": "TSR", "mechanism": "SM", "safety_mechanis
               "research": "RES", "rule": "RULE", "timing": "DEF", "definition": "DEF", "requirement": "FSR"}
 RANK = {lv: i for i, lv in enumerate(LEVELS)}
 ROLL_ORDER = ("FAIL", "CONFLICT", "UNKNOWN", "PASS", "MANUAL", "NOT_APPLICABLE")
+# the provenance tags whose items are the source's own requirements when a package does not name them (the
+# package field keeps its historical name ``customer_tags``; CUSTOMER-PAST is the older spelling of PAST-PROJECT)
+DEFAULT_SOURCE_TAGS = ("CONFIRMED", "PAST-PROJECT", "CUSTOMER-PAST", "PROJECT")
+# the result sets of a run (``ReferenceRunner.summary()["counts"]`` keys; "customer" is the historical key of
+# the source requirements)
+SET_NAMES = {"customer": ("원문 요구", "source requirements"),
+             "internal": ("내부 (DERIVED·RESEARCH·OPEN 등)", "internal (derived, research, open …)"),
+             "illustrative": ("예시 값으로 판정 (ILL)", "judged with illustrative values (ILL)"),
+             "proposed": ("제안 (DERIVED)", "proposals (DERIVED)")}
 
 
 def level_of(item: dict) -> tuple[str, bool]:
@@ -65,7 +74,7 @@ def hierarchy(pkg: dict, rows: list | None = None) -> dict:
     items = pkg.get("items") or []
     by_id = {it["id"]: it for it in items}
     verdict = {r["id"]: r["verdict"] for r in rows or []}
-    cust = set(pkg.get("customer_tags") or ("CONFIRMED", "CUSTOMER-PAST", "PROJECT"))
+    cust = set(pkg.get("customer_tags") or DEFAULT_SOURCE_TAGS)
     level, inferred_level = {}, []
     for it in items:
         lv, inf = level_of(it)
@@ -166,4 +175,10 @@ def hierarchy(pkg: dict, rows: list | None = None) -> dict:
 def level_name(lv: str) -> str:
     from ...i18n import tr
     ko, en = LEVEL_NAMES.get(lv, (lv, lv))
+    return tr(ko, en)
+
+
+def set_name(key: str) -> str:
+    from ...i18n import tr
+    ko, en = SET_NAMES.get(key, (key, key))
     return tr(ko, en)

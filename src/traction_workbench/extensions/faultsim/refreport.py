@@ -15,6 +15,7 @@ import math
 
 import numpy as np
 
+from .refhier import SET_NAMES
 from .safestate import fault_timeline
 
 EVIDENCE_CHANNELS = ("t", "T_em", "T_shaft", "T_request", "T_cmd", "T_est_mon", "v_dc", "i_dc", "i_bat", "speed_rpm",
@@ -91,7 +92,7 @@ def matrix_rows(summary: dict) -> list:
             rows.append({
                 "item": r["id"], "group": r.get("group", ""), "kind": r.get("kind", ""), "level": r.get("level", ""),
                 "title": r.get("title", ""),
-                "provenance": r.get("provenance", ""), "customer": "yes" if r.get("customer") else "no",
+                "provenance": r.get("provenance", ""), "source": "yes" if r.get("customer") else "no",
                 "asil_literal": r.get("asil_literal") or "", "agreement": r.get("agreement") or "",
                 "traces_to": ", ".join(r.get("traces_to") or []),
                 "traces_to_inferred": ", ".join(r.get("traces_to_inferred") or []),
@@ -106,7 +107,7 @@ def matrix_rows(summary: dict) -> list:
     return rows
 
 
-MATRIX_COLUMNS = ("item", "group", "kind", "level", "title", "provenance", "customer", "asil_literal", "agreement",
+MATRIX_COLUMNS = ("item", "group", "kind", "level", "title", "provenance", "source", "asil_literal", "agreement",
                   "traces_to", "traces_to_inferred", "proposed", "item_verdict", "illustrative", "check", "label",
                   "scenario", "variant", "check_verdict", "expected", "measured", "reasons", "open_parameters",
                   "illustrative_parameters")
@@ -141,8 +142,8 @@ def _hierarchy_html(summary: dict) -> list:
              "<p class='m'>Levels and traces as the package states them; <i>inferred</i> links are marked and are "
              "proposals for review. The first badge is the item's own verdict, the second the worst verdict of its "
              "subtree (FAIL &gt; CONFLICT &gt; UNKNOWN &gt; PASS; MANUAL only when nothing was checked). A proposal is "
-             "a DERIVED addition, never a customer requirement.</p>",
-             "<table><tr><th>level</th><th>items</th><th>customer</th><th>proposed</th><th>machine-checked</th>"
+             "a DERIVED addition, never a source requirement.</p>",
+             "<table><tr><th>level</th><th>items</th><th>source</th><th>proposed</th><th>machine-checked</th>"
              "<th>traced up</th><th>inferred links</th></tr>"]
     for k in LEVELS:
         st = (h.get("stats") or {}).get(k)
@@ -178,12 +179,12 @@ def _hierarchy_html(summary: dict) -> list:
         parts.append("<h3>Gaps the structure shows</h3><table><tr><th>item</th><th>level</th><th>gap</th>"
                      "<th>addressed by</th></tr>")
         for g in gaps:
-            parts.append(f"<tr><td>{e(g['id'])}{' (customer)' if g.get('customer') else ''}</td><td>{e(g['level'])}"
+            parts.append(f"<tr><td>{e(g['id'])}{' (source)' if g.get('customer') else ''}</td><td>{e(g['level'])}"
                          f"</td><td>{e(g['text'])}</td><td>{e(', '.join(g.get('proposals') or [])) or '-'}</td></tr>")
         parts.append("</table>")
     props = [r for r in summary.get("rows", []) if r.get("proposed")]
     if props:
-        parts.append("<h3>Proposals (DERIVED additions, not customer requirements)</h3><ul>")
+        parts.append("<h3>Proposals (DERIVED additions, not source requirements)</h3><ul>")
         for r in props:
             parts.append(f"<li>{_badge(r['verdict'])}<b>{e(r['id'])}</b> ({e(r.get('level', ''))}, traces to "
                          f"{e(', '.join((r.get('traces_to') or []) + (r.get('traces_to_inferred') or [])) or '-')}) "
@@ -198,22 +199,24 @@ def reference_html(summary: dict, project: dict | None = None, code: dict | None
     e = html.escape
     pk = summary.get("package") or {}
     prof = summary.get("profile", "customer")
+    prof_name = {"customer": "as given (OPEN stays UNKNOWN)", "illustrative": "illustrative (results marked ILL)"}
     rows = summary.get("rows", [])
     parts = []
     parts.append(f"<h1>{e(pk.get('title') or 'Reference verification')}</h1>")
-    parts.append(f"<p class='m'>profile <b>{e(prof)}</b> · package digest {e(pk.get('digest', '-'))} · product "
+    parts.append(f"<p class='m'>profile <b>{e(prof_name.get(prof, prof))}</b> · package digest {e(pk.get('digest', '-'))} · product "
                  f"{e((project or {}).get('label', '-'))} ({e((project or {}).get('digest', '-'))})"
                  + (f" · code {e(_txt(code))}" if code else "") + "</p>")
     if prof == "illustrative":
         parts.append("<p class='w'>Illustrative profile: OPEN values take example values - every result that used "
-                     "one is marked ILL and is never a customer verdict.</p>")
+                     "one is marked ILL and is never a verdict on the given values.</p>")
     parts.append("<p class='m'>Every simulation verdict is about the product model named above. OPEN values are never "
                  "guessed: a check that needs one is UNKNOWN and names it.</p>")
     # counts
     parts.append("<h2>Summary</h2><table><tr><th>set</th>" + "".join(f"<th>{v}</th>" for v in VERDICT_ORDER)
                  + "<th>total</th></tr>")
     for key, cnt in (summary.get("counts") or {}).items():
-        parts.append(f"<tr><td>{e(key)}</td>" + "".join(f"<td>{cnt.get(v, 0)}</td>" for v in VERDICT_ORDER)
+        parts.append(f"<tr><td>{e(SET_NAMES.get(key, (key, key))[1])}</td>"
+                     + "".join(f"<td>{cnt.get(v, 0)}</td>" for v in VERDICT_ORDER)
                      + f"<td>{sum(cnt.values())}</td></tr>")
     parts.append("</table>")
     parts += _hierarchy_html(summary)
@@ -254,8 +257,8 @@ def reference_html(summary: dict, project: dict | None = None, code: dict | None
     for r in rows:
         tag = " ILL" if r.get("illustrative") else ""
         meta = " · ".join(x for x in (r.get("level"), r.get("provenance"),
-                                      "customer" if r.get("customer") else "proposal (DERIVED)" if r.get("proposed")
-                                      else "not a customer requirement",
+                                      "source requirement" if r.get("customer") else "proposal (DERIVED)"
+                                      if r.get("proposed") else "not a source requirement",
                                       r.get("asil_literal") and f"ASIL {r['asil_literal']}", r.get("agreement"),
                                       r.get("traces_to") and "traces to " + ", ".join(r["traces_to"]),
                                       r.get("traces_to_inferred") and "inferred: " + ", ".join(r["traces_to_inferred"]))

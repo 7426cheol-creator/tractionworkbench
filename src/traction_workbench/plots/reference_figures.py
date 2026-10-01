@@ -29,7 +29,9 @@ def _arr(tr_: dict, k: str):
 
 
 def fig_reference_summary(fig, summary: dict, title: str | None = None):
-    """Verdicts per group (stacked, items counted once) and the customer / internal / illustrative totals."""
+    """Verdicts per group (stacked, items counted once) and the totals per set (source requirements, internal,
+    illustrative, proposals)."""
+    from ..extensions.faultsim.refhier import set_name
     _reset(fig, title)
     t = S.theme()
     rows = summary.get("rows") or []
@@ -53,7 +55,7 @@ def fig_reference_summary(fig, summary: dict, title: str | None = None):
     ax.set_xlabel(tr("항목 수", "items"))
     ax.legend(loc="lower right", fontsize=7.5, ncol=3)
     cnt = summary.get("counts") or {}
-    lines = [f"{k}: " + ", ".join(f"{v} {c[v]}" for v in VORDER if c.get(v)) for k, c in cnt.items()]
+    lines = [f"{set_name(k)}: " + ", ".join(f"{v} {c[v]}" for v in VORDER if c.get(v)) for k, c in cnt.items()]
     _note(ax, "\n".join(lines) or "-", loc="upper right")
     ax.grid(axis="x", color=t["grid"], lw=0.5)
 

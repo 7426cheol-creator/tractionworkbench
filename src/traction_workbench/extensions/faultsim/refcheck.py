@@ -19,6 +19,7 @@ import re
 import numpy as np
 
 from ...errors import InputValidationError
+from .refhier import DEFAULT_SOURCE_TAGS
 from .safestate import (FAIL, NA, PASS, UNKNOWN, excess_impulse, fault_timeline, judge_safe_state,
                         time_to_window_hold)
 
@@ -933,8 +934,8 @@ def c_asil_binding(ctx, spec, P):
 
 @check("provenance")
 def c_provenance(ctx, spec, P):
-    """The package keeps customer truth and study assumptions apart: OPEN parameters carry no value, DERIVED /
-    RESEARCH items are not presented as customer requirements, every CONFLICT has at least two variants."""
+    """The package keeps the source's statements and study assumptions apart: OPEN parameters carry no value,
+    DERIVED / RESEARCH items are not presented as source requirements, every CONFLICT has at least two variants."""
     pkg = ctx.package
     bad = []
     for p in pkg.get("parameters", []):
@@ -942,10 +943,10 @@ def c_provenance(ctx, spec, P):
             bad.append(f"OPEN parameter {p['id']} carries a value {p['value']!r}")
         if p.get("provenance") == "CONFLICT" and len(p.get("variants") or {}) < 2:
             bad.append(f"CONFLICT parameter {p['id']} has fewer than two variants")
-    cust = set(pkg.get("customer_tags") or ("CONFIRMED", "CUSTOMER-PAST", "PROJECT"))
+    cust = set(pkg.get("customer_tags") or DEFAULT_SOURCE_TAGS)
     for it in pkg.get("items", []):
         if it.get("customer_requirement") and it.get("provenance") not in cust:
-            bad.append(f"{it['id']} ({it.get('provenance')}) is marked as a customer requirement")
+            bad.append(f"{it['id']} ({it.get('provenance')}) is marked as a source requirement")
     return _res(PASS if not bad else FAIL, {"violations": len(bad)}, "provenance kept apart",
                 bad or ["OPEN values empty, DERIVED / RESEARCH separate, conflicts as variants"])
 
@@ -1234,7 +1235,7 @@ def c_window_semantics(ctx, spec, P):
                if not bad else bad[0],
                f"sign flip detected in {flips_seen} of {flips} cases (signed comparison, never |T|)",
                "tolerance: linear map over |measured speed|, flat outside" if not tbad else tbad[0],
-               "holds for every value of the limit factor, the margin and the tolerance in the grid (their customer "
+               "holds for every value of the limit factor, the margin and the tolerance in the grid (their source "
                "values are not needed for this property)"]
     return _res(verdict, {"cases": n, "mismatches": len(bad) + len(tbad), "sign_flips": flips},
                 "the implemented window equals the declared formula", reasons)
@@ -1419,7 +1420,7 @@ def c_package_coverage(ctx, spec, P):
 
 @check("question")
 def c_question(ctx, spec, P):
-    """An open question to the customer or an internal owner: MANUAL until answered; lists which OPEN parameters
+    """An open question to the requirement owner or an internal owner: MANUAL until answered; lists which OPEN parameters
     the answer closes and how many items wait for it (the order in which to ask)."""
     pkg = ctx.package
     it = ctx.item(spec.get("_item"))

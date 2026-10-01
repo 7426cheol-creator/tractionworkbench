@@ -1,13 +1,14 @@
 """Reference packages: a requirement / scenario catalogue with provenance, verified item by item on the product.
 
-A reference package (schema ``twb-reference/1``, JSON) is what a study or a customer specification asks the
-simulation to show.  It keeps apart what the customer states, what a project assumes, what is derived internally and
+A reference package (schema ``twb-reference/1``, JSON) is what a study or a specification asks the simulation to
+show.  It keeps apart what the source states, what a project assumes, what is derived internally and
 what a study found - and never lets a missing value become a number:
 
-``provenance``     tag -> meaning (e.g. CONFIRMED, CUSTOMER-PAST, PROJECT, DERIVED, RESEARCH, OPEN, CONFLICT);
-``customer_tags``  the tags that are customer truth (the others are never presented as customer requirements);
+``provenance``     tag -> meaning (e.g. CONFIRMED, PAST-PROJECT, PROJECT, DERIVED, RESEARCH, OPEN, CONFLICT);
+``customer_tags``  the tags whose items are the source's own requirements (the field keeps its historical name;
+                   the other items are never presented as source requirements);
 ``parameters``     the registry: id, unit, provenance, value (None for OPEN), an ``illustrative`` value used only by
-                   the illustrative profile (results flagged, never a customer verdict), ``variants`` for a CONFLICT;
+                   the illustrative profile (results flagged, never a verdict on the given values), ``variants`` for a CONFLICT;
 ``asil_binding``   ASIL literal -> the parameter that resolves it (MAX -> the project's maximum ASIL parameter);
 ``scenarios``      id -> {title, scenario (the fault-simulation scenario, incl. ``system`` and ``vehicle``),
                    variants: name -> a patch merged into the scenario};
@@ -31,12 +32,12 @@ from pathlib import Path
 
 from ...errors import InputValidationError
 from .refcheck import CHECKS, CONFLICT, MANUAL, ORDER, Params, worst
-from .refhier import hierarchy, level_of
+from .refhier import DEFAULT_SOURCE_TAGS, hierarchy, level_of
 from .safestate import FAIL, NA, PASS, UNKNOWN
 
 SCHEMA = "twb-reference/1"
 VERDICTS = (PASS, FAIL, UNKNOWN, CONFLICT, MANUAL, NA)
-DEFAULT_CUSTOMER_TAGS = ("CONFIRMED", "CUSTOMER-PAST", "PROJECT")
+DEFAULT_CUSTOMER_TAGS = DEFAULT_SOURCE_TAGS                    # (the historical name)
 
 
 class OpenParameter(Exception):
@@ -99,7 +100,7 @@ def validate_package(pkg: dict) -> list:
     # the hierarchy: known levels, traces to known items, a proposal never a customer requirement
     from .refhier import LEVELS
     known = set(ids)
-    cust = set(pkg.get("customer_tags") or ("CONFIRMED", "CUSTOMER-PAST", "PROJECT"))
+    cust = set(pkg.get("customer_tags") or DEFAULT_SOURCE_TAGS)
     for it in pkg.get("items", []):
         if it.get("level") is not None and it.get("level") not in LEVELS:
             err(f"item {it.get('id')}: unknown level {it.get('level')!r} (one of {', '.join(LEVELS)})")
@@ -108,7 +109,7 @@ def validate_package(pkg: dict) -> list:
                 if ref not in known:
                     warn(f"item {it.get('id')}: {key} names an unknown item {ref!r}")
         if it.get("proposed") and (it.get("provenance") in cust or it.get("customer_requirement")):
-            err(f"item {it.get('id')}: a proposal cannot carry a customer provenance ({it.get('provenance')})")
+            err(f"item {it.get('id')}: a proposal cannot carry a source provenance ({it.get('provenance')})")
     return out
 
 
@@ -135,14 +136,16 @@ class RunRecord:
 class ReferenceRunner:
     """Verifies a package's items on a product (``configure.ProductData``).
 
-    ``profile``: ``customer`` (OPEN values stay unknown) or ``illustrative`` (OPEN values take their illustrative
-    value; every result that used one is flagged and kept apart from the customer verdicts).  ``values``: parameter
-    values entered by the user for this run (id -> value; their provenance becomes USER)."""
+    ``profile``: ``customer`` - the values as given, OPEN values stay unknown (``source`` is accepted for it; the
+    historical key is kept) - or ``illustrative`` (OPEN values take their illustrative value; every result that used
+    one is flagged and kept apart from the verdicts on the given values).  ``values``: parameter values entered by
+    the user for this run (id -> value; their provenance becomes USER)."""
 
     def __init__(self, product, package: dict, profile: str = "customer", values: dict | None = None,
                  progress=None, cancel=None):
+        profile = "customer" if profile == "source" else profile
         if profile not in ("customer", "illustrative"):
-            raise InputValidationError("profile must be customer or illustrative", field="profile")
+            raise InputValidationError("profile must be source (as given) or illustrative", field="profile")
         self.product, self.package, self.profile = product, package, profile
         self.values = dict(values or {})
         self.progress, self.cancel = progress, cancel

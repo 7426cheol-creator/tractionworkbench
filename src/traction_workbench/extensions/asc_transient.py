@@ -1,4 +1,4 @@
-"""ASC fault-current transient and the customer's two current-time requirements (independent review, 9.13).
+"""ASC fault-current transient and its two current-time requirements (independent review, 9.13).
 
 One fault event, one trajectory, several questions evaluated on it:
 
@@ -473,7 +473,7 @@ def asc_transient(drive: DriveModel, scenario: Scenario, id0_A: float, iq0_A: fl
                                     "basis": demag_basis or "not stated",
                                     "detail": "dq current against an imported single-threshold envelope (local "
                                               "field, magnet temperature and history not represented)"}
-    signal = ("phase-current proxy over every initial angle (exact enclosure, the same basis as the customer phase "
+    signal = ("phase-current proxy over every initial angle (exact enclosure, the same basis as the phase-current "
               "requirements); no conduction-topology model: not switch / diode / die current and not module "
               "survival")
     if device_peak_A is None and device_i2t_A2s is None:
@@ -525,7 +525,7 @@ def asc_transient(drive: DriveModel, scenario: Scenario, id0_A: float, iq0_A: fl
     level = ("SCREENING (constant-parameter linear magnetic model; saturation, cross-coupling and temperature change "
              "not represented)")
     if incomplete or not reqs:
-        joint_detail, reasons = "customer current-time requirements incomplete or not stated", \
+        joint_detail, reasons = "current-time requirements incomplete or not stated", \
             (Reason.REQUIREMENT_INCOMPLETE,)
     elif fails:
         joint_detail = ("screening indicates the requirement(s) " + ", ".join(v["req_id"] for v in fails) +

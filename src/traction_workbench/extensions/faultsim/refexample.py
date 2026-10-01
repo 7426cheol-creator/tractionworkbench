@@ -3,7 +3,7 @@
 It is the demonstration and the test fixture of the reference verification (``refpkg``): a scenario library on the
 built-in synthetic project (every scenario a fault-simulation scenario, with the system components and the
 additional mechanisms it needs declared inline, so the project data stay untouched) and example items with their
-checks.  A customer or study package (loaded from a file) uses the same scenario and check vocabulary; its items,
+checks.  A specification or study package (loaded from a file) uses the same scenario and check vocabulary; its items,
 provenance and parameter values are its own.  Every value here is an example (synthetic), never a requirement of a
 product.
 """
@@ -14,7 +14,7 @@ import copy
 
 # ------------------------------------------------------------------------------------------------- building blocks
 
-# the customer-style torque monitors: the request scaled by a limit factor with a speed-dependent tolerance (time /
+# the signed-window torque monitors: the request scaled by a limit factor with a speed-dependent tolerance (time /
 # debounce and integral), the oscillation power and energy monitors
 MONITORS = [
     {"id": "SM-TWIN", "kind": "torque_window_signed", "path": "SW", "reaction": "safe_state", "period_ms": 1.0,
@@ -32,7 +32,7 @@ MONITORS = [
      "resources": ["MCU"], "text": "accumulated oscillation energy (estimate minus request)",
      "params": {"f_hp_Hz": 3.0, "allow_W": 2000.0, "limit_J": 400.0, "leak_per_s": 0.5}},
 ]
-NO_TQ = {"mechanisms.SM-TQ.enabled": False}          # the plain torque monitor off (the customer-style ones judge)
+NO_TQ = {"mechanisms.SM-TQ.enabled": False}          # the plain torque monitor off (the signed-window ones judge)
 
 # redundant channels: a second resolver channel, a monitor DC-voltage channel, a DC-current sensor, and the
 # mechanisms that compare them; PWM feedback; the estimator's qualified domain
@@ -131,7 +131,7 @@ _CHATTER = [{"kind": "torque_command", "t_ms": 10.0 + 6.0 * k,
 
 SCENARIOS = {
     # -- signed torque window: the four quadrants, a healthy step, deviations, oscillations ------------------------
-    "S-QUAD": {"title": "normal operation in the four quadrants (customer-style monitors added)",
+    "S-QUAD": {"title": "normal operation in the four quadrants (signed-window monitors added)",
                "scenario": {"speed_rpm": 6000, "torque_Nm": 100, "horizon_ms": 80, "overrides": NO_TQ,
                             "additions": {"mechanisms": MONITORS}},
                "variants": {"motoring": {}, "regen": {"torque_Nm": -100},
@@ -507,7 +507,7 @@ SCENARIOS["S-OPSTATE"]["variants"] = {
 
 PARAMETERS = [
     {"id": "T_SHUTOFF", "unit": "ms", "provenance": "OPEN", "value": None, "illustrative": 50.0,
-     "note": "criterion -> customer safe state (default error response)"},
+     "note": "criterion -> safe state (default error response)"},
     {"id": "FTTI_TORQUE", "unit": "ms", "provenance": "OPEN", "value": None, "illustrative": 100.0,
      "note": "torque-window deviation -> safe state"},
     {"id": "T_KL15_SW", "unit": "ms", "provenance": "OPEN", "value": None, "illustrative": 20.0,
@@ -526,24 +526,24 @@ PARAMETERS = [
      "note": "highest shaft torque a requirement allows in the safe state (C4)"},
     {"id": "SS_TRANSITION", "unit": "ms", "provenance": "OPEN", "value": None, "illustrative": 20.0,
      "note": "transition allowance before the safe-state conditions are judged"},
-    {"id": "GDE_TO_3PS", "unit": "us", "provenance": "CUSTOMER-PAST", "value": 150.0},
-    {"id": "FAST_REACT", "unit": "us", "provenance": "CUSTOMER-PAST", "value": 20.0},
-    {"id": "X_LOW", "unit": "V", "provenance": "CUSTOMER-PAST", "value": None, "illustrative": 60.0,
+    {"id": "GDE_TO_3PS", "unit": "us", "provenance": "PAST-PROJECT", "value": 150.0},
+    {"id": "FAST_REACT", "unit": "us", "provenance": "PAST-PROJECT", "value": 20.0},
+    {"id": "X_LOW", "unit": "V", "provenance": "PAST-PROJECT", "value": None, "illustrative": 60.0,
      "note": "HV threshold below which the hardware selects freewheeling (minimum 60 V; nominal OPEN)"},
     {"id": "X_UPP", "unit": "V", "provenance": "OPEN", "value": None, "illustrative": 100.0,
      "note": "HV threshold above which the hardware selects the ASC"},
     {"id": "SEQ", "unit": "-", "provenance": "CONFLICT", "value": None,
      "variants": {"SEQ_A": "six-switch-off 100 us, then ASC", "SEQ_B": "ASC (lower), six-switch-off after 100 us"},
      "note": "two records of the hardware sequence disagree"},
-    {"id": "HV_SUPPLY_MIN", "unit": "V", "provenance": "CUSTOMER-PAST", "value": 40.0},
-    {"id": "GUARD_STNDBY_IDLE", "unit": "ms", "provenance": "CUSTOMER-PAST", "value": 50.0},
-    {"id": "MAX_STNDBY_IDLE", "unit": "ms", "provenance": "CUSTOMER-PAST", "value": 150.0},
-    {"id": "PERSIST_IDLE_STNDBY", "unit": "ms", "provenance": "CUSTOMER-PAST", "value": 1000.0},
+    {"id": "HV_SUPPLY_MIN", "unit": "V", "provenance": "PAST-PROJECT", "value": 40.0},
+    {"id": "GUARD_STNDBY_IDLE", "unit": "ms", "provenance": "PAST-PROJECT", "value": 50.0},
+    {"id": "MAX_STNDBY_IDLE", "unit": "ms", "provenance": "PAST-PROJECT", "value": 150.0},
+    {"id": "PERSIST_IDLE_STNDBY", "unit": "ms", "provenance": "PAST-PROJECT", "value": 1000.0},
     {"id": "T_CHANGEOVER", "unit": "ms", "provenance": "OPEN", "value": None, "illustrative": 50.0,
      "note": "controlled changeover completion"},
-    {"id": "STANDSTILL_DIST", "unit": "m", "provenance": "CUSTOMER-PAST", "value": 2.0},
-    {"id": "BRAKE_DECEL", "unit": "m/s^2", "provenance": "CUSTOMER-PAST", "value": 5.0},
-    {"id": "T_REACT_DRIVER", "unit": "s", "provenance": "CUSTOMER-PAST", "value": 1.0},
+    {"id": "STANDSTILL_DIST", "unit": "m", "provenance": "PAST-PROJECT", "value": 2.0},
+    {"id": "BRAKE_DECEL", "unit": "m/s^2", "provenance": "PAST-PROJECT", "value": 5.0},
+    {"id": "T_REACT_DRIVER", "unit": "s", "provenance": "PAST-PROJECT", "value": 1.0},
     {"id": "ACCEL_CURVE", "unit": "(km/h, m/s^2)", "provenance": "OPEN", "value": None,
      "illustrative": [[0, 2.0], [40, 2.0], [120, 1.0]], "note": "vehicle acceleration target curve"},
     {"id": "SAFE_VALUE", "unit": "N*m", "provenance": "OPEN", "value": None, "illustrative": 50.0,
@@ -573,9 +573,9 @@ PARAMETERS = [
      "note": "lowest DC power (regeneration is negative) the interface accepts after the vehicle lowers its minimum "
              "torque"},
     {"id": "T_PASSIVE_DISCHARGE", "unit": "s", "provenance": "PROJECT", "value": 120.0},
-    {"id": "OC_RATIO", "unit": "x I_max", "provenance": "CUSTOMER-PAST", "value": 1.5,
+    {"id": "OC_RATIO", "unit": "x I_max", "provenance": "PAST-PROJECT", "value": 1.5,
      "note": "fast over-current threshold relative to the maximum current (outside the normal range)"},
-    {"id": "OC_RATIO_TOL", "unit": "-", "provenance": "CUSTOMER-PAST", "value": 0.1},
+    {"id": "OC_RATIO_TOL", "unit": "-", "provenance": "PAST-PROJECT", "value": 0.1},
 ]
 
 SS = {"torque_tol_Nm": "$T_TOL", "power_tol_W": "$P_TOL", "tlsr_min_Nm": "$TLSR_T_MIN", "tlsr_max_Nm": "$TLSR_T_MAX",
@@ -626,7 +626,7 @@ ITEMS = [
      "checks": [_c("timeline", "S-FAULT", expect_recorded=True, ftti_ms="$FTTI_TORQUE", shutoff_ms="$T_SHUTOFF",
                    torque_tol_Nm="$T_TOL", power_tol_W="$P_TOL")]},
     # -- torque monitors -------------------------------------------------------------------------------------------
-    {"id": "EX-TQ-01", "group": "torque window", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+    {"id": "EX-TQ-01", "group": "torque window", "kind": "requirement", "provenance": "PAST-PROJECT",
      "title": "no false trip in the four quadrants and on a healthy step (signed limits)",
      "checks": [_c("no_detection", "S-QUAD", variants=("motoring", "regen", "reverse_motoring", "reverse_regen",
                                                         "step"), mode="all")]},
@@ -636,14 +636,14 @@ ITEMS = [
                 _c("detected", "S-DEV", "chatter", by=["SM-TINT"], label="integral monitor on the boundary chatter"),
                 _c("detected", "S-DEV", "chatter", by=["SM-TWIN"], expect=False,
                    label="the time monitor alone misses the chatter")]},
-    {"id": "EX-TQ-03", "group": "torque window", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+    {"id": "EX-TQ-03", "group": "torque window", "kind": "requirement", "provenance": "PAST-PROJECT",
      "title": "a contradictory received envelope (maximum <= minimum) triggers the default error response",
      "checks": [_c("detected", "S-ENV", by=["SM-TWIN"])]},
     {"id": "EX-OSC-01", "group": "oscillation", "kind": "requirement", "provenance": "CONFIRMED",
      "title": "torque oscillation detected by the oscillating-power and energy monitors",
      "checks": [_c("detected", "S-OSC", variants=("f5", "f20", "f80"), mode="all", by=["SM-OSCP", "SM-OSCE"])]},
     # -- hardware paths --------------------------------------------------------------------------------------------
-    {"id": "EX-HW-01", "group": "hardware path", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+    {"id": "EX-HW-01", "group": "hardware path", "kind": "requirement", "provenance": "PAST-PROJECT",
      "title": "gate-driver enable withdrawn -> the ASC within 150 us (both recorded sequences)",
      "checks": [_c("state_time", "S-GDE", variants=("SEQ_A", "SEQ_B"), origin="fault", max_us="$GDE_TO_3PS"),
                 # the physical safe state within the same budget and held (no transition allowance): the sequence
@@ -651,21 +651,21 @@ ITEMS = [
                 _c("safe_state", "S-GDE", variants=("SEQ_A", "SEQ_B"), origin="fault", deadline_us="$GDE_TO_3PS",
                    torque_tol_Nm="$T_TOL", power_tol_W="$P_TOL", tlsr_min_Nm="$TLSR_T_MIN",
                    tlsr_max_Nm="$TLSR_T_MAX")]},
-    {"id": "EX-HW-02", "group": "hardware path", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+    {"id": "EX-HW-02", "group": "hardware path", "kind": "requirement", "provenance": "PAST-PROJECT",
      "title": "fast over-voltage: detection and reaction within 20 us",
      "checks": [_c("hw_timing", "S-FOV", mech="SM-OV", quantity="v_dc", threshold=780.0,
                    detect_max_us="$FAST_REACT", react_max_us="$FAST_REACT")]},
-    {"id": "EX-HW-03", "group": "hardware path", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+    {"id": "EX-HW-03", "group": "hardware path", "kind": "requirement", "provenance": "PAST-PROJECT",
      "title": "fast DC over-current: detection within 20 us, no reaction invented",
      "checks": [_c("hw_timing", "S-DCFOC", mech="SM-DCOC", quantity="i_bat", threshold=300.0,
                    detect_max_us="$FAST_REACT"),
                 _c("bound", "S-DCFOC", quantity="bridge", max=0.0, label="the bridge stays in PWM")]},
     # -- supplies ----------------------------------------------------------------------------------------------------
-    {"id": "EX-PW-01", "group": "supply", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+    {"id": "EX-PW-01", "group": "supply", "kind": "requirement", "provenance": "PAST-PROJECT",
      "title": "the safe state survives the low-voltage loss (redundant gate supply); not with LV-only gates",
      "checks": [_c("safe_state", "S-LV", "redundant", origin="fault", **SS),
                 _c("safe_state", "S-LV", "lv_gates", origin="fault", expect_reached=False, **SS)]},
-    {"id": "EX-PW-02", "group": "supply", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+    {"id": "EX-PW-02", "group": "supply", "kind": "requirement", "provenance": "PAST-PROJECT",
      "title": "an emergency stop by terminal-30 loss ends in the same safe state as a low-voltage loss",
      "checks": [_c("equivalent", "S-LV", "estop", other="S-LV", other_variant="redundant")]},
     # -- supervisor ----------------------------------------------------------------------------------------------------
@@ -693,7 +693,7 @@ ITEMS = [
      "checks": [_c("rearm", "S-MODE", "t30_uv", expect_latch=False),
                 _c("permit", "S-MODE", "t30_uv", **{"from": "input:t30_state=uv", "to": "input:t30_state=normal"},
                    restored_within_ms=50.0)]},
-    {"id": "EX-OPS-01", "group": "operating states", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+    {"id": "EX-OPS-01", "group": "operating states", "kind": "requirement", "provenance": "PAST-PROJECT",
      "title": "power-up, idle, run, roll-out and standby with their guard and completion times",
      "checks": [_c("opstate", "S-OPSTATE", sequence=[["POWER_OFF", "STNDBY"], ["STNDBY", "IDLE"], ["IDLE", "RUN"],
                                                      ["RUN", "IDLE"], ["IDLE", "STNDBY"]],
@@ -701,11 +701,11 @@ ITEMS = [
                             "min_ms": "$GUARD_STNDBY_IDLE", "max_ms": "$MAX_STNDBY_IDLE"}]),
                 _c("guard_table", guard="IDLE->RUN", formula="hv_enable & spt_done & aps_release & trq_gen_rq"),
                 _c("guard_table", guard="RUN->IDLE", formula="~hv_enable | rol_actv | pwr_stg_ctrl | ~trq_gen_rq")]},
-    {"id": "EX-OPS-02", "group": "operating states", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+    {"id": "EX-OPS-02", "group": "operating states", "kind": "requirement", "provenance": "PAST-PROJECT",
      "title": "controlled changeover RUN -> IDLE at speed",
      "checks": [_c("changeover", "S-CHANGE", **{"from": "RUN", "to": "IDLE"}, max_ms="$T_CHANGEOVER")]},
     # -- vehicle ---------------------------------------------------------------------------------------------------------
-    {"id": "EX-VEH-01", "group": "vehicle", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+    {"id": "EX-VEH-01", "group": "vehicle", "kind": "requirement", "provenance": "PAST-PROJECT",
      "title": "standstill to standstill <= 2 m with 5 m/s^2 braking after a 1 s reaction",
      "checks": [_c("vehicle", "S-VEH", "monitor_on", distance_max_m="$STANDSTILL_DIST", t_react_s="$T_REACT_DRIVER",
                    a_brake_mps2="$BRAKE_DECEL"),
@@ -713,15 +713,15 @@ ITEMS = [
                    t_react_s="$T_REACT_DRIVER", a_brake_mps2="$BRAKE_DECEL",
                    label="counterexample: the undetected fault exceeds the distance")]},
     # -- interface -------------------------------------------------------------------------------------------------------
-    {"id": "EX-ITF-01", "group": "interface", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+    {"id": "EX-ITF-01", "group": "interface", "kind": "requirement", "provenance": "PAST-PROJECT",
      "title": "the signed arbitration of the request and the intervention torque",
      "checks": [_c("arbitration")]},
-    {"id": "EX-ITF-02", "group": "interface", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+    {"id": "EX-ITF-02", "group": "interface", "kind": "requirement", "provenance": "PAST-PROJECT",
      "title": "extended torque: positive side only, active flag, timed reversion",
      "checks": [_c("extended", "S-ITF", "extension", c_t_imax_ms="$C_T_IMAX"),
                 _c("extended", "S-ITF", "extension_voltage_mode", expect_active=False),
                 _c("extended", "S-ITF", "negative", neg_limit_Nm=-150.0)]},
-    {"id": "EX-ITF-03", "group": "interface", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+    {"id": "EX-ITF-03", "group": "interface", "kind": "requirement", "provenance": "PAST-PROJECT",
      "title": "the speed-limit fallback limits the positive torque to the safe value",
      "checks": [_c("fallback", "S-ITF", v, origin="t0", safe_value_Nm="$SAFE_VALUE", settle_ms=220.0)
                 for v in ("fallback_qualifier", "fallback_wheel_invalid", "fallback_request_invalid",
@@ -793,7 +793,7 @@ ITEMS = [
      "checks": [_c("task_cycle", tx_cycles_ms=[10.0], rx_cycles_ms=[10.0, 20.0], max_task_ms="$MAX_SAFETY_TASK",
                    mechanisms=["SM-TQ", "SM-SUM", "SM-LOS", "SM-OVSW"])]},
     {"id": "EX-META-01", "group": "provenance", "kind": "rule", "provenance": "DERIVED",
-     "title": "customer truth and study assumptions kept apart; OPEN values stay empty",
+     "title": "the source's statements and study assumptions kept apart; OPEN values stay empty",
      "checks": [_c("provenance"), _c("asil_binding")]},
     {"id": "EX-MET-01", "group": "metrics", "kind": "requirement", "provenance": "OPEN",
      "title": "architectural metrics per metric set (never added across sets)",
@@ -816,18 +816,18 @@ ITEMS = [
                                                                "sys_permit", "sys_reasons", "sys_confirmed"],
                    events=["input", "safe_state_request", "actuation", "supervisor"])]},
     {"id": "EX-MAN-01", "group": "organisation", "kind": "action", "provenance": "DERIVED",
-     "title": "input baseline and responsibilities agreed with the customer",
+     "title": "input baseline and responsibilities agreed with the requirement owner",
      "manual": "organisational: record the agreement (document, revision) as evidence",
      "checks": [_c("manual", reason="organisational: record the agreement (document, revision) as evidence")]},
     # -- the second part: formula, envelope, supplies, states, clock, coupling, regeneration, questions ----------------
-    {"id": "EX-TQ-04", "group": "torque window", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+    {"id": "EX-TQ-04", "group": "torque window", "kind": "requirement", "provenance": "PAST-PROJECT",
      "title": "the implemented signed window is the declared formula (for every limit factor and tolerance)",
      "checks": [_c("window_semantics", high="max(T*F, T/F) + A", low="min(T*F, T/F) - A", rule="add")]},
-    {"id": "EX-TQ-05", "group": "torque window", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+    {"id": "EX-TQ-05", "group": "torque window", "kind": "requirement", "provenance": "PAST-PROJECT",
      "title": "the small long deviation is detected - for which limit factors (break-even of an OPEN value)",
      "checks": [_c("sweep", "S-DEVF", param="LIMIT_FACTOR", values=[1.05, 1.1, 1.3, 1.6], inner="detected",
                    params={"by": ["SM-TWIN"]})]},
-    {"id": "EX-TQ-06", "group": "torque window", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+    {"id": "EX-TQ-06", "group": "torque window", "kind": "requirement", "provenance": "PAST-PROJECT",
      "title": "the received envelope bounds the actual torque; a widened capability input cannot widen the window",
      "checks": [_c("detected", "S-ENVX", "received", by=["SM-TWIN"]),
                 _c("detected", "S-ENVX", "widened_no_bound", by=["SM-TWIN"], expect=False,
@@ -846,39 +846,39 @@ ITEMS = [
      "checks": [_c("safe_state", "S-MODE", "no_torque", origin="input:target_mode=no_torque",
                    to="input:target_mode=run", conditions=["C3"], deadline_ms="$FTTI_STANDBY",
                    transition_ms="$SS_TRANSITION")]},
-    {"id": "EX-HW-04", "group": "hardware path", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+    {"id": "EX-HW-04", "group": "hardware path", "kind": "requirement", "provenance": "PAST-PROJECT",
      "title": "the hardware sequence works while the MCU is in reset",
      "checks": [_c("state_time", "S-GDE", variants=("SEQ_A_mcu_reset", "SEQ_B_mcu_reset"),
                    origin="event:fault:gde_disable", max_us="$GDE_TO_3PS")]},
-    {"id": "EX-HW-05", "group": "hardware path", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+    {"id": "EX-HW-05", "group": "hardware path", "kind": "requirement", "provenance": "PAST-PROJECT",
      "title": "the fast over-current threshold lies outside the normal range at 1.5 x I_max +-10 %",
      "checks": [_c("threshold_ratio", mech="SM-OC", reference="inverter_current_limit", ratio="$OC_RATIO",
                    tol="$OC_RATIO_TOL"),
                 _c("hw_timing", "S-ACFOC", variants=("thr_nominal", "thr_low", "thr_high"), mode="all", mech="SM-OC",
                    quantity="i_phase_abs", detect_max_us="$FAST_REACT", react_max_us="$FAST_REACT",
                    label="detection and reaction with the threshold tolerance")]},
-    {"id": "EX-PW-03", "group": "supply", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+    {"id": "EX-PW-03", "group": "supply", "kind": "requirement", "provenance": "PAST-PROJECT",
      "title": "a leg short is still detected by the desaturation protection during the low-voltage loss",
      "checks": [_c("detected", "S-LV", "short_during_lv_loss", by=["SM-DSAT"], origin=13.0)]},
-    {"id": "EX-PW-04", "group": "supply", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+    {"id": "EX-PW-04", "group": "supply", "kind": "requirement", "provenance": "PAST-PROJECT",
      "title": "the transfer between the sources is seamless; a transfer gap longer than the hold-up loses the gates",
      "checks": [_c("bound", "S-SUPPLY", "transfer_seamless", quantity="rail_GATE", min=1.0),
                 _c("bound", "S-SUPPLY", "transfer_gap", quantity="rail_GATE", min=1.0, expect_violation=True,
                    label="counterexample: a 1 ms gap is longer than the 0.5 ms hold-up")]},
-    {"id": "EX-PW-05", "group": "supply", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+    {"id": "EX-PW-05", "group": "supply", "kind": "requirement", "provenance": "PAST-PROJECT",
      "title": "a failed redundant source is flagged; the drive keeps its supplies from the other source",
      "checks": [_c("event", "S-SUPPLY", "hv_source_fault", kind="supply", source="HV_fault", origin="fault"),
                 _c("no_detection", "S-SUPPLY", "hv_source_fault")]},
-    {"id": "EX-OPS-03", "group": "operating states", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+    {"id": "EX-OPS-03", "group": "operating states", "kind": "requirement", "provenance": "PAST-PROJECT",
      "title": "an active state is entered between passive ones only while torque production is allowed",
      "checks": [_c("opstate", "S-OPSTATE", "kl15_off", absent=[["IDLE", "RUN"]])]},
-    {"id": "EX-OPS-04", "group": "operating states", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+    {"id": "EX-OPS-04", "group": "operating states", "kind": "requirement", "provenance": "PAST-PROJECT",
      "title": "no AC / DC energy flow: APS above the speed threshold, ASO below it",
      "checks": [_c("state_time", "S-EFB", "above", origin="input:energy_flow_block=1", states=["asc_low"],
                    max_us=2000.0),
                 _c("state_time", "S-EFB", "below", origin="input:energy_flow_block=1", states=["six_switch_off"],
                    max_us=2000.0)]},
-    {"id": "EX-OPS-05", "group": "operating states", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+    {"id": "EX-OPS-05", "group": "operating states", "kind": "requirement", "provenance": "PAST-PROJECT",
      "title": "the power-stage states each operating state allows, and the stage names",
      "checks": [_c("model_tables", allow={"STNDBY": ["ASO", "APS"], "IDLE": ["ASO", "APS"],
                                           "DIAG": ["ASO", "APS", "PWM"], "RUN": ["ASO", "PWM"],
@@ -899,7 +899,7 @@ ITEMS = [
     {"id": "EX-DIS-02", "group": "discharge", "kind": "requirement", "provenance": "PROJECT",
      "title": "passive discharge below the limit within its time by the bleeder alone",
      "checks": [_c("passive_discharge", v_limit_V="$V_DISCHARGE", deadline_s="$T_PASSIVE_DISCHARGE")]},
-    {"id": "EX-VEH-02", "group": "vehicle", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+    {"id": "EX-VEH-02", "group": "vehicle", "kind": "requirement", "provenance": "PAST-PROJECT",
      "title": "a legitimate start torque at standstill with the clutch open: no false trip, no vehicle motion",
      "checks": [_c("no_detection", "S-START"),
                 _c("vehicle", "S-START", expect_no_motion=True)]},
@@ -913,11 +913,11 @@ ITEMS = [
          "terminal 15 hardware": ["signal:kl15_hw"], "terminal 30": ["signal:t30_state", "fault:lv_loss"],
          "rotor sensor": ["role:position_control"], "wheel speed": ["signal:wheel_speed_kph"],
          "clock": ["fault:clock"], "mechanical coupling": ["fault:coupling"], "bus": ["fault:e2e"]})]},
-    {"id": "EX-RST-01", "group": "supervisor", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+    {"id": "EX-RST-01", "group": "supervisor", "kind": "requirement", "provenance": "PAST-PROJECT",
      "title": "an MCU reset: no PWM authority until the MCU has booted again (rotating and at standstill)",
      "checks": [_c("no_pwm", "S-RESET", "rotating", **{"from": "event:fault:mcu_reset", "to": "event::MCU booted"}),
                 _c("no_pwm", "S-RESET", "standstill", **{"from": "event:fault:mcu_reset", "to": "event::MCU booted"})]},
-    {"id": "EX-NF-01", "group": "torque window", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+    {"id": "EX-NF-01", "group": "torque window", "kind": "requirement", "provenance": "PAST-PROJECT",
      "title": "the normal function limits first (the monitor stays silent); with it failed the monitor reacts in time",
      "checks": [_c("normal_first", "S-NORMAL1ST", "healthy", failed_variant="app_failed",
                    deadline_ms="$FTTI_TORQUE")]},
@@ -938,10 +938,10 @@ ITEMS = [
 # ------------------------------------------------------------------------------------------------- the hierarchy
 # the example's structure: two vehicle goals, three top-level requirements (one whose text was not provided), the
 # functional requirements below them, the technical requirements, a mechanism - and a proposal (a DERIVED addition
-# the simulation shows is missing: never a customer requirement)
+# the simulation shows is missing: never a source requirement)
 ROLLUP = "judged through the requirements traced to it (the roll-up)"
 ITEMS[:0] = [
-    {"id": "EX-SG-01", "level": "SG", "group": "goals", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+    {"id": "EX-SG-01", "level": "SG", "group": "goals", "kind": "requirement", "provenance": "PAST-PROJECT",
      "title": "no unintended vehicle acceleration or deceleration from the electric drive beyond what the driver "
               "controls", "manual": ROLLUP},
     {"id": "EX-SG-02", "level": "SG", "group": "goals", "kind": "requirement", "provenance": "PROJECT",
@@ -1012,13 +1012,14 @@ for _it in ITEMS:
 REFERENCE_EXAMPLE = {
     "schema": "twb-reference/1",
     "meta": {"title": "Example reference package (synthetic)", "date": "2026-09-30",
-             "note": "a neutral demonstration of every check on the built-in synthetic project - not a customer "
+             "note": "a neutral demonstration of every check on the built-in synthetic project - not a real "
                      "specification; every value is an example"},
-    "provenance": {"CONFIRMED": "confirmed from the source text", "CUSTOMER-PAST": "a customer requirement not "
-                   "re-verified against the source", "PROJECT": "a project condition", "DERIVED": "derived internally",
+    "provenance": {"CONFIRMED": "confirmed from the source text",
+                   "PAST-PROJECT": "a requirement of an earlier project, not re-verified against the source",
+                   "PROJECT": "a project condition", "DERIVED": "derived internally",
                    "RESEARCH": "a study value, never a requirement", "OPEN": "undecided: no value",
                    "CONFLICT": "records disagree: variants kept"},
-    "customer_tags": ["CONFIRMED", "CUSTOMER-PAST", "PROJECT"],
+    "customer_tags": ["CONFIRMED", "PAST-PROJECT", "PROJECT"],
     "parameters": PARAMETERS,
     "asil_binding": {"MAX": "MAX_ASIL"},
     "fmeda": FMEDA,

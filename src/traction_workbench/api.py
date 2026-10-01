@@ -471,7 +471,7 @@ EXAMPLE_RIPPLE = {
     "capacitor": PROJECT.capacitor(), "source": PROJECT.source_impedance(),
     "fsw_kHz": _CTRL["fsw_kHz"], "modulation": _CTRL["modulation"],
     "requirement": {"location": "dc_link_bus", "quantity": "voltage_pp", "limit": 15.0, "bandwidth_Hz": 50e3,
-                    "note": "example requirement; a real one needs the customer's measurement definition"},
+                    "note": "example requirement; a real one needs its measurement definition"},
 }
 
 
@@ -518,7 +518,7 @@ EXAMPLE_ASC = {
 
 
 def asc(body):
-    """ASC fault transient and the customer's current-time requirements on one trajectory (review 9.13)."""
+    """ASC fault transient and the two current-time requirements on one trajectory (review 9.13)."""
     from .extensions.asc_transient import CurrentTimeRequirement, asc_transient
     b = {**EXAMPLE_ASC, **(body or {})}
     d = _drive(b)
@@ -1984,8 +1984,8 @@ def reference_example() -> dict:
 
 REFERENCE_BUILTIN = (
     ("example", "내장 예제 (중립·합성, 모든 검사)", "built-in example (neutral, synthetic, every check)", None),
-    ("customer_inverter", "고객 인버터 FuSa 참고 문서 (분류·추적·제안 포함)",
-     "customer inverter FuSa reference (classified, traced, with proposals)", "customer_inverter_reference.json"),
+    ("customer_inverter", "인버터 FuSa 참고 문서 (분류·추적·제안 포함)",
+     "inverter FuSa reference (classified, traced, with proposals)", "customer_inverter_reference.json"),
 )
 
 
@@ -2016,7 +2016,7 @@ def reference_load(src) -> dict:
 
 def reference_run(body=None, project=None, progress=None) -> dict:
     """Verifies a reference package's items on the project's product: ``body`` = {package (default: the built-in
-    example), profile (customer | illustrative), values (parameter id -> value entered for this run), ids (a subset of
+    example), profile (customer = as given | illustrative; "source" is accepted for customer), values (parameter id -> value entered for this run), ids (a subset of
     the items)}.  ``progress(fraction, message)`` is called per item (it may raise to cancel).  Returns the summary
     (rows, counts, the OPEN report, conflicts, manual items), the product identity and the evidence runs (decimated
     traces, events and timelines for the plots)."""

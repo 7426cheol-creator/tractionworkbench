@@ -56,6 +56,13 @@ def test_builtin_packages_and_the_hierarchy(win):
     tops = _top_ids(page.tree)
     assert {"A-02", "A-03", "A-07", "PROP-SG-HV"} <= set(tops)
     assert page.t_gaps.rowCount() > 20 and page.t_props.rowCount() >= 8
+    labels = ([page.profile.itemText(k) for k in range(page.profile.count())]           # the page's own words:
+              + [page.only_customer.itemText(k) for k in range(page.only_customer.count())]  # "원문 요구",
+              + [page.builtin.itemText(k) for k in range(page.builtin.count())]              # never "고객 요구"
+              + [page.matrix.horizontalHeaderItem(j).text() for j in range(page.matrix.columnCount())]
+              + [page.t_gaps.item(r, 0).text() for r in range(page.t_gaps.rowCount())]
+              + [page.group.itemText(k) for k in range(page.group.count())] + [page.pkg_label.text()])
+    assert not [x for x in labels if "고객" in x or "customer" in x.lower()]
     page.level.setCurrentIndex(page.level.findData("SM"))
     assert page.matrix.rowCount() == sum(1 for it in page.package["items"] if it.get("level") == "SM")
     page.level.setCurrentIndex(page.level.findData("REQ"))

@@ -121,7 +121,7 @@ FTTI_CHAIN = {
 }
 
 SAFE_STATE_RULES = [{"rule_id": "PRJ-SR-01", "when": {"Vdc_below_V": 60}, "require": "FREEWHEEL",
-                     "basis": "project safety concept: HVDC < 60 V -> force the freewheel path (customer/project rule, "
+                     "basis": "project safety concept: HVDC < 60 V -> force the freewheel path (project rule, "
                               "not physics)"}]
 
 # -- gearbox: torsional ROM and reducer efficiency of the same single-speed reducer --------------------------------

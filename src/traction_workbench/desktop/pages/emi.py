@@ -179,7 +179,7 @@ class EmiPage(QWidget):
         f = QFormLayout(g)
         self.prof = {}
         for key, lab in (("standard", tr("규격", "standard")), ("edition", tr("판", "edition")),
-                         ("customer_revision", tr("고객 규격 개정", "customer spec revision")), ("curve_id", tr("클래스/곡선 ID", "class / curve ID")),
+                         ("customer_revision", tr("규격 개정", "spec revision")), ("curve_id", tr("클래스/곡선 ID", "class / curve ID")),
                          ("port", tr("포트", "port")), ("network", tr("AN 정의", "AN definition")),
                          ("fixture", tr("치구·하네스·본딩", "fixture / harness / bonding")), ("operating_condition", tr("운전 조건", "operating condition"))):
             w = QLineEdit(str(pr.get(key, "")))

@@ -356,7 +356,7 @@ def run_self_test(app, out_dir) -> int:
         rf = visit("reference", 0, [lambda pg: pg.load_builtin("customer_inverter")], [])
         from PySide6.QtCore import Qt as _Qt
         tops = {rf.tree.topLevelItem(k).data(0, _Qt.UserRole) for k in range(rf.tree.topLevelItemCount())}
-        check("reference:customer_hierarchy", len(rf.package["items"]) >= 370 and {"A-02", "A-03", "PROP-SG-HV"} <= tops
+        check("reference:builtin_hierarchy", len(rf.package["items"]) >= 370 and {"A-02", "A-03", "PROP-SG-HV"} <= tops
               and rf.t_gaps.rowCount() > 20 and rf.t_props.rowCount() >= 8, f"{len(rf.package['items'])} items")
         rf.tabs.setCurrentWidget(rf.tab_hier)
         shot(win, "25n_reference_hierarchy")

@@ -114,10 +114,10 @@ PAGE_INFO = {
                             "causal simulation fault → measurement → control and monitoring → reaction → actual "
                             "bridge, torque, current, DC link → SG / FSR / TSR verdicts; reaction candidates, "
                             "campaigns and counterexamples, validation evidence"),
-    "reference": lambda: tr("고객 사양·스터디 참고 패키지의 항목을 이 제품 모델에서 하나씩 판정: 근거 수준 유지, OPEN 값은 "
+    "reference": lambda: tr("사양서·스터디 참고 패키지의 항목을 이 제품 모델에서 하나씩 판정: 근거 수준 유지, OPEN 값은 "
                             "추정하지 않음(UNKNOWN), 충돌 기록은 변형으로, 안전 상태는 물리 결과(C1-C4)로 - 요구-증거 매트릭스"
                             "·UNKNOWN/CONFLICT 보고·타당성 지도·HTML/CSV",
-                            "a customer specification or study reference verified item by item on this product "
+                            "a specification or study reference verified item by item on this product "
                             "model: provenance kept, OPEN values never guessed (UNKNOWN), conflicting records as "
                             "variants, the safe state on the physics (C1-C4) - requirement-to-evidence matrix, "
                             "unknown / conflict report, feasibility map, HTML / CSV"),

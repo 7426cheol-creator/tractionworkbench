@@ -167,7 +167,7 @@ def evaluate_supplied_policy(table: CurrentPolicyTable, drive: DriveModel, scena
     elif accuracy_Nm is None and abs(terr) > num_tol:
         st, reasons = Status.UNKNOWN, (Reason.REQUIREMENT_INCOMPLETE,)
         detail = (f"the supplied policy delivers {pt.Tshaft_Nm:.6g} N*m (error {terr:+.4g} N*m, above the numerical "
-                  f"residual budget {num_tol:.2g} N*m); no customer torque-accuracy requirement is stated, so this "
+                  f"residual budget {num_tol:.2g} N*m); no torque-accuracy requirement is stated, so this "
                   f"error is neither accepted nor rejected (the table's declared accuracy "
                   f"{table.torque_tolerance_Nm:g} N*m is not a requirement)")
     elif not_eval:

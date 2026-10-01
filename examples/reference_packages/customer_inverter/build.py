@@ -1,4 +1,4 @@
-"""Builds the customer reference package from the reference document (included with the customer's agreement).
+"""Builds the inverter FuSa reference package from the reference document (included by agreement).
 The scenario library is the application's neutral one (refexample), its parameter references renamed to the
 document's parameter names; the items are the document's items with their provenance, ASIL literal, agreement status
 and the checks that verify them.
@@ -38,8 +38,13 @@ def M(reason):
 
 
 # ================================================================================================= parameters
+# the application speaks of the source's requirements, never of "customer requirements": the document's tag for a
+# requirement recovered from an earlier project (CUSTOMER-PAST) is written PAST-PROJECT
+TAG = {"CUSTOMER-PAST": "PAST-PROJECT"}
+
+
 def P(pid, unit, prov, value=None, ill=None, note="", **kw):
-    d = {"id": pid, "unit": unit, "provenance": prov, "value": value, "note": note}
+    d = {"id": pid, "unit": unit, "provenance": TAG.get(prov, prov), "value": value, "note": note}
     if ill is not None:
         d["illustrative"] = ill
     d.update(kw)
@@ -59,7 +64,7 @@ PARAMETERS = [
     P("VW_MIN_LFM_DESTAB", "-", "OPEN", ill=0.8, note="DESTAB metric (fraction)"),
     P("VW_T_SHUTOFF", "ms", "OPEN", ill=50.0, note="14714 triggering criterion -> safe state"),
     P("VW_MAX_FTTI_TORQUE", "ms", "OPEN", ill=100.0, note="torque window deviation -> default error response; "
-                                                            "exact origin to be confirmed by the customer"),
+                                                            "exact origin to be confirmed"),
     P("VW_FTTI_STD", "ms", "OPEN", ill=50.0, note="standby / no-torque"),
     P("VW_MAX_SAFETY_TASK_TIME", "ms", "OPEN", ill=10.0, note="14713 safety task upper bound"),
     P("VW_T_KL15_SW_SHUTOFF", "ms", "OPEN", ill=20.0, note="14730 SW KL15 OFF"),
@@ -75,7 +80,7 @@ PARAMETERS = [
     P("T_PASSIVE_DISCHARGE", "s", "PROJECT", 120.0,
       note="past project condition: < 120 s; never promoted to the FuSi text automatically"),
     P("X_Low", "V", "CUSTOMER-PAST", ill=60.0, note="HW safe-state threshold: nominal xx V (OPEN), minimum 60 V; "
-                                                      "customer-agreed / adjustable"),
+                                                      "agreed / adjustable"),
     P("X_Low_min", "V", "CUSTOMER-PAST", 60.0, note="the minimum of X_Low"),
     P("X_Upp", "V", "CUSTOMER-PAST", ill=100.0, note="HW safe-state threshold: nominal yy V, max yyy V; exact value "
                                                        "OPEN"),
@@ -126,7 +131,7 @@ PARAMETERS = [
     P("REGEN_POWER_MIN", "W", "DERIVED", ill=-30000.0, note="TSR-ADD-035 REGEN_ACCEPTANCE_ENVELOPE (lowest DC power)"),
     P("T_OVERSPEED_RESPONSE", "ms", "DERIVED", ill=50.0, note="TSR-ADD-040"),
     P("T_LATENT_TEST", "ms", "DERIVED", ill=100.0, note="TSR-ADD-019 latent test interval"),
-    P("FDTI_BUDGET", "ms", "DERIVED", ill=10.0, note="internal detection budget (never assumed to be a customer value)"),
+    P("FDTI_BUDGET", "ms", "DERIVED", ill=10.0, note="internal detection budget (never assumed to be a source value)"),
     P("FRTI_BUDGET", "ms", "DERIVED", ill=40.0, note="internal reaction + actuation + settling budget"),
 ]
 PIDS = {p["id"] for p in PARAMETERS}
@@ -201,10 +206,11 @@ SC["S-RESET"]["variants"]["rotating_long"] = {"speed_rpm": 12000.0, "faults": [
 
 # ================================================================================================= items
 ITEMS = []
-CUST = ("CONFIRMED", "CUSTOMER-PAST", "PROJECT")
+CUST = ("CONFIRMED", "PAST-PROJECT", "PROJECT")
 
 
 def I(iid, group, kind, prov, title, checks=None, manual=None, **kw):
+    prov = TAG.get(prov, prov)
     it = {"id": iid, "group": group, "kind": kind, "provenance": prov, "title": title, "checks": checks or []}
     if manual:
         it["manual"] = manual
@@ -517,7 +523,7 @@ CK = {
                                              "LFM_min": "$VW_MIN_LFM_DESTAB", "PMHF_max_fit": "$VW_MAX_PMHF_DESTAB"}},
                  label="TORQUE and DESTAB judged per set, never added"),
     "asil": C("asil_binding", label="ASIL literals kept, resolved only through FUSA_Param"),
-    "prov": C("provenance", label="customer truth / study assumptions kept apart"),
+    "prov": C("provenance", label="source statements / study assumptions kept apart"),
     "coverage": C("package_coverage", label="a verdict row for every item"),
     "trace": C("trace_channels", "S-KL15", "sw", channels=["t", "T_em", "T_shaft", "v_dc", "i_dc", "bridge",
                                                            "sys_permit", "sys_reasons", "sys_confirmed"],
@@ -608,14 +614,14 @@ GROUP_MANUAL = {
     ("C", 4): "Per-phase blanking은 HW 고정: 모델의 HW 보호(DESAT/OC 비교기)는 보정·SW 설정으로 끌 수 없는 요소로 모델링됨 - "
               "실제 회로의 blanking 구현은 회로/데이터시트 근거로 기록",
     ("D", 2): "STNDBY/IDLE/FAULT의 reaction 우선순위 표(6th/1st/7th/3rd)는 원문 세부가 불완전: 우선순위는 설정 가능한 "
-              "데이터로 두고 고객 표 확보 후 binding",
+              "데이터로 두고 원문 표 확보 후 binding",
     ("D", 8): "Tx_MachStat 보고: 모델은 상태(sys_state)를 기록 - 실제 신호 매핑은 통신 DB로 확인",
     ("F", 1): "EM1_Max/Min 계산 입력(Vdc, I_Max_neu, 속도, 전압 한계, 손실, derating, 과부하, c_max_moment): 앱의 "
-              "capability 계산으로 산출 가능 - 고객 계산식/입력 정의 확보 필요",
-    ("F", 2): "I_Max_neu / I_Min_neu 고속 영역 보간: 전류 한계 곡선은 제품 데이터 - 고객 정의 확보 필요",
+              "capability 계산으로 산출 가능 - 원문 계산식/입력 정의 확보 필요",
+    ("F", 2): "I_Max_neu / I_Min_neu 고속 영역 보간: 전류 한계 곡선은 제품 데이터 - 원문 정의 확보 필요",
     ("G", 2): "SiC 전력 모듈을 이용한 active discharge: 현재 모델에 없음 (구현 시 torque/phase current 발생과 고ASIL "
               "경로 상호작용을 추가 검증)",
-    ("H", 2): "OC/단락 반응과 OV 반응의 우선순위는 아키텍처 가설 (고객 표 binding 전 DERIVED)",
+    ("H", 2): "OC/단락 반응과 OV 반응의 우선순위는 아키텍처 가설 (원문 표 binding 전 DERIVED)",
     ("I", 0): None,
 }
 RESEARCH_CHECKS = [
@@ -704,7 +710,7 @@ for r in D["scenarios"]:
 # -- §5 timing, §6 OPEN, §7 outputs ---------------------------------------------------------------------------------
 TIM = [
     [C("timeline", "S-FAULT", expect_recorded=True, fdti_ms="$FDTI_BUDGET", torque_tol_Nm="$SS_TORQUE_TOL",
-       power_tol_W="$SS_POWER_TOL", label="FDTI = t_detect - t_fault (internal budget, not a customer value)")],
+       power_tol_W="$SS_POWER_TOL", label="FDTI = t_detect - t_fault (internal budget, not a source value)")],
     [C("timeline", "S-FAULT", frti_ms="$FRTI_BUDGET", torque_tol_Nm="$SS_TORQUE_TOL",
        power_tol_W="$SS_POWER_TOL", label="FRTI = t_physical_safe - t_detect (gate time kept apart)")],
     [C("timeline", "S-FAULT", ftti_ms="$VW_MAX_FTTI_TORQUE", torque_tol_Nm="$SS_TORQUE_TOL",
@@ -729,7 +735,7 @@ OPEN_MANUAL = {6: "P1/P2 ↔ EM1/EM2 ↔ P0/P1 물리 매핑: 모델은 한 기�
                   "전 자동 치환 금지",
                8: "HWIO 개별 번호↔문장 매핑: 추정 배정 금지 (원문 확인)",
                9: "14714의 next Rx_KL15_Sw + KL15_Hw OFF→ON 순서·시간차·validity: 재허가 계약은 변형(variant)으로 "
-                  "구현되어 있고 승인 계약은 고객 답변 후 binding"}
+                  "구현되어 있고 승인 계약은 답변 후 binding"}
 for k, text in enumerate(D["open"]):
     checks = []
     if OPEN_PARAMS[k]:
@@ -997,14 +1003,14 @@ ADD_CH = {
     36: ("fov", "fov_bound"), 37: ("dis", "dis_false", "dis_rot"), 38: (), 39: (), 40: ("overspeed", "overspeed_cx"),
     41: (), 42: ("start",),
 }
-ADD_MAN = {3: "COMMAND_COMPATIBILITY_TABLE (방향·mode·EM 조합)은 고객 통신 계약 확보 후 표로 선언",
+ADD_MAN = {3: "COMMAND_COMPATIBILITY_TABLE (방향·mode·EM 조합)은 통신 계약 확보 후 표로 선언",
            6: "전류 영점 학습(offset 활성화 조건)은 모델 밖 - 보정 활성화 규칙은 calibration 검사로 대체 확인 불가",
            15: "상·하단 동시 도통 방지는 브리지 모델에서 구조적 - 명령 경로 고장은 회로 수준 시험",
            18: "GD 설정 무결성(SPI/CRC/readback)은 모델 밖", 26: "비안전 기능 간섭(MPU/DMA/partition)은 모델 밖 - FFI 분석",
            28: "service/개발 명령의 안전 우회 차단은 모델 밖 - 진단 세션 명세로 검증",
            30: "EM별 상태·재기동 격리: 모델은 한 인버터 + 두 번째 기계의 축약 모델",
            33: "차량 제공 torque/speed 데이터의 형식·age·EM swap은 통신 계약 확인 필요 (조건부 후보)",
-           38: "열 과부하 제한 (조건부 후보): 열 모델은 앱의 열 해석 페이지 - 고객 안전 할당 확인 후 연결",
+           38: "열 과부하 제한 (조건부 후보): 열 모델은 앱의 열 해석 페이지 - 안전 할당 확인 후 연결",
            39: "열 보호 입력·모델 신뢰성 상실 (조건부 후보)",
            41: "구동·회생 토크 상실의 가용성 보고 (조건부 후보)",
            42: "Disconnector·Parking lock interlock (조건부 후보; K0는 context로만 확정)"}
@@ -1070,8 +1076,8 @@ known = {it["id"] for it in ITEMS}
 cited = sorted({n for it in ITEMS for n in NUM.findall(_text(it))})
 for n in cited:
     if f"WI-{n}" not in known:
-        I(f"WI-{n}", "Appendix A. 고객 WI (cited, not in the source)", "requirement", "OPEN",
-          f"customer requirement {n}: cited by the source, its text is not in it", level="FSR",
+        I(f"WI-{n}", "Appendix A. WI (cited, not in the source)", "requirement", "OPEN",
+          f"requirement {n}: cited by the source, its text is not in it", level="FSR",
           traces_to_inferred=["WI-14677", "WI-14678"],
           manual="the text is not in the source: ask for it before it is refined")
 by_id = {it["id"]: it for it in ITEMS}
@@ -1209,6 +1215,14 @@ PROPOSALS = [
 ]
 classify()
 
+# the section names as the application shows them (navigation labels; the item texts stay verbatim)
+GROUP_SHOWN = {"Appendix A. 고객 WI 14656-14741": "Appendix A. WI 14656-14741",
+               "Appendix A. 고객 WI (cited, not in the source)": "Appendix A. WI (cited, not in the source)",
+               "Appendix B. TSR-ADD 42 · 고객 범위 확인": "Appendix B. TSR-ADD 42 · 범위 확인"}
+for it in ITEMS:
+    g = it.get("group") or ""
+    it["group"] = GROUP_SHOWN.get(g, g.replace("recovered customer requirement", "recovered requirement"))
+
 # ================================================================================================= the package
 used = set()
 for it in ITEMS:
@@ -1219,15 +1233,15 @@ for it in ITEMS:
             used.add(c["params"]["failed_scenario"])
 PACKAGE = {
     "schema": "twb-reference/1",
-    "meta": {"title": "Traction Inverter FuSa simulation reference — customer package",
+    "meta": {"title": "Traction Inverter FuSa simulation reference",
              "date": "2026-09-30", "source": "Traction_Inverter_Functional_Safety_Simulation_Reference (input package, "
                                               "2026-09-30)",
-             "note": "Not an approved customer specification. Provenance tags kept as in the source; OPEN values "
+             "note": "Not an approved specification. Provenance tags kept as in the source; OPEN values "
                      "stay empty (the illustrative profile uses flagged example values). Every simulation verdict is "
                      "about the product model loaded in the application."},
-    "provenance": {"CONFIRMED": "고객 원문/사진에서 직접 복원·재확인", "CUSTOMER-PAST": "과거 고객 요구 (이번 원본에서 "
+    "provenance": {"CONFIRMED": "원문/사진에서 직접 복원·재확인", "PAST-PROJECT": "과거 프로젝트 요구 (이번 원본에서 "
                    "재검증 못함)", "PROJECT": "프로젝트 조건/적용값", "DERIVED": "내부 도출 FSR/TSR/아키텍처/검증 제안",
-                   "RESEARCH": "스터디/논문 예시값 (고객 요구 아님)", "OPEN": "미확정 (값 없음)",
+                   "RESEARCH": "스터디/논문 예시값 (원문 요구 아님)", "OPEN": "미확정 (값 없음)",
                    "CONFLICT": "회수 기록 충돌 (variant 유지)"},
     "customer_tags": list(CUST),
     "parameters": PARAMETERS,
