@@ -96,10 +96,10 @@ reading reports it and a proposal adds one.*
 
 참고 문서 전체 실행(합성 제품 모델): 원문 값 프로파일 **PASS 118 · UNKNOWN 155 · MANUAL 91 · FAIL 3 · CONFLICT 0** —
 UNKNOWN은 모두 이름 있는 OPEN 값(39개) 때문이고, 가장 많이 막는 값은 안전 상태 허용오차(각 85 항목)입니다. FAIL 3건은 합성 모델의
-DC 과전류 비교기(300 A)가 문서 규칙(1.5 × Imax ±10 %)을 벗어난 것. 예시 값을 넣으면 PASS 236 · CONFLICT 6(GDE 두 시퀀스) · FAIL 12.
+DC 과전류 비교기(300 A)가 문서 규칙(1.5 × Imax ±10 %)을 벗어난 것. 예시 값을 넣으면 PASS 235 · CONFLICT 7(GDE 두 시퀀스) · FAIL 12. 배터리 시스템의 보호(BMS)는 가정하지 않습니다.
 *The whole reference document on the synthetic product model, values as given: 118 PASS, 155 UNKNOWN (each waiting on a named OPEN value),
 91 MANUAL, 3 FAIL (the model's DC over-current comparator outside the document's rule), 0 CONFLICT; with illustrative
-values 236 PASS, 6 CONFLICT, 12 FAIL.*
+values 235 PASS, 7 CONFLICT, 12 FAIL. The battery system's own protection (BMS) is not assumed.*
 
 ![사건 타임라인: 고장 → 검출 → 전략 단계 → 안전 조건 도달](docs/screenshots/fusa_timeline_soft_asc.jpg)
 
