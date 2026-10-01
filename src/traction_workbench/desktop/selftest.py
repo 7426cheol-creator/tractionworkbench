@@ -235,12 +235,40 @@ def run_self_test(app, out_dir) -> int:
         check("fault:wrong_reaction", v.get("TSR-06") == "FAIL" and fs.t_req.rowCount() == 14
               and acts[:1] == ["six_switch_off"], f"{ {k: x for k, x in v.items() if x != 'PASS'} } {acts[:2]}")
         reading("fault_sim", fs.insight, "fault_sim")
-        for tab, name in ((fs.p_wave, "25b_fault_waveforms"), (fs.tab_timeline, "25c_fault_timeline"),
+        for tab, name in ((fs.p_wave, "25b_fault_waveforms"), (fs.tab_zoom, "25b2_fault_transient"),
+                          (fs.tab_timeline, "25c_fault_timeline"),
                           (fs.tab_req, "25d_fault_requirements"), (fs.insight, "25e_fault_reading")):
             fs.tabs.setCurrentWidget(tab)
             if tab is fs.tab_req:
                 fs.t_req.selectRow(next(r for r in range(fs.t_req.rowCount()) if fs.t_req.item(r, 0).text() == "TSR-06"))
             shot(win, name)
+        # the transient zoom: every extreme read from the simulated samples; the data cursor follows a curve
+        rows_t = {fs.t_trans.item(r, 0).text(): r for r in range(fs.t_trans.rowCount())}
+        r_v = rows_t.get("V_dc [V]")
+        check("fault:transient", fs.p_zoom._draw is not None and fs.t_trans.rowCount() == 5 and r_v is not None
+              and float(fs.t_trans.item(r_v, 2).text()) > 850.0, f"{fs.t_trans.rowCount()} rows")
+        from matplotlib.backend_bases import MouseEvent
+        fs.tabs.setCurrentWidget(fs.tab_zoom)
+        app.processEvents()
+        ax0 = fs.p_zoom.figure.axes[0]
+        x0, x1 = ax0.get_xlim()
+        px, py = ax0.transData.transform((0.5 * (x0 + x1), sum(ax0.get_ylim()) / 2))
+        MouseEvent("motion_notify_event", fs.p_zoom.canvas, px, py)._process()
+        check("plot:data_cursor", fs.p_zoom.cursor.enabled and fs.p_zoom.cursor.live is not None
+              and "ms" in fs.p_zoom.readout.text(), fs.p_zoom.readout.text()[:120])
+        # the processor lost while rolling: the hardware selection by the DC voltage cycles (a missing requirement)
+        from ..insight.fault import bridge_cycling
+        fs.preset.setCurrentIndex(fs.preset.findData("hw_vdc_rolling"))
+        fs._load_preset()
+        fs.run()
+        app.processEvents()
+        cyc = bridge_cycling(fs.last or {}) or {}
+        check("fault:hw_vdc_cycling", cyc.get("changes", 0) >= 6 and 5.0 < (cyc.get("period_ms") or 0) < 12.0
+              and 55.0 < cyc.get("v_min_V", 0) and cyc.get("v_max_V", 1e9) < 110.0, str(cyc)[:200])
+        fs.tabs.setCurrentWidget(fs.tab_zoom)
+        shot(win, "25b3_fault_hw_vdc_cycling")
+        fs.preset.setCurrentIndex(fs.preset.findData("res_lost"))
+        fs._load_preset()
         from PySide6.QtCore import Qt
         keep = ("policy", "none", "asc_low", "asc_high", "six_switch_off", "torque_zero", "FW2_ASC_LOW", "SOFT_ASC_V")
         for i in range(fs.cand_list.count()):            # the primitive reactions and two declared strategies
@@ -324,6 +352,25 @@ def run_self_test(app, out_dir) -> int:
         for i in range(fs.verif_list.count()):
             fs.verif_list.item(i).setCheckState(Qt.Checked)
         fs.top.setCurrentIndex(0)
+        # reference verification: the built-in customer package classified and traced; a proposal verified
+        rf = visit("reference", 0, [lambda pg: pg.load_builtin("customer_inverter")], [])
+        from PySide6.QtCore import Qt as _Qt
+        tops = {rf.tree.topLevelItem(k).data(0, _Qt.UserRole) for k in range(rf.tree.topLevelItemCount())}
+        check("reference:customer_hierarchy", len(rf.package["items"]) >= 370 and {"A-02", "A-03", "PROP-SG-HV"} <= tops
+              and rf.t_gaps.rowCount() > 20 and rf.t_props.rowCount() >= 8, f"{len(rf.package['items'])} items")
+        rf.tabs.setCurrentWidget(rf.tab_hier)
+        shot(win, "25n_reference_hierarchy")
+        rf.load_builtin("example")
+        rf.profile.setCurrentIndex(rf.profile.findData("illustrative"))
+        rf.search.setText("EX-PROP-01")
+        rf.run()
+        app.processEvents()
+        row = next((r for r in (rf.last or {}).get("rows", []) if r["id"] == "EX-PROP-01"), {})
+        check("reference:proposal", row.get("verdict") == "PASS" and row.get("proposed"), row.get("verdict"))
+        rf.tabs.setCurrentIndex(0)
+        rf.matrix.selectRow(0)
+        shot(win, "25o_reference_matrix")
+        rf.search.setText("")
         pw = visit("power", 0, ["run_module"], [(lambda pg: pg.mod_tabs.setCurrentIndex(1), "26_power_module"),
                                                 (lambda pg: pg.mod_tabs.setCurrentWidget(pg.i_mod), "26a_power_module_reading")])
         check("power:module", pw.last_module is not None and pw.last_module["losses"]["established"]

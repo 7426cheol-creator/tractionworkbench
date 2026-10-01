@@ -17,14 +17,16 @@ FAULT_LABELS = {"sensor": "sensor fault", "torque_command": "torque command faul
                 "phase_open": "phase open", "gate_supply_loss": "gate supply loss",
                 "battery_disconnect": "battery disconnect", "contactor_stuck": "contactor welded",
                 "charge_acceptance_loss": "loss of charge acceptance", "mechanism_disabled": "latent mechanism fault",
-                "path_lost": "latent reaction-path loss", "resource_loss": "shared resource loss"}
+                "path_lost": "latent reaction-path loss", "resource_loss": "shared resource loss",
+                "clock": "MCU clock fault", "coupling": "mechanical coupling change"}
 QUANTITY_LABELS = {"v_dc": "V_dc", "i_phase_abs": "|i_phase| (largest of the three phases)",
                    "i_bat_charge": "battery charging current", "torque": "shaft torque", "torque_abs": "|shaft torque|",
                    "speed": "speed", "bridge_in": "bridge state", "i_d": "d-axis current i_d",
                    "torque_brake": "braking torque (opposing the rotation)"}
 PARAM_LABELS = {"duration_s": "duration [s]", "duration_ms": "duration [ms]", "limit_A": "limit [A]",
                 "threshold_A": "threshold [A]", "threshold_V": "threshold [V]", "debounce_ms": "debounce [ms]",
-                "delay_us": "delay [us]", "filter_us": "filter [us]", "timeout_ms": "timeout [ms]"}
+                "delay_us": "delay [us]", "filter_us": "filter [us]", "timeout_ms": "timeout [ms]",
+                "threshold_rpm": "threshold [rpm]", "J_kgm2": "inertia [kg*m^2]", "T_load_Nm": "load torque [N*m]"}
 VALUE_LABELS = {**REACTION_LABELS, "upper_on": "upper switch on", "lower_on": "lower switch on",
                 "stuck_duty": "stuck duty", "stuck_last": "stuck at the last value", "sign_flip": "sign flip"}
 

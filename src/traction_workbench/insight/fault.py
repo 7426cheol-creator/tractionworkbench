@@ -15,6 +15,58 @@ from . import Insight, esc, num, q
 VL = {"PASS": "ok", "FAIL": "bad", "UNKNOWN": "open", "NOT_APPLICABLE": "info"}
 
 
+def bridge_cycling(res: dict, min_changes: int = 4) -> dict | None:
+    """The commanded bridge switching back and forth between the same two states after the first fault (at least
+    ``min_changes`` changes): the states, the number of changes, the period (median time between entering the same
+    state) and the DC-link and torque range while it cycles; None otherwise."""
+    import numpy as np
+    from ..extensions.faultsim.engine import BRIDGE_CODES
+    tr_ = res.get("trace") or {}
+    t = np.asarray(tr_.get("t", []), dtype=float)
+    br = np.asarray(tr_.get("bridge", []), dtype=float)
+    if t.size < 3 or br.size != t.size:
+        return None
+    tf = min((e["t"] for e in res.get("events") or [] if e["kind"] == "fault"), default=float(t[0]))
+    k = np.where(t >= tf - 1e-12)[0]
+    b = br[k].astype(int)
+    ch = np.where(np.diff(b) != 0)[0] + 1
+    if len(ch) < min_changes:
+        return None
+    entered = b[ch]
+    pair = sorted(set(int(x) for x in entered[-min_changes:]))
+    if len(pair) != 2:
+        return None
+    inside = np.isin(b[ch - 1], pair) & np.isin(entered, pair)          # a change between the two states
+    j = len(ch)
+    while j > 0 and inside[j - 1]:                                     # the run of such changes up to the end
+        j -= 1
+    ch, entered = ch[j:], entered[j:]
+    if len(ch) < min_changes:
+        return None
+    names = {v: n for n, v in BRIDGE_CODES.items()}
+    tt = t[k]
+    first = entered[-1]
+    starts = tt[ch][entered == first]
+    per = float(np.median(np.diff(starts))) if starts.size >= 2 else None
+    if per:                                    # the steady cycle starts after the last interval longer than it
+        gaps = np.diff(tt[ch])
+        long_ = np.where(gaps > 1.5 * per)[0]
+        if long_.size:
+            ch, entered = ch[long_[-1] + 1:], entered[long_[-1] + 1:]
+        if len(ch) < min_changes:
+            return None
+    w = (t >= tt[ch[0]])
+    v = np.asarray(tr_.get("v_dc", []), dtype=float)
+    T = np.asarray(tr_.get("T_shaft", []), dtype=float)
+    return {"states": [names.get(pair[0], str(pair[0])), names.get(pair[1], str(pair[1]))], "changes": int(len(ch)),
+            "first_s": float(tt[ch[0]]), "period_ms": None if per is None else per * 1e3,
+            "frequency_Hz": None if not per else 1.0 / per,
+            "v_min_V": float(v[w].min()) if v.size == t.size else None,
+            "v_max_V": float(v[w].max()) if v.size == t.size else None,
+            "T_min_Nm": float(T[w].min()) if T.size == t.size else None,
+            "T_max_Nm": float(T[w].max()) if T.size == t.size else None}
+
+
 def react(r) -> str:
     """A reaction or bridge command as people name it (in the current language)."""
     return {"asc_low": "ASC-low", "asc_high": "ASC-high", "six_switch_off": "6SO", "torque_zero": tr("토크 0", "zero torque"),
@@ -174,6 +226,12 @@ def fault_insight(res: dict) -> Insight:
             + (tr("요구 위반 — ", "requirements violated — ") + ", ".join(esc(x["id"]) for x in fails) if fails else
                tr("모든 적용 요구 통과", "every applicable requirement met") if overall == "PASS" else
                tr("판단불가 항목 있음", "undecided items")))
+    cyc = bridge_cycling(res)
+    if cyc:
+        head += tr(f" — 단, 브리지가 {react(cyc['states'][0])} ↔ {react(cyc['states'][1])} 순환 "
+                   f"(주기 ≈ {num(cyc['period_ms'], 3)} ms)",
+                   f" — but the bridge cycles {react(cyc['states'][0])} ↔ {react(cyc['states'][1])} "
+                   f"(period ≈ {num(cyc['period_ms'], 3)} ms)")
     ins = Insight(headline=head, verdict=overall)
     det = [e for e in res.get("events") or [] if e["kind"] == "detection"]
     act = [e for e in res.get("events") or [] if e["kind"] == "actuation"]
@@ -186,6 +244,28 @@ def fault_insight(res: dict) -> Insight:
         (tr("V_dc 최대", "max V_dc"), q(s.get("v_dc_max_V"), "V"), "info"),
         (tr("축 토크 범위", "shaft torque range"), f"{num(s.get('T_shaft_min_Nm'))} … {num(s.get('T_shaft_max_Nm'))} N·m",
          "info")]
+    # 0) a bridge that keeps switching between two states after the fault (e.g. a hardware selection by the DC
+    #     voltage that freewheels, recharges the link and short-circuits again)
+    if cyc:
+        sc_ = ins.section(tr("브리지 반복 전환 (순환)", "the bridge keeps switching (cycling)"),
+                          tr("같은 두 상태 사이를 고장 뒤 계속 오갑니다: 전환마다 브리지와 DC-link가 다시 과도 상태가 됩니다.",
+                             "it goes back and forth between the same two states after the fault: every change starts a "
+                             "new transient of the bridge and the DC link."))
+        a, b_ = cyc["states"]
+        sc_.add(tr(f"{esc(react(a))} ↔ {esc(react(b_))}: 전환 {cyc['changes']}회, 주기 ≈ {num(cyc['period_ms'], 3)} ms "
+                   f"({num(cyc['frequency_Hz'], 3)} Hz), 첫 전환 {_ms(cyc['first_s'])}",
+                   f"{esc(react(a))} ↔ {esc(react(b_))}: {cyc['changes']} changes, period ≈ "
+                   f"{num(cyc['period_ms'], 3)} ms ({num(cyc['frequency_Hz'], 3)} Hz), first at {_ms(cyc['first_s'])}"),
+                "warn")
+        sc_.add(tr(f"순환 중 DC-link {num(cyc['v_min_V'], 4)} … {num(cyc['v_max_V'], 4)} V, 축 토크 "
+                   f"{num(cyc['T_min_Nm'], 4)} … {num(cyc['T_max_Nm'], 4)} N·m",
+                   f"while cycling the DC link spans {num(cyc['v_min_V'], 4)} … {num(cyc['v_max_V'], 4)} V, the shaft "
+                   f"torque {num(cyc['T_min_Nm'], 4)} … {num(cyc['T_max_Nm'], 4)} N·m"), "warn",
+                tr("6SO 구간마다 역기전력이 링크를 다시 충전합니다(에너지가 HV 쪽으로: C2). 이 설계의 요구는 순환 자체나 링크가 "
+                   "방전 한계 아래에 머무는지를 묻지 않습니다 — 요구가 빠진 곳입니다.",
+                   "every six-switch-off interval lets the back-EMF recharge the link (energy fed to the HV side: C2). "
+                   "No requirement of this design asks about the cycling itself or whether the link stays below the "
+                   "discharge limit - a missing requirement.") if "six_switch_off" in cyc["states"] else "")
     # 1) the causal chain
     sec = ins.section(tr("인과 사슬: 고장 → 측정·추정 → 감시·검출 → 반응 명령 → 실제 브리지 → 결과",
                          "causal chain: fault → measurement / estimate → detection → reaction command → actual bridge → "

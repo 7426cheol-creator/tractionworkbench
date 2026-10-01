@@ -29,7 +29,7 @@ traction-workbench = "traction_workbench.desktop.app:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-traction_workbench = ["desktop/resources/*", "mathworks/matlab/+twb/*.m"]
+traction_workbench = ["desktop/resources/*", "mathworks/matlab/+twb/*.m", "extensions/faultsim/packages/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

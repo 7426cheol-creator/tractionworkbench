@@ -39,7 +39,7 @@ from .plant import (E_BAT, E_BLEED, E_CU, E_EXT, E_INV, E_MECH, ID, IQ, PHASES, 
                     LegCommand, MachineParams, OutOfModel, Plant, ShootThrough, integrate, phase_currents)
 from .labels import exit_label, fault_text, reaction_label
 from .protection import (BRIDGE_REACTIONS, REACTIONS, Detection, MechanismSpec, MechanismState, PathSpec,
-                         ResourceBook, SafeStatePolicy, torque_window)
+                         ResourceBook, SafeStatePolicy, signed_window, speed_tolerance, torque_window, window_excess)
 from .sensors import make_sensor, unwrap_delta
 from .strategy import MEASURED_EXITS, StrategySpec, action_kind
 from .system import SystemLayer
@@ -106,6 +106,12 @@ FAULT_KINDS = {
     "safety_task_stop": ("the safety-monitor task stops (the control task keeps running)", ()),
     "application_limit_fail": ("the application's torque limitation fails (the interface envelope no longer "
                                "limits the command)", ()),
+    "clock": ("the MCU clock fails: its periodic software (control task, software mechanisms, supervisor task) runs "
+              "at value x the nominal rate (drift) or stops; hardware, the plant and an external watchdog keep true "
+              "time", (("mode", ("drift", "stop"), "drift"), ("value", "float", 0.5))),
+    "coupling": ("a mechanical coupling changes (a clutch opens or closes): the inertia at the shaft becomes J_kgm2 "
+                 "(0: the speed is held by the load) and the load torque T_load_Nm",
+                 (("J_kgm2", "float", 0.0), ("T_load_Nm", "float", 0.0))),
 }
 
 
@@ -435,6 +441,7 @@ class _Sim:
         self.t_now, self.x_now = 0.0, None
         self.app_limit_failed = False
         self.safety_task_stopped = False
+        self.clock_rate, self.clock_parked = 1.0, []
         self.env_fault = None                          # (mode, value, t) of a corrupted received envelope
         self.tw_view = {"hi": math.nan, "lo": math.nan, "tol": math.nan, "int": math.nan}
         self.res_lost_sensors: set = set()
@@ -549,6 +556,16 @@ class _Sim:
             self.safety_task_stopped = True
         elif k == "application_limit_fail":
             self.app_limit_failed = True
+        elif k == "clock":
+            self._clock(t, 0.0 if p.get("mode", "drift") == "stop" else float(p.get("value", 0.5)), f.text())
+        elif k == "coupling":
+            m = self.plant.m
+            self._coupling_before = (m.J, m.T_load)
+            J = p.get("J_kgm2")
+            m.J = float(J) if J else None
+            m.T_load = float(p.get("T_load_Nm") or 0.0)
+            self.ev(t, "plant", "coupling", "mechanical coupling changed: " + (
+                f"inertia {m.J:g} kg*m^2" if m.J else "speed held by the load") + f", load torque {m.T_load:g} N*m")
         dur = p.get("duration_s")
         if dur is not None and k not in ("mcu_reset", "switch_short", "switch_open", "diode_open", "phase_open"):
             self.schedule(t + float(dur), 0, "fault_clear", f)
@@ -604,6 +621,10 @@ class _Sim:
             self.safety_task_stopped = False
         elif k == "application_limit_fail":
             self.app_limit_failed = False
+        elif k == "clock":
+            self._clock(t, 1.0, "clock back to its nominal rate")
+        elif k == "coupling" and getattr(self, "_coupling_before", None) is not None:
+            self.plant.m.J, self.plant.m.T_load = self._coupling_before
         self.ev(t, "fault_cleared", f.kind, f"{f.text()} cleared (intermittent fault)")
 
     def _truth_for(self, sen, x):
@@ -1173,6 +1194,39 @@ class _Sim:
         return v
 
     # -- software mechanisms -----------------------------------------------------------------------------------
+    def _clock(self, t, rate: float, why: str):
+        """The MCU clock runs at ``rate`` x nominal from t (0: stopped).  The MCU's periodic software - the control
+        task, the software mechanisms hosted on the MCU, the supervisor task - is re-timed (its periods stretch by the
+        rate change; a stopped clock parks it until the clock returns); hardware mechanisms, the plant and an external
+        watchdog keep true time, and the software still counts its nominal periods (it cannot see its own clock)."""
+        old = self.clock_rate
+
+        def mcu_task(e):
+            if e[3] in ("control", "sys:task"):
+                return True
+            return e[3] == "monitor" and "MCU" in e[4].spec.resources
+
+        keep, moved = [], []
+        for e in self.heap:
+            (moved if (e[0] > t + 1e-15 and mcu_task(e)) else keep).append(e)
+        if old > 0.0:                       # future instants as offsets on the clock's own time base
+            parked = [((e[0] - t) * old, e) for e in moved]
+        else:
+            parked = [(off, e) for off, e in self.clock_parked] + [((e[0] - t) * old, e) for e in moved]
+        self.clock_parked = []
+        self.heap = keep
+        if rate > 0.0:
+            for off, e in parked:
+                self.seq += 1
+                keep.append((t + off / rate, e[1], self.seq, e[3], e[4]))
+        else:
+            self.clock_parked = parked
+        heapq.heapify(self.heap)
+        self.clock_rate = rate
+        self.ev(t, "controller", "clock", f"{why}: the MCU's periodic software now runs at "
+                                          f"{rate:g} x its nominal rate" if rate > 0 else f"{why}: the MCU's "
+                                          "periodic software stops")
+
     def _wd_alive(self, t):
         self.last_alive = t
         self.wd_token += 1
@@ -1266,6 +1320,12 @@ class _Sim:
             thr = float(P["threshold_V"])
             viol = v > thr if spec.kind == "overvoltage_sw" else v < thr
             detail = f"measured Vdc {v:.1f} V {'>' if spec.kind == 'overvoltage_sw' else '<'} {thr:g} V"
+        elif spec.kind == "overspeed_sw":
+            # the control's speed estimate (the position channel): a frozen or lost position hides an overspeed
+            sp = self.ctrl.w_est / self.s.control.p * 60.0 / TWO_PI
+            thr = float(P["threshold_rpm"])
+            viol = abs(sp) > thr
+            detail = f"measured speed {sp:.0f} rpm beyond {thr:g} rpm"
         elif spec.kind == "position_los":
             sen = self.sensor("position_monitor")
             viol = bool(sen.flags(t, sen.read(t)).get("loss_of_signal"))
@@ -1313,41 +1373,15 @@ class _Sim:
         return self.last_cmd if self.last_cmd is not None else 0.0
 
     def _signed_window(self, t, T_req, P):
-        """(high, low, contradiction) of the customer-style window: the received envelope (around the request or
-        declared static) and / or the request scaled by the limit factor (high = max(T F, T / F) + abs, low =
-        min(T F, T / F) - abs - signed, never |T|), bounded by independent limits."""
-        src = P.get("limit_source", "factor")
-        hi, lo = math.inf, -math.inf
-        if src in ("envelope", "both"):
-            e_hi, e_lo = P.get("env_max_Nm"), P.get("env_min_Nm")
-            e_hi = T_req + float(P.get("env_above_Nm", 50.0)) if e_hi is None else float(e_hi)
-            e_lo = T_req - float(P.get("env_below_Nm", 50.0)) if e_lo is None else float(e_lo)
-            if self.env_fault is not None and t >= self.env_fault[2] - 1e-12:
-                md, val, _ = self.env_fault
-                e_hi = (e_lo - abs(val or 1.0)) if md == "contradiction" else val
-            if e_hi <= e_lo:
-                return e_hi, e_lo, f"received envelope contradiction: maximum {e_hi:.1f} <= minimum {e_lo:.1f} N*m"
-            hi, lo = e_hi, e_lo
-        if src in ("factor", "both"):
-            F = float(P.get("limit_factor", 1.2))
-            a = float(P.get("abs_Nm", 0.0))
-            f_hi, f_lo = max(T_req * F, T_req / F) + a, min(T_req * F, T_req / F) - a
-            hi, lo = (f_hi, f_lo) if src == "factor" else (min(hi, f_hi), max(lo, f_lo))
-        if P.get("independent_max_Nm") is not None:
-            hi = min(hi, float(P["independent_max_Nm"]))
-        if P.get("independent_min_Nm") is not None:
-            lo = max(lo, float(P["independent_min_Nm"]))
-        return hi, lo, None
+        """The signed window of a monitor at t (``protection.signed_window`` with the received envelope's fault)."""
+        ef = None
+        if self.env_fault is not None and t >= self.env_fault[2] - 1e-12:
+            ef = self.env_fault[:2]
+        return signed_window(T_req, P, ef)
 
     def _tol(self, P):
-        """The speed-dependent tolerance (a map over the MEASURED speed, linear, flat outside)."""
-        tm = P.get("tol_map")
-        if not tm:
-            return float(P.get("tol_Nm", 0.0))
-        sp = self.ctrl.w_est / self.s.control.p * 60.0 / TWO_PI
-        if P.get("tol_speed_abs", True):
-            sp = abs(sp)
-        return float(np.interp(sp, [float(a) for a, _ in tm], [float(b) for _, b in tm]))
+        """The speed-dependent tolerance over the MEASURED speed (``protection.speed_tolerance``)."""
+        return speed_tolerance(self.ctrl.w_est / self.s.control.p * 60.0 / TWO_PI, P)
 
     def _run_ext_mechanism(self, t, x, m: MechanismState):
         spec, P, a = m.spec, m.spec.params, m.aux
@@ -1385,14 +1419,7 @@ class _Sim:
             self.mon_view = {"T_est": T_est, "lo": lo, "hi": hi}
             x_hi = x_lo = -math.inf
             if not contra:
-                add = P.get("tol_rule", "add") == "add"
-                x_hi = (T_est + tol - hi) if add else (T_est - tol - hi)
-                x_lo = (lo - (T_est - tol)) if add else (lo - (T_est + tol))
-                sides = P.get("sides", "both")
-                if sides == "high":
-                    x_lo = -math.inf
-                elif sides == "low":
-                    x_hi = -math.inf
+                x_hi, x_lo = window_excess(T_est, tol, hi, lo, P)
             if k == "torque_window_signed":
                 viol = bool(contra) or x_hi > 0.0 or x_lo > 0.0
                 detail = contra or (f"estimated torque {T_est:.1f} N*m (tolerance {tol:.1f} N*m) outside "

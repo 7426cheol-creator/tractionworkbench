@@ -12,6 +12,8 @@ datas = [
     (str(ROOT / "examples"), "examples"),
     (str(ROOT / "src" / "traction_workbench" / "desktop" / "resources"), "traction_workbench/desktop/resources"),
     (str(ROOT / "src" / "traction_workbench" / "mathworks" / "matlab"), "traction_workbench/mathworks/matlab"),
+    (str(ROOT / "src" / "traction_workbench" / "extensions" / "faultsim" / "packages"),
+     "traction_workbench/extensions/faultsim/packages"),
     (str(ROOT / "README.md"), "."),
     (str(ROOT / "docs"), "docs"),
 ]

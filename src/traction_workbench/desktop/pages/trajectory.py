@@ -96,7 +96,7 @@ class TrajectoryPage(QWidget):
         sc.setMinimumWidth(320)
         split.addWidget(sc)
         self.tabs = QTabWidget()
-        self.p_plane = PlotPanel()
+        self.p_plane = PlotPanel(cursor=False)          # the plane's hover reads the operating point
         self.p_vars = PlotPanel()
         self.table = KeyValueTable(headers=[lab or key for key, lab in FIELD_LABELS])
         self.tabs.addTab(self.p_plane, tr("dq 전류 궤적", "dq current trajectory"))

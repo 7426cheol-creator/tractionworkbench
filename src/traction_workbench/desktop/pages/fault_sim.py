@@ -272,7 +272,7 @@ class FaultSimPage(QWidget):
         self.override.setToolTip(tr("이 실행에서 모든 반응 요청을 이 반응(기본 반응 또는 선언된 전략)으로 바꿉니다 — 후보 비교용",
                                     "every reaction request of this run becomes this reaction (a primitive one or a "
                                     "declared strategy) — for comparing candidates"))
-        self.edit_design_btn = QPushButton(tr("보호 설계·안전 요구 편집 →", "edit protection design & requirements →"))
+        self.edit_design_btn = QPushButton(tr("보호 설계·안전 요구 편집 →", "edit protection design and requirements →"))
         self.edit_design_btn.clicked.connect(lambda: self.top.setCurrentWidget(self.editor))
         vbox = QVBoxLayout()
         vbox.setContentsMargins(0, 0, 0, 0)
@@ -314,6 +314,30 @@ class FaultSimPage(QWidget):
                                         "Run to see truth, measurement, estimate, command and actual bridge on one "
                                         "time axis."), min_height=520)
         self.tabs.addTab(self.p_wave, tr("동기 파형", "synchronized waveforms"))
+        w = QWidget()
+        lz = QVBoxLayout(w)
+        lz.setContentsMargins(0, 0, 0, 0)
+        self.p_zoom = PlotPanel(hint=tr("실행하면 고장 전후 과도 구간이 시뮬레이션 샘플 단위로 확대되어 극값의 값과 시각이 표시됩니다.",
+                                        "Run to see the transient around the fault zoomed to the simulated samples, "
+                                        "each extreme with its value and instant."), min_height=460)
+        self.t_trans = KeyValueTable(headers=[tr("양", "quantity"), tr("고장 전", "pre-fault"),
+                                              tr("고장 후 극값", "extreme"), tr("시각 [ms]", "at [ms]"),
+                                              tr("고장 후 [ms]", "t − fault [ms]"),
+                                              tr("반응 후 [ms]", "t − reaction [ms]"), tr("최대 / 최소", "max / min"),
+                                              tr("한계 밖 [ms]", "outside limit [ms]"),
+                                              tr("정착 [ms]", "settling [ms]"), tr("샘플 간격 [µs]", "step [µs]")])
+        self.t_trans.setToolTip(tr(
+            "극값은 시뮬레이션 샘플 그대로입니다(보간 없음). 샘플 간격 = 그 시각 주변의 계산 해상도. 정착 = 최종값(마지막 10 % 구간의 "
+            "중앙값) 둘레 편차의 5 % 안에 머물기 시작한 시각(상전류는 max(|i_a|,|i_b|,|i_c|) 포락선, 6펄스 리플 15 % 허용).",
+            "Extremes are simulated samples (no interpolation). Step = the sample spacing around that instant (the "
+            "resolution the value was computed with). "
+            "Settling = from when the quantity stays within 5 % of its excursion around the final value (the median of "
+            "the last tenth); the phase currents by the envelope max(|i_a|, |i_b|, |i_c|) with 15 % for its six-pulse "
+            "ripple."))
+        lz.addWidget(self.p_zoom, 3)
+        lz.addWidget(self.t_trans, 1)
+        self.tabs.addTab(w, tr("과도 확대", "transient zoom"))
+        self.tab_zoom = w
         w = QWidget()
         l2 = QVBoxLayout(w)
         l2.setContentsMargins(0, 0, 0, 0)
@@ -387,7 +411,7 @@ class FaultSimPage(QWidget):
         self.editor.load(self.design["base"])
         self.editor.changed.connect(self._design_changed)
         self.editor.apply_requested.connect(self._apply_design)
-        self.top.addTab(self.editor, tr("보호 설계·안전 요구 (편집)", "protection design & safety requirements"))
+        self.top.addTab(self.editor, tr("보호 설계·안전 요구 (편집)", "protection design · safety requirements (edit)"))
         self.case_tab = self._case_tab()
         self.top.addTab(self.case_tab, tr("안전 근거 (심사)", "safety case (review)"))
         lay = QVBoxLayout(self)
@@ -1056,6 +1080,7 @@ class FaultSimPage(QWidget):
         csv = lambda tr_=tr_: {k: tr_[k] for k in ("t", "T_shaft", "T_request", "T_cmd", "T_est_mon", "i_a", "i_b", "i_c",
                                                    "i_a_meas", "v_dc", "v_dc_meas", "i_bat", "bridge")}   # noqa: E731
         self.p_wave.draw(FF.fig_fault_waveforms, res, title=title, name="fault_waveforms", csv=csv)
+        self._show_transient(res, title)
         self.p_time.draw(FF.fig_fault_timeline, res, title=title, name="fault_timeline")
         kinds = {"fault": tr("고장", "fault"), "detection": tr("검출", "detection"), "actuation": tr("반응", "reaction"),
                  "bridge": tr("브리지", "bridge"), "reaction_blocked": tr("반응 차단", "blocked"),
@@ -1285,8 +1310,42 @@ class FaultSimPage(QWidget):
             with open(path, "w", encoding="utf-8") as fh:
                 json.dump(out, fh, ensure_ascii=False, default=str)
 
+    def _show_transient(self, res, title):
+        """The transient zoom and its table (``transient.transient_metrics``: simulated samples, no interpolation)."""
+        from ...extensions.faultsim.transient import transient_metrics
+        m = transient_metrics(res, bounds=FF.tsr_bounds(res))
+        tr_ = res["trace"]
+        w = m.get("window_s")
+
+        def csv(tr_=tr_, w=w):
+            import numpy as np
+            t = np.asarray(tr_["t"], dtype=float)
+            k = np.ones(t.size, dtype=bool) if w is None else (t >= w[0]) & (t <= w[1])
+            return {key: np.asarray(tr_[key])[k] for key in ("t", "T_shaft", "T_request", "T_cmd", "i_a", "i_b",
+                                                              "i_c", "v_dc", "i_bat", "bridge")}
+        self.p_zoom.draw(FF.fig_fault_transient, res, title=title, name="fault_transient", csv=csv)
+        names = {"T_shaft": tr("축 토크 [N·m]", "shaft torque [N·m]"), "T_em": tr("전자기 토크 [N·m]", "EM torque [N·m]"),
+                 "i_phase": tr("상전류 |i| [A]", "phase current |i| [A]"), "v_dc": "V_dc [V]",
+                 "i_bat": tr("배터리 전류 [A]", "battery current [A]")}
+
+        def f(v, d=4):
+            return "—" if v is None else f"{v:.{d}g}"
+        rows = []
+        for r in m["rows"]:
+            ext = f(r["extreme"]) + (f" (i_{r['phase']})" if r.get("phase") else "")
+            lim = r.get("outside_bound_ms")
+            rows.append((names.get(r["quantity"], r["quantity"]), f(r.get("pre")), ext,
+                         f"{r['t_extreme_s'] * 1e3:.4f}", f(r.get("after_fault_ms")), f(r.get("after_reaction_ms")),
+                         f"{f(r.get('max'))} / {f(r.get('min'))}",
+                         "—" if lim is None else f"{lim:.4g}" + (tr(" (최초 +", " (first +") +
+                                                                 f"{r['first_outside_ms']:.4g} ms)"
+                                                                 if r.get("first_outside_ms") is not None else ""),
+                         f(r.get("settling_ms")) if r.get("settling_ms") is not None else
+                         tr("구간 안에 정착 안 함", "not within the run"), f"{r['resolution_us']:.3g}"))
+        self.t_trans.set_rows(rows)
+
     def redraw(self):
-        for p in (self.p_wave, self.p_time, self.p_cmp, self.p_camp, self.p_val, self.p_dep):
+        for p in (self.p_wave, self.p_zoom, self.p_time, self.p_cmp, self.p_camp, self.p_val, self.p_dep):
             p.redraw()
         for i in (self.insight, self.i_cmp, self.i_camp, self.i_val, self.i_case):
             i.redraw()

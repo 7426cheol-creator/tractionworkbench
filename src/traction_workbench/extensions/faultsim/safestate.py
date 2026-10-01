@@ -218,6 +218,9 @@ def fault_timeline(result, mechanisms=None, torque_tol_Nm: float = 5.0, power_to
         t_term = float(tt[k[0]]) if len(k) else None
         if act.get("reaction") == "torque_zero":
             t_gate = act["t"]
+    if t_fault is not None:                 # one clock: an instant found within the 1e-12 s tolerance of the onset
+        t_crit, t_detect, t_req, t_gate, t_term = (   # (the same step, accumulated time) is the onset, never before it
+            None if x is None else max(x, t_fault) for x in (t_crit, t_detect, t_req, t_gate, t_term))
     phys = judge_safe_state(result, t_gate if t_gate is not None else t_req, torque_tol_Nm=torque_tol_Nm,
                             power_tol_W=power_tol_W, t_min_Nm=t_min_Nm, t_max_Nm=t_max_Nm, hold_s=hold_s)
     return {"t_fault": t_fault, "t_criterion": t_crit, "t_detect": t_detect,

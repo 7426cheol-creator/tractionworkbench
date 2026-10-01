@@ -1975,6 +1975,83 @@ def fault_report(body=None, project=None) -> str:
                             counterexamples=b.get("counterexamples"))
 
 
+def reference_example() -> dict:
+    """The built-in example reference package (twb-reference/1): a neutral, synthetic catalogue of every check."""
+    import copy as _copy
+    from .extensions.faultsim.refexample import REFERENCE_EXAMPLE
+    return _copy.deepcopy(REFERENCE_EXAMPLE)
+
+
+REFERENCE_BUILTIN = (
+    ("example", "내장 예제 (중립·합성, 모든 검사)", "built-in example (neutral, synthetic, every check)", None),
+    ("customer_inverter", "고객 인버터 FuSa 참고 문서 (분류·추적·제안 포함)",
+     "customer inverter FuSa reference (classified, traced, with proposals)", "customer_inverter_reference.json"),
+)
+
+
+def reference_builtin() -> list:
+    """The built-in reference packages: [(key, Korean name, English name)]."""
+    return [(k, ko, en) for k, ko, en, _f in REFERENCE_BUILTIN]
+
+
+def reference_builtin_package(key: str) -> dict:
+    """A built-in reference package by key (``example`` or a package shipped with the application)."""
+    import json as _json
+    from pathlib import Path as _Path
+    for k, _ko, _en, fname in REFERENCE_BUILTIN:
+        if k != key:
+            continue
+        if fname is None:
+            return reference_example()
+        path = _Path(__file__).resolve().parent / "extensions" / "faultsim" / "packages" / fname
+        return _json.loads(path.read_text(encoding="utf-8"))
+    raise InputValidationError(f"unknown built-in reference package {key!r}", field="package")
+
+
+def reference_load(src) -> dict:
+    """A reference package from a dict or a JSON file, validated (errors raise; warnings are kept in ``_problems``)."""
+    from .extensions.faultsim.refpkg import load_package
+    return load_package(src)
+
+
+def reference_run(body=None, project=None, progress=None) -> dict:
+    """Verifies a reference package's items on the project's product: ``body`` = {package (default: the built-in
+    example), profile (customer | illustrative), values (parameter id -> value entered for this run), ids (a subset of
+    the items)}.  ``progress(fraction, message)`` is called per item (it may raise to cancel).  Returns the summary
+    (rows, counts, the OPEN report, conflicts, manual items), the product identity and the evidence runs (decimated
+    traces, events and timelines for the plots)."""
+    from .extensions.faultsim.refpkg import ReferenceRunner, load_package
+    from .extensions.faultsim.refreport import evidence_runs
+    b = dict(body or {})
+    pr = project or PROJECT
+    pkg = b.get("package") or reference_example()
+    if "_problems" not in pkg:
+        pkg = load_package(pkg)
+    def step(k, n, iid):
+        progress(k / max(n, 1), iid)
+    runner = ReferenceRunner(fault_product(pr), pkg, profile=b.get("profile", "customer"), values=b.get("values"),
+                             progress=step if progress is not None else None)
+    out = runner.run_all(b.get("ids"))
+    out["project"] = {"label": pr.label, "digest": pr.digest()}
+    out["problems"] = pkg.get("_problems") or []
+    out["values"] = dict(b.get("values") or {})
+    out["evidence_runs"] = evidence_runs(runner)
+    return out
+
+
+def reference_html(summary: dict) -> str:
+    """The verification of a reference package as one self-contained HTML page."""
+    from .extensions.faultsim.campaign import code_identity
+    from .extensions.faultsim.refreport import reference_html as _html
+    return _html(summary, project=summary.get("project"), code=code_identity())
+
+
+def reference_csv(summary: dict) -> str:
+    """The requirement-to-evidence matrix (one row per check) as CSV text."""
+    from .extensions.faultsim.refreport import matrix_csv
+    return matrix_csv(summary)
+
+
 ROUTES = {
     "info": info, "evaluate": evaluate, "curve": curve, "map": idiq, "sizing": sizing, "dominance": dominance,
     "relaxation": relaxation, "timing": timing, "discharge": discharge, "passive": passive, "overvoltage": overvoltage,
@@ -1990,6 +2067,7 @@ ROUTES = {
     "fault_sim": fault_sim, "fault_compare": fault_compare, "fault_campaign": fault_campaign,
     "fault_rerun": fault_rerun, "fault_validation": fault_validation, "fault_independence": fault_independence,
     "fault_design": fault_design, "fault_review": fault_review, "fault_verification": fault_verification,
+    "reference_run": reference_run,
 }
 
 

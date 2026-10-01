@@ -39,6 +39,7 @@ _ASIL_ORDER = {a: i for i, a in enumerate(ASIL_LEVELS)}
 # the sensor role each mechanism kind reads (its conversion delay adds to the detection latency)
 _READS = {"torque_monitor": "current_mon_a", "current_plausibility": "current_mon_a", "overcurrent_sw": "current_mon_a",
           "overvoltage_sw": "vdc_monitor", "undervoltage_sw": "vdc_monitor", "position_los": "position_monitor",
+          "overspeed_sw": "position_control",
           "overcurrent_hw": "current_hw_a", "overvoltage_hw": "vdc_hw"}
 _ROLE_DEFAULTS = {"current_hw_a": "current_a", "current_mon_a": "current_a", "position_monitor": "position_control",
                   "vdc_monitor": "vdc_control", "vdc_hw": "vdc_control"}

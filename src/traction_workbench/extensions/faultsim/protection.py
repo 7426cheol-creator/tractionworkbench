@@ -33,7 +33,7 @@ from ...errors import InputValidationError
 
 SW_KINDS = ("torque_monitor", "current_plausibility", "overcurrent_sw", "overvoltage_sw", "undervoltage_sw",
             "position_los", "command_timeout", "torque_window_signed", "torque_integral", "osc_power", "osc_energy",
-            "rx_monitor", "rotor_plausibility", "vdc_plausibility", "estimator_domain", "pwm_feedback")
+            "rx_monitor", "rotor_plausibility", "vdc_plausibility", "estimator_domain", "pwm_feedback", "overspeed_sw")
 HW_KINDS = ("overcurrent_hw", "overvoltage_hw", "desat", "gate_uvlo", "watchdog", "dc_overcurrent_hw", "gde_monitor")
 SYS_KINDS = ("system",)                         # a safe state requested by the system layer (not a detection)
 REACTIONS = ("safe_state", "asc_low", "asc_high", "six_switch_off", "torque_zero", "report_only")
@@ -59,6 +59,8 @@ KIND_PARAMS = {
                        ("debounce_ms", "ms", 0.2, "time above the threshold before the trip")),
     "undervoltage_sw": (("threshold_V", "V", 300.0, "measured DC-voltage threshold"),
                         ("debounce_ms", "ms", 1.0, "time below the threshold before the trip")),
+    "overspeed_sw": (("threshold_rpm", "rpm", 14000.0, "measured speed magnitude that is an overspeed"),
+                     ("debounce_ms", "ms", 1.0, "time above the threshold before the trip")),
     "position_los": (("debounce_ms", "ms", 0.0, "time the loss-of-signal flag must stay set"),),
     "command_timeout": (("timeout_ms", "ms", 50.0, "maximum age of the torque command"),),
     "overcurrent_hw": (("threshold_A", "A", 900.0, "comparator threshold on the analog current outputs"),
@@ -122,6 +124,7 @@ KIND_PARAMS = {
 }
 REQUIRED_PARAMS = {"current_plausibility": ("threshold_A",), "overcurrent_sw": ("threshold_A",),
                    "overvoltage_sw": ("threshold_V",), "undervoltage_sw": ("threshold_V",),
+                   "overspeed_sw": ("threshold_rpm",),
                    "command_timeout": ("timeout_s",), "overcurrent_hw": ("threshold_A",),
                    "overvoltage_hw": ("threshold_V",), "desat": ("threshold_A",), "watchdog": ("timeout_s",),
                    "torque_monitor": ("abs_Nm",), "torque_integral": ("limit_Nms",), "osc_power": ("threshold_W",),
@@ -291,6 +294,68 @@ class ResourceBook:
 
 def window_width(T: float, params: dict) -> float:
     return max(float(params.get("abs_Nm", 0.0)), float(params.get("rel", 0.0)) * abs(T))
+
+
+def signed_window(T_req: float, P: dict, env_fault=None) -> tuple:
+    """(high, low, contradiction) of the customer-style signed window (pure): the received envelope (around the
+    request, or declared static) and / or the request scaled by the limit factor - high = max(T F, T / F) + abs,
+    low = min(T F, T / F) - abs, signed (never |T|) - bounded by independent limits.  ``env_fault``: (mode, value) of
+    a corrupted received envelope (a contradiction or a wrong maximum)."""
+    src = P.get("limit_source", "factor")
+    hi, lo = math.inf, -math.inf
+    if src in ("envelope", "both"):
+        e_hi, e_lo = P.get("env_max_Nm"), P.get("env_min_Nm")
+        e_hi = T_req + float(P.get("env_above_Nm", 50.0)) if e_hi is None else float(e_hi)
+        e_lo = T_req - float(P.get("env_below_Nm", 50.0)) if e_lo is None else float(e_lo)
+        if env_fault is not None:
+            md, val = env_fault
+            e_hi = (e_lo - abs(val or 1.0)) if md == "contradiction" else val
+        if e_hi <= e_lo:
+            return e_hi, e_lo, f"received envelope contradiction: maximum {e_hi:.1f} <= minimum {e_lo:.1f} N*m"
+        hi, lo = e_hi, e_lo
+    if src in ("factor", "both"):
+        F = float(P.get("limit_factor", 1.2))
+        a = float(P.get("abs_Nm", 0.0))
+        f_hi, f_lo = max(T_req * F, T_req / F) + a, min(T_req * F, T_req / F) - a
+        hi, lo = (f_hi, f_lo) if src == "factor" else (min(hi, f_hi), max(lo, f_lo))
+    if P.get("independent_max_Nm") is not None:
+        hi = min(hi, float(P["independent_max_Nm"]))
+    if P.get("independent_min_Nm") is not None:
+        lo = max(lo, float(P["independent_min_Nm"]))
+    return hi, lo, None
+
+
+def window_excess(T_est: float, tol: float, hi: float, lo: float, P: dict) -> tuple:
+    """(high-side excess, low-side excess) of the estimate against the window with the tolerance (pure; > 0 is a
+    violation).  ``tol_rule`` add (as recovered): T + tol > high, T - tol < low; widen: T - tol > high, T + tol < low.
+    ``sides``: both | high | low."""
+    add = P.get("tol_rule", "add") == "add"
+    x_hi = (T_est + tol - hi) if add else (T_est - tol - hi)
+    x_lo = (lo - (T_est - tol)) if add else (lo - (T_est + tol))
+    sides = P.get("sides", "both")
+    if sides == "high":
+        x_lo = -math.inf
+    elif sides == "low":
+        x_hi = -math.inf
+    return x_hi, x_lo
+
+
+def speed_tolerance(speed_rpm: float, P: dict) -> float:
+    """The speed-dependent tolerance: a map over the measured speed (linear, flat outside; |speed| unless
+    ``tol_speed_abs`` is false), or the fixed ``tol_Nm``."""
+    tm = P.get("tol_map")
+    if not tm:
+        return float(P.get("tol_Nm", 0.0))
+    sp = abs(speed_rpm) if P.get("tol_speed_abs", True) else speed_rpm
+    xs, ys = [float(a) for a, _ in tm], [float(b) for _, b in tm]
+    if sp <= xs[0]:
+        return ys[0]
+    if sp >= xs[-1]:
+        return ys[-1]
+    for k in range(1, len(xs)):
+        if sp <= xs[k]:
+            return ys[k - 1] + (ys[k] - ys[k - 1]) * (sp - xs[k - 1]) / (xs[k] - xs[k - 1])
+    return ys[-1]
 
 
 def torque_window(T_min: float, T_max: float, T_lag: float, params: dict) -> tuple[float, float]:

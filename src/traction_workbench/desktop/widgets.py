@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDoubleS
 from ..i18n import tr
 from ..plots import style as S
 from . import theme
+from .cursor import DataCursor
 
 
 def fmt(v, digits: int = 6) -> str:
@@ -65,11 +66,12 @@ def claim_cell(name: str) -> Cell:
 # ---------------------------------------------------------------------------
 
 class PlotPanel(QWidget):
-    """Matplotlib canvas + navigation toolbar + PNG/SVG/PDF/CSV export + hover readout line."""
+    """Matplotlib canvas + navigation toolbar + PNG/SVG/PDF/CSV export + readout line + data cursor (``cursor``: on
+    at the start; a panel whose clicks and hover mean something else - a map - starts with it off)."""
 
     clicked = Signal(float, float)
 
-    def __init__(self, parent=None, hint: str | None = None, min_height: int = 360):
+    def __init__(self, parent=None, hint: str | None = None, min_height: int = 360, cursor: bool = True):
         super().__init__(parent)
         self.figure = Figure(layout="constrained")
         self.canvas = FigureCanvasQTAgg(self.figure)
@@ -80,10 +82,35 @@ class PlotPanel(QWidget):
         self.readout = QLabel("")
         self.readout.setObjectName("Readout")
         self.readout.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.readout.setWordWrap(True)                  # three lines (cursor values, pinned cursors) that never
+        self.readout.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)     # widen the window or move the canvas
+        self.readout.setFixedHeight(3 * self.readout.fontMetrics().lineSpacing() + 6)
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
         top.addWidget(self.toolbar)
         top.addStretch(1)
+        self.signal_box = QComboBox()
+        self.signal_box.setToolTip(tr("데이터 커서가 따라갈 신호 (범례 항목을 클릭해도 고릅니다)",
+                                      "the signal the data cursor follows (or click its legend entry)"))
+        self.signal_box.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.signal_box.setMinimumContentsLength(14)
+        self.signal_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)     # the room the row has, up to
+        self.signal_box.setMaximumWidth(330)                   # a long signal name (not cut to a few letters)
+        self.signal_box.setFixedHeight(26)
+        self.signal_box.currentIndexChanged.connect(self._signal_chosen)
+        top.addWidget(self.signal_box, 2)
+        self.cursor_btn = QPushButton(tr("데이터 커서", "Data cursor"))
+        self.cursor_btn.setCheckable(True)
+        self.cursor_btn.setFixedHeight(26)
+        self.cursor_btn.setToolTip(tr(
+            "범례 항목(또는 목록)에서 신호를 고르면 커서가 그 곡선을 샘플 단위로 따라가며 값을 표시합니다 · 신호를 고르지 "
+            "않으면 마우스에 가장 가까운 곡선 · 좌클릭: 커서 고정(두 개 → Δx·Δy) · ←/→: 고정 커서를 한 샘플씩 "
+            "(Shift: 10) · 우클릭/Esc: 고정 커서 지우기",
+            "Pick a signal in the legend (or the list) and the cursor follows that curve sample by sample with its "
+            "value · without a pick it follows the curve nearest the mouse · left click: pin a cursor (two → Δx, Δy) "
+            "· ←/→: move the last pin one sample (Shift: 10) · right click / Esc: remove the pins"))
+        self.cursor_btn.toggled.connect(self.set_cursor)
+        top.addWidget(self.cursor_btn)
         self.fig_buttons = []
         for label, fn in (("PNG", lambda: self.export("png")), ("SVG", lambda: self.export("svg")),
                           ("PDF", lambda: self.export("pdf")), ("CSV", self.export_csv)):
@@ -106,11 +133,16 @@ class PlotPanel(QWidget):
         self._csv = None
         self._hover = None
         self.name = "figure"
+        self.canvas.setFocusPolicy(Qt.StrongFocus)                        # the cursor's arrow keys
+        self.cursor = DataCursor(self.canvas, self.readout.setText, on_signals=self._fill_signals,
+                                 on_track=self._show_track)
         self.canvas.mpl_connect("motion_notify_event", self._on_move)
         self.canvas.mpl_connect("button_press_event", self._on_click)
         self.canvas.mpl_connect("resize_event", self._fit_texts)       # titles and legends follow the canvas size
         self.placeholder(hint or tr("입력을 확인하고 실행하면 결과 그래프가 여기에 표시됩니다.",
                                     "Run the calculation to see the plot here."))
+        self.cursor_btn.setChecked(cursor)
+        self.set_cursor(cursor)
 
     # -- drawing ---------------------------------------------------------------
     def placeholder(self, text: str):
@@ -118,6 +150,7 @@ class PlotPanel(QWidget):
         self._pending = False
         self._csv = None
         self.figure.clear()
+        self.cursor.clear()
         t = S.theme()
         self.figure.set_facecolor(t["bg"])
         self.figure.text(0.5, 0.5, text, ha="center", va="center", color=t["muted"], fontsize=10, wrap=True)
@@ -153,8 +186,10 @@ class PlotPanel(QWidget):
         self.figure.set_facecolor(S.theme()["bg"])
         try:
             fn(self.figure, *args, **kwargs)
+            self.cursor.rebuild()                       # the new figure's curves (the chosen signal is kept)
         except Exception as exc:  # noqa: BLE001 - a plotting failure must not crash the app
             self.figure.clear()
+            self.cursor.clear()
             self.figure.text(0.5, 0.5, f"plot error: {exc}", ha="center", va="center", color="#cf222e")
         self._fit_texts()
         self.canvas.draw_idle()
@@ -173,7 +208,37 @@ class PlotPanel(QWidget):
         self._stale = False
 
     # -- interaction -----------------------------------------------------------
+    def set_cursor(self, on: bool):
+        """Data cursor on / off (off: the page's own hover readout and clicks, as before)."""
+        self.cursor.set_enabled(on)
+        self.signal_box.setVisible(bool(on))
+        if self.cursor_btn.isChecked() != bool(on):
+            self.cursor_btn.setChecked(bool(on))
+
+    def _fill_signals(self, names, track):
+        self.signal_box.blockSignals(True)
+        self.signal_box.clear()
+        self.signal_box.addItem(tr("가까운 곡선", "nearest curve"))
+        for n in names:
+            self.signal_box.addItem(n)
+        self.signal_box.setCurrentIndex(0 if track is None else track + 1)
+        self.signal_box.setEnabled(bool(names))
+        self.signal_box.blockSignals(False)
+
+    def _show_track(self, track):
+        self.signal_box.blockSignals(True)
+        self.signal_box.setCurrentIndex(0 if track is None else track + 1)
+        self.signal_box.blockSignals(False)
+
+    def _signal_chosen(self, idx: int):
+        self.cursor.select(None if idx <= 0 else idx - 1)
+
     def _on_move(self, ev):
+        if self.toolbar.mode:                           # zoom / pan own the mouse
+            return
+        if self.cursor.enabled and self.cursor.signals:
+            self.cursor.move(ev)
+            return
         if self._hover is None or ev.inaxes is None or ev.xdata is None:
             return
         try:
@@ -182,7 +247,12 @@ class PlotPanel(QWidget):
             self.readout.setText("")
 
     def _on_click(self, ev):
-        if ev.inaxes is None or ev.xdata is None or self.toolbar.mode:
+        if self.toolbar.mode:
+            return
+        if self.cursor.press(ev):
+            self.canvas.setFocus()
+            return
+        if ev.inaxes is None or ev.xdata is None:
             return
         if ev.button == 1:
             self.clicked.emit(float(ev.xdata), float(ev.ydata))
@@ -197,9 +267,10 @@ class PlotPanel(QWidget):
                                               f"{kind.upper()} (*.{kind})")
         if path:
             try:
-                self.figure.savefig(path, dpi=200 if kind == "png" else None)
+                self.figure.savefig(path, dpi=200 if kind == "png" else None)   # the pinned cursors are exported
             except Exception as exc:  # noqa: BLE001 - e.g. a locked file or a folder without write access
                 error_box(self, tr("그림 저장 실패", "could not save the figure"), str(exc))
+            self.canvas.draw_idle()
 
     def export_csv(self):
         if self._csv is None:

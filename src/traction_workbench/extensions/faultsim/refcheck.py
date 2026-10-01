@@ -18,6 +18,7 @@ import re
 
 import numpy as np
 
+from ...errors import InputValidationError
 from .safestate import (FAIL, NA, PASS, UNKNOWN, excess_impulse, fault_timeline, judge_safe_state,
                         time_to_window_hold)
 
@@ -83,7 +84,7 @@ def _budget(label, value_s, limit_s, open_name):
 
 def origin_time(run, spec, tl=None) -> float | None:
     """The time origin of a check: fault | criterion | detect | gate | terminal | t0 | <ms> | input:<signal>=<v> |
-    event:<kind>[:<source text>]."""
+    event:<kind>[:<source or text>] (an empty kind matches any kind)."""
     o = spec if isinstance(spec, (int, float)) else (spec or "gate")
     if isinstance(o, (int, float)):
         return float(o) * 1e-3
@@ -100,9 +101,9 @@ def origin_time(run, spec, tl=None) -> float | None:
                 return e["t"]
         return None
     if o.startswith("event:"):
-        kind, _, text = o[6:].partition(":")
+        kind, _, text = o[6:].partition(":")           # an empty kind: an event of any kind
         for e in run.result.events:
-            if e["kind"] == kind and (not text or text in e["text"] or text == e["source"]):
+            if (not kind or e["kind"] == kind) and (not text or text in e["text"] or text == e["source"]):
                 return e["t"]
         return None
     raise ValueError(f"unknown origin {o!r}")
@@ -132,12 +133,20 @@ def c_safe_state(ctx, spec, P: Params):
     o = origin_time(run, P.get("origin", "gate"), tl)
     tT, tP, open_tol = _tols(P)
     until = origin_time(run, P.get("to"), tl) if P.get("to") is not None else None
+    deadline = _ms(P.get("deadline_ms"))
+    if deadline is None and P.get("deadline_us") is not None:           # a hardware budget stated in microseconds
+        deadline = float(P.get("deadline_us")) * 1e-6
     kw = dict(t_min_Nm=P.get("tlsr_min_Nm"), t_max_Nm=P.get("tlsr_max_Nm"),
               transition_s=_ms(P.get("transition_ms")) or 0.0, hold_s=_ms(P.get("hold_ms")) or 0.0,
-              deadline_s=_ms(P.get("deadline_ms")), deadline_open=P.opened("deadline_ms"), until_s=until)
+              deadline_s=deadline, deadline_open=P.opened("deadline_ms") or P.opened("deadline_us"), until_s=until)
+    if P.get("conditions"):
+        # an obligation that is one condition of the safe state only (e.g. no torque by active pulsing: C3)
+        kw["conditions"] = tuple(P.get("conditions"))
     j = judge_safe_state(run.result, o, torque_tol_Nm=tT, power_tol_W=tP, **kw)
     reasons = list(j["reasons"])
     for k in ("tlsr_min_Nm", "tlsr_max_Nm", "transition_ms"):
+        if k != "transition_ms" and P.get("conditions") and "C4" not in P.get("conditions"):
+            continue
         if P.opened(k):
             reasons.append(f"{P.opened(k)} OPEN" + (" (judged without a transition allowance)"
                                                     if k == "transition_ms" else " (C4 not judged)"))
@@ -176,7 +185,8 @@ def c_safe_state(ctx, spec, P: Params):
             reasons.insert(0, "the stated counterexample is not reproduced (the safe state is reached)")
     return _res(v, meas, "C1-C4 reached after the origin and held" if exp is not False else
                 "the safe state is NOT reached (counterexample)", reasons,
-                {"timeline": tl, "conditions": j["conditions"], "run": run.key})
+                {"timeline": tl, "conditions": j["conditions"], "run": run.key, "judge": j.get("params"),
+                 "origin_s": j.get("origin_s"), "window_from_s": j.get("window_from_s"), "t_safe": j.get("t_safe")})
 
 
 @check("timeline")
@@ -265,6 +275,10 @@ def quantity(tr, name):
         return np.abs(np.asarray(tr["T_shaft"], float))
     if name == "p_dc":
         return np.asarray(tr["v_dc"], float) * np.nan_to_num(np.asarray(tr["i_dc"], float))
+    if name in ("est_error", "est_error_abs"):
+        # the monitor's torque estimate against the true shaft (transmission-side) torque
+        e = np.asarray(tr["T_est_mon"], float) - np.asarray(tr["T_shaft"], float)
+        return np.abs(e) if name == "est_error_abs" else e
     if name in tr:
         return np.asarray(tr[name], float)
     raise KeyError(name)
@@ -312,7 +326,8 @@ def c_bound(ctx, spec, P):
     v = worst(verdicts)
     if P.get("expect_violation"):
         reasons.insert(0, "counterexample reproduced: the bound is violated" if v == FAIL else
-                       "the expected violation does not occur")
+                       "the expected violation does not occur" if v == PASS else
+                       "whether the bound is violated depends on the OPEN limit")
         v = PASS if v == FAIL else (FAIL if v == PASS else v)
     return _res(v, meas, f"{P.get('quantity')} within [{lo}, {hi}]" + (" violated (counterexample)" if
                 P.get("expect_violation") else ""), reasons, {"run": run.key})
@@ -325,7 +340,14 @@ def c_hw_timing(ctx, spec, P):
     tr = run.result.trace
     t = np.asarray(tr["t"], float)
     q = quantity(tr, P.get("quantity"))
-    thr = float(P.get("threshold"))
+    thr = P.get("threshold")
+    if thr is None:
+        # the comparator's own threshold in this run (a variant may move it: threshold tolerance)
+        m = next((m for m in run.setup.mechanisms if m.mech_id == P.get("mech")), None)
+        thr = None if m is None else next((m.params[k] for k in ("threshold_A", "threshold_V") if k in m.params), None)
+        if thr is None:
+            return _res(UNKNOWN, {}, "", [f"no threshold declared and none found on {P.get('mech')}"], {"run": run.key})
+    thr = float(thr)
     k = np.where(q > thr)[0]
     t_cross = float(t[k[0]]) if len(k) else None
     mech = P.get("mech")
@@ -381,6 +403,11 @@ def c_opstate(ctx, spec, P):
         verdicts.append(PASS if ok_seq else FAIL)
         reasons.append(("transitions in order: " if ok_seq else "expected transitions missing / out of order: ")
                        + " -> ".join(f"{a}->{b}" for a, b in want))
+    for a_, b_ in [tuple(x) for x in P.get("absent", ())]:
+        hit = next((x for x in tr if x["from"] == a_ and x["to"] == b_), None)
+        verdicts.append(PASS if hit is None else FAIL)
+        reasons.append(f"{a_} -> {b_} does not occur (as required)" if hit is None else
+                       f"{a_} -> {b_} occurs at {hit['t'] * 1e3:.4g} ms although it must not")
     for tc in P.get("timing", ()):
         a = next((x for x in tr if x["from"] == tc["from"] and x["to"] == tc["to"]), None)
         if a is None:
@@ -480,9 +507,13 @@ def c_no_pwm(ctx, spec, P):
     b = origin_time(run, P.get("to")) if P.get("to") is not None else float(t[-1])
     if a is None:
         return _res(NA, {}, "", ["the window's origin does not occur"], {"run": run.key})
+    note = []
+    if b is None:                       # the closing event never comes: the window runs to the end of the trajectory
+        b = float(t[-1])
+        note = [f"{P.get('to')} does not occur within the horizon: judged to the end ({b * 1e3:.4g} ms)"]
     k = np.where((t > a + 1e-12) & (t <= b + 1e-12) & (br == 0))[0]
-    return _res(PASS if not len(k) else FAIL, {}, "no PWM authority in the window",
-                ["no PWM" if not len(k) else f"PWM at {t[k[0]] * 1e3:.4g} ms"], {"run": run.key})
+    return _res(PASS if not len(k) else FAIL, {"window_ms": [a * 1e3, b * 1e3]}, "no PWM authority in the window",
+                ["no PWM" if not len(k) else f"PWM at {t[k[0]] * 1e3:.4g} ms"] + note, {"run": run.key})
 
 
 @check("equivalent")
@@ -590,7 +621,14 @@ def c_fallback(ctx, spec, P):
     t = np.asarray(tr["t"], float)
     T = np.asarray(tr["T_shaft"], float)
     o = origin_time(run, P.get("origin"))
-    lim = P.get("safe_value_Nm")
+    if P.has("axle_torque_Nm"):
+        # the end-to-end variant: the safe value is an axle torque through the transmission ratio
+        ax, ratio = P.get("axle_torque_Nm"), P.get("wheel_ratio")
+        lim = None if (ax is None or ratio is None) else float(ax) / float(ratio)
+        missing = ", ".join(x for x in (P.opened("axle_torque_Nm"), P.opened("wheel_ratio")) if x)
+    else:
+        lim = P.get("safe_value_Nm")
+        missing = P.opened("safe_value_Nm")
     settle = _ms(P.get("settle_ms", 20.0))
     if o is None:
         return _res(FAIL, {}, "", ["the fallback condition never occurs"], {"run": run.key})
@@ -598,8 +636,7 @@ def c_fallback(ctx, spec, P):
     peak = float(np.max(T[m])) if m.any() else None
     meas = {"T_max_after_Nm": peak}
     if lim is None:
-        return _res(UNKNOWN, meas, "", [f"safe value {P.opened('safe_value_Nm')} OPEN; measured {peak:.4g} N*m"],
-                    {"run": run.key})
+        return _res(UNKNOWN, meas, "", [f"safe value {missing} OPEN; measured {peak:.4g} N*m"], {"run": run.key})
     ok = peak <= lim + float(P.get("tol_Nm", 5.0))
     return _res(PASS if ok else FAIL, meas, f"positive torque <= {lim:g} N*m after {settle * 1e3:g} ms",
                 [f"max shaft torque {peak:.4g} N*m after the fallback"], {"run": run.key})
@@ -962,8 +999,14 @@ def c_feasibility(ctx, spec, P):
                                                                                                  "asc_low"))),
         hv_state=P.get("hv_state", "connected"), torque_tol_Nm=_tols(P)[0], power_tol_W=_tols(P)[1],
         t_min_Nm=P.get("tlsr_min_Nm"), t_max_Nm=P.get("tlsr_max_Nm"),
-        horizon_ms=float(P.get("horizon_ms", 40.0)), progress=ctx.progress))
+        horizon_ms=float(P.get("horizon_ms", 40.0)), temperatures=tuple(P.get("temperatures_C") or (None,)),
+        progress=None))
     cnt = res["counts"]
+    if P.get("research"):
+        # a study figure recomputed for this machine (e.g. how many states meet neither reaction): never acceptance
+        return _res(NA, cnt, "computed for this machine (research reference, not an acceptance criterion)",
+                    [f"{k}: {v}" for k, v in cnt.items()] + [f"reference of the study: {P.get('reference')}"
+                                                             if P.get("reference") else ""], {"map": res})
     verdicts, reasons = [], [f"{k}: {v}" for k, v in cnt.items()]
     if P.get("expect_counterexample"):
         c = P.get("expect_counterexample")
@@ -1043,8 +1086,9 @@ def c_normal_first(ctx, spec, P):
                f"monitor reacted: {det[0]['text']}"]
     if lim is not None:
         reasons.append(f"application limitation first: {lim['text']} at {lim['t'] * 1e3:.4g} ms")
-    if P.get("failed_scenario"):
-        r2 = ctx.run({**spec, "scenario": P.get("failed_scenario"), "variant": None})
+    if P.get("failed_scenario") or P.get("failed_variant"):
+        r2 = ctx.run({**spec, "scenario": P.get("failed_scenario") or spec.get("scenario"),
+                      "variant": P.get("failed_variant")})
         d2 = next((e for e in r2.result.events if e["kind"] == "detection"), None)
         t0 = fault_timeline(r2.result)["t_fault"] or 0.0
         v, r = (FAIL, "the monitor did not react with the application failed") if d2 is None else \
@@ -1103,3 +1147,407 @@ def c_state_time(ctx, spec, P):
     v, r = _budget(f"{'/'.join(P.get('states', ('ASC',)))} after the origin", dt, None if lim is None else lim * 1e-6,
                    P.opened("max_us"))
     return _res(v or PASS, meas, f"in the state within {lim} us", [r.replace(" ms", " ms")], {"run": run.key})
+
+
+# ------------------------------------------------------------------------------------------------- formula checks
+
+_ARITH_FUNCS = {"max": max, "min": min, "abs": abs}
+
+
+def _arith(expr: str, env: dict) -> float:
+    """A declared arithmetic formula (numbers, the names in ``env``, + - * /, max / min / abs) - nothing else."""
+    import ast
+    import operator as op
+    ops = {ast.Add: op.add, ast.Sub: op.sub, ast.Mult: op.mul, ast.Div: op.truediv, ast.USub: op.neg,
+           ast.UAdd: op.pos}
+
+    def ev(n):
+        if isinstance(n, ast.Expression):
+            return ev(n.body)
+        if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)) and not isinstance(n.value, bool):
+            return float(n.value)
+        if isinstance(n, ast.Name):
+            if n.id not in env:
+                raise ValueError(f"unknown name {n.id} in {expr!r}")
+            return float(env[n.id])
+        if isinstance(n, ast.BinOp) and type(n.op) in ops:
+            return ops[type(n.op)](ev(n.left), ev(n.right))
+        if isinstance(n, ast.UnaryOp) and type(n.op) in ops:
+            return ops[type(n.op)](ev(n.operand))
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in _ARITH_FUNCS and not n.keywords:
+            return float(_ARITH_FUNCS[n.func.id](*[ev(a) for a in n.args]))
+        raise ValueError(f"not an allowed formula element in {expr!r}")
+    return ev(ast.parse(str(expr), mode="eval"))
+
+
+@check("window_semantics")
+def c_window_semantics(ctx, spec, P):
+    """The implemented signed torque window (the function the monitors run) against the declared formula, over a
+    grid of requests of both signs, limit factors, margins, actual torques and tolerances - so it holds for every
+    value of an OPEN limit factor or tolerance: the high / low edges, the tolerance inequality (``rule``), the signed
+    comparison (a sign flip is a violation - never |T|) and the speed-dependent tolerance (a map over |speed|)."""
+    from .protection import signed_window, speed_tolerance, window_excess
+    hi_f, lo_f = P.get("high", "max(T*F, T/F) + A"), P.get("low", "min(T*F, T/F) - A")
+    rule = P.get("rule", "add")
+    grid = [float(x) for x in P.get("requests", (-300, -120, -20, -1, 0, 1, 20, 120, 300))]
+    factors = [float(x) for x in P.get("factors", (1.0, 1.05, 1.2, 1.5, 2.0))]
+    margins = [float(x) for x in P.get("margins", (0.0, 5.0, 20.0))]
+    tols = [float(x) for x in P.get("tolerances", (0.0, 2.5, 10.0))]
+    bad, n, flips, flips_seen = [], 0, 0, 0
+    for F in factors:
+        for A in margins:
+            for T in grid:
+                Pm = {"limit_source": "factor", "limit_factor": F, "abs_Nm": A, "tol_rule": rule}
+                hi, lo, _c = signed_window(T, Pm)
+                env = {"T": T, "F": F, "A": A}
+                rh, rl = _arith(hi_f, env), _arith(lo_f, env)
+                n += 1
+                if abs(hi - rh) > 1e-9 or abs(lo - rl) > 1e-9:
+                    bad.append(f"edges at T={T:g}, F={F:g}, A={A:g}: [{lo:.4g}, {hi:.4g}] vs declared [{rl:.4g}, "
+                               f"{rh:.4g}]")
+                for Ta in sorted(set(grid + [T, -T, rh + 0.5, rl - 0.5, rh - 0.5, rl + 0.5])):
+                    for tol in tols:
+                        n += 1
+                        x_hi, x_lo = window_excess(Ta, tol, hi, lo, Pm)
+                        if rule == "add":
+                            ref_hi, ref_lo = Ta + tol > rh, Ta - tol < rl
+                        else:
+                            ref_hi, ref_lo = Ta - tol > rh, Ta + tol < rl
+                        if (x_hi > 0) != ref_hi or (x_lo > 0) != ref_lo:
+                            bad.append(f"violation at T={T:g}, T_act={Ta:g}, tol={tol:g}: implemented "
+                                       f"({x_hi > 0}, {x_lo > 0}) vs declared ({ref_hi}, {ref_lo})")
+                # the signed comparison: the actual torque of the opposite sign violates wherever the declared
+                # window does not contain it (a |T| comparison would accept it)
+                if T != 0.0 and not (rl <= -T <= rh):
+                    flips += 1
+                    x_hi, x_lo = window_excess(-T, 0.0, hi, lo, Pm)
+                    flips_seen += int(x_hi > 0 or x_lo > 0)
+    tm = P.get("tol_map") or [[0.0, 5.0], [6000.0, 7.5], [12000.0, 10.0]]
+    tbad = []
+    for sp in (-15000.0, -9000.0, -3000.0, 0.0, 1500.0, 6000.0, 9000.0, 12000.0, 20000.0):
+        got = speed_tolerance(sp, {"tol_map": tm})
+        ref = float(np.interp(abs(sp), [float(a) for a, _ in tm], [float(b) for _, b in tm]))
+        if abs(got - ref) > 1e-9:
+            tbad.append(f"tolerance at {sp:g} rpm {got:.4g} vs {ref:.4g}")
+    verdict = PASS if not bad and not tbad and flips_seen == flips else FAIL
+    reasons = [f"{n} cases: the edges and the {rule} inequality as declared (high = {hi_f}, low = {lo_f})"
+               if not bad else bad[0],
+               f"sign flip detected in {flips_seen} of {flips} cases (signed comparison, never |T|)",
+               "tolerance: linear map over |measured speed|, flat outside" if not tbad else tbad[0],
+               "holds for every value of the limit factor, the margin and the tolerance in the grid (their customer "
+               "values are not needed for this property)"]
+    return _res(verdict, {"cases": n, "mismatches": len(bad) + len(tbad), "sign_flips": flips},
+                "the implemented window equals the declared formula", reasons)
+
+
+@check("sweep")
+def c_sweep(ctx, spec, P):
+    """One or more OPEN (or any) parameters swept over declared values (every combination): the inner check at each.
+    While a swept parameter has no value the verdict is UNKNOWN with the combinations it passes for - the
+    break-even, never a guess; once every one has a value (declared, entered, or illustrative in that profile) the
+    verdict is the inner check's at those values."""
+    import itertools
+    pids = P.raw.get("param")
+    pids = [pids] if isinstance(pids, str) else list(pids or ())
+    inner = P.raw.get("inner")
+    ip = dict(P.raw.get("params") or {})
+    vals = P.raw.get("values") or ()
+    grids = [list(vals)] if len(pids) == 1 else [list(v) for v in vals]
+    if inner not in CHECKS or inner == "sweep" or not pids or len(grids) != len(pids) or not all(grids):
+        return _res(UNKNOWN, {}, "", ["a sweep needs parameters, values for each and an inner check"])
+    missing = object()
+    saved = {pid: ctx.values.get(pid, missing) for pid in pids}
+
+    def restore():
+        for pid, v in saved.items():
+            if v is missing:
+                ctx.values.pop(pid, None)
+            else:
+                ctx.values[pid] = v
+
+    def one(combo):
+        for pid, v in zip(pids, combo):
+            ctx.values[pid] = v
+        opened: dict = {}
+        resolved = ctx.resolve(ip, open_refs=opened)
+        try:
+            return CHECKS[inner](ctx, spec, Params(ip, resolved, opened, set()))
+        except InputValidationError as exc:
+            return _res(UNKNOWN, {}, "", [f"input: {exc}"])
+
+    def label(combo):
+        return ", ".join(f"{pid} = {v}" for pid, v in zip(pids, combo))
+    per = []
+    try:
+        for combo in itertools.product(*grids):
+            r = one(combo)
+            per.append({"values": list(combo), "verdict": r["verdict"],
+                        "reasons": [x for x in r["reasons"] if x][:2], "measured": r.get("measured", {})})
+    finally:
+        restore()
+    declared = [ctx.param_value(pid) for pid in pids]     # entered, declared, or illustrative in that profile
+    rows = [f"{label(x['values'])}: {x['verdict']} ({'; '.join(x['reasons'])[:110]})" for x in per]
+    if all(v is not None for v in declared):
+        try:
+            r = one(declared)
+        finally:
+            restore()
+        return _res(r["verdict"], {"at": dict(zip(pids, declared)), "sweep": per}, r.get("expected", ""),
+                    [f"at {label(declared)}: {r['verdict']}"] + [x for x in r["reasons"] if x][:2] + rows,
+                    r.get("evidence", {}))
+    ok = [label(x["values"]) for x in per if x["verdict"] == PASS]
+    no = [label(x["values"]) for x in per if x["verdict"] == FAIL]
+    opens = [pid for pid, v in zip(pids, declared) if v is None]
+    summary = (f"passes for {len(ok)} of {len(per)} combinations" + (f" ({'; '.join(ok[:4])}"
+               f"{'; ...' if len(ok) > 4 else ''})" if ok else "") + (f"; fails for {len(no)}" if no else ""))
+    return _res(UNKNOWN, {"sweep": per}, f"{inner} over {', '.join(pids)}",
+                [summary + f" - {', '.join(opens)} OPEN: the verdict waits for the value"] + rows)
+
+
+@check("event")
+def c_event(ctx, spec, P):
+    """An event of a kind (and source / text) occurs after the origin (within a limit), or never (``expect``
+    false)."""
+    run = ctx.run(spec)
+    o = origin_time(run, P.get("origin", "t0"))
+    if o is None:
+        return _res(NA, {}, "", ["the origin does not occur"], {"run": run.key})
+    kind, src, text = P.get("kind"), P.get("source"), P.get("text")
+    evs = [e for e in run.result.events if e["t"] >= o - 1e-12 and (kind is None or e["kind"] == kind)
+           and (src is None or str(e["source"]) == src or str(src) in str(e["source"]))
+           and (text is None or str(text) in e["text"])]
+    first = evs[0] if evs else None
+    what = " / ".join(str(x) for x in (kind, src, text) if x)
+    meas = {"occurs": bool(first), "after_ms": None if first is None else (first["t"] - o) * 1e3,
+            "text": None if first is None else first["text"], "count": len(evs)}
+    if P.has("min_count"):                  # a repetition (e.g. a selection that keeps switching): how often
+        n = int(P.get("min_count"))
+        ts = np.array([e["t"] for e in evs])
+        gaps = np.diff(ts) * 1e3 if len(evs) > 1 else np.array([])
+        per = np.diff(ts[::2]) * 1e3 if len(evs) > 2 else np.array([])       # a two-way alternation's period
+        meas["median_interval_ms"] = float(np.median(gaps)) if gaps.size else None
+        meas["median_period_ms"] = float(np.median(per)) if per.size else None
+        return _res(PASS if len(evs) >= n else FAIL, meas, f"{what} at least {n} times",
+                    [f"{len(evs)} x {what}" + (f", every second one {meas['median_period_ms']:.4g} ms apart (the "
+                                               f"period of an alternation)" if per.size else "")], {"run": run.key})
+    if P.get("expect", True) is False:
+        return _res(PASS if first is None else FAIL, meas, f"no {what}",
+                    [f"no {what}" if first is None else f"{what} at {first['t'] * 1e3:.4g} ms: {first['text']}"],
+                    {"run": run.key})
+    if first is None:
+        return _res(FAIL, meas, what, [f"no {what} after the origin"], {"run": run.key})
+    v, r = _budget(what, first["t"] - o, _ms(P.get("within_ms")), P.opened("within_ms"))
+    return _res(v or PASS, meas, what, [r, first["text"]], {"run": run.key})
+
+
+# ------------------------------------------------------------------------------------------------- package checks
+
+def _refs(obj, out: set):
+    if isinstance(obj, str) and obj.startswith("$") and len(obj) > 1 and not obj.startswith("$$"):
+        out.add(obj[1:])
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            _refs(v, out)
+    elif isinstance(obj, list):
+        for v in obj:
+            _refs(v, out)
+    return out
+
+
+def item_parameters(pkg: dict, item: dict) -> set:
+    """Every parameter an item's checks use: in the check parameters and in the scenarios (and variants) they run."""
+    sc = pkg.get("scenarios") or {}
+    out: set = set()
+    for c in item.get("checks") or []:
+        _refs(c.get("params") or {}, out)
+        swept = (c.get("params") or {}).get("param")
+        if swept:
+            out.update([swept] if isinstance(swept, str) else list(swept))
+        s = sc.get(c.get("scenario")) or {}
+        _refs(s.get("scenario") or {}, out)
+        for v in ([c.get("variant")] if c.get("variant") else []) + list(c.get("variants") or []):
+            _refs((s.get("variants") or {}).get(v) or {}, out)
+    return out
+
+
+@check("open_kept")
+def c_open_kept(ctx, spec, P):
+    """The named parameters stay OPEN in the package (no guessed value) - a value entered by the user for a run is
+    shown as such; the items that wait for each are listed."""
+    pkg = ctx.package
+    ids = list(P.raw.get("params") or ())
+    rows, bad = [], []
+    for pid in ids:
+        p = ctx.params.get(pid)
+        dep = [it["id"] for it in pkg.get("items", []) if pid in item_parameters(pkg, it)]
+        if p is None:
+            bad.append(f"{pid} is not in the parameter registry")
+            continue
+        if p.get("value") is not None and p.get("provenance") == "OPEN":
+            bad.append(f"{pid} is OPEN but carries the value {p['value']!r}")
+        state = ("entered by the user for this run" if pid in ctx.values else
+                 "declared" if p.get("value") is not None else "OPEN (no value)")
+        rows.append(f"{pid}: {state}; {len(dep)} item(s) depend on it"
+                    + (f" ({', '.join(dep[:6])}{', ...' if len(dep) > 6 else ''})" if dep else ""))
+    return _res(PASS if not bad else FAIL, {"parameters": len(ids)}, "kept OPEN until the source gives the value",
+                bad + rows)
+
+
+@check("package_coverage")
+def c_package_coverage(ctx, spec, P):
+    """Every item of the package has a machine check or a stated manual reason, every parameter reference resolves,
+    and the requirement-to-evidence matrix therefore has a row with a verdict for everything the source lists."""
+    pkg = ctx.package
+    items = pkg.get("items", [])
+    params = {p["id"] for p in pkg.get("parameters", [])}
+    empty = [i["id"] for i in items if not i.get("checks") and not i.get("manual")]
+    unknown = sorted({r for i in items for r in item_parameters(pkg, i)} - params)
+    sc_used = {c.get("scenario") for i in items for c in i.get("checks") or []}
+    unused = sorted(set(pkg.get("scenarios") or {}) - sc_used)
+    by_kind: dict = {}
+    for i in items:
+        by_kind[i.get("kind", "")] = by_kind.get(i.get("kind", ""), 0) + 1
+    machine = sum(1 for i in items if any(c.get("check") != "manual" for c in i.get("checks") or []))
+    bad = [f"{len(empty)} item(s) without a check or a manual reason: {', '.join(empty[:8])}"] if empty else []
+    bad += [f"unknown parameter reference(s): {', '.join(unknown[:8])}"] if unknown else []
+    return _res(PASS if not bad else FAIL, {"items": len(items), "machine_checked": machine, "by_kind": by_kind,
+                                             "unused_scenarios": unused},
+                "a verdict row for every item", bad + [f"{len(items)} items, {machine} with a machine check; "
+                                                       f"kinds {by_kind}"] +
+                ([f"scenarios not used by any item: {', '.join(unused)}"] if unused else []))
+
+
+@check("question")
+def c_question(ctx, spec, P):
+    """An open question to the customer or an internal owner: MANUAL until answered; lists which OPEN parameters
+    the answer closes and how many items wait for it (the order in which to ask)."""
+    pkg = ctx.package
+    it = ctx.item(spec.get("_item"))
+    closes = list(P.raw.get("closes") or ())
+    dep = sorted({i["id"] for i in pkg.get("items", []) for pid in closes if pid in item_parameters(pkg, i)})
+    st = (it.get("status") or "OPEN").upper()
+    if st == "DONE" and it.get("evidence"):
+        return _res(PASS, {"closes": closes, "waiting_items": len(dep)}, "answered",
+                    [f"answer recorded: {it.get('evidence')}"])
+    return _res(MANUAL, {"closes": closes, "waiting_items": len(dep)}, "an answer from the owner",
+                [f"closes {', '.join(closes) or '-'}; {len(dep)} item(s) wait for it"
+                 + (f": {', '.join(dep[:10])}{', ...' if len(dep) > 10 else ''}" if dep else "")])
+
+
+@check("model_interfaces")
+def c_model_interfaces(ctx, spec, P):
+    """The interfaces / fault classes / mechanisms a source lists are represented in the simulation model (by name:
+    ``signal:`` vehicle input, ``fault:`` fault kind, ``mech:`` mechanism kind, ``channel:`` recorded channel,
+    ``sensor:`` a sensor kind of the design, ``role:`` a sensor role).  Presence in the model, not the real circuit."""
+    from .engine import FAULT_KINDS, _Recorder
+    from .protection import KIND_PARAMS
+    from .system import SIGNALS
+    data = ctx.design_data()
+    sensors = {s.get("kind") for s in data.get("sensors") or []}
+    roles = set((data.get("roles") or {}).keys()) | set((data.get("roles") or {}).values())
+    sys_ch = {"sys_permit", "sys_reasons", "sys_latch", "sys_confirmed", "sys_state", "src_LV", "src_HV",
+              "itf_pos_limit", "itf_ext_active", "itf_fallback", "rx_age", "em2_i_dc", "tw_hi", "tw_lo", "tw_tol",
+              "tw_int"}
+
+    def has(ref: str) -> bool:
+        kind, _, name = ref.partition(":")
+        return {"signal": name in SIGNALS, "fault": name in FAULT_KINDS, "mech": name in KIND_PARAMS,
+                "channel": name in _Recorder.KEYS or name in sys_ch or name.startswith("rail_"),
+                "sensor": name in sensors, "role": name in roles}.get(kind, False)
+    rows, miss = [], []
+    for label, refs in (P.raw.get("interfaces") or {}).items():
+        refs = [refs] if isinstance(refs, str) else list(refs)
+        gone = [r for r in refs if not has(r)]
+        if not refs:
+            miss.append(f"{label}: not represented in the model")
+        elif gone:
+            miss.append(f"{label}: missing {', '.join(gone)}")
+        else:
+            rows.append(f"{label}: {', '.join(refs)}")
+    return _res(PASS if not miss else UNKNOWN, {"represented": len(rows), "missing": len(miss)},
+                "every listed interface is represented in the simulation", miss + rows +
+                ["presence in the simulation model - the real circuit, pin map and data base are separate evidence"])
+
+
+@check("model_tables")
+def c_model_tables(ctx, spec, P):
+    """Declared tables against the implementation: the power-stage states each operating state allows, and the
+    naming of the bridge states (ASO = six-switch-off, APS = ASC, PWM)."""
+    from .system import BRIDGE_STAGE, DEFAULT_ALLOW
+    bad, rows = [], []
+    for st, want in (P.raw.get("allow") or {}).items():
+        got = set(DEFAULT_ALLOW.get(st, ()))
+        if set(want) != got:
+            bad.append(f"{st}: implemented {sorted(got)} vs declared {sorted(want)}")
+        else:
+            rows.append(f"{st}: {'/'.join(sorted(got))}")
+    for code, stage in (P.raw.get("stages") or {}).items():
+        if BRIDGE_STAGE.get(code) != stage:
+            bad.append(f"{code}: implemented {BRIDGE_STAGE.get(code)} vs declared {stage}")
+        else:
+            rows.append(f"{code} = {stage}")
+    return _res(PASS if not bad else FAIL, {"mismatches": len(bad)}, "the declared tables as implemented",
+                bad + rows)
+
+
+@check("passive_discharge")
+def c_passive_discharge(ctx, spec, P):
+    """The bleeder alone: V(t) = V0 exp(-t / (R C)) - time to the limit against the deadline (the battery
+    disconnected, the bleeder always across the link; the product's declared R and C)."""
+    from .configure import build_setup
+    setup, _r, _i = build_setup(ctx.product, {"speed_rpm": 0.0, "torque_Nm": 0.0, "horizon_ms": 1.0})
+    R, C = setup.dc.R_bleed, setup.dc.C
+    v0 = float(P.get("v0_V") or setup.dc.V_oc)
+    lim = float(P.get("v_limit_V", 60.0))
+    if not R:
+        return _res(FAIL, {}, "", ["no bleeder declared: the link does not discharge passively"])
+    t = R * C * math.log(v0 / lim) if v0 > lim else 0.0
+    meas = {"t_s": t, "R_ohm": R, "C_uF": C * 1e6, "v0_V": v0}
+    dl = P.get("deadline_s")
+    reasons = [f"R {R:g} ohm, C {C * 1e6:g} uF (tau {R * C:.4g} s): {v0:g} V -> {lim:g} V in {t:.4g} s"]
+    if dl is None:
+        return _res(UNKNOWN if P.opened("deadline_s") else PASS, meas, "", reasons +
+                    ([f"passes if {P.opened('deadline_s')} >= {t:.4g} s (OPEN)"] if P.opened("deadline_s") else []))
+    ok = t <= float(dl) + 1e-12
+    return _res(PASS if ok else FAIL, meas, f"below {lim:g} V within {dl:g} s by the bleeder alone",
+                reasons + [f"{'<=' if ok else '>'} {dl:g} s"])
+
+
+@check("threshold_ratio")
+def c_threshold_ratio(ctx, spec, P):
+    """A comparator threshold against the product's normal range: threshold / reference within ratio x (1 +- tol)
+    and above the normal maximum (the reference: the inverter's phase-current limit or the DC source's discharge
+    current limit)."""
+    if spec.get("scenario"):
+        setup = ctx.run(spec).setup
+    else:
+        from .configure import build_setup
+        setup, _r, _i = build_setup(ctx.product, {"speed_rpm": 0.0, "torque_Nm": 0.0, "horizon_ms": 1.0})
+    m = next((m for m in setup.mechanisms if m.mech_id == P.get("mech")), None)
+    if m is None:
+        return _res(UNKNOWN, {}, "", [f"no mechanism {P.get('mech')} in the design / scenario"])
+    thr = next((float(m.params[k]) for k in ("threshold_A", "threshold_V") if k in m.params), None)
+    ref = P.get("reference", "inverter_current_limit")
+    if ref == "inverter_current_limit":
+        ref_v = float(ctx.product.drive.inverter.current_limit_A_peak)
+    elif ref == "dc_discharge_current_limit":
+        ref_v = (ctx.product.project.data("dc_source").get("limits") or {}).get("discharge_current_max_A")
+        ref_v = None if ref_v is None else float(ref_v)
+    else:
+        ref_v = P.get("reference_value")
+    meas = {"threshold": thr, "reference": ref_v, "ratio": None if not ref_v or thr is None else thr / ref_v}
+    if thr is None or not ref_v:
+        return _res(UNKNOWN, meas, "", [f"threshold {thr} / reference {ref} {ref_v}: not both known"])
+    ratio, tol = P.get("ratio"), P.get("tol", 0.0)
+    reasons = [f"{P.get('mech')} threshold {thr:g} = {thr / ref_v:.3g} x {ref} ({ref_v:g})"]
+    verdicts = [PASS if thr > ref_v else FAIL]
+    reasons.append("above the normal range" if thr > ref_v else "inside the normal range: normal operation can trip it")
+    if ratio is None:
+        verdicts.append(UNKNOWN)
+        reasons.append(f"the ratio {P.opened('ratio')} OPEN")
+    else:
+        lo, hi = float(ratio) * (1 - float(tol or 0.0)), float(ratio) * (1 + float(tol or 0.0))
+        ok = lo - 1e-9 <= thr / ref_v <= hi + 1e-9
+        verdicts.append(PASS if ok else FAIL)
+        reasons.append(f"{thr / ref_v:.3g} {'within' if ok else 'outside'} [{lo:.3g}, {hi:.3g}]")
+    return _res(worst(verdicts), meas, "threshold outside the normal range at the declared ratio", reasons)

@@ -408,6 +408,101 @@ SCENARIOS = {
                   "variants": {"gate_lost": {}, "healthy": {"faults": [_cs_offset()]}}},
 }
 
+# the second part of the library: the received envelope as the window, supply transfer, the no-energy-flow request,
+# a clock fault, a coupling change with an overspeed monitor, a regeneration limit sent by the vehicle, a legitimate
+# torque at standstill with the clutch open
+_ENV_TWIN = dict(MONITORS[0], params=dict(MONITORS[0]["params"], limit_source="envelope", env_above_Nm=40.0,
+                                          env_below_Nm=40.0))
+OVERSPEED = {"id": "SM-OS", "kind": "overspeed_sw", "path": "SW", "reaction": "safe_state", "period_ms": 1.0,
+             "resources": ["MCU"], "params": {"threshold_rpm": 3500.0, "debounce_ms": 1.0},
+             "text": "measured speed above the overspeed threshold"}
+SCENARIOS.update({
+    "S-ENVX": {"title": "the received torque envelope as the window: an actual torque 80 N*m above the request",
+               "scenario": {"speed_rpm": 3000, "torque_Nm": 100, "horizon_ms": 60, "overrides": NO_TQ,
+                            "additions": {"mechanisms": [_ENV_TWIN]},
+                            "faults": [{"kind": "torque_command", "t_ms": 10, "params": {
+                                "mode": "offset", "value": 80.0, "paths": "control"}}]},
+               "variants": {"received": {},
+                            "widened_no_bound": {"additions": {"mechanisms": [dict(_ENV_TWIN, params=dict(
+                                _ENV_TWIN["params"], env_above_Nm=300.0))]}},
+                            "widened_bounded": {"additions": {"mechanisms": [dict(_ENV_TWIN, params=dict(
+                                _ENV_TWIN["params"], env_above_Nm=300.0, independent_max_Nm=160.0))]}}}},
+    "S-DEVF": {"title": "a small long deviation (35 N*m) against the window with the limit factor as a parameter",
+               "scenario": {"speed_rpm": 6000, "torque_Nm": 100, "horizon_ms": 60,
+                            "overrides": dict(NO_TQ, **{"control.command_period_ms": 1.0}),
+                            "additions": {"mechanisms": [dict(MONITORS[0], params=dict(
+                                MONITORS[0]["params"], limit_factor="$LIMIT_FACTOR"))]},
+                            "faults": [{"kind": "torque_command", "t_ms": 10,
+                                        "params": {"mode": "offset", "value": 35.0, "paths": "control"}}]}},
+    "S-SUPPLY": {"title": "supply faults with both sources declared (6000 rpm, 100 N*m)",
+                 "scenario": {"speed_rpm": 6000, "torque_Nm": 100, "horizon_ms": 40, "system": {"supply": SUPPLY}},
+                 "variants": {"hv_source_fault": {"faults": [{"kind": "hv_supply_fault", "t_ms": 10}]},
+                              "transfer_seamless": {"faults": [{"kind": "lv_loss", "t_ms": 10}]},
+                              "transfer_gap": {"system": {"supply": dict(SUPPLY, transfer_gap_us=1000.0)},
+                                               "faults": [{"kind": "lv_loss", "t_ms": 10}]}}},
+    "S-EFB": {"title": "the vehicle requests no AC / DC energy flow at 20 ms (RUN, 100 N*m)",
+              "scenario": {"torque_Nm": 100, "horizon_ms": 60,
+                           "system": {"supervisor": SUPERVISOR, "opstate": dict(OPSTATE, initial="RUN"),
+                                      "inputs": [_inp(20, "energy_flow_block", 1)]}},
+              "variants": {"above": {"speed_rpm": 6000.0}, "below": {"speed_rpm": 1000.0}}},
+    "S-CLOCK": {"title": "the MCU clock fails at 10 ms (3000 rpm, 100 N*m)",
+                "scenario": {"speed_rpm": 3000, "torque_Nm": 100, "horizon_ms": 40},
+                "variants": {"stop": {"faults": [{"kind": "clock", "t_ms": 10, "params": {"mode": "stop"}}]},
+                             "drift_half": {"faults": [{"kind": "clock", "t_ms": 10,
+                                                        "params": {"mode": "drift", "value": 0.5}}]}}},
+    "S-COUPLING": {"title": "a coupling opens at 10 ms under 100 N*m (the machine alone: 0.05 kg*m^2)",
+                   "scenario": {"speed_rpm": 3000, "torque_Nm": 100, "horizon_ms": 60,
+                                "additions": {"mechanisms": [OVERSPEED]},
+                                "faults": [{"kind": "coupling", "t_ms": 10, "params": {"J_kgm2": 0.05}}]},
+                   "variants": {"runaway": {},
+                                "runaway_position_frozen": {"faults": [
+                                    {"kind": "sensor", "t_ms": 10, "params": {"target": "RES", "mode": "stuck_last"}},
+                                    {"kind": "coupling", "t_ms": 10, "params": {"J_kgm2": 0.05}}]}}},
+    "S-REGEN": {"title": "regeneration at 6000 rpm; the vehicle lowers the minimum torque to -40 N*m at 20 ms",
+                "scenario": {"speed_rpm": 6000, "torque_Nm": -150, "horizon_ms": 60, "overrides": NO_TQ,
+                             "system": {"interface": {"envelope": {"max_Nm": 200.0, "min_Nm": -200.0}},
+                                        "inputs": [_inp(20, "env_min_Nm", -40.0)]}}},
+    "S-START": {"title": "standstill, clutch open: a legitimate 120 N*m start torque of the machine at 10 ms",
+                "scenario": {"torque_Nm": None, "horizon_ms": 100,
+                             "request": {"kind": "step", "T0_Nm": 0, "T1_Nm": 120, "t0_ms": 10},
+                             "vehicle": dict(VEHICLE, v0_kph=0.0, position="P1", k0_closed=False)}},
+})
+SCENARIOS["S-LV"]["variants"]["short_during_lv_loss"] = {
+    "faults": [{"kind": "lv_loss", "t_ms": 10}, {"kind": "switch_short", "t_ms": 13,
+                                                  "params": {"leg": "a", "device": "upper"}}]}
+SCENARIOS["S-GDE"]["variants"].update({
+    f"{seq}_mcu_reset": {"additions": gde_additions(seq), "faults": [
+        {"kind": "mcu_reset", "t_ms": 9, "params": {"duration_ms": 10.0}}, {"kind": "gde_disable", "t_ms": 10}]}
+    for seq in ("SEQ_A", "SEQ_B")})
+
+
+def hw_vdc_additions(v_low="$X_LOW", v_upp="$X_UPP") -> dict:
+    """The processor lost while rolling: the hardware GDE monitor and a path that selects the bridge by the hardware
+    DC voltage only (ASC above ``v_upp``, six-switch-off below ``v_low``; ``v_low`` 0 V: the ASC is held)."""
+    s = {"id": "HW_VDC_SELECT", "fallback": "six_switch_off",
+         "text": "hardware selection by the DC-link voltage: ASC above X_upp, six-switch-off below X_low",
+         "steps": [{"action": "hv_select_low", "exit": "none", "params": {"v_upp_V": v_upp, "v_low_V": v_low}}]}
+    return {"mechanisms": [GDE_MONITOR], "strategies": [s],
+            "paths": [{"id": "HWGD", "delay_us": 2.0, "resources": ["CPLD"], "fixed_reaction": "HW_VDC_SELECT"}]}
+
+
+SCENARIOS["S-HWVDC"] = {
+    "title": "the processor lost and the battery disconnected while rolling at 6000 rpm: the hardware selects the "
+             "bridge by the DC voltage",
+    "scenario": {"speed_rpm": 6000, "torque_Nm": 50, "horizon_ms": 120,
+                 "faults": [{"kind": "mcu_reset", "t_ms": 10, "params": {"duration_ms": 5000.0}},
+                            {"kind": "gde_disable", "t_ms": 10}, {"kind": "battery_disconnect", "t_ms": 10}],
+                 "additions": hw_vdc_additions()},
+    "variants": {"cycling": {}, "latched": {"additions": hw_vdc_additions(v_low=0.0)}}}
+SCENARIOS["S-REACT"]["variants"]["fw_low_hv_3000"] = {
+    "speed_rpm": 3000, "Voc_V": 50.0, "faults": [_cmd("six_switch_off")],
+    "overrides": {"battery.bms.delay_ms": 1000.0}}          # the battery keeps accepting the charge
+SCENARIOS["S-OPSTATE"]["variants"] = {
+    "nominal": {},
+    "kl15_off": {"system": {"inputs": [_inp(150, "kl15_sw", 0), _inp(200, "trq_gen_rq", 1),
+                                       _inp(300, "trq_gen_rq", 0), _inp(320, "ignition", 0),
+                                       _inp(330, "discharge_request", 1)]}}}
+
 # ------------------------------------------------------------------------------------------------- parameters
 
 PARAMETERS = [
@@ -470,6 +565,17 @@ PARAMETERS = [
     {"id": "LFM_TARGET", "unit": "-", "provenance": "OPEN", "value": None, "illustrative": 0.8},
     {"id": "PMHF_TARGET", "unit": "FIT", "provenance": "OPEN", "value": None, "illustrative": 100.0},
     {"id": "MAX_ASIL", "unit": "ASIL", "provenance": "OPEN", "value": None, "note": "the maximum ASIL parameter"},
+    {"id": "LIMIT_FACTOR", "unit": "-", "provenance": "OPEN", "value": None, "illustrative": 1.1,
+     "note": "limit factor of the torque window"},
+    {"id": "EST_ERROR_BOUND", "unit": "N*m", "provenance": "OPEN", "value": None, "illustrative": 15.0,
+     "note": "accuracy of the safety torque estimate against the transmission-side torque"},
+    {"id": "REGEN_POWER_MIN", "unit": "W", "provenance": "OPEN", "value": None, "illustrative": -30000.0,
+     "note": "lowest DC power (regeneration is negative) the interface accepts after the vehicle lowers its minimum "
+             "torque"},
+    {"id": "T_PASSIVE_DISCHARGE", "unit": "s", "provenance": "PROJECT", "value": 120.0},
+    {"id": "OC_RATIO", "unit": "x I_max", "provenance": "CUSTOMER-PAST", "value": 1.5,
+     "note": "fast over-current threshold relative to the maximum current (outside the normal range)"},
+    {"id": "OC_RATIO_TOL", "unit": "-", "provenance": "CUSTOMER-PAST", "value": 0.1},
 ]
 
 SS = {"torque_tol_Nm": "$T_TOL", "power_tol_W": "$P_TOL", "tlsr_min_Nm": "$TLSR_T_MIN", "tlsr_max_Nm": "$TLSR_T_MAX",
@@ -540,7 +646,11 @@ ITEMS = [
     {"id": "EX-HW-01", "group": "hardware path", "kind": "requirement", "provenance": "CUSTOMER-PAST",
      "title": "gate-driver enable withdrawn -> the ASC within 150 us (both recorded sequences)",
      "checks": [_c("state_time", "S-GDE", variants=("SEQ_A", "SEQ_B"), origin="fault", max_us="$GDE_TO_3PS"),
-                _c("safe_state", "S-GDE", variants=("SEQ_A", "SEQ_B"), origin="fault", **SS)]},
+                # the physical safe state within the same budget and held (no transition allowance): the sequence
+                # that leaves the ASC for six-switch-off at 12,000 rpm rectifies into the battery (C2)
+                _c("safe_state", "S-GDE", variants=("SEQ_A", "SEQ_B"), origin="fault", deadline_us="$GDE_TO_3PS",
+                   torque_tol_Nm="$T_TOL", power_tol_W="$P_TOL", tlsr_min_Nm="$TLSR_T_MIN",
+                   tlsr_max_Nm="$TLSR_T_MAX")]},
     {"id": "EX-HW-02", "group": "hardware path", "kind": "requirement", "provenance": "CUSTOMER-PAST",
      "title": "fast over-voltage: detection and reaction within 20 us",
      "checks": [_c("hw_timing", "S-FOV", mech="SM-OV", quantity="v_dc", threshold=780.0,
@@ -707,8 +817,197 @@ ITEMS = [
                    events=["input", "safe_state_request", "actuation", "supervisor"])]},
     {"id": "EX-MAN-01", "group": "organisation", "kind": "action", "provenance": "DERIVED",
      "title": "input baseline and responsibilities agreed with the customer",
-     "manual": "organisational: record the agreement (document, revision) as evidence"},
+     "manual": "organisational: record the agreement (document, revision) as evidence",
+     "checks": [_c("manual", reason="organisational: record the agreement (document, revision) as evidence")]},
+    # -- the second part: formula, envelope, supplies, states, clock, coupling, regeneration, questions ----------------
+    {"id": "EX-TQ-04", "group": "torque window", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+     "title": "the implemented signed window is the declared formula (for every limit factor and tolerance)",
+     "checks": [_c("window_semantics", high="max(T*F, T/F) + A", low="min(T*F, T/F) - A", rule="add")]},
+    {"id": "EX-TQ-05", "group": "torque window", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+     "title": "the small long deviation is detected - for which limit factors (break-even of an OPEN value)",
+     "checks": [_c("sweep", "S-DEVF", param="LIMIT_FACTOR", values=[1.05, 1.1, 1.3, 1.6], inner="detected",
+                   params={"by": ["SM-TWIN"]})]},
+    {"id": "EX-TQ-06", "group": "torque window", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+     "title": "the received envelope bounds the actual torque; a widened capability input cannot widen the window",
+     "checks": [_c("detected", "S-ENVX", "received", by=["SM-TWIN"]),
+                _c("detected", "S-ENVX", "widened_no_bound", by=["SM-TWIN"], expect=False,
+                   label="counterexample: a widened envelope hides the deviation"),
+                _c("detected", "S-ENVX", "widened_bounded", by=["SM-TWIN"],
+                   label="the independent bound keeps the window")]},
+    {"id": "EX-EST-01", "group": "torque window", "kind": "requirement", "provenance": "DERIVED",
+     "title": "the safety torque estimate against the transmission-side torque (all quadrants)",
+     "checks": [_c("bound", "S-QUAD", v, quantity="est_error_abs", max="$EST_ERROR_BOUND", **{"from": 20.0})
+                for v in ("motoring", "regen", "reverse_motoring", "reverse_regen")]},
+    {"id": "EX-SS-03", "group": "safe state", "kind": "rule", "provenance": "PROJECT",
+     "title": "a low DC voltage does not make freewheeling safe (back-EMF above the link at 3000 rpm, 50 V)",
+     "checks": [_c("safe_state", "S-REACT", "fw_low_hv_3000", origin="gate", expect_reached=False, **SS)]},
+    {"id": "EX-SS-04", "group": "safe state", "kind": "requirement", "provenance": "CONFIRMED",
+     "title": "a no-torque target mode forbids torque by active pulsing (C3 only - not the full safe state)",
+     "checks": [_c("safe_state", "S-MODE", "no_torque", origin="input:target_mode=no_torque",
+                   to="input:target_mode=run", conditions=["C3"], deadline_ms="$FTTI_STANDBY",
+                   transition_ms="$SS_TRANSITION")]},
+    {"id": "EX-HW-04", "group": "hardware path", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+     "title": "the hardware sequence works while the MCU is in reset",
+     "checks": [_c("state_time", "S-GDE", variants=("SEQ_A_mcu_reset", "SEQ_B_mcu_reset"),
+                   origin="event:fault:gde_disable", max_us="$GDE_TO_3PS")]},
+    {"id": "EX-HW-05", "group": "hardware path", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+     "title": "the fast over-current threshold lies outside the normal range at 1.5 x I_max +-10 %",
+     "checks": [_c("threshold_ratio", mech="SM-OC", reference="inverter_current_limit", ratio="$OC_RATIO",
+                   tol="$OC_RATIO_TOL"),
+                _c("hw_timing", "S-ACFOC", variants=("thr_nominal", "thr_low", "thr_high"), mode="all", mech="SM-OC",
+                   quantity="i_phase_abs", detect_max_us="$FAST_REACT", react_max_us="$FAST_REACT",
+                   label="detection and reaction with the threshold tolerance")]},
+    {"id": "EX-PW-03", "group": "supply", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+     "title": "a leg short is still detected by the desaturation protection during the low-voltage loss",
+     "checks": [_c("detected", "S-LV", "short_during_lv_loss", by=["SM-DSAT"], origin=13.0)]},
+    {"id": "EX-PW-04", "group": "supply", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+     "title": "the transfer between the sources is seamless; a transfer gap longer than the hold-up loses the gates",
+     "checks": [_c("bound", "S-SUPPLY", "transfer_seamless", quantity="rail_GATE", min=1.0),
+                _c("bound", "S-SUPPLY", "transfer_gap", quantity="rail_GATE", min=1.0, expect_violation=True,
+                   label="counterexample: a 1 ms gap is longer than the 0.5 ms hold-up")]},
+    {"id": "EX-PW-05", "group": "supply", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+     "title": "a failed redundant source is flagged; the drive keeps its supplies from the other source",
+     "checks": [_c("event", "S-SUPPLY", "hv_source_fault", kind="supply", source="HV_fault", origin="fault"),
+                _c("no_detection", "S-SUPPLY", "hv_source_fault")]},
+    {"id": "EX-OPS-03", "group": "operating states", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+     "title": "an active state is entered between passive ones only while torque production is allowed",
+     "checks": [_c("opstate", "S-OPSTATE", "kl15_off", absent=[["IDLE", "RUN"]])]},
+    {"id": "EX-OPS-04", "group": "operating states", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+     "title": "no AC / DC energy flow: APS above the speed threshold, ASO below it",
+     "checks": [_c("state_time", "S-EFB", "above", origin="input:energy_flow_block=1", states=["asc_low"],
+                   max_us=2000.0),
+                _c("state_time", "S-EFB", "below", origin="input:energy_flow_block=1", states=["six_switch_off"],
+                   max_us=2000.0)]},
+    {"id": "EX-OPS-05", "group": "operating states", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+     "title": "the power-stage states each operating state allows, and the stage names",
+     "checks": [_c("model_tables", allow={"STNDBY": ["ASO", "APS"], "IDLE": ["ASO", "APS"],
+                                          "DIAG": ["ASO", "APS", "PWM"], "RUN": ["ASO", "PWM"],
+                                          "LHOM": ["ASO", "PWM"], "FAULT": ["ASO", "APS"]},
+                   stages={"six_switch_off": "ASO", "asc_low": "APS", "asc_high": "APS", "pwm": "PWM"})]},
+    {"id": "EX-CLK-01", "group": "execution", "kind": "requirement", "provenance": "DERIVED",
+     "title": "a stopped MCU clock is caught by the external watchdog; a 50 % drift is a blind spot of a timeout "
+              "watchdog",
+     "checks": [_c("detected", "S-CLOCK", "stop", by=["SM-WD"]),
+                _c("detected", "S-CLOCK", "drift_half", by=["SM-WD"], expect=False)]},
+    {"id": "EX-OS-01", "group": "vehicle", "kind": "requirement", "provenance": "DERIVED",
+     "title": "an overspeed after a coupling opens is detected; a frozen position hides it",
+     "checks": [_c("detected", "S-COUPLING", "runaway", by=["SM-OS"]),
+                _c("detected", "S-COUPLING", "runaway_position_frozen", by=["SM-OS"], expect=False)]},
+    {"id": "EX-REG-01", "group": "interface", "kind": "requirement", "provenance": "DERIVED",
+     "title": "the regenerative power follows the lowered minimum torque the vehicle sends",
+     "checks": [_c("bound", "S-REGEN", quantity="p_dc", min="$REGEN_POWER_MIN", **{"from": 30.0})]},
+    {"id": "EX-DIS-02", "group": "discharge", "kind": "requirement", "provenance": "PROJECT",
+     "title": "passive discharge below the limit within its time by the bleeder alone",
+     "checks": [_c("passive_discharge", v_limit_V="$V_DISCHARGE", deadline_s="$T_PASSIVE_DISCHARGE")]},
+    {"id": "EX-VEH-02", "group": "vehicle", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+     "title": "a legitimate start torque at standstill with the clutch open: no false trip, no vehicle motion",
+     "checks": [_c("no_detection", "S-START"),
+                _c("vehicle", "S-START", expect_no_motion=True)]},
+    {"id": "EX-META-02", "group": "provenance", "kind": "rule", "provenance": "DERIVED",
+     "title": "OPEN values kept open; every item has a verdict row",
+     "checks": [_c("open_kept", params=["T_SHUTOFF", "FTTI_TORQUE", "X_UPP", "TLSR_T_MAX"]),
+                _c("package_coverage")]},
+    {"id": "EX-MOD-02", "group": "modules", "kind": "module", "provenance": "DERIVED",
+     "title": "the interfaces and fault classes a source lists are represented in the model",
+     "checks": [_c("model_interfaces", interfaces={
+         "terminal 15 hardware": ["signal:kl15_hw"], "terminal 30": ["signal:t30_state", "fault:lv_loss"],
+         "rotor sensor": ["role:position_control"], "wheel speed": ["signal:wheel_speed_kph"],
+         "clock": ["fault:clock"], "mechanical coupling": ["fault:coupling"], "bus": ["fault:e2e"]})]},
+    {"id": "EX-RST-01", "group": "supervisor", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+     "title": "an MCU reset: no PWM authority until the MCU has booted again (rotating and at standstill)",
+     "checks": [_c("no_pwm", "S-RESET", "rotating", **{"from": "event:fault:mcu_reset", "to": "event::MCU booted"}),
+                _c("no_pwm", "S-RESET", "standstill", **{"from": "event:fault:mcu_reset", "to": "event::MCU booted"})]},
+    {"id": "EX-NF-01", "group": "torque window", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+     "title": "the normal function limits first (the monitor stays silent); with it failed the monitor reacts in time",
+     "checks": [_c("normal_first", "S-NORMAL1ST", "healthy", failed_variant="app_failed",
+                   deadline_ms="$FTTI_TORQUE")]},
+    {"id": "EX-SM-01", "group": "hardware path", "kind": "safety_mechanism", "provenance": "DERIVED",
+     "title": "fast DC-link over-voltage comparator: a complete specification and a demonstrated path",
+     "spec": {"target_fault": "DC-link over-voltage (battery disconnected in regeneration)",
+              "principle": "analog comparator on the hardware DC-link voltage, 5 us filter",
+              "reaction": "ASC by the hardware path (speed-dependent rule), independent of the processor",
+              "timing": "detection and reaction within $FAST_REACT", "asil": "as the safety goal it serves",
+              "allocation": "logic device and gate drivers (HW)", "verification": "EX-HW-02 (simulation), bench test",
+              "shared": "HV measurement divider shared with the control sensor"},
+     "checks": [_c("sm_spec", demonstrated_by="EX-HW-02")]},
+    {"id": "EX-Q-01", "group": "questions", "kind": "question", "provenance": "DERIVED",
+     "title": "which tolerance and transition time decide the physical safe state?",
+     "checks": [_c("question", closes=["T_TOL", "P_TOL", "SS_TRANSITION"])]},
 ]
+
+# ------------------------------------------------------------------------------------------------- the hierarchy
+# the example's structure: two vehicle goals, three top-level requirements (one whose text was not provided), the
+# functional requirements below them, the technical requirements, a mechanism - and a proposal (a DERIVED addition
+# the simulation shows is missing: never a customer requirement)
+ROLLUP = "judged through the requirements traced to it (the roll-up)"
+ITEMS[:0] = [
+    {"id": "EX-SG-01", "level": "SG", "group": "goals", "kind": "requirement", "provenance": "CUSTOMER-PAST",
+     "title": "no unintended vehicle acceleration or deceleration from the electric drive beyond what the driver "
+              "controls", "manual": ROLLUP},
+    {"id": "EX-SG-02", "level": "SG", "group": "goals", "kind": "requirement", "provenance": "PROJECT",
+     "title": "no electric shock from energy left in the high-voltage system after the drive is switched off",
+     "manual": ROLLUP},
+    {"id": "EX-TLSR-01", "level": "TLSR", "group": "goals", "kind": "requirement", "provenance": "CONFIRMED",
+     "title": "prevent unintended torque at standstill", "traces_to": ["EX-SG-01"], "manual": ROLLUP},
+    {"id": "EX-TLSR-02", "level": "TLSR", "group": "goals", "kind": "requirement", "provenance": "CONFIRMED",
+     "title": "prevent unintended excessive torque while driving", "traces_to": ["EX-SG-01"], "manual": ROLLUP},
+    {"id": "EX-TLSR-03", "level": "TLSR", "group": "goals", "kind": "requirement", "provenance": "OPEN",
+     "title": "drivetrain destabilisation (the text was not provided)", "traces_to": ["EX-SG-01"],
+     "manual": "the requirement text is not provided: ask for it before anything is derived from it"},
+]
+ITEMS.append(
+    {"id": "EX-PROP-01", "level": "TSR", "group": "proposals", "kind": "requirement", "provenance": "DERIVED",
+     "proposed": True, "traces_to": ["EX-DIS-01"], "traces_to_inferred": ["EX-HW-04"],
+     "title": "with the processor lost while the machine turns and the battery disconnected, the hardware selection "
+              "by the DC voltage shall not cycle between freewheeling and ASC: where the back-EMF exceeds X_LOW it "
+              "holds the ASC (a speed- or back-EMF-dependent latch)",
+     "rationale": "the selection by the DC voltage alone (ASC above X_upp, six-switch-off below X_low) cycles at "
+                  "6000 rpm once the active discharge has pulled the link to X_low: every six-switch-off interval lets "
+                  "the back-EMF recharge it (energy fed back, C2), the link never stays below the discharge limit, and "
+                  "no requirement of the example asks about it; holding the ASC keeps it below",
+     "checks": [_c("event", "S-HWVDC", "cycling", kind="strategy", text="hardware HV selection", min_count=6,
+                   label="the selection by the DC voltage alone cycles (demonstration)"),
+                _c("bound", "S-HWVDC", "cycling", quantity="v_dc", max="$V_DISCHARGE", expect_violation=True,
+                   label="... and the link does not stay below the discharge limit (counterexample)",
+                   **{"from": 80.0}),
+                _c("event", "S-HWVDC", "latched", kind="strategy", text="hardware HV selection", expect=False,
+                   label="the ASC held: no cycling"),
+                _c("bound", "S-HWVDC", "latched", quantity="v_dc", max="$V_DISCHARGE",
+                   label="the ASC held: the link stays below the discharge limit", **{"from": 80.0})]})
+HIERARCHY = {
+    # level, traces_to (as the example states it)
+    "EX-SS-01": ("FSR", ["EX-TLSR-01", "EX-TLSR-02"]), "EX-SS-04": ("FSR", ["EX-TLSR-01"]),
+    "EX-TQ-01": ("FSR", ["EX-TLSR-02"]), "EX-TQ-02": ("FSR", ["EX-TLSR-02"]), "EX-TQ-03": ("FSR", ["EX-TLSR-02"]),
+    "EX-OSC-01": ("FSR", ["EX-TLSR-03"]), "EX-NF-01": ("FSR", ["EX-TLSR-02"]),
+    "EX-SUP-01": ("FSR", ["EX-TLSR-01"]), "EX-SUP-02": ("FSR", ["EX-TLSR-01"]), "EX-SUP-04": ("FSR", ["EX-TLSR-01"]),
+    "EX-RST-01": ("FSR", ["EX-TLSR-01"]),
+    "EX-OPS-01": ("FSR", ["EX-TLSR-01"]), "EX-OPS-02": ("FSR", ["EX-TLSR-02"]), "EX-OPS-03": ("FSR", ["EX-TLSR-01"]),
+    "EX-OPS-04": ("FSR", ["EX-TLSR-02"]), "EX-OPS-05": ("FSR", ["EX-TLSR-01"]),
+    "EX-VEH-01": ("FSR", ["EX-SG-01"]), "EX-VEH-02": ("FSR", ["EX-TLSR-01"]), "EX-OS-01": ("FSR", ["EX-TLSR-02"]),
+    "EX-ITF-01": ("FSR", ["EX-TLSR-02"]), "EX-ITF-02": ("FSR", ["EX-TLSR-02"]), "EX-ITF-03": ("FSR", ["EX-TLSR-02"]),
+    "EX-REG-01": ("FSR", ["EX-TLSR-02"]), "EX-DUAL-01": ("FSR", ["EX-TLSR-02"]),
+    "EX-DIS-01": ("FSR", ["EX-SG-02"]), "EX-DIS-02": ("FSR", ["EX-SG-02"]),
+    "EX-TQ-04": ("TSR", ["EX-TQ-01"]), "EX-TQ-05": ("TSR", ["EX-TQ-02"]), "EX-TQ-06": ("TSR", ["EX-TQ-03"]),
+    "EX-EST-01": ("TSR", ["EX-TQ-01"]), "EX-SS-02": ("TSR", ["EX-SS-01"]), "EX-TSK-01": ("TSR", ["EX-TQ-02"]),
+    "EX-HW-01": ("TSR", ["EX-SS-01"]), "EX-HW-02": ("TSR", ["EX-SS-01"]), "EX-HW-03": ("TSR", ["EX-SS-01"]),
+    "EX-HW-04": ("TSR", ["EX-HW-01"]), "EX-HW-05": ("TSR", ["EX-HW-03"]),
+    "EX-PW-01": ("TSR", ["EX-SS-01"]), "EX-PW-02": ("TSR", ["EX-SS-01"]), "EX-PW-03": ("TSR", ["EX-SS-01"]),
+    "EX-PW-04": ("TSR", ["EX-SS-01"]), "EX-PW-05": ("TSR", ["EX-SS-01"]),
+    "EX-TST-01": ("TSR", ["EX-SS-01"]), "EX-TST-02": ("TSR", ["EX-SS-01"]), "EX-E2E-01": ("TSR", ["EX-TQ-03"]),
+    "EX-IN-01": ("TSR", ["EX-TQ-02"]), "EX-PWM-01": ("TSR", ["EX-SS-01"]), "EX-WD-01": ("TSR", ["EX-TSK-01"]),
+    "EX-CLK-01": ("TSR", ["EX-TSK-01"]), "EX-CONF-01": ("TSR", ["EX-SS-01"]), "EX-CAL-01": ("TSR", ["EX-TQ-01"]),
+    "EX-MET-01": ("TSR", ["EX-TLSR-01", "EX-TLSR-02"]),
+    "EX-SM-01": ("SM", ["EX-HW-02"]),
+    "EX-TL-01": ("DEF", []), "EX-SS-03": ("RULE", ["EX-SS-01"]), "EX-SUP-03": ("RULE", ["EX-SUP-02"]),
+    "EX-META-01": ("RULE", []), "EX-META-02": ("RULE", []), "EX-MAP-01": ("OUT", ["EX-SS-01"]),
+    "EX-RES-01": ("RES", []), "EX-MOD-01": ("MOD", []), "EX-MOD-02": ("MOD", []), "EX-MAN-01": ("ACT", []),
+    "EX-Q-01": ("Q", ["EX-SS-01", "EX-TLSR-03"]),
+}
+for _it in ITEMS:
+    if _it["id"] in HIERARCHY:
+        _it["level"], _t = HIERARCHY[_it["id"]]
+        if _t:
+            _it["traces_to"] = list(_t)
 
 REFERENCE_EXAMPLE = {
     "schema": "twb-reference/1",

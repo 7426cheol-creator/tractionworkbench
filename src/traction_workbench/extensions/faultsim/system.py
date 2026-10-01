@@ -37,7 +37,8 @@ last source is gone and need a restart time when one returns; a rail's loss is t
 Torque interface.  An end-to-end protected receive path (counter, data id, machine id, CRC; the newest ACCEPTED
 frame is used; a repeated counter is not a new update and does not refresh the age), the speed-limit fallback
 (an invalid wheel speed, an invalid or missing speed-limit request or qualifier, a limited qualifier or a wheel speed
-above the request limit the positive torque to a safe value), the available-torque envelope with the intervention
+above the request limit the positive torque to a safe value), the available-torque envelope (declared, or the
+maximum / minimum the vehicle sends as inputs that change over time) with the intervention
 torque (T_sum = request + intervention clamped to the maximum when positive, to the minimum when negative) and the
 temporary positive-side extended torque (up to a minimum extended torque while requested, reverted after a maximum
 time; never outside voltage-control mode, never on the negative side).
@@ -68,7 +69,8 @@ SIGNALS = {"kl15_sw": 1, "kl15_hw": 1, "target_mode": "run", "hv_enable": 1, "sp
            "trq_gen_rq": 1, "rol_actv": 0, "pwr_stg_ctrl": 0, "ignition": 1, "energy_flow_block": 0,
            "t30_state": "normal", "discharge_request": 0, "wheel_speed_valid": 1, "wheel_speed_kph": 0.0,
            "speed_limit_valid": 1, "speed_limit_kph": 250.0, "speed_limit_qualifier": "ok", "intervention_Nm": 0.0,
-           "ext_request": 0, "voltage_control_mode": 0, "dtc_clear": 0, "reset_request": 0}
+           "ext_request": 0, "voltage_control_mode": 0, "dtc_clear": 0, "reset_request": 0,
+           "env_max_Nm": None, "env_min_Nm": None}
 PULSES = ("dtc_clear", "reset_request")
 TARGET_MODES = ("run", "standby", "no_torque")
 STATES = ("POWER_OFF", "STNDBY", "IDLE", "DIAG", "RUN", "LHOM", "FAULT")
@@ -481,7 +483,8 @@ class SystemLayer:
                 n += 1
         if sp.supply:
             for r in sp.supply.rails:
-                self.rails[r.name] = {"powered": True, "token": 0, "down": False}
+                # the source a rail runs from (its first available one): a later change is a transfer
+                self.rails[r.name] = {"powered": True, "token": 0, "down": False, "from": r.sources[0]}
         if sp.interface and sp.interface.e2e:
             e = sp.interface.e2e
             # the steady state before t = 0: the frame sent one period earlier was received and accepted
@@ -541,6 +544,17 @@ class SystemLayer:
                 for res in spec.resources:
                     sim.restore_resource(t, res)
                 sim.update_bridge(t, f"rail {name} back")
+        elif kind == "sys:rail_transfer":
+            # the transfer to the other source is complete: the rail is fed again
+            name, token = payload
+            r = self.rails[name]
+            if token == r["token"] and not r["powered"]:
+                r["powered"] = True
+                r["token"] += 1
+                spec = next(rr for rr in self.spec.supply.rails if rr.name == name)
+                sim.ev(t, "supply", name, f"rail {name}: transfer complete, fed from {r.get('from')}")
+                if r["down"]:
+                    sim.schedule(t + spec.restart_s, 1, "sys:rail_up", (name, r["token"]))
         elif kind == "sys:em2_step":
             self._em2_power(sim, t)
         elif kind == "sys:em2_react":
@@ -802,12 +816,12 @@ class SystemLayer:
                 self._goto(sim, t, "IDLE", ", ".join(why))
 
     def passive_stage(self, sim) -> str:
+        """The passive stage of a state without PWM and of a request for no AC / DC energy flow: APS (the ASC) above
+        the declared measured speed, ASO (six-switch-off) below it."""
         op = self.spec.opstate
         spd = abs(sim.last_meas.get("speed_rpm") or 0.0)
         if op is None:
             return "six_switch_off"
-        if self.sig.get("energy_flow_block"):
-            return op.aps_side if spd >= op.aps_above_rpm else "six_switch_off"
         return op.aps_side if spd >= op.aps_above_rpm else "six_switch_off"
 
     # -- enforcing: request / release the safe state -----------------------------------------------------------
@@ -822,6 +836,9 @@ class SystemLayer:
         if self.reasons:
             pwm_ok = False
             why += sorted(self.reasons)
+        if self.sig.get("energy_flow_block"):
+            pwm_ok = False
+            why.append("no AC / DC energy flow requested")
         was = self.permit
         self.permit = pwm_ok and sim.hw_reaction is None
         if not pwm_ok:
@@ -832,9 +849,9 @@ class SystemLayer:
                 return          # the fault reaction holds; the latch keeps it
             if key == "reset":
                 return          # the reset output state holds the bridge
-            if key is None:     # the state does not allow PWM: its passive stage
+            if key is None:     # the state (or a no-energy-flow request) does not allow PWM: the passive stage
                 reaction, path = self.passive_stage(sim), (sp.supervisor.path if sp.supervisor else "SW")
-                key = f"state_{self.state}"
+                key = "no_energy_flow" if self.sig.get("energy_flow_block") else f"state_{self.state}"
             else:
                 reaction, path = self._reason_reaction(key)
             if initial:
@@ -936,15 +953,17 @@ class SystemLayer:
             have = [s for s in r.sources if (s == "LV" and self.src["LV"]) or (s == "HV" and hv)]
             powered = bool(have)
             if powered and st["powered"] and sp.transfer_gap_s > 0 and st.get("from") and st["from"] not in have:
-                # the source changes: a transfer gap
+                # the source changes: a transfer gap (the hold-up bridges it, or the rail drops until it ends)
                 st["token"] += 1
+                st["from"] = have[0]
                 if sp.transfer_gap_s > r.hold_up_s:
                     sim.schedule(t + r.hold_up_s, 1, "sys:rail_down", (r.name, st["token"]))
                     st["powered"] = False
                     sim.schedule(t + sp.transfer_gap_s, 1, "sys:rail_transfer", (r.name, st["token"]))
                 sim.ev(t, "supply", r.name, f"rail {r.name}: source transfer ({sp.transfer_gap_s * 1e6:g} us gap, "
                                             f"hold-up {r.hold_up_s * 1e3:g} ms)")
-            st["from"] = have[0] if have else None
+                continue
+            st["from"] = have[0] if have else st.get("from")
             if powered == st["powered"]:
                 continue
             st["powered"] = powered
@@ -1072,8 +1091,12 @@ class SystemLayer:
                 self._fb_logged = False
         T_sum = T + float(s["intervention_Nm"] or 0.0)
         env = itf.envelope
+        if env is None and (s["env_max_Nm"] is not None or s["env_min_Nm"] is not None):
+            env = {}
         if env is not None:
-            T_max, T_min = float(env.get("max_Nm", math.inf)), float(env.get("min_Nm", -math.inf))
+            # the envelope the vehicle sends (an input that changes over time) or the declared static one
+            T_max = float(env.get("max_Nm", math.inf)) if s["env_max_Nm"] is None else float(s["env_max_Nm"])
+            T_min = float(env.get("min_Nm", -math.inf)) if s["env_min_Nm"] is None else float(s["env_min_Nm"])
             ex = itf.extended
             if ex is not None:
                 req = bool(s["ext_request"]) and not s["voltage_control_mode"]

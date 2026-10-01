@@ -79,7 +79,8 @@ class OperatingViews(QWidget):
         self.tabs = QTabWidget()
         self.overview = PlotPanel(hint=tr("배터리–릴레이–DC 링크–인버터–모터 개요도와 운전점 값", "battery–contactor–DC link–inverter–motor overview"),
                                   min_height=300)
-        self.map = PlotPanel(hint=tr("계산 후 id–iq 제약 지도가 표시됩니다.", "The id–iq constraint map appears after a run."))
+        self.map = PlotPanel(hint=tr("계산 후 id–iq 제약 지도가 표시됩니다.", "The id–iq constraint map appears after a run."),
+                             cursor=False)             # its clicks pick an operating point; hover reads the map
         self.wave = PlotPanel(hint=tr("운전점의 상전류·전압·듀티·쇄교자속 파형", "phase current, voltage, duty and flux waveforms"))
         self.phasor = PlotPanel(hint=tr("dq 벡터도와 공간벡터 육각형", "dq phasor diagram and space-vector hexagon"))
         self.power = PlotPanel(hint=tr("전력 흐름과 제약 사용률", "power chain and constraint utilisation"))

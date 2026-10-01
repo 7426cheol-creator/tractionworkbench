@@ -156,7 +156,40 @@ SCENARIOS = [
                   "faults": [{"kind": "switch_open", "t_ms": 0, "params": {"leg": "a", "device": "upper"}},
                              {"kind": "battery_disconnect", "t_ms": 10},
                              {"kind": "gate_supply_loss", "t_ms": 10, "params": {"side": "lower"}}]}},
+    {"key": "hw_vdc_rolling", "category": "hardware safe-state selection",
+     "title": {"ko": "제어 상실·주행 중 · MCU 정지 + 배터리 차단 → HW가 DC 전압으로 FW/ASC 선택",
+               "en": "control lost while rolling · MCU dead + battery off → hardware FW / ASC by the DC voltage"},
+     "hint": {"ko": "GDE 상실 → HW가 DC-link 전압으로 선택(X_upp 100 V 위 ASC, X_low 60 V 아래 6SO). 능동 방전이 링크를 60 V까지 "
+                    "내리면 6SO → 역기전력이 수십 µs 만에 100 V로 재충전 → ASC → … 순환하고 링크가 60 V 아래에 머물지 못함 "
+                    "(설계 편집 탭에서 임계값·전략을 바꿔 볼 수 있음)",
+              "en": "GDE lost → the hardware selects by the DC-link voltage (ASC above X_upp 100 V, 6SO below X_low 60 V). "
+                    "Once the active discharge has pulled the link to 60 V, 6SO lets the back-EMF recharge it to 100 V in "
+                    "tens of us → ASC → … it cycles and the link never stays below 60 V (thresholds and strategy in the "
+                    "design tab)"},
+     "scenario": {"speed_rpm": 6000, "torque_Nm": 50, "horizon_ms": 120,
+                  "faults": [{"kind": "mcu_reset", "t_ms": 10, "params": {"duration_ms": 5000.0}},
+                             {"kind": "gde_disable", "t_ms": 10},
+                             {"kind": "battery_disconnect", "t_ms": 10}]}},
 ]
+
+
+def _hw_vdc_design() -> dict:
+    """The design variant of ``hw_vdc_rolling``: the example's mechanisms, strategies and paths with a hardware GDE
+    monitor whose path selects the bridge by the hardware DC voltage (added records: whole-list changes)."""
+    from .configure import FAULT_SIM_EXAMPLE as X
+    mech = {"id": "SM-GDE", "kind": "gde_monitor", "path": "HWGD", "reaction": "safe_state", "params": {"delay_us": 1.0},
+            "resources": ["CPLD"], "text": "hardware GDE monitor (logic device): the processor lost its PWM authority"}
+    strat = {"id": "HW_VDC_SELECT", "fallback": "six_switch_off",
+             "text": "hardware selection by the DC-link voltage: ASC above X_upp, six-switch-off below X_low",
+             "steps": [{"action": "hv_select_low", "exit": "none", "params": {"v_upp_V": 100.0, "v_low_V": 60.0}}]}
+    path = {"id": "HWGD", "delay_us": 2.0, "resources": ["CPLD"], "fixed_reaction": "HW_VDC_SELECT",
+            "basis": "logic device next to the gate drivers: works without the processor"}
+    return {"mechanisms": copy.deepcopy(X["mechanisms"]) + [mech],
+            "strategies": copy.deepcopy(X.get("strategies") or []) + [strat],
+            "paths": copy.deepcopy(X["paths"]) + [path]}
+
+
+next(s for s in SCENARIOS if s["key"] == "hw_vdc_rolling")["scenario"]["overrides"] = _hw_vdc_design()
 
 
 # a campaign each representative scenario suggests (its base is the scenario): the axes and what they explore
@@ -226,6 +259,10 @@ CAMPAIGNS = {
                                                                                       "break the held safe condition"}),
     "no_safe_reaction": ([{"path": "speed_rpm", "values": [3000, 6000, 12000]}],
                          {"ko": "실행 가능한 안전 반응이 없는 영역", "en": "where no executable safe reaction exists"}),
+    "hw_vdc_rolling": ([{"path": "speed_rpm", "values": [500, 1000, 2000, 4000, 6000]}],
+                       {"ko": "순환이 시작되는 속도: 6SO에서 역기전력이 링크를 X_low 위로 다시 충전하는 속도부터",
+                        "en": "the speed from which it cycles: where the back-EMF recharges the link above X_low in "
+                              "six-switch-off"}),
 }
 for _s in SCENARIOS:
     if _s["key"] in CAMPAIGNS:
@@ -298,7 +335,7 @@ def independence_data(data: dict) -> dict:
     reads = {"torque_monitor": ["current_mon_a", "current_mon_b", "position_monitor"],
              "current_plausibility": ["current_mon_a", "current_mon_b", "current_mon_c"],
              "overcurrent_sw": ["current_mon_a", "current_mon_b", "current_mon_c"],
-             "overvoltage_sw": ["vdc_monitor"], "undervoltage_sw": ["vdc_monitor"],
+             "overvoltage_sw": ["vdc_monitor"], "undervoltage_sw": ["vdc_monitor"], "overspeed_sw": ["position_control"],
              "position_los": ["position_monitor"], "overcurrent_hw": ["current_hw_a", "current_hw_b", "current_hw_c"],
              "overvoltage_hw": ["vdc_hw"]}
     control_reads = {role(r) for r in ("current_a", "current_b", "current_c", "position_control", "vdc_control")}

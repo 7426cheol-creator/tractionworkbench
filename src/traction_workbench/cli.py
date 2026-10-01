@@ -10,7 +10,7 @@
     twb curve --vdc 600
     twb acceptance                        production output vs the golden fixtures
     twb exchange [OUT.json]               MathWorks-port exchange package (conventions, identities, fixtures)
-    twb selftest OUT_DIR                  headless check of the desktop application (screenshots + report)
+    twb selftest OUT_DIR [--lang en]      headless check of the desktop application (screenshots + report)
     twb project show|check [PROJECT.json] project data package: identity / cross-section consistency (default:
                                           the built-in synthetic project)
     twb project diff A.json B.json        changed sections, paths and the analyses they feed
@@ -55,7 +55,7 @@ def cmd_gui(args):
 
 def cmd_selftest(args):
     from .desktop.app import main as gui_main
-    return gui_main(["--self-test", args.out])
+    return gui_main(["--self-test", args.out] + (["--lang", args.lang] if getattr(args, "lang", None) else []))
 
 
 def cmd_report(args):
@@ -398,6 +398,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(fn=cmd_exchange)
     p = sub.add_parser("selftest", help="headless check of the desktop application")
     p.add_argument("out", nargs="?", default="selftest_out")
+    p.add_argument("--lang", choices=("ko", "en"), help="the language of the pages (default: the saved setting)")
     p.set_defaults(fn=cmd_selftest)
     p = sub.add_parser("evaluate", help="evaluate a case file into a decision record")
     p.add_argument("case")

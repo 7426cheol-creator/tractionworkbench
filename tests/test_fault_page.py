@@ -99,6 +99,18 @@ def test_a_representative_scenario_runs_and_reads_on_the_page(win, tmp_path, mon
     assert "TSR-06" in page.req_detail.text() and "850" in page.req_detail.text()
     assert page.t_events.rowCount() == len(res["events"])
     assert page.p_wave._draw is not None and page.p_time._draw is not None
+    # the transient zoom: the extremes as simulated, the time over the TSR-06 limit, the data cursor on its curves
+    from PySide6.QtWidgets import QApplication
+    page.tabs.setCurrentWidget(page.tab_zoom)
+    QApplication.instance().processEvents()
+    assert page.p_zoom._draw is not None and page.t_trans.rowCount() == 5
+    rv = _row(page.t_trans, "V_dc [V]")
+    over = page.t_trans.item(rv, 7).text()
+    assert over != "—" and float(over.split()[0]) > 0                 # above 850 V for a while (TSR-06 FAIL)
+    assert float(page.t_trans.item(rv, 2).text()) > 850.0
+    names = page.p_zoom.cursor.names                                  # the curves the data cursor can follow
+    assert any(n.startswith("i_a") for n in names) and any("DC-link" in n for n in names)
+    page.tabs.setCurrentWidget(page.p_wave)
     text = page.insight.text()                                      # the reading names cause, reaction and result
     assert "센서" in text and "6SO" in text and "TSR-06" in text and "정류 개시" in text
     assert "SYNTH-TRACTION" in win.banners["fault_sim"].text()     # the product data the result came from

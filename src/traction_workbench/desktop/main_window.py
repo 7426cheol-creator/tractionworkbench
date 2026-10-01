@@ -28,6 +28,7 @@ from .pages.performance import PerformancePage
 from .pages.power import PowerPage
 from .pages.project import ProjectPage
 from .pages.protection import ProtectionPage
+from .pages.reference import ReferencePage
 from .pages.requirement_set import RequirementSetPage
 from .pages.pwm_driveline import PwmDrivelinePage
 from .pages.safety import SafetyPage
@@ -48,6 +49,7 @@ PAGES = (
     ("safety", lambda: tr("안전 스크리닝", "Safety screening"), SafetyPage),
     ("protection", lambda: tr("보호·고장", "Protection & fault"), ProtectionPage),
     ("fault_sim", lambda: tr("고장 시뮬레이션·FuSa", "Fault simulation & FuSa"), FaultSimPage),
+    ("reference", lambda: tr("기능안전 요구 검증", "FuSa reference verification"), ReferencePage),
     ("thermal", lambda: tr("열·지속시간", "Thermal & duration"), ThermalPage),
     ("power", lambda: tr("전력변환·수명", "Power stage & life"), PowerPage),
     ("efficiency", lambda: tr("효율·모듈 비교", "Efficiency & modules"), EfficiencyPage),
@@ -68,7 +70,7 @@ NAV_GROUPS = (
                                                                    "performance", "design")),
     (lambda: tr("전력·열·효율", "Power, heat & efficiency"), ("thermal", "power", "efficiency")),
     (lambda: tr("제어·EMC", "Control & EMC"), ("pwm_driveline", "emi")),
-    (lambda: tr("안전·보호", "Safety & protection"), ("safety", "protection", "fault_sim")),
+    (lambda: tr("안전·보호", "Safety & protection"), ("safety", "protection", "fault_sim", "reference")),
     (lambda: tr("시스템·설계", "Systems & design"), ("oew_hev", "machine")),
     (lambda: tr("검증", "Verification"), ("verification",)),
 )
@@ -112,6 +114,13 @@ PAGE_INFO = {
                             "causal simulation fault → measurement → control and monitoring → reaction → actual "
                             "bridge, torque, current, DC link → SG / FSR / TSR verdicts; reaction candidates, "
                             "campaigns and counterexamples, validation evidence"),
+    "reference": lambda: tr("고객 사양·스터디 참고 패키지의 항목을 이 제품 모델에서 하나씩 판정: 근거 수준 유지, OPEN 값은 "
+                            "추정하지 않음(UNKNOWN), 충돌 기록은 변형으로, 안전 상태는 물리 결과(C1-C4)로 - 요구-증거 매트릭스"
+                            "·UNKNOWN/CONFLICT 보고·타당성 지도·HTML/CSV",
+                            "a customer specification or study reference verified item by item on this product "
+                            "model: provenance kept, OPEN values never guessed (UNKNOWN), conflicting records as "
+                            "variants, the safe state on the physics (C1-C4) - requirement-to-evidence matrix, "
+                            "unknown / conflict report, feasibility map, HTML / CSV"),
     "oew_hev": lambda: tr("OEW 듀얼 인버터와 HEV 두 기기 공통 bus", "open-end winding dual inverter and HEV two-machine bus"),
     "machine": lambda: tr("모터 스케일링 트레이드, 권선 계산, 개념 사이징",
                           "machine scaling trade study, winding calculator, concept sizing"),
@@ -168,6 +177,7 @@ TASK_LABELS = {
     "fault_validation": lambda: tr("플랜트 검증", "plant validation"),
     "fault_review": lambda: tr("정적 설계 검토", "static design review"),
     "fault_verification": lambda: tr("검증 매트릭스", "verification matrix"),
+    "reference": lambda: tr("기능안전 요구 검증", "reference verification"),
 }
 # tasks whose argument is not a request body: they run on the state's drive and limits
 STATE_TASKS = ("decision-env", "requirement_set", "explorer", "trajectory", "performance", "design-sweep",

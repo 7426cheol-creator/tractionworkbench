@@ -31,6 +31,7 @@ from pathlib import Path
 
 from ...errors import InputValidationError
 from .refcheck import CHECKS, CONFLICT, MANUAL, ORDER, Params, worst
+from .refhier import hierarchy, level_of
 from .safestate import FAIL, NA, PASS, UNKNOWN
 
 SCHEMA = "twb-reference/1"
@@ -95,6 +96,19 @@ def validate_package(pkg: dict) -> list:
                     err(f"item {it.get('id')}: scenario {s} has no variant {v!r}")
         if not it.get("checks") and not it.get("manual"):
             warn(f"item {it.get('id')}: no check and no manual reason")
+    # the hierarchy: known levels, traces to known items, a proposal never a customer requirement
+    from .refhier import LEVELS
+    known = set(ids)
+    cust = set(pkg.get("customer_tags") or ("CONFIRMED", "CUSTOMER-PAST", "PROJECT"))
+    for it in pkg.get("items", []):
+        if it.get("level") is not None and it.get("level") not in LEVELS:
+            err(f"item {it.get('id')}: unknown level {it.get('level')!r} (one of {', '.join(LEVELS)})")
+        for key in ("traces_to", "traces_to_inferred"):
+            for ref in it.get(key) or []:
+                if ref not in known:
+                    warn(f"item {it.get('id')}: {key} names an unknown item {ref!r}")
+        if it.get("proposed") and (it.get("provenance") in cust or it.get("customer_requirement")):
+            err(f"item {it.get('id')}: a proposal cannot carry a customer provenance ({it.get('provenance')})")
     return out
 
 
@@ -236,6 +250,10 @@ class ReferenceRunner:
             raise
         except InputValidationError as exc:
             r = {"verdict": UNKNOWN, "measured": {}, "expected": "", "reasons": [f"input: {exc}"], "evidence": {}}
+        except Exception as exc:                        # noqa: BLE001 - one broken check never stops the others
+            r = {"verdict": UNKNOWN, "measured": {}, "expected": "",
+                 "reasons": [f"the check could not be evaluated ({type(exc).__name__}: {exc})"], "evidence": {},
+                 "error": True}
         r["check"] = c["check"]
         r["label"] = c.get("label", "")
         r["scenario"] = c.get("scenario")
@@ -300,6 +318,10 @@ class ReferenceRunner:
             if r is None:
                 continue
             rows.append({"id": it["id"], "group": it.get("group", ""), "kind": it.get("kind", ""),
+                         "level": level_of(it)[0], "proposed": bool(it.get("proposed")),
+                         "rationale": it.get("rationale"),
+                         "traces_to": list(it.get("traces_to") or []),
+                         "traces_to_inferred": list(it.get("traces_to_inferred") or []),
                          "title": it.get("title", ""), "provenance": it.get("provenance", ""),
                          "customer": it.get("provenance") in cust, "asil_literal": it.get("asil_literal"),
                          "agreement": it.get("agreement"), "verdict": r["verdict"],
@@ -308,7 +330,8 @@ class ReferenceRunner:
                          "checks": r["checks"]})
         counts: dict = {}
         for row in rows:
-            key = ("illustrative" if row["illustrative"] else "customer" if row["customer"] else "internal")
+            key = ("illustrative" if row["illustrative"] else "customer" if row["customer"] else
+                   "proposed" if row["proposed"] else "internal")
             counts.setdefault(key, {}).setdefault(row["verdict"], 0)
             counts[key][row["verdict"]] += 1
         open_report: dict = {}
@@ -322,6 +345,7 @@ class ReferenceRunner:
                      for r in rows if r["verdict"] == CONFLICT]
         manual = [r["id"] for r in rows if r["verdict"] == MANUAL]
         return {"rows": rows, "counts": counts, "open_report": open_report, "conflicts": conflicts, "manual": manual,
+                "hierarchy": hierarchy(self.package, rows),
                 "runs": {k: {"scenario": v.scenario, "status": v.result.status} for k, v in self.runs.items()},
                 "profile": self.profile, "package": {"title": (self.package.get("meta") or {}).get("title", ""),
                                                      "digest": digest({k: v for k, v in self.package.items()
